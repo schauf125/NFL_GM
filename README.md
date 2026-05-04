@@ -34,6 +34,7 @@ python tools\play.py schedule MIN
 python tools\play.py week 1
 python tools\play.py sim-matchup MIN CHI --seed 125
 python tools\play.py sim-game 1 --seed 127
+python tools\play.py sim-audit --games 100 --season 2026 --seed 3000
 python tools\play.py manual-playtest --team MIN
 python tools\play.py playtest-logs latest
 python tools\play.py playtest-logs bundle --latest
@@ -99,6 +100,7 @@ python tools\league_calendar.py current
 python tools\league_calendar.py next --limit 18
 python tools\league_schedule.py validate
 python tools\sim_game.py matchup MIN CHI --seed 125
+python tools\sim_audit.py --games 100 --season 2026 --seed 3000
 python tools\roster_actions.py cap --team DEN
 python tools\setup_draft_classes.py apply
 python tools\setup_draft_classes.py create-class 2027 --seed 2027-default

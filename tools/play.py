@@ -773,6 +773,25 @@ def action_sim_game(args: argparse.Namespace) -> None:
     run_tool_script(args.game_id, "sim_game.py", script_args)
 
 
+def action_sim_audit(args: argparse.Namespace) -> None:
+    script_args = ["--season", str(args.season), "--games", str(args.games), "--seed", str(args.seed)]
+    if args.team:
+        script_args.extend(["--team", args.team])
+    if args.week is not None:
+        script_args.extend(["--week", str(args.week)])
+    if args.matchup:
+        script_args.extend(["--matchup", *args.matchup])
+    if args.progress_every is not None:
+        script_args.extend(["--progress-every", str(args.progress_every)])
+    if args.json:
+        script_args.extend(["--json", str(args.json)])
+    if args.csv:
+        script_args.extend(["--csv", str(args.csv)])
+    if args.strict:
+        script_args.append("--strict")
+    run_tool_script(args.game_id, "sim_audit.py", script_args)
+
+
 def action_manual_playtest(args: argparse.Namespace) -> None:
     target_game_id, db_path = save_db(args.game_id)
     script_args = ["--save-id", target_game_id, "--team", args.team]
@@ -1236,6 +1255,20 @@ def build_parser() -> argparse.ArgumentParser:
     sim_game_parser.add_argument("--show-plays", type=int, default=16)
     sim_game_parser.add_argument("--box", action="store_true", help="Include a player box score.")
     sim_game_parser.set_defaults(func=action_sim_game)
+
+    sim_audit_parser = subparsers.add_parser("sim-audit", help="Dry-run a match-engine realism audit in the active save.")
+    add_save_selector(sim_audit_parser)
+    sim_audit_parser.add_argument("--season", type=int, default=game_flow.DEFAULT_START_YEAR)
+    sim_audit_parser.add_argument("--games", type=int, default=100)
+    sim_audit_parser.add_argument("--seed", type=int, default=3000)
+    sim_audit_parser.add_argument("--team", help="Sample scheduled games involving this team abbreviation.")
+    sim_audit_parser.add_argument("--week", type=int, help="Sample scheduled games from one regular-season week.")
+    sim_audit_parser.add_argument("--matchup", nargs=2, metavar=("AWAY", "HOME"), help="Repeat one explicit matchup instead of sampling the schedule.")
+    sim_audit_parser.add_argument("--progress-every", type=int, default=0)
+    sim_audit_parser.add_argument("--json", type=Path)
+    sim_audit_parser.add_argument("--csv", type=Path)
+    sim_audit_parser.add_argument("--strict", action="store_true")
+    sim_audit_parser.set_defaults(func=action_sim_audit)
 
     manual_parser = subparsers.add_parser("manual-playtest", help="Manual play-through tester with a log bundle.")
     add_save_selector(manual_parser)
