@@ -1,0 +1,1382 @@
+{
+  "speed": {
+    "strength": [
+      "has enough long speed to stress angles",
+      "can erase space when the lane opens",
+      "plays with above-board range for the role",
+      "shows steady speed rather than a one-play flash",
+      "shows functional speed in the situations that matter for the role",
+      "gives the staff a dependable speed baseline to build from",
+      "has enough runway speed to change pursuit angles",
+      "can make average angles wrong in space"
+    ],
+    "concern": [
+      "does not consistently threaten with pure speed",
+      "may struggle to recover if initially beaten",
+      "looks ordinary when asked to win a footrace",
+      "speed can fade when the rep becomes messy",
+      "needs speed to become more dependable from snap to snap",
+      "speed is not always strong enough to cover up other issues",
+      "does not consistently threaten the top of the defense or pursuit path",
+      "build-up speed is not scary enough to erase early mistakes"
+    ]
+  },
+  "acceleration": {
+    "strength": [
+      "gets to top speed quickly",
+      "shows a useful first-step trigger",
+      "has burst that shows up in short areas",
+      "shows steady acceleration rather than a one-play flash",
+      "shows functional acceleration in the situations that matter for the role",
+      "gives the staff a dependable acceleration baseline to build from",
+      "gets to top gear quickly enough to win the first step",
+      "has the burst to punish hesitation"
+    ],
+    "concern": [
+      "needs a runway before the athleticism shows",
+      "does not always trigger explosively",
+      "can be late to reach useful speed",
+      "acceleration can fade when the rep becomes messy",
+      "needs acceleration to become more dependable from snap to snap",
+      "acceleration is not always strong enough to cover up other issues",
+      "first-step burst is more ordinary than the timed numbers suggest",
+      "needs a runway before the movement profile shows up"
+    ]
+  },
+  "agility": {
+    "strength": [
+      "changes direction without losing much speed",
+      "has loose enough hips to survive in space",
+      "can redirect and stay balanced",
+      "shows steady agility rather than a one-play flash",
+      "shows functional agility in the situations that matter for the role",
+      "gives the staff a dependable agility baseline to build from",
+      "changes direction without losing much usable speed",
+      "has the short-area looseness to survive tight-space reps"
+    ],
+    "concern": [
+      "tightness shows up when forced to redirect",
+      "can lose balance through sharper transitions",
+      "does not always handle lateral stress cleanly",
+      "agility can fade when the rep becomes messy",
+      "needs agility to become more dependable from snap to snap",
+      "agility is not always strong enough to cover up other issues",
+      "can get segmented when forced to redirect quickly",
+      "lateral transitions are not always clean"
+    ]
+  },
+  "balance": {
+    "strength": [
+      "plays through contact with good body control",
+      "stays upright through awkward traffic",
+      "rarely looks knocked off his track",
+      "shows steady balance rather than a one-play flash",
+      "shows functional balance in the situations that matter for the role",
+      "gives the staff a dependable balance baseline to build from",
+      "absorbs contact without losing the rep immediately",
+      "keeps his feet through enough traffic to extend plays"
+    ],
+    "concern": [
+      "contact can knock him off schedule",
+      "gets unsettled when the play gets muddy",
+      "does not always recover cleanly after contact",
+      "balance can fade when the rep becomes messy",
+      "needs balance to become more dependable from snap to snap",
+      "balance is not always strong enough to cover up other issues",
+      "body control can betray him when the rep turns chaotic"
+    ]
+  },
+  "strength": {
+    "strength": [
+      "has real functional strength",
+      "can create force when leverage is right",
+      "plays with enough mass and power to hold up",
+      "shows steady strength rather than a one-play flash",
+      "shows functional strength in the situations that matter for the role",
+      "gives the staff a dependable strength baseline to build from",
+      "plays with enough force to change the terms of contact",
+      "has functional power that shows up outside the weight room"
+    ],
+    "concern": [
+      "power element is still developing",
+      "can be displaced by stronger opponents",
+      "needs leverage to survive against force",
+      "strength can fade when the rep becomes messy",
+      "needs strength to become more dependable from snap to snap",
+      "strength is not always strong enough to cover up other issues",
+      "play strength does not always match the frame",
+      "can be displaced when the opponent wins leverage first"
+    ]
+  },
+  "play_recognition": {
+    "strength": [
+      "sees the picture quickly",
+      "diagnoses well enough to play fast",
+      "rarely looks surprised by the first answer",
+      "shows steady play recognition rather than a one-play flash",
+      "shows functional play recognition in the situations that matter for the role",
+      "gives the staff a dependable play recognition baseline to build from",
+      "keys the action quickly enough to play ahead of blocks",
+      "rarely needs the play to fully declare before reacting"
+    ],
+    "concern": [
+      "processing can lag behind the tools",
+      "can be late to recognize route and run concepts",
+      "needs reps before the game fully slows down",
+      "play recognition can fade when the rep becomes messy",
+      "needs play recognition to become more dependable from snap to snap",
+      "play recognition is not always strong enough to cover up other issues",
+      "can be a half-beat late when the offense changes the picture",
+      "false keys can pull him away from the answer"
+    ]
+  },
+  "processing_speed": {
+    "strength": [
+      "moves from read to answer quickly",
+      "can adjust after the first look disappears",
+      "shows enough mental quickness for a bigger role",
+      "shows steady processing speed rather than a one-play flash",
+      "shows functional processing speed in the situations that matter for the role",
+      "gives the staff a dependable processing speed baseline to build from",
+      "can reset the plan quickly when the first answer disappears",
+      "does not stay stuck on the first read for long"
+    ],
+    "concern": [
+      "can freeze when the first answer is taken away",
+      "needs to speed up post-snap decisions",
+      "mental tempo is uneven",
+      "processing speed can fade when the rep becomes messy",
+      "needs processing speed to become more dependable from snap to snap",
+      "processing speed is not always strong enough to cover up other issues",
+      "late mental resets put him behind the rep",
+      "can look toolsy but delayed when the picture changes after the snap"
+    ]
+  },
+  "discipline": {
+    "strength": [
+      "plays within structure",
+      "usually keeps assignments intact",
+      "does not often create avoidable chaos",
+      "shows steady discipline rather than a one-play flash",
+      "shows functional discipline in the situations that matter for the role",
+      "gives the staff a dependable discipline baseline to build from",
+      "plays with enough assignment control to stay on the field",
+      "does not give away many cheap reps through panic or freelancing"
+    ],
+    "concern": [
+      "assignment discipline needs work",
+      "can chase plays that are not his",
+      "mistakes may show up as penalties or busted fits",
+      "discipline can fade when the rep becomes messy",
+      "needs discipline to become more dependable from snap to snap",
+      "discipline is not always strong enough to cover up other issues",
+      "can chase plays that are not his to make",
+      "assignment trust still needs to catch up with the tools"
+    ]
+  },
+  "composure": {
+    "strength": [
+      "does not look overwhelmed by pressure moments",
+      "keeps his mechanics and decisions fairly steady",
+      "has a calm baseline under stress",
+      "shows steady composure rather than a one-play flash",
+      "shows functional composure in the situations that matter for the role",
+      "gives the staff a dependable composure baseline to build from",
+      "does not look overwhelmed when the moment tightens",
+      "keeps the profile together after a bad rep"
+    ],
+    "concern": [
+      "pressure can speed him up",
+      "needs to prove he can stay steady when the game turns",
+      "bad reps can snowball",
+      "composure can fade when the rep becomes messy",
+      "needs composure to become more dependable from snap to snap",
+      "composure is not always strong enough to cover up other issues",
+      "can let one mistake become two",
+      "late-game and pressure situations need more emotional steadiness"
+    ]
+  },
+  "stamina": {
+    "strength": [
+      "can handle a steady workload",
+      "holds his traits late into games",
+      "does not fade quickly with volume",
+      "shows steady stamina rather than a one-play flash",
+      "shows functional stamina in the situations that matter for the role",
+      "gives the staff a dependable stamina baseline to build from"
+    ],
+    "concern": [
+      "conditioning may limit early usage",
+      "can wear down across longer drives",
+      "needs to prove he can carry a full workload",
+      "stamina can fade when the rep becomes messy",
+      "needs stamina to become more dependable from snap to snap",
+      "stamina is not always strong enough to cover up other issues"
+    ]
+  },
+  "durability": {
+    "strength": [
+      "has a sturdy frame for the role",
+      "projects to handle normal contact volume",
+      "does not carry obvious durability flags in this model",
+      "shows steady durability rather than a one-play flash",
+      "shows functional durability in the situations that matter for the role",
+      "gives the staff a dependable durability baseline to build from",
+      "has handled enough contact and workload to trust the projection",
+      "availability supports the grade"
+    ],
+    "concern": [
+      "durability projection is shaky",
+      "frame and usage create some availability concern",
+      "medical review could matter more than usual",
+      "durability can fade when the rep becomes messy",
+      "needs durability to become more dependable from snap to snap",
+      "durability is not always strong enough to cover up other issues",
+      "availability questions make the role harder to price",
+      "the body history creates some hesitation about workload"
+    ]
+  },
+  "consistency": {
+    "strength": [
+      "puts enough good reps together to trust the projection",
+      "has a stable week-to-week profile",
+      "does not require a perfect setup to contribute",
+      "shows steady consistency rather than a one-play flash",
+      "shows functional consistency in the situations that matter for the role",
+      "gives the staff a dependable consistency baseline to build from",
+      "the week-to-week profile is more stable than flashy",
+      "keeps the low-end reps from taking over the report"
+    ],
+    "concern": [
+      "good reps and bad reps are too far apart",
+      "weekly reliability is still a question",
+      "needs to narrow the gap between flashes and baseline",
+      "consistency can fade when the rep becomes messy",
+      "needs consistency to become more dependable from snap to snap",
+      "consistency is not always strong enough to cover up other issues",
+      "the best reps and worst reps look like different players",
+      "needs to narrow the gap between flash and floor"
+    ]
+  },
+  "pass_accuracy_short": {
+    "strength": [
+      "throws the short game with placement and timing",
+      "can keep an offense on schedule underneath",
+      "shows touch on rhythm throws",
+      "creates a real passing-game building block through short accuracy",
+      "keeps the passing game on schedule when short accuracy is featured",
+      "shows enough short accuracy to expand the call sheet",
+      "puts the easy answers where they need to be",
+      "can keep quick game rhythm intact"
+    ],
+    "concern": [
+      "misses too many layups",
+      "short accuracy is not automatic enough",
+      "can make simple throws harder than they need to be",
+      "does not have reliable enough short accuracy to carry a full NFL menu",
+      "the passing profile gets shaky when short accuracy has to be the answer",
+      "needs cleaner short accuracy before the staff can trust him in high-leverage downs",
+      "misses too many layups for a timing-based passing game",
+      "short placement is not automatic enough yet"
+    ]
+  },
+  "pass_accuracy_mid": {
+    "strength": [
+      "has workable intermediate ball placement",
+      "can attack windows between levels",
+      "throws the middle game with enough confidence",
+      "creates a real passing-game building block through mid accuracy",
+      "keeps the passing game on schedule when mid accuracy is featured",
+      "shows enough mid accuracy to expand the call sheet",
+      "can hit the intermediate windows that move NFL chains",
+      "shows enough layering to punish the second level"
+    ],
+    "concern": [
+      "intermediate accuracy comes and goes",
+      "throws into second-level windows need work",
+      "timing windows can close before the ball arrives",
+      "does not have reliable enough mid accuracy to carry a full NFL menu",
+      "the passing profile gets shaky when mid accuracy has to be the answer",
+      "needs cleaner mid accuracy before the staff can trust him in high-leverage downs",
+      "intermediate placement can drift into coverage",
+      "does not always throw receivers open between levels"
+    ]
+  },
+  "pass_accuracy_deep": {
+    "strength": [
+      "can punish defenses vertically",
+      "has enough deep placement to change coverage",
+      "can layer shots downfield",
+      "creates a real passing-game building block through deep accuracy",
+      "keeps the passing game on schedule when deep accuracy is featured",
+      "shows enough deep accuracy to expand the call sheet",
+      "gives vertical routes a real chance instead of just throwing it far",
+      "can stress safeties with placement beyond the coverage"
+    ],
+    "concern": [
+      "deep accuracy is more flash than foundation",
+      "vertical throws need better touch",
+      "can leave explosive plays on the field",
+      "does not have reliable enough deep accuracy to carry a full NFL menu",
+      "the passing profile gets shaky when deep accuracy has to be the answer",
+      "needs cleaner deep accuracy before the staff can trust him in high-leverage downs",
+      "deep balls can force receivers to become defenders",
+      "vertical touch runs hot and cold"
+    ]
+  },
+  "throw_power": {
+    "strength": [
+      "has enough arm to access the full field",
+      "can drive the ball outside the numbers",
+      "arm strength is a real selling point",
+      "creates a real passing-game building block through throw power",
+      "keeps the passing game on schedule when throw power is featured",
+      "shows enough throw power to expand the call sheet",
+      "has enough arm to attack late-breaking windows",
+      "can drive the ball without everything needing to be perfect"
+    ],
+    "concern": [
+      "arm strength is not a separator",
+      "will need anticipation to compensate for average velocity",
+      "tight-window throws lose life late",
+      "does not have reliable enough throw power to carry a full NFL menu",
+      "the passing profile gets shaky when throw power has to be the answer",
+      "needs cleaner throw power before the staff can trust him in high-leverage downs",
+      "arm strength may limit the menu outside the numbers",
+      "tight-window velocity is not a carrying trait"
+    ]
+  },
+  "throw_release": {
+    "strength": [
+      "gets the ball out without wasted motion",
+      "release speed helps him survive pressure",
+      "can beat closing windows with timing",
+      "creates a real passing-game building block through throw release",
+      "keeps the passing game on schedule when throw release is featured",
+      "shows enough throw release to expand the call sheet",
+      "gets the ball out before windows collapse",
+      "release timing helps him beat pressure looks"
+    ],
+    "concern": [
+      "release can be a tick slow",
+      "delivery gives defenders time to close",
+      "needs cleaner mechanics to speed up the operation",
+      "does not have reliable enough throw release to carry a full NFL menu",
+      "the passing profile gets shaky when throw release has to be the answer",
+      "needs cleaner throw release before the staff can trust him in high-leverage downs",
+      "the ball can come out late even when the read is there",
+      "longer delivery gives rushers and coverage time to recover"
+    ]
+  },
+  "platform_control": {
+    "strength": [
+      "can throw when the platform is imperfect",
+      "survives muddy-pocket mechanics",
+      "keeps enough accuracy off schedule",
+      "creates a real passing-game building block through platform control",
+      "keeps the passing game on schedule when platform control is featured",
+      "shows enough platform control to expand the call sheet",
+      "can survive imperfect pockets without the throw falling apart",
+      "retains enough accuracy when moved off his spot"
+    ],
+    "concern": [
+      "accuracy drops when moved off his spot",
+      "needs a cleaner platform than he will always get",
+      "pressure can break the throwing base",
+      "does not have reliable enough platform control to carry a full NFL menu",
+      "the passing profile gets shaky when platform control has to be the answer",
+      "needs cleaner platform control before the staff can trust him in high-leverage downs",
+      "accuracy drops when the base is disturbed",
+      "needs a cleaner platform than the league will always provide"
+    ]
+  },
+  "carry_vision": {
+    "strength": [
+      "finds lanes before they fully declare",
+      "has a natural feel for space",
+      "can sort through blocks with patience",
+      "turns vision into visible run-game answers",
+      "can create positive plays when the run concept asks for vision",
+      "uses vision to give the rushing profile a clear identity",
+      "sets up blocks instead of just running into daylight",
+      "finds cutback answers before they are obvious"
+    ],
+    "concern": [
+      "vision is late or predetermined",
+      "misses cutback lanes",
+      "can run into closed doors",
+      "vision is too inconsistent to be treated as a carrying skill yet",
+      "the run game can stall when vision has to solve the rep",
+      "needs more reliable vision to avoid negative plays",
+      "can run himself into closed space",
+      "misses backside answers that should be available"
+    ]
+  },
+  "elusiveness": {
+    "strength": [
+      "can make the first defender miss",
+      "has open-field creativity",
+      "creates his own space",
+      "turns elusiveness into visible run-game answers",
+      "can create positive plays when the run concept asks for elusiveness",
+      "uses elusiveness to give the rushing profile a clear identity",
+      "can make the first tackler miss without losing the play",
+      "has enough wiggle to create yards beyond the design"
+    ],
+    "concern": [
+      "does not create much on his own",
+      "needs blocking to do most of the work",
+      "elusiveness is ordinary for the role",
+      "elusiveness is too inconsistent to be treated as a carrying skill yet",
+      "the run game can stall when elusiveness has to solve the rep",
+      "needs more reliable elusiveness to avoid negative plays",
+      "does not create many clean misses on his own",
+      "space runs can die if the blocking is not clean"
+    ]
+  },
+  "contact_power": {
+    "strength": [
+      "runs through glancing contact",
+      "can finish with force",
+      "has enough power to fall forward",
+      "turns power into visible run-game answers",
+      "can create positive plays when the run concept asks for power",
+      "uses power to give the rushing profile a clear identity",
+      "falls forward and turns contact into extra yardage",
+      "brings enough finish to punish light boxes"
+    ],
+    "concern": [
+      "contact can end the rep quickly",
+      "power profile is light",
+      "does not consistently move piles",
+      "power is too inconsistent to be treated as a carrying skill yet",
+      "the run game can stall when power has to solve the rep",
+      "needs more reliable power to avoid negative plays",
+      "does not move piles consistently",
+      "contact can end the play too quickly"
+    ]
+  },
+  "ball_security": {
+    "strength": [
+      "protects the ball well enough to earn trust",
+      "does not expose the ball often",
+      "has a stable possession profile",
+      "turns ball security into visible run-game answers",
+      "can create positive plays when the run concept asks for ball security",
+      "uses ball security to give the rushing profile a clear identity",
+      "protects the ball well enough to trust touches",
+      "keeps the ball secured through traffic and fatigue"
+    ],
+    "concern": [
+      "ball security needs attention",
+      "contact balance and carriage create fumble concern",
+      "has to prove coaches can trust him late",
+      "ball security is too inconsistent to be treated as a carrying skill yet",
+      "the run game can stall when ball security has to solve the rep",
+      "needs more reliable ball security to avoid negative plays",
+      "ball carriage gives defenders chances to steal possessions",
+      "has to prove the staff can trust him with volume"
+    ]
+  },
+  "run_patience": {
+    "strength": [
+      "lets blocks develop",
+      "does not rush the read",
+      "shows mature tempo in the run game",
+      "turns run patience into visible run-game answers",
+      "can create positive plays when the run concept asks for run patience",
+      "uses run patience to give the rushing profile a clear identity",
+      "lets blocks declare before committing",
+      "presses the landmark without panicking into the wrong gap"
+    ],
+    "concern": [
+      "can outrun his blocking",
+      "needs to slow his feet before choosing",
+      "run tempo is still immature",
+      "run patience is too inconsistent to be treated as a carrying skill yet",
+      "the run game can stall when run patience has to solve the rep",
+      "needs more reliable run patience to avoid negative plays",
+      "outruns his blocking too often",
+      "can be impatient enough to create his own traffic"
+    ]
+  },
+  "release_vs_press": {
+    "strength": [
+      "has answers against press",
+      "can avoid getting stalled at the line",
+      "release package creates early separation",
+      "uses release to give the passing game a usable matchup detail",
+      "wins enough with release to stay in the quarterback's progression",
+      "shows release as a legitimate receiving tool",
+      "has answers at the line against contact",
+      "does not let press corners cancel the route immediately"
+    ],
+    "concern": [
+      "press can erase him early",
+      "needs better hands and footwork at the line",
+      "physical corners can disrupt the route before it starts",
+      "release is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when release does not show up",
+      "needs sharper release before he can handle a larger route menu",
+      "press can disrupt the entire route clock",
+      "needs a better plan against length at the line"
+    ]
+  },
+  "route_snap": {
+    "strength": [
+      "separates at the break point",
+      "has sharp enough cuts to uncover",
+      "can snap routes off with burst",
+      "uses route snap to give the passing game a usable matchup detail",
+      "wins enough with route snap to stay in the quarterback's progression",
+      "shows route snap as a legitimate receiving tool",
+      "can separate at the break point",
+      "has enough snap to create throwing windows on schedule"
+    ],
+    "concern": [
+      "routes can round off",
+      "does not always separate at the top",
+      "break-point suddenness is inconsistent",
+      "route snap is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when route snap does not show up",
+      "needs sharper route snap before he can handle a larger route menu",
+      "routes can round off at the point that should create separation",
+      "breaks do not always threaten tight coverage"
+    ]
+  },
+  "route_timing": {
+    "strength": [
+      "understands landmarks and timing",
+      "can be where the quarterback expects",
+      "runs with enough detail to stay on schedule",
+      "uses route timing to give the passing game a usable matchup detail",
+      "wins enough with route timing to stay in the quarterback's progression",
+      "shows route timing as a legitimate receiving tool",
+      "understands landmarks well enough to be quarterback friendly",
+      "gets to the right space at the right time"
+    ],
+    "concern": [
+      "route timing needs polish",
+      "drifts through landmarks",
+      "must get more precise to earn targets",
+      "route timing is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when route timing does not show up",
+      "needs sharper route timing before he can handle a larger route menu",
+      "timing drift can make the quarterback late or wrong",
+      "needs a cleaner route clock"
+    ]
+  },
+  "hands": {
+    "strength": [
+      "catches the routine ball cleanly",
+      "has trustworthy hands",
+      "does not fight the football often",
+      "uses hands to give the passing game a usable matchup detail",
+      "wins enough with hands to stay in the quarterback's progression",
+      "shows hands as a legitimate receiving tool",
+      "finishes routine catches cleanly",
+      "does not turn catchable throws into adventures"
+    ],
+    "concern": [
+      "hands are not yet trustworthy",
+      "routine drops show up",
+      "can fight the ball away from his frame",
+      "hands is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when hands does not show up",
+      "needs sharper hands before he can handle a larger route menu",
+      "routine catches are not as routine as they need to be",
+      "will test a quarterback's patience with avoidable drops"
+    ]
+  },
+  "contested_catch": {
+    "strength": [
+      "can win through contact at the catch point",
+      "has useful 50-50 ability",
+      "plays bigger when the ball is in the air",
+      "uses contested catch to give the passing game a usable matchup detail",
+      "wins enough with contested catch to stay in the quarterback's progression",
+      "shows contested catch as a legitimate receiving tool",
+      "can turn covered throws into completions",
+      "plays the ball like he expects to own the catch point"
+    ],
+    "concern": [
+      "does not consistently finish contested balls",
+      "catch-point strength is a concern",
+      "needs cleaner separation because contested wins are not reliable",
+      "contested catch is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when contested catch does not show up",
+      "needs sharper contested catch before he can handle a larger route menu",
+      "does not consistently rescue low-percentage throws",
+      "the catch-point profile is more hopeful than proven"
+    ]
+  },
+  "catch_in_traffic": {
+    "strength": [
+      "can secure throws with bodies around him",
+      "does not shrink over the middle",
+      "handles contact at arrival",
+      "uses catch in traffic to give the passing game a usable matchup detail",
+      "wins enough with catch in traffic to stay in the quarterback's progression",
+      "shows catch in traffic as a legitimate receiving tool",
+      "holds the ball when contact arrives on schedule",
+      "can finish throws that arrive in crowded windows"
+    ],
+    "concern": [
+      "traffic catches are an adventure",
+      "contact can jar the ball loose",
+      "may need protected targets early",
+      "catch in traffic is not consistent enough to drive targets on its own",
+      "the receiving profile gets narrow when catch in traffic does not show up",
+      "needs sharper catch in traffic before he can handle a larger route menu",
+      "contact can turn catchable throws into loose balls",
+      "traffic catches are not trustworthy enough yet"
+    ]
+  },
+  "pass_block_power": {
+    "strength": [
+      "anchors well against power",
+      "can stop direct force",
+      "has a good power-blocking floor in protection",
+      "brings repeatable value against power in pass protection",
+      "creates cleaner pictures when the assignment leans on pass block vs power",
+      "gives the run/pass plan a sturdier foundation through pass block vs power",
+      "anchors well enough to stop direct pocket compression",
+      "can absorb a bull rush without immediately giving ground"
+    ],
+    "concern": [
+      "anchor can collapse",
+      "bull rushers may test him early",
+      "needs more lower-body strength in protection",
+      "pass block vs power can break down against better technique",
+      "needs more stable pass block vs power before the staff expands the assignment",
+      "NFL power and movement could expose uneven pass block vs power",
+      "power rushes can walk him back into the pocket",
+      "anchor strength is not consistently firm"
+    ]
+  },
+  "pass_block_finesse": {
+    "strength": [
+      "can handle counters and hand usage",
+      "recovers against finesse looks",
+      "has enough technique to solve moves",
+      "brings repeatable value against finesse in pass protection",
+      "creates cleaner pictures when the assignment leans on pass block vs finesse",
+      "gives the run/pass plan a sturdier foundation through pass block vs finesse",
+      "has enough hands and recovery to answer counters",
+      "does not panic when rushers change the picture"
+    ],
+    "concern": [
+      "counters can beat him",
+      "hand usage is not ready for advanced rushers",
+      "finesse rushers may expose him early",
+      "pass block vs finesse can break down against better technique",
+      "needs more stable pass block vs finesse before the staff expands the assignment",
+      "NFL power and movement could expose uneven pass block vs finesse",
+      "counters can cross his face too cleanly",
+      "hand timing gets exposed by better rush plans"
+    ]
+  },
+  "pass_block_speed": {
+    "strength": [
+      "has the feet to protect space",
+      "can handle speed on the edge",
+      "slides well enough to mirror",
+      "brings repeatable value against speed in pass protection",
+      "creates cleaner pictures when the assignment leans on pass block vs speed",
+      "gives the run/pass plan a sturdier foundation through pass block vs speed",
+      "can protect the edge against real speed",
+      "has the feet to stay square on the arc"
+    ],
+    "concern": [
+      "speed can stress his set points",
+      "edge quickness is a concern",
+      "needs better angles against wide rushes",
+      "pass block vs speed can break down against better technique",
+      "needs more stable pass block vs speed before the staff expands the assignment",
+      "NFL power and movement could expose uneven pass block vs speed",
+      "speed can threaten his set before the punch lands",
+      "edge quickness may force him into early panic"
+    ]
+  },
+  "run_block_drive": {
+    "strength": [
+      "can move bodies in the run game",
+      "creates displacement when aligned correctly",
+      "brings real drive-blocking value",
+      "shows repeatable run block drive as a blocking tool",
+      "creates cleaner pictures when the assignment leans on run block drive",
+      "gives the run/pass plan a sturdier foundation through run block drive",
+      "creates vertical movement when leverage is right",
+      "can displace defenders in the run game"
+    ],
+    "concern": [
+      "does not generate enough movement",
+      "run-game power comes and goes",
+      "can stalemate instead of displace",
+      "run block drive can break down against better technique",
+      "needs more stable run block drive before the staff expands the assignment",
+      "NFL power and movement could expose uneven run block drive",
+      "does not create enough movement at the point of attack"
+    ]
+  },
+  "reach_block": {
+    "strength": [
+      "has enough movement skill for reach blocks",
+      "can seal laterally",
+      "fits zone concepts well",
+      "shows repeatable reach block as a blocking tool",
+      "creates cleaner pictures when the assignment leans on reach block",
+      "gives the run/pass plan a sturdier foundation through reach block",
+      "can seal lateral landmarks and widen run lanes",
+      "moves well enough to make outside concepts believable"
+    ],
+    "concern": [
+      "lateral blocks stress him",
+      "can arrive late on reach assignments",
+      "outside-zone work may expose him",
+      "reach block can break down against better technique",
+      "needs more stable reach block before the staff expands the assignment",
+      "NFL power and movement could expose uneven reach block",
+      "struggles to reach defenders who can cross his face",
+      "lateral blocks can arrive late"
+    ]
+  },
+  "lead_block": {
+    "strength": [
+      "can find targets in space",
+      "moves well enough as a lead blocker",
+      "has usable second-level blocking ability",
+      "shows repeatable lead block as a blocking tool",
+      "creates cleaner pictures when the assignment leans on lead block",
+      "gives the run/pass plan a sturdier foundation through lead block",
+      "finds moving targets well enough in space",
+      "can lead through traffic without wasting the angle"
+    ],
+    "concern": [
+      "misses moving targets",
+      "space blocking is unreliable",
+      "can look uncomfortable when asked to lead",
+      "lead block can break down against better technique",
+      "needs more stable lead block before the staff expands the assignment",
+      "NFL power and movement could expose uneven lead block",
+      "space blocks can turn into glancing contact",
+      "does not always locate the most dangerous defender"
+    ]
+  },
+  "block_sustain": {
+    "strength": [
+      "stays connected through the rep",
+      "can maintain leverage after contact",
+      "does not shed blocks too early",
+      "shows repeatable block sustain as a blocking tool",
+      "creates cleaner pictures when the assignment leans on block sustain",
+      "gives the run/pass plan a sturdier foundation through block sustain",
+      "stays latched long enough for the play to finish",
+      "does not lose late in the rep as often as most prospects"
+    ],
+    "concern": [
+      "struggles to sustain contact",
+      "can lose late in the rep",
+      "needs better grip strength and finish",
+      "block sustain can break down against better technique",
+      "needs more stable block sustain before the staff expands the assignment",
+      "NFL power and movement could expose uneven block sustain",
+      "initial wins can leak away late",
+      "needs better strain to finish blocks"
+    ]
+  },
+  "power_rush": {
+    "strength": [
+      "can collapse space with power",
+      "has a rush path that stresses the pocket",
+      "turns strength into pressure",
+      "can force protection adjustments with power rush",
+      "the rush has a more believable path when power rush is available",
+      "uses power rush to create a real pressure profile",
+      "can compress the pocket through the blocker",
+      "turns leverage into real pocket movement"
+    ],
+    "concern": [
+      "power rush is not threatening enough",
+      "does not dent the pocket consistently",
+      "needs more force through contact",
+      "power rush is too spotty to project as a week-one pressure answer",
+      "needs to make power rush a habit instead of a flash",
+      "the rush can stall when power rush does not win early",
+      "power rush does not consistently dent the pocket",
+      "strong tackles can absorb him without help"
+    ]
+  },
+  "finesse_rush": {
+    "strength": [
+      "has counters beyond raw force",
+      "can win with hand skill",
+      "shows a workable finesse plan",
+      "can force protection adjustments with finesse rush",
+      "the rush has a more believable path when finesse rush is available",
+      "uses finesse rush to create a real pressure profile",
+      "has hand work that can win without pure force",
+      "can cross blockers up with enough counter skill"
+    ],
+    "concern": [
+      "counter game is underdeveloped",
+      "needs more than one rush answer",
+      "can get stuck when the first move fails",
+      "finesse rush is too spotty to project as a week-one pressure answer",
+      "needs to make finesse rush a habit instead of a flash",
+      "the rush can stall when finesse rush does not win early",
+      "the finesse package is still too predictable",
+      "better hands are needed to win once the first move stalls"
+    ]
+  },
+  "speed_rush": {
+    "strength": [
+      "can threaten the edge with burst",
+      "has speed-to-corner pressure",
+      "gets tackles opening their hips",
+      "can force protection adjustments with speed rush",
+      "the rush has a more believable path when speed rush is available",
+      "uses speed rush to create a real pressure profile",
+      "threatens the edge before tackles are comfortable",
+      "can stress the outside shoulder with burst"
+    ],
+    "concern": [
+      "speed rush may not scare NFL tackles",
+      "does not consistently corner",
+      "burst does not always become pressure",
+      "speed rush is too spotty to project as a week-one pressure answer",
+      "needs to make speed rush a habit instead of a flash",
+      "the rush can stall when speed rush does not win early",
+      "does not consistently win the corner",
+      "speed rush can get ridden past the pocket"
+    ]
+  },
+  "rush_plan": {
+    "strength": [
+      "rushes with a plan",
+      "sets up counters well",
+      "understands how to sequence pressure",
+      "sets up later wins by sequencing the rush",
+      "has a more believable pressure path when the counters show up",
+      "uses sequencing to make the pressure profile more credible",
+      "sets up blockers instead of just collecting moves",
+      "has a believable answer once the first rush is taken away"
+    ],
+    "concern": [
+      "rush plan is still raw",
+      "can repeat losing moves",
+      "needs to become less predictable",
+      "rush plan is too spotty to project as a week-one pressure answer",
+      "needs to make rush plan a habit instead of a flash",
+      "the rush can stall when rush plan does not win early",
+      "rushes like he is guessing too often",
+      "needs a second and third answer to become a real pressure player"
+    ]
+  },
+  "stunt_execution": {
+    "strength": [
+      "fits designed pressures well",
+      "has timing on games and loops",
+      "can execute within pressure packages",
+      "can force protection adjustments with stunt execution",
+      "the rush has a more believable path when stunt execution is available",
+      "uses stunt execution to create a real pressure profile",
+      "times games well enough to create free-access pressure",
+      "understands spacing on twists and loops"
+    ],
+    "concern": [
+      "stunt timing is inconsistent",
+      "can get lost on designed pressure",
+      "needs cleaner path discipline",
+      "stunt execution is too spotty to project as a week-one pressure answer",
+      "needs to make stunt execution a habit instead of a flash",
+      "the rush can stall when stunt execution does not win early",
+      "stunts can lose timing and open escape space",
+      "needs more discipline on designed pressure paths"
+    ]
+  },
+  "double_team_takeon": {
+    "strength": [
+      "can survive extra attention",
+      "holds ground against combination blocks",
+      "has enough mass and leverage for double teams",
+      "can keep the front alive when protection slides his way",
+      "the front stays sturdier when he can survive extra attention",
+      "does not disappear as quickly when two blockers find him",
+      "can keep from being erased by two bodies",
+      "creates enough resistance to help the rest of the front"
+    ],
+    "concern": [
+      "double teams can erase him",
+      "needs more anchor against combo blocks",
+      "can get washed out by size",
+      "double-team take-on is too spotty to project as a week-one pressure answer",
+      "needs to make double-team take-on a habit instead of a flash",
+      "the rush can stall when double-team take-on does not win early",
+      "double teams can wash him out of the picture",
+      "needs a stronger plan against combo blocks"
+    ]
+  },
+  "sack_finish": {
+    "strength": [
+      "finishes when he gets home",
+      "turns pressure into actual production",
+      "closes with purpose",
+      "turns pressure into endings when he gets a clean angle",
+      "the rush matters more because he can finish at the quarterback",
+      "converts enough pressure to make the rush profile credible",
+      "turns pressure into actual endings",
+      "closes with enough control to finish the quarterback"
+    ],
+    "concern": [
+      "leaves sacks on the field",
+      "near-misses show up too often",
+      "needs better closing control",
+      "sack finish is too spotty to project as a week-one pressure answer",
+      "needs to make sack finish a habit instead of a flash",
+      "the rush can stall when sack finish does not win early",
+      "near misses show up too often",
+      "has to finish better once he wins the rep"
+    ]
+  },
+  "run_diagnostics": {
+    "strength": [
+      "reads run action quickly",
+      "finds the ball through traffic",
+      "diagnoses blocking schemes well",
+      "uses run diagnostics to stay useful against the run game",
+      "shows enough run diagnostics to survive in early-down traffic",
+      "gives the defense cleaner fits when run diagnostics is on time",
+      "reads the run picture before blockers climb",
+      "does not need much time to identify the ball path"
+    ],
+    "concern": [
+      "can be late to diagnose runs",
+      "misdirection gives him trouble",
+      "needs cleaner eyes in the run game",
+      "run diagnostics can be stressed by misdirection and better blockers",
+      "needs more dependable diagnosis to avoid becoming a run-game target",
+      "the run-defense profile slips when his diagnosis is late",
+      "misdirection can hold his eyes too long",
+      "late diagnosis creates run-fit stress"
+    ]
+  },
+  "block_shedding": {
+    "strength": [
+      "can get off blocks",
+      "has hands to clear contact",
+      "does not stay attached long",
+      "uses block shedding to stay useful against the run game",
+      "shows enough block shedding to survive in early-down traffic",
+      "gives the defense cleaner fits when block shedding is on time",
+      "gets off blocks with enough violence and timing",
+      "does not stay captured once contact arrives"
+    ],
+    "concern": [
+      "blocks can stick to him",
+      "needs better shed technique",
+      "can be occupied too easily",
+      "block shedding can be stressed by misdirection and better blockers",
+      "needs more dependable block shedding to avoid becoming a run-game target",
+      "the run-defense profile slips when block shedding is late",
+      "can get stuck on blocks too long",
+      "needs better hand usage to free himself"
+    ]
+  },
+  "gap_integrity": {
+    "strength": [
+      "holds his fit",
+      "understands gap responsibility",
+      "does not create many run-fit leaks",
+      "uses gap integrity to stay useful against the run game",
+      "shows enough gap integrity to survive in early-down traffic",
+      "gives the defense cleaner fits when gap integrity is on time",
+      "keeps the defense structurally sound",
+      "plays his gap before chasing the highlight"
+    ],
+    "concern": [
+      "gap discipline is inconsistent",
+      "can open cutback lanes",
+      "over-pursuit shows up",
+      "gap integrity can be stressed by misdirection and better blockers",
+      "needs more dependable gap integrity to avoid becoming a run-game target",
+      "the run-defense profile slips when gap integrity is late",
+      "can open creases by trying to do too much",
+      "gap trust is still a coaching point"
+    ]
+  },
+  "pursuit_angle": {
+    "strength": [
+      "takes efficient angles",
+      "can close without overrunning",
+      "pursuit path is usually sound",
+      "uses pursuit angle to stay useful against the run game",
+      "shows enough pursuit angle to survive in early-down traffic",
+      "gives the defense cleaner fits when pursuit angle is on time",
+      "takes angles that cut off space instead of chasing ghosts",
+      "has a good feel for where the ball carrier is headed"
+    ],
+    "concern": [
+      "angles need work",
+      "can overrun the ball",
+      "speed does not always translate because of poor paths",
+      "pursuit angle can be stressed by misdirection and better blockers",
+      "needs more dependable pursuit angle to avoid becoming a run-game target",
+      "the run-defense profile slips when pursuit angle is late",
+      "overpursuit can create escape lanes",
+      "angles can turn average plays into explosives"
+    ]
+  },
+  "edge_contain": {
+    "strength": [
+      "sets a solid edge",
+      "keeps outside leverage",
+      "understands contain responsibility",
+      "uses edge contain to stay useful against the run game",
+      "shows enough edge contain to survive in early-down traffic",
+      "gives the defense cleaner fits when edge contain is on time",
+      "sets a firm enough edge to keep the ball inside",
+      "understands outside leverage in the run game"
+    ],
+    "concern": [
+      "can lose the edge",
+      "outside contain is not dependable yet",
+      "gets too far inside at times",
+      "edge contain can be stressed by misdirection and better blockers",
+      "needs more dependable edge contain to avoid becoming a run-game target",
+      "the run-defense profile slips when edge contain is late",
+      "can lose contain by chasing inside too early",
+      "the edge can get soft against better blocking surfaces"
+    ]
+  },
+  "traffic_navigation": {
+    "strength": [
+      "works through bodies well",
+      "can stay clean in traffic",
+      "does not get screened out easily",
+      "uses traffic navigation to stay useful against the run game",
+      "shows enough traffic navigation to survive in early-down traffic",
+      "gives the defense cleaner fits when traffic navigation is on time",
+      "works through bodies without losing sight of the ball",
+      "can stay clean enough in traffic to matter"
+    ],
+    "concern": [
+      "traffic muddies the read",
+      "can get picked off by bodies",
+      "needs to play cleaner through congestion",
+      "traffic navigation can be stressed by misdirection and better blockers",
+      "needs more dependable traffic navigation to avoid becoming a run-game target",
+      "the run-defense profile slips when traffic navigation is late",
+      "gets screened out by clutter too often",
+      "traffic can delay him from reaching the play"
+    ]
+  },
+  "press_coverage": {
+    "strength": [
+      "can disrupt releases at the line",
+      "has useful press tools",
+      "can alter route timing early",
+      "uses press coverage to give the coverage plan a usable answer",
+      "shows enough press coverage to hold up when the route picture changes",
+      "can stay connected through the throwing window with press coverage",
+      "can disrupt releases before the route declares",
+      "has enough jam timing to alter the route clock"
+    ],
+    "concern": [
+      "press technique is not reliable",
+      "missed jams put him in chase mode",
+      "physical coverage can get grabby",
+      "does not have stable enough press coverage to be exposed every snap",
+      "route detail and tempo can stress his press coverage",
+      "needs cleaner press coverage before the staff can expand the coverage menu",
+      "missed jams can put him in immediate recovery mode",
+      "press technique is not consistent enough to live in every week"
+    ]
+  },
+  "man_coverage": {
+    "strength": [
+      "can match routes in man",
+      "has the mirror ability to survive isolated",
+      "stays attached through breaks",
+      "uses man coverage to give the coverage plan a usable answer",
+      "shows enough man coverage to hold up when the route picture changes",
+      "can stay connected through the throwing window with man coverage",
+      "can stay in phase when the route tempo changes",
+      "has mirror ability that translates to isolated downs"
+    ],
+    "concern": [
+      "man coverage is still a projection",
+      "can lose phase against sharper routes",
+      "may need zone help early",
+      "does not have stable enough man coverage to be exposed every snap",
+      "route detail and tempo can stress his man coverage",
+      "needs cleaner man coverage before the staff can expand the coverage menu",
+      "sharp route runners can separate before he recovers",
+      "man snaps may need help until the technique steadies"
+    ]
+  },
+  "zone_coverage": {
+    "strength": [
+      "understands spacing in zone",
+      "has a feel for route distribution",
+      "can overlap windows",
+      "uses zone coverage to give the coverage plan a usable answer",
+      "shows enough zone coverage to hold up when the route picture changes",
+      "can stay connected through the throwing window with zone coverage",
+      "understands spacing and can close from zone landmarks",
+      "can pass routes without losing the next threat"
+    ],
+    "concern": [
+      "zone spacing can drift",
+      "needs better pattern recognition",
+      "can be late passing routes off",
+      "does not have stable enough zone coverage to be exposed every snap",
+      "route detail and tempo can stress his zone coverage",
+      "needs cleaner zone coverage before the staff can expand the coverage menu",
+      "spacing can drift and open easy completions",
+      "zone eyes can be manipulated by experienced quarterbacks"
+    ]
+  },
+  "zone_recovery": {
+    "strength": [
+      "can recover once the ball declares",
+      "closes zone windows quickly",
+      "has useful click-and-close ability",
+      "uses zone recovery to give the coverage plan a usable answer",
+      "shows enough zone recovery to hold up when the route picture changes",
+      "can stay connected through the throwing window with zone recovery",
+      "can close once the throw declares",
+      "has enough recovery burst to challenge late windows"
+    ],
+    "concern": [
+      "recovery speed does not always save late reads",
+      "can arrive a step late from zone",
+      "needs earlier triggers",
+      "does not have stable enough zone recovery to be exposed every snap",
+      "route detail and tempo can stress his zone recovery",
+      "needs cleaner zone recovery before the staff can expand the coverage menu",
+      "late recovery leaves too many uncontested throws",
+      "does not always regain ground once the window opens"
+    ]
+  },
+  "ball_skills": {
+    "strength": [
+      "can play the ball in the air",
+      "has takeaway flashes",
+      "does more than just occupy space",
+      "uses ball skills to give the coverage plan a usable answer",
+      "shows enough ball skills to hold up when the route picture changes",
+      "can stay connected through the throwing window with ball skills",
+      "plays the ball instead of only playing the man",
+      "can turn targets into turnover chances"
+    ],
+    "concern": [
+      "ball production may not follow",
+      "does not always locate cleanly",
+      "can be present without making the play",
+      "does not have stable enough ball skills to be exposed every snap",
+      "route detail and tempo can stress his ball skills",
+      "needs cleaner ball skills before the staff can expand the coverage menu",
+      "leaves too many pass-breakup chances unfinished",
+      "ball production may not match the coverage flashes"
+    ]
+  },
+  "coverage_communication": {
+    "strength": [
+      "communicates well enough to reduce busts",
+      "appears comfortable passing routes",
+      "can organize coverage traffic",
+      "uses coverage communication to give the coverage plan a usable answer",
+      "shows enough coverage communication to hold up when the route picture changes",
+      "can stay connected through the throwing window with coverage communication",
+      "helps keep the coverage tied together",
+      "shows enough communication to reduce bust risk"
+    ],
+    "concern": [
+      "communication needs work",
+      "coverage bust risk is still present",
+      "can be late to pass off routes",
+      "does not have stable enough coverage communication to be exposed every snap",
+      "route detail and tempo can stress his coverage communication",
+      "needs cleaner coverage communication before the staff can expand the coverage menu",
+      "coverage checks and handoffs can get messy",
+      "communication lapses could create explosive mistakes"
+    ]
+  },
+  "solo_tackle": {
+    "strength": [
+      "can finish one-on-one tackles",
+      "gets ball carriers down cleanly",
+      "is trustworthy in direct tackle chances",
+      "uses solo tackle to finish plays cleanly",
+      "shows enough solo tackle to reduce cheap yards after contact",
+      "brings useful solo tackle to the defensive profile",
+      "can get ball carriers down without needing help",
+      "finishes enough one-on-one chances to trust the angle"
+    ],
+    "concern": [
+      "solo tackling is a concern",
+      "missed tackles could limit early snaps",
+      "needs better finish in space",
+      "can leak yards when the first tackle fails",
+      "needs more trustworthy solo tackle before the staff lives with him in space",
+      "the defense could feel the missed-play risk if solo tackle does not improve",
+      "solo finishes are not clean enough yet",
+      "missed tackles could keep him out of high-leverage space"
+    ]
+  },
+  "tackle_wrap": {
+    "strength": [
+      "wraps and secures well",
+      "can slow runners even when contact is not perfect",
+      "does not rely only on shoulder hits",
+      "uses tackle wrap to finish plays cleanly",
+      "shows enough tackle wrap to reduce cheap yards after contact",
+      "brings useful tackle wrap to the defensive profile",
+      "can hold on even when the hit is not perfect",
+      "wraps well enough to slow power through contact"
+    ],
+    "concern": [
+      "wrap technique is loose",
+      "can slide off contact",
+      "needs to finish tackles with better form",
+      "can leak yards when tackle wrap fails",
+      "needs more trustworthy tackle wrap before the staff lives with him in space",
+      "the defense could feel the missed-play risk if tackle wrap does not improve",
+      "slips off too many contact attempts",
+      "needs better clamp strength and finish mechanics"
+    ]
+  },
+  "hit_power": {
+    "strength": [
+      "brings real pop on contact",
+      "can change ball-carrier behavior with force",
+      "has tone-setting contact strength",
+      "uses hit power to finish plays cleanly",
+      "shows enough hit power to reduce cheap yards after contact",
+      "brings useful hit power to the defensive profile",
+      "can change a ball carrier's balance on contact",
+      "brings enough collision force to be felt"
+    ],
+    "concern": [
+      "contact power is ordinary",
+      "does not create much stopping force",
+      "may need help finishing stronger runners",
+      "can leak yards when hit power fails",
+      "needs more trustworthy hit power before the staff lives with him in space",
+      "the defense could feel the missed-play risk if hit power does not improve",
+      "collision force is more ordinary than the frame suggests",
+      "can hunt contact without creating real stopping power"
+    ]
+  },
+  "forced_fumble": {
+    "strength": [
+      "attacks the ball",
+      "has strip timing",
+      "can create turnover chances",
+      "uses forced fumble to finish plays cleanly",
+      "shows enough forced fumble to reduce cheap yards after contact",
+      "brings useful forced fumble to the defensive profile",
+      "attacks the ball without abandoning the tackle",
+      "has a knack for creating turnover chances"
+    ],
+    "concern": [
+      "does not create many ball-disruption plays",
+      "strip timing is undeveloped",
+      "needs more production when he arrives",
+      "can leak yards when forced fumble fails",
+      "needs more trustworthy forced fumble before the staff lives with him in space",
+      "the defense could feel the missed-play risk if forced fumble does not improve",
+      "ball production may not follow him without cleaner technique",
+      "can miss chances to attack exposed carriage"
+    ]
+  },
+  "open_field_tackle": {
+    "strength": [
+      "can finish in space",
+      "has enough control in open-field tackle chances",
+      "does not panic in space",
+      "uses open-field control to finish plays cleanly",
+      "shows enough open-field tackle to reduce cheap yards after contact",
+      "brings useful open-field tackle to the defensive profile",
+      "can finish in space without perfect help",
+      "keeps leverage well enough in isolated tackle chances"
+    ],
+    "concern": [
+      "open-field tackling is shaky",
+      "space exposes his angles and finish",
+      "may need protected assignments early",
+      "can leak yards when open-field tackle fails",
+      "needs more trustworthy open-field tackle before the staff lives with him in space",
+      "the defense could feel the missed-play risk if open-field tackle does not improve",
+      "space tackling could be a weekly target",
+      "needs to arrive under control in the open field"
+    ]
+  },
+  "assist_tackle": {
+    "strength": [
+      "gets bodies slowed for help",
+      "understands group tackling",
+      "can contribute even when he is not first there",
+      "uses assist / group tackle to finish plays cleanly",
+      "shows enough assist / group tackle to reduce cheap yards after contact",
+      "brings useful assist / group tackle to the defensive profile",
+      "does his job in group tackles and prevents extra churn",
+      "can steer runners back to help"
+    ],
+    "concern": [
+      "does not always help clean up plays",
+      "group-tackle value is limited",
+      "can arrive without affecting the runner",
+      "can leak yards when assist / group tackle fails",
+      "needs more trustworthy assist / group tackle before the staff lives with him in space",
+      "the defense could feel the missed-play risk if assist / group tackle does not improve",
+      "does not always slow the runner long enough for help",
+      "can arrive without enough control to finish the group tackle"
+    ]
+  },
+  "kick_power": {
+    "strength": [
+      "has legitimate leg strength",
+      "can change field position with the leg",
+      "distance is not the issue",
+      "shows draftable kick power by specialist standards",
+      "has enough kick power to survive NFL operation demands",
+      "gives the special teams unit usable kick power",
+      "has enough leg to change the field from distance",
+      "distance range will get special-teams coaches interested"
+    ],
+    "concern": [
+      "leg strength is ordinary",
+      "may be distance-limited",
+      "does not consistently drive the ball",
+      "kick power has to become more repeatable under game pressure",
+      "the specialist profile gets thin if kick power wavers",
+      "needs steadier kick power to earn trust from the staff",
+      "range looks more average when the operation is not perfect",
+      "distance limitations could shrink game-day choices"
+    ]
+  },
+  "kick_accuracy": {
+    "strength": [
+      "has dependable directional control",
+      "can repeat his motion well",
+      "accuracy is the selling point",
+      "shows draftable kick accuracy by specialist standards",
+      "has enough kick accuracy to survive NFL operation demands",
+      "gives the special teams unit usable kick accuracy",
+      "repeats the operation well enough to trust direction",
+      "placement gives the coverage and kicking units workable balls"
+    ],
+    "concern": [
+      "accuracy is too streaky",
+      "directional misses are a concern",
+      "needs a more repeatable operation",
+      "kick accuracy has to become more repeatable under game pressure",
+      "the specialist profile gets thin if kick accuracy wavers",
+      "needs steadier kick accuracy to earn trust from the staff",
+      "directional control can wander",
+      "operation consistency needs to hold when pressure rises"
+    ]
+  }
+}

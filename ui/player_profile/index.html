@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NFL GM Player Profile</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="profile-shell">
+      <aside class="player-rail" aria-label="Player browser">
+        <div class="rail-title">
+          <strong>Player Profile</strong>
+          <span id="seasonLabel"></span>
+        </div>
+        <div class="filters">
+          <input id="searchInput" type="search" autocomplete="off" placeholder="Search players">
+          <select id="teamFilter" aria-label="Team filter"></select>
+          <select id="positionFilter" aria-label="Position filter"></select>
+        </div>
+        <div id="playerList" class="player-list"></div>
+      </aside>
+
+      <section class="profile-workspace">
+        <header class="profile-hero">
+          <div class="hero-photo-wrap">
+            <img id="heroLogo" class="hero-logo" alt="">
+            <div id="heroPhoto" class="hero-photo"></div>
+          </div>
+          <div class="hero-main">
+            <p id="teamLine" class="eyebrow"></p>
+            <h1 id="playerName"></h1>
+            <p id="positionLine" class="position-line"></p>
+            <div id="heroFacts" class="hero-facts"></div>
+          </div>
+          <div class="hero-actions">
+            <a class="ghost-link" href="../app_shell/index.html">Main Menu</a>
+            <a class="ghost-link" href="../game_center/index.html">Game Center</a>
+            <a class="ghost-link" href="../front_office/index.html">Front Office</a>
+            <a id="cardViewLink" class="ghost-link" href="../player_card/index.html">Card View</a>
+          </div>
+        </header>
+
+        <nav class="profile-tabs" aria-label="Player profile sections">
+          <button type="button" data-view="overview" class="active">Overview</button>
+          <button type="button" data-view="attributes">Attributes</button>
+          <button type="button" data-view="stats">Stats</button>
+          <button type="button" data-view="contract">Contract</button>
+          <button type="button" data-view="history">History</button>
+        </nav>
+
+        <section id="profileView" class="profile-view"></section>
+      </section>
+    </main>
+
+    <script src="./player-profile-data.js?v=20260503-udfa1"></script>
+    <script src="./app.js?v=20260503-udfa1"></script>
+  </body>
+</html>

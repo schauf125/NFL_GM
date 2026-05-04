@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NFL GM Player Card</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="browser-panel" aria-label="Player browser">
+        <div class="browser-title">
+          <span>Scouting Cards</span>
+          <small id="playerCount"></small>
+        </div>
+        <div class="filters">
+          <input id="searchInput" type="search" autocomplete="off" placeholder="Search player, team, position">
+          <select id="teamFilter" aria-label="Team filter"></select>
+        </div>
+        <div id="playerList" class="player-list"></div>
+      </aside>
+
+      <section class="card-stage" aria-live="polite">
+        <nav class="module-links" aria-label="Workspace links">
+          <a href="../app_shell/index.html">Main Menu</a>
+          <a href="../game_center/index.html">Game Center</a>
+          <a href="../front_office/index.html">Front Office</a>
+          <a href="../player_profile/index.html">Profiles</a>
+        </nav>
+        <article id="playerCard" class="player-card">
+          <section class="portrait-panel">
+            <div class="photo-block">
+              <img id="teamLogoHero" class="team-logo-hero" alt="">
+              <img id="playerHeadshot" class="player-headshot" alt="">
+              <div class="portrait-glow"></div>
+              <div class="portrait-initials" id="portraitInitials"></div>
+              <div class="jersey-number" id="jerseyNumber"></div>
+            </div>
+
+            <div class="left-report">
+              <div class="section-block">
+                <h2>Archetype</h2>
+                <p id="archetypeText"></p>
+              </div>
+
+              <div class="section-block">
+                <h2>Role Fit</h2>
+                <div id="roleFit" class="role-fit"></div>
+              </div>
+
+              <div class="section-block">
+                <h2>Top Traits</h2>
+                <div id="topTraits" class="compact-metrics"></div>
+              </div>
+
+              <div class="section-block">
+                <h2>Areas To Improve</h2>
+                <div id="improveTraits" class="compact-metrics"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="details-panel">
+            <header class="player-header">
+              <div>
+                <p id="teamLine" class="team-line"></p>
+                <h1 id="playerName"></h1>
+                <p id="positionLine" class="position-line"></p>
+              </div>
+              <img id="teamLogoSmall" class="team-logo-small" alt="">
+            </header>
+
+            <div class="info-grid">
+              <div>
+                <span>Age</span>
+                <strong id="ageText"></strong>
+              </div>
+              <div>
+                <span>Experience</span>
+                <strong id="expText"></strong>
+              </div>
+              <div>
+                <span>Status</span>
+                <strong id="statusText"></strong>
+              </div>
+            </div>
+
+            <div class="measure-grid">
+              <div>
+                <span>College</span>
+                <strong id="collegeText"></strong>
+              </div>
+              <div>
+                <span>Height</span>
+                <strong id="heightText"></strong>
+              </div>
+              <div>
+                <span>Weight</span>
+                <strong id="weightText"></strong>
+              </div>
+            </div>
+
+            <section class="section-block scouting">
+              <h2>Scouting Report</h2>
+              <p id="scoutingText"></p>
+            </section>
+
+            <section class="read-grid">
+              <div class="read-cell">
+                <span>Current Read</span>
+                <strong id="currentRead"></strong>
+              </div>
+              <div class="read-cell">
+                <span>Development</span>
+                <strong id="developmentRead"></strong>
+              </div>
+              <div class="read-cell">
+                <span>Risk Level</span>
+                <strong id="riskRead"></strong>
+              </div>
+            </section>
+
+            <section class="section-block attributes">
+              <h2>Attributes</h2>
+              <div id="attributeBoard" class="attribute-board"></div>
+            </section>
+          </section>
+        </article>
+      </section>
+    </main>
+
+    <script src="./player-data.js?v=20260503-udfa1"></script>
+    <script src="./app.js?v=20260503-udfa1"></script>
+  </body>
+</html>

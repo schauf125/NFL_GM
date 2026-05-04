@@ -1,0 +1,354 @@
+{
+  "summary_openers": {
+    "high_end": [
+      "{name} profiles as a legitimate early contributor if the mental side keeps pace with the tools.",
+      "{name} has the kind of profile that will keep decision makers in the room longer than planned.",
+      "{name} looks like one of the cleaner bets in this class when the role is kept specific.",
+      "{name} has starter-level tape and enough physical upside to keep the grade near the top of the board.",
+      "{name} brings a premium blend of baseline skill and projectable traits.",
+      "{name} checks enough boxes that the debate is more about ceiling than roster fit.",
+      "{name} has the kind of profile staffs can sell themselves on early.",
+      "{name} looks ready to help quickly, though the final grade still depends on how the staff weighs the flaws."
+    ],
+    "starter_path": [
+      "{name} has a realistic starter path, but the landing spot and development plan matter.",
+      "{name} is not a finished product, though the role fit is easy to see.",
+      "{name} brings enough usable traits to project beyond pure depth.",
+      "{name} has starter tools in flashes and enough tape to justify patience.",
+      "{name} is a credible projection if the coaching staff can narrow the early assignment.",
+      "{name} has a workable NFL profile with a few traits that can carry him while he develops.",
+      "{name} should stay on boards because the good reps look like real Sunday traits.",
+      "{name} is not a clean evaluation, but the path to a meaningful role is visible."
+    ],
+    "developmental": [
+      "{name} is more projection than polish right now.",
+      "{name} has traits worth developing, but the tape leaves real questions.",
+      "{name} needs time before the staff can trust him in a large role.",
+      "{name} is a traits bet with enough flaws to require a deliberate plan.",
+      "{name} flashes the outline of an NFL role without sustaining it snap to snap.",
+      "{name} is the kind of prospect who needs a staff that already knows what it wants from him.",
+      "{name} has tools that will keep scouts interested, but the week-one role should be limited.",
+      "{name} has enough talent to stick in a building while the details catch up."
+    ],
+    "roster_bubble": [
+      "{name} is a camp-and-depth profile unless one trait translates faster than expected.",
+      "{name} has to win on the margins to stick.",
+      "{name} looks like a late board player with a narrow early role.",
+      "{name} needs special teams, practice reps, or a niche package to create staying power.",
+      "{name} is fighting the numbers game unless the staff sees a specific developmental hook.",
+      "{name} has enough to warrant a look, but the margin for early mistakes is small.",
+      "{name} looks more like a roster competition player than a plug-in answer.",
+      "{name} will need to convince a staff that the best trait is worth protecting."
+    ]
+  },
+  "projection": {
+    "round_1": [
+      "Projected as an early pick, but not immune to a miss if the weaknesses are real.",
+      "First-round consideration with enough volatility to split scouting rooms.",
+      "High board grade with starter expectations, though the floor is not as tidy as the surface profile.",
+      "Top-tier draft slot is justified if the staff believes the translatable traits are stable.",
+      "Should be in early-pick conversations, with the main debate centered on how quickly he can handle a full role.",
+      "The grade belongs near the top of the class, but the evaluation still needs a clear answer for the miss case."
+    ],
+    "round_2_3": [
+      "Day-two value with a chance to outplay the slot if the role is protected early.",
+      "Could become a quality starter, but the bust path is visible.",
+      "Best treated as a good prospect with specific development needs, not a finished answer.",
+      "Fits the day-two range because the strengths are real and the holes are still coachable.",
+      "Can justify a meaningful investment if the staff has a defined usage plan.",
+      "The grade makes sense in the second or third round, especially for a team comfortable living with early variance."
+    ],
+    "round_4_5": [
+      "Mid-round target who needs patience and a clear role.",
+      "Developmental player with enough traits to bet on, but no guarantee he survives early mistakes.",
+      "Useful board value if the staff is comfortable with the risk.",
+      "Best viewed as a traits-and-fit selection rather than a safe depth add.",
+      "Could carve out a role by year two if the staff can simplify the first assignment.",
+      "The mid-round case depends on whether one carrying trait is strong enough to dress on game day."
+    ],
+    "round_6_7": [
+      "Late-round projection with special teams or package value as the first foothold.",
+      "Needs a specific staff fit to become more than depth.",
+      "Worth a late look, but the path to a second contract is narrow.",
+      "Draftable if the staff has a clear developmental lane and patience with the rough edges.",
+      "The late-round value is tied more to role clarity than complete tape.",
+      "A good camp could change the trajectory, but he is not a low-maintenance projection."
+    ],
+    "leftover": [
+      "Priority free-agent type unless a team has a strong private grade.",
+      "Back-end roster profile with one or two traits to investigate.",
+      "Likely undrafted unless the medical, workout, or interview process changes the board.",
+      "More likely to enter as a camp competition player than a protected roster piece.",
+      "The free-agent case is built around fit, persistence, and whether a staff believes the best trait travels.",
+      "Needs the right depth chart and a strong summer to become more than a practice-squad conversation."
+    ]
+  },
+  "risk_notes": {
+    "Low": [
+      "The evaluation has a fairly stable floor for the projected role.",
+      "There are weaknesses, but the basic player profile is coherent.",
+      "The role translation looks cleaner than most players in this range.",
+      "The staff should have a good idea of what it is getting if the assignment stays reasonable.",
+      "The risk is more about ceiling than whether he belongs in the league.",
+      "Nothing in the report requires the team to invent a role from scratch."
+    ],
+    "Medium": [
+      "The report carries some volatility because the good and bad traits both show up clearly.",
+      "The player could beat this grade, but there is enough uncertainty to avoid treating him as safe.",
+      "The staff fit will heavily influence whether the strengths matter on Sundays.",
+      "He can become a winning piece, but the developmental checkpoints need to be real.",
+      "There is enough variance here that two teams could stack him a full tier apart.",
+      "The projection works if the staff accepts the tradeoffs instead of pretending they are minor."
+    ],
+    "High": [
+      "This is a boom-bust evaluation and the board grade could be wrong by a full tier.",
+      "The miss case is real: the traits may not overcome the football concerns.",
+      "A scout can like the tools and still worry the player never earns a stable role.",
+      "The gap between the best reps and the down-to-down floor is large enough to create real bust risk.",
+      "This is the kind of profile that can tempt a team early and frustrate the staff later.",
+      "The evaluation needs a strong conviction check before the team spends premium draft capital."
+    ]
+  },
+  "role_fit": [
+    "Best early fit: {role}.",
+    "The first NFL role should probably be {role}.",
+    "He should be evaluated first through the {role} lens.",
+    "The cleanest path starts with {role} duties before the staff expands the menu.",
+    "The board grade makes the most sense if {role} is the planned job.",
+    "He is easiest to project when the early job description stays close to {role}.",
+    "A staff should resist moving him away from the {role} role too quickly.",
+    "His best football probably comes when the scheme lets him live in the {role} role first."
+  ],
+  "usage_notes": {
+    "default": [
+      "Early usage should be narrow enough to let the best trait show up before the whole assignment expands.",
+      "The first season should be built around packages, special teams, and practice growth.",
+      "He should not be asked to solve every situation immediately.",
+      "The best early plan is to give him a defined job and let the weekly trust grow from there.",
+      "A patient staff can let the role expand once the low-end reps become less costly."
+    ],
+    "pocket_qb": [
+      "Early usage should lean on rhythm throws, protected looks, and answers that arrive on time.",
+      "The staff should build the passing menu from concepts he can identify before the snap.",
+      "He needs a clean weekly plan that keeps protection, timing, and field vision connected."
+    ],
+    "scrambling_qb": [
+      "Early usage should include movement throws and selective designed runs without turning every dropback into an escape drill.",
+      "The staff should use the legs as a pressure valve while demanding steady pocket answers.",
+      "His first role needs structure, because pure playmaking can hide issues until the league adjusts."
+    ],
+    "power_rb": [
+      "Early usage should let him press downhill and finish runs without needing to manufacture every yard on his own.",
+      "He fits best in a rotation where contact balance and ball security matter more than pure space creation.",
+      "The staff can build trust with short-yardage, four-minute, and physical early-down work."
+    ],
+    "elusive_rb": [
+      "Early usage should get him into space and avoid asking him to live only between tight interior gaps.",
+      "He can earn touches quickly if the staff creates clean angles through screens, draws, and spread looks.",
+      "The role works best when he can stress linebackers laterally before contact arrives."
+    ],
+    "boundary_wr": [
+      "Early usage should give him defined outside releases and chances to win vertically or at the boundary.",
+      "He should be eased into a full route tree while the staff tests which releases travel against NFL corners.",
+      "The offense should let him work where size, stride length, and ball skills can matter."
+    ],
+    "slot_wr": [
+      "Early usage should emphasize option routes, space work, and quick-game timing.",
+      "He can help sooner if the staff uses motion, stacks, and inside access to keep him clean.",
+      "The role should test route detail and hands before asking him to live outside."
+    ],
+    "inline_te": [
+      "Early usage should keep him attached enough to develop blocking value while giving him simple passing-game answers.",
+      "The best plan is to let him win with alignment versatility without overloading the route menu.",
+      "He needs enough blocking trust to stay on the field before the receiving role can grow."
+    ],
+    "move_te": [
+      "Early usage should use detached alignments, crossers, seams, and matchups against linebackers.",
+      "He can contribute sooner if the staff treats him as a space player first and a full-service tight end later.",
+      "The role needs receiving stress points while the blocking detail catches up."
+    ],
+    "pass_protecting_ot": [
+      "Early usage should protect him from excessive assignment changes while the pass set becomes repeatable.",
+      "The staff should test him against speed and counters before assuming he can live alone on the edge.",
+      "He needs stable technique work before the offense leans on him as an island protector."
+    ],
+    "interior_run_blocker": [
+      "Early usage should lean on double teams, angles, and downhill concepts that let his power show.",
+      "The staff should avoid making him survive only in space until the footwork becomes more consistent.",
+      "He fits best when the run game lets him create movement before asking him to redirect late."
+    ],
+    "speed_edge": [
+      "Early usage should let him rush from wide alignments and build counters after tackles respect the arc.",
+      "The first pass-rush package should showcase burst without asking him to anchor every early down.",
+      "The staff can use him as a pressure specialist while the rush plan and run fits mature."
+    ],
+    "power_edge": [
+      "Early usage should lean on edge-setting, pocket compression, and physical downs before widening the rush menu.",
+      "He fits best when the staff values heavy hands and run-game reliability as part of the first role.",
+      "The pass-rush plan should grow out of power before asking him to win as a pure speed player."
+    ],
+    "interior_rusher": [
+      "Early usage should put him in attack alignments where first-step quickness and leverage can show up.",
+      "He can earn pressure-package snaps before he is ready for every run fit.",
+      "The staff should give him chances to penetrate rather than only occupy blocks."
+    ],
+    "nose_run_stopping_dt": [
+      "Early usage should center on early downs, short-yardage, and keeping linebackers clean.",
+      "He can have value quickly if the staff accepts that the box-score production may be modest.",
+      "The role works best when block control and gap discipline are treated as the primary job."
+    ],
+    "coverage_lb": [
+      "Early usage should simplify the run fits enough to keep him clean in coverage and pursuit.",
+      "He can help in sub packages if the staff protects him from constant downhill traffic.",
+      "The plan should let speed and space instincts show while the box responsibilities grow."
+    ],
+    "box_lb": [
+      "Early usage should keep him near the action and let him trigger downhill.",
+      "He fits best in a role that values contact, run fits, and limited coverage stress early.",
+      "The staff should build the passing-down role only after the run-game trust is established."
+    ],
+    "man_cb": [
+      "Early usage should test press and mirror ability without leaving him alone against every route type.",
+      "The staff should build the plan around leverage rules and matchups that suit his recovery profile.",
+      "He can play early if the technique holds up enough to survive isolation snaps."
+    ],
+    "zone_cb": [
+      "Early usage should emphasize vision, route handoffs, and closing speed from zone spacing.",
+      "He fits best in a coverage plan that lets him read the quarterback and drive on throws.",
+      "The staff should avoid forcing a pure man role until the footwork proves it can hold."
+    ],
+    "deep_safety": [
+      "Early usage should keep his eyes clean and let range, angles, and communication settle the back end.",
+      "He can earn trust if the staff sees enough discipline to limit explosive mistakes.",
+      "The role should grow from landmark consistency before adding heavier disguise responsibility."
+    ],
+    "box_safety": [
+      "Early usage should put him near the line, in robber looks, and around the run fit.",
+      "He fits best when the staff lets physicality and short-area trigger show before asking for constant deep range.",
+      "The plan should balance matchup work with enough box snaps to use his best traits."
+    ],
+    "K": [
+      "Early usage is simple: the leg has to travel, and the staff must decide whether the operation is repeatable under pressure.",
+      "The grade depends on whether the workout consistency matches the game-day temperament.",
+      "He needs stable mechanics and enough range to justify carrying a specialist through early misses."
+    ],
+    "P": [
+      "Early usage depends on hang time, directional control, and whether the coverage unit can play off the ball flight.",
+      "The staff should value repeatable operation time as much as peak distance.",
+      "He needs to show the leg can flip field position without outkicking the coverage."
+    ],
+    "LS": [
+      "Early usage is almost entirely trust based; one bad snap can matter more than a month of clean ones.",
+      "The evaluation should focus on operation time, placement, and protection reliability.",
+      "He has to be boring in the best possible way before a staff uses a roster spot."
+    ]
+  },
+  "development_notes": {
+    "high_end": [
+      "The development plan should focus on turning a strong profile into weekly reliability, not rebuilding the player.",
+      "The main checkpoint is whether the details stay sharp once opponents can scheme against him.",
+      "He should be pushed quickly, but the staff still needs to protect the one area that could cap the ceiling.",
+      "The fastest path is a focused rookie role that expands once the floor proves stable.",
+      "This is more refinement than rescue, which is why the early investment can make sense.",
+      "The staff should have a year-one plan and a year-two expansion plan before turning in the card."
+    ],
+    "starter_path": [
+      "The development plan should target two or three specific fixes instead of trying to remake everything at once.",
+      "He has enough tools to become a starter if the staff can clean up the repeatable errors.",
+      "The most important checkpoint is whether the shaky reps shrink by midseason of year one.",
+      "He needs a coaching staff willing to live with some early unevenness while the best traits mature.",
+      "The projection improves if he earns a narrow role first and then adds responsibility.",
+      "The staff should decide whether the flaws are habits, experience gaps, or true limitations."
+    ],
+    "developmental": [
+      "The development plan should be specific, patient, and honest about what he cannot do yet.",
+      "He needs practice time and a protected package before the team asks for starter-level answers.",
+      "The staff should identify one carrying trait and build the first year around it.",
+      "The risk rises if the team drafts him without a clear teaching progression.",
+      "The best outcome probably requires a redshirt-style year with visible practice growth.",
+      "He needs the kind of coaching plan that turns flashes into habits."
+    ],
+    "roster_bubble": [
+      "The development plan starts with survival: special teams, reliability, and one bankable trait.",
+      "He needs to make a staff notice him quickly because patience is limited at this part of the board.",
+      "The best path is a narrow job he can own before the roster squeeze arrives.",
+      "He has to become dependable in the unglamorous parts of the role before the upside matters.",
+      "The team should know exactly why it is keeping him by the end of camp.",
+      "He is more likely to stick if the staff gives him a simple weekly checklist."
+    ],
+    "high_risk": [
+      "The development plan must be unusually clear because the tools alone will not carry the evaluation.",
+      "He needs a staff that can separate fixable issues from traits that may never stabilize.",
+      "The team should be comfortable with a wide range of outcomes before investing.",
+      "The projection can work, but only if the coaching staff is honest about the early limitations.",
+      "The first year may decide whether the ceiling is real or just a workout-grade mirage.",
+      "This is a conviction pick, and the conviction needs to come with a plan."
+    ]
+  },
+  "lens_notes": {
+    "default": [
+      "The area report leans on live exposure and how the player handled his week-to-week role.",
+      "This scout is weighting the player's best and worst tape without leaning too hard on one workout.",
+      "The opinion is shaped by usage context, competition level, and how often the role looked repeatable.",
+      "The report reads like a grounded area grade, with enough room for another scout to disagree."
+    ],
+    "national_scout": [
+      "The national look is more comfortable separating the player from the college system.",
+      "This report puts extra weight on whether the profile translates across opponents and schemes.",
+      "The grade is less reactive to flashes and more focused on bankable NFL traits.",
+      "The national report is trying to avoid overcorrecting for one loud game or one quiet stretch."
+    ],
+    "optimistic_area": [
+      "This is a favorable read that trusts the best tape more than the worst tape.",
+      "The scout may be giving extra credit for growth trajectory and daily exposure.",
+      "The report is willing to bet that the rough parts improve with NFL coaching.",
+      "The grade should be cross-checked because the optimism is doing some work."
+    ],
+    "conservative_crosscheck": [
+      "The cross-check is intentionally stress-testing the miss case.",
+      "This report is less forgiving of traits that have not already become consistent production.",
+      "The grade may run colder than the room if the scout does not trust the projection.",
+      "The conservative read is useful because it asks what happens if the best trait does not travel."
+    ],
+    "traits_scout": [
+      "The traits report is more willing to chase the athletic ceiling than the weekly floor.",
+      "This lens may push the player higher if the movement profile or body type is rare.",
+      "The grade is influenced by what the player could become, not only what he is right now.",
+      "The room should make sure the traits are tied to an actual football job."
+    ],
+    "analytics_scout": [
+      "The analytical cross-check weighs age, production shape, role efficiency, and athletic context.",
+      "This report is asking whether the profile has evidence beyond traits and reputation.",
+      "The grade may punish older breakouts or players whose production depended heavily on scheme.",
+      "The lens is useful for catching prospects whose public profile is louder than the underlying indicators."
+    ],
+    "old_school_scout": [
+      "The old-school read puts real weight on body type, toughness, and how the player looks getting off the bus.",
+      "This report can be valuable when the physical profile is obvious, but it may underplay skill variance.",
+      "The grade is more comfortable betting on size, speed, and temperament than a narrow spreadsheet case.",
+      "The room should check whether the physical tools actually show up in the key role traits."
+    ],
+    "medical_crosscheck": [
+      "The medical cross-check is more sensitive to availability, durability, and workload projection.",
+      "This report may shade the grade down if the body history makes the role harder to trust.",
+      "The lens is less concerned with peak flashes than whether the player can stay available.",
+      "The grade should be paired with updated medical information before the final board stack."
+    ],
+    "small_school_scout": [
+      "The small-school report is balancing clear dominance against the jump in weekly competition.",
+      "This scout is more willing to protect a late riser if the traits and practice exposure check out.",
+      "The grade carries extra uncertainty because the player may not have faced many NFL bodies.",
+      "The report should be cross-checked with all-star practices, combine work, and private visits."
+    ]
+  },
+  "variance_notes": [
+    "This report is an opinion, not the true rating card.",
+    "Private workouts and interviews could move this report more than usual.",
+    "The grade is sensitive to how much the scout trusts the projection traits.",
+    "Another scout could reasonably stack him a tier higher or lower depending on role preference.",
+    "The final board should check whether the same strengths show up against better competition.",
+    "This is the kind of report that may age very differently after a year in an NFL building.",
+    "The workout data supports part of the opinion, but the tape still has to carry the grade.",
+    "The room should separate what the player already does from what the staff hopes to teach."
+  ]
+}

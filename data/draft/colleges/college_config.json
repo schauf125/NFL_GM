@@ -1,0 +1,22 @@
+{
+  "source": "College weights are compiled from nflverse players.csv college_name counts.",
+  "power_school_weight_multiplier": 1.35,
+  "small_school_weight_multiplier": 0.55,
+  "random_small_school_chance": 0.08,
+  "international_college_chance": 0.28,
+  "international_development_sources": {
+    "International Pathway Program": 35,
+    "Canadian university": 22,
+    "Australian club program": 16,
+    "European league program": 12,
+    "Junior college transfer": 8,
+    "No college football": 7
+  },
+  "age_bucket_weights": {
+    "round_1": {"20": 6, "21": 29, "22": 45, "23": 16, "24": 3, "25": 1},
+    "round_2_3": {"20": 3, "21": 17, "22": 40, "23": 25, "24": 12, "25": 3},
+    "round_4_5": {"20": 1, "21": 9, "22": 30, "23": 30, "24": 23, "25": 7},
+    "round_6_7": {"20": 0.5, "21": 4.5, "22": 20, "23": 30, "24": 33, "25": 12},
+    "leftover": {"20": 0.5, "21": 2.5, "22": 15, "23": 32, "24": 35, "25": 13, "26": 2}
+  }
+}
