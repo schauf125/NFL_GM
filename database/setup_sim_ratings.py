@@ -355,6 +355,26 @@ def create_schema(conn):
             PRIMARY KEY (player_id, season, role_key, scheme_key)
         );
 
+        CREATE TABLE IF NOT EXISTS player_qb_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            rhythm INTEGER NOT NULL CHECK (rhythm BETWEEN 0 AND 100),
+            pocket_discipline INTEGER NOT NULL CHECK (pocket_discipline BETWEEN 0 AND 100),
+            pocket_drift INTEGER NOT NULL CHECK (pocket_drift BETWEEN 0 AND 100),
+            checkdown_willingness INTEGER NOT NULL CHECK (checkdown_willingness BETWEEN 0 AND 100),
+            deep_aggression INTEGER NOT NULL CHECK (deep_aggression BETWEEN 0 AND 100),
+            pressure_escape INTEGER NOT NULL CHECK (pressure_escape BETWEEN 0 AND 100),
+            broken_play_creation INTEGER NOT NULL CHECK (broken_play_creation BETWEEN 0 AND 100),
+            scramble_trigger INTEGER NOT NULL CHECK (scramble_trigger BETWEEN 0 AND 100),
+            sack_risk INTEGER NOT NULL CHECK (sack_risk BETWEEN 0 AND 100),
+            throwaway_discipline INTEGER NOT NULL CHECK (throwaway_discipline BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_player_ratings_rating_key
             ON player_ratings(rating_key);
         CREATE INDEX IF NOT EXISTS idx_player_ratings_season_rating
@@ -363,6 +383,8 @@ def create_schema(conn):
             ON player_role_assignments(player_id, season, priority);
         CREATE INDEX IF NOT EXISTS idx_player_role_scores_role
             ON player_role_scores(season, role_key, role_score);
+        CREATE INDEX IF NOT EXISTS idx_player_qb_behavior_profiles_season
+            ON player_qb_behavior_profiles(season, label);
 
         CREATE VIEW IF NOT EXISTS player_sim_ratings_view AS
             SELECT

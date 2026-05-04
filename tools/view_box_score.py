@@ -231,14 +231,26 @@ def print_box_score(con: sqlite3.Connection, schedule_game_id: int, show_plays: 
 
             defense_total = sum(
                 int(stats.get(key, 0))
-                for key in ("tackles", "sacks", "interceptions", "pass_deflections", "forced_fumbles", "fumble_recoveries")
+                for key in (
+                    "tackles",
+                    "solo_tackles",
+                    "assisted_tackles",
+                    "sacks",
+                    "interceptions",
+                    "pass_deflections",
+                    "forced_fumbles",
+                    "fumble_recoveries",
+                )
             )
             if defense_total:
+                tackles = int(stats.get("tackles", 0))
+                solo = int(stats.get("solo_tackles", tackles if not stats.get("assisted_tackles", 0) else 0))
+                assisted = int(stats.get("assisted_tackles", 0))
                 defense.append(
                     (
-                        stats.get("tackles", 0),
+                        tackles,
                         name,
-                        f"  {name}: {int(stats.get('tackles', 0))} TKL, {int(stats.get('sacks', 0))} SK, "
+                        f"  {name}: {tackles} TKL ({solo} solo, {assisted} ast), {int(stats.get('sacks', 0))} SK, "
                         f"{int(stats.get('interceptions', 0))} INT, {int(stats.get('pass_deflections', 0))} PD, "
                         f"{int(stats.get('forced_fumbles', 0))} FF, {int(stats.get('fumble_recoveries', 0))} FR",
                     )

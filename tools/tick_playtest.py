@@ -36,6 +36,9 @@ def route_row(route: tick_engine.RouteTickState) -> dict[str, Any]:
     return {
         "receiver": route.receiver.name,
         "defender": route.defender.name,
+        "slot": route.route_slot,
+        "read_rank": route.read_rank,
+        "role": route.route_role,
         "depth": route.depth,
         "break_tick": route.break_tick,
         "separation": round(route.separation, 2),
@@ -55,6 +58,7 @@ def result_payload(result: tick_engine.TickPassResult) -> dict[str, Any]:
         "ticks_elapsed": result.ticks_elapsed,
         "time_elapsed_seconds": result.time_elapsed_seconds,
         "quarterback": result.quarterback.name,
+        "qb_profile": result.qb_profile.as_dict(),
         "target": result.target.name if result.target else None,
         "defender": result.defender.name if result.defender else None,
         "rusher": result.rusher.name if result.rusher else None,
@@ -91,9 +95,15 @@ def print_result(result: tick_engine.TickPassResult, *, show_events: bool, show_
     )
     print(
         f"QB: {result.quarterback.name} | "
+        f"Style: {result.qb_profile.label} | "
         f"Target: {result.target.name if result.target else '-'} | "
         f"Defender: {result.defender.name if result.defender else '-'} | "
         f"Rusher: {result.rusher.name if result.rusher else '-'}"
+    )
+    print(
+        f"QB traits: rhythm {result.qb_profile.rhythm:.0f}, drift {result.qb_profile.pocket_drift:.0f}, "
+        f"escape {result.qb_profile.pressure_escape:.0f}, broken-play {result.qb_profile.broken_play_creation:.0f}, "
+        f"sack-risk {result.qb_profile.sack_risk:.0f}"
     )
     print(
         f"Throw tick: {result.throw_tick or '-'} | "
@@ -111,6 +121,7 @@ def print_result(result: tick_engine.TickPassResult, *, show_events: bool, show_
         for route in sorted(result.routes, key=lambda item: item.target_priority, reverse=True):
             print(
                 f"  {route.receiver.name:<24} vs {route.defender.name:<24} "
+                f"{route.route_slot:<3} {route.route_role:<9} R{route.read_rank + 1} "
                 f"depth {route.depth:>2}, break T{route.break_tick:>2}, "
                 f"sep {route.separation:.2f}, open T{route.open_tick or '-'}"
             )

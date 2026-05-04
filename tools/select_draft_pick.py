@@ -25,6 +25,7 @@ if str(DATABASE_DIR) not in sys.path:
     sys.path.insert(0, str(DATABASE_DIR))
 
 from engine.draft.schema import ensure_schema as ensure_draft_schema
+from engine.qb_behavior import ensure_player_qb_behavior_schema
 from migrate_legacy_sim_ratings import ensure_sim_rating_schema
 from setup_contract_years import (
     ensure_schema as ensure_contract_schema,
@@ -75,6 +76,7 @@ def ensure_all_schema(con: sqlite3.Connection) -> None:
     ensure_contract_schema(con)
     ensure_transaction_schema(con)
     ensure_draft_schema(con)
+    ensure_player_qb_behavior_schema(con)
     player_personalities.ensure_schema(con)
     player_personalities.seed_trait_definitions(con)
     player_development_modifiers.seed_master_data(con)
@@ -617,6 +619,63 @@ def copy_ratings(con: sqlite3.Connection, prospect_id: int, player_id: int, seas
     return len(rows)
 
 
+def copy_qb_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_qb_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_qb_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_qb_behavior_profiles (
+            player_id, season, label, rhythm, pocket_discipline, pocket_drift,
+            checkdown_willingness, deep_aggression, pressure_escape,
+            broken_play_creation, scramble_trigger, sack_risk,
+            throwaway_discipline, source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            rhythm = excluded.rhythm,
+            pocket_discipline = excluded.pocket_discipline,
+            pocket_drift = excluded.pocket_drift,
+            checkdown_willingness = excluded.checkdown_willingness,
+            deep_aggression = excluded.deep_aggression,
+            pressure_escape = excluded.pressure_escape,
+            broken_play_creation = excluded.broken_play_creation,
+            scramble_trigger = excluded.scramble_trigger,
+            sack_risk = excluded.sack_risk,
+            throwaway_discipline = excluded.throwaway_discipline,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["rhythm"]),
+            int(row["pocket_discipline"]),
+            int(row["pocket_drift"]),
+            int(row["checkdown_willingness"]),
+            int(row["deep_aggression"]),
+            int(row["pressure_escape"]),
+            int(row["broken_play_creation"]),
+            int(row["scramble_trigger"]),
+            int(row["sack_risk"]),
+            int(row["throwaway_discipline"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
 def convert_undrafted_prospect_to_free_agent(
     con: sqlite3.Connection,
     *,
@@ -639,6 +698,7 @@ def convert_undrafted_prospect_to_free_agent(
         draft_year=draft_year,
     )
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, draft_year)
+    qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, draft_year)
     insert_primary_flex(con, prospect, player_id)
     insert_career_shell(con, player_id, "FA")
@@ -682,6 +742,7 @@ def convert_undrafted_prospect_to_free_agent(
         "true_rank": prospect["true_rank"] if "true_rank" in prospect.keys() else None,
         "converted": True,
         "ratings": rating_rows,
+        "qb_behavior_profiles": qb_behavior_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1103,6 +1164,7 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         rookie_contract=contract,
     )
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     insert_primary_flex(con, prospect, player_id)
     insert_career_shell(con, player_id, team_abbr)
@@ -1158,6 +1220,7 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         "position": prospect["position"],
         "college": prospect["college"],
         "ratings": rating_rows,
+        "qb_behavior_profiles": qb_behavior_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1189,6 +1252,7 @@ def print_selection(result: dict[str, Any], *, dry_run: bool) -> None:
     print(f"Contract note: {result['contract_note']}")
     print(
         f"Copied: {result['ratings']} ratings, {result['role_assignments']} role assignments, "
+        f"{result.get('qb_behavior_profiles', 0)} QB behavior profiles, "
         f"{result['role_scores']} role scores, {result['personalities']} hidden personality traits, "
         f"{result.get('development_modifiers', 0)} development modifiers, "
         f"{result.get('scheme_fits', 0)} scheme fits"

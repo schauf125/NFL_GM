@@ -11,18 +11,21 @@ from .class_preview import DraftClassPreviewRow
 from .repository import (
     DraftClass,
     DraftProspectCombineResult,
+    DraftProspectQBBehaviorProfile,
     DraftProspectPrivateWorkout,
     DraftProspectProDayResult,
     DraftProspectRating,
     DraftProspectRoleScore,
     create_draft_class,
     replace_prospect_combine_result,
+    replace_prospect_qb_behavior_profile,
     replace_prospect_private_workout,
     replace_prospect_pro_day_result,
     replace_prospect_sim_profile,
 )
 from .schema import ensure_schema
 from .senior_bowl import senior_bowl_status
+from engine.qb_behavior import generated_qb_behavior_profile
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,27 @@ def persist_draft_class(
             roles=[row.primary_role, row.secondary_role],
             ensure=False,
         )
+        if row.position.upper() == "QB":
+            qb_profile = generated_qb_behavior_profile(row.archetype, row.ratings)
+            replace_prospect_qb_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectQBBehaviorProfile(
+                    label=qb_profile.label,
+                    rhythm=int(round(qb_profile.rhythm)),
+                    pocket_discipline=int(round(qb_profile.pocket_discipline)),
+                    pocket_drift=int(round(qb_profile.pocket_drift)),
+                    checkdown_willingness=int(round(qb_profile.checkdown_willingness)),
+                    deep_aggression=int(round(qb_profile.deep_aggression)),
+                    pressure_escape=int(round(qb_profile.pressure_escape)),
+                    broken_play_creation=int(round(qb_profile.broken_play_creation)),
+                    scramble_trigger=int(round(qb_profile.scramble_trigger)),
+                    sack_risk=int(round(qb_profile.sack_risk)),
+                    throwaway_discipline=int(round(qb_profile.throwaway_discipline)),
+                    notes=qb_profile.notes,
+                ),
+                ensure=False,
+            )
         replace_prospect_combine_result(
             con,
             prospect_id,

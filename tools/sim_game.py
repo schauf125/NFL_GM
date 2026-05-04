@@ -144,6 +144,8 @@ def print_box_score(result: match_engine.GameResult) -> None:
                 int(stats.get(key, 0))
                 for key in (
                     "tackles",
+                    "solo_tackles",
+                    "assisted_tackles",
                     "sacks",
                     "interceptions",
                     "pass_deflections",
@@ -152,11 +154,14 @@ def print_box_score(result: match_engine.GameResult) -> None:
                 )
             )
             if defense_total:
+                tackles = int(stats.get("tackles", 0))
+                solo = int(stats.get("solo_tackles", tackles if not stats.get("assisted_tackles", 0) else 0))
+                assisted = int(stats.get("assisted_tackles", 0))
                 defense.append(
                     (
-                        int(stats.get("tackles", 0)),
+                        tackles,
                         name,
-                        f"  {name}: {int(stats.get('tackles', 0))} TKL, "
+                        f"  {name}: {tackles} TKL ({solo} solo, {assisted} ast), "
                         f"{int(stats.get('sacks', 0))} SK, "
                         f"{int(stats.get('interceptions', 0))} INT, "
                         f"{int(stats.get('pass_deflections', 0))} PD, "

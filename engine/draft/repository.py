@@ -35,6 +35,22 @@ class DraftProspectRoleScore:
 
 
 @dataclass(frozen=True)
+class DraftProspectQBBehaviorProfile:
+    label: str
+    rhythm: int
+    pocket_discipline: int
+    pocket_drift: int
+    checkdown_willingness: int
+    deep_aggression: int
+    pressure_escape: int
+    broken_play_creation: int
+    scramble_trigger: int
+    sack_risk: int
+    throwaway_discipline: int
+    notes: str | None = None
+
+
+@dataclass(frozen=True)
 class DraftProspectCombineResult:
     combine_status: str
     participation_note: str | None = None
@@ -240,6 +256,61 @@ def replace_prospect_sim_profile(
             )
             for role_score in role_scores
         ],
+    )
+
+
+def replace_prospect_qb_behavior_profile(
+    con: sqlite3.Connection,
+    prospect_id: int,
+    profile: DraftProspectQBBehaviorProfile,
+    *,
+    source: str = "draft_generator",
+    ensure: bool = True,
+) -> None:
+    """Replace one generated QB behavior profile for a draft prospect."""
+    if ensure:
+        ensure_schema(con)
+    con.execute(
+        """
+        INSERT INTO draft_prospect_qb_behavior_profiles (
+            prospect_id, label, rhythm, pocket_discipline, pocket_drift,
+            checkdown_willingness, deep_aggression, pressure_escape,
+            broken_play_creation, scramble_trigger, sack_risk,
+            throwaway_discipline, source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(prospect_id) DO UPDATE SET
+            label = excluded.label,
+            rhythm = excluded.rhythm,
+            pocket_discipline = excluded.pocket_discipline,
+            pocket_drift = excluded.pocket_drift,
+            checkdown_willingness = excluded.checkdown_willingness,
+            deep_aggression = excluded.deep_aggression,
+            pressure_escape = excluded.pressure_escape,
+            broken_play_creation = excluded.broken_play_creation,
+            scramble_trigger = excluded.scramble_trigger,
+            sack_risk = excluded.sack_risk,
+            throwaway_discipline = excluded.throwaway_discipline,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            prospect_id,
+            profile.label,
+            profile.rhythm,
+            profile.pocket_discipline,
+            profile.pocket_drift,
+            profile.checkdown_willingness,
+            profile.deep_aggression,
+            profile.pressure_escape,
+            profile.broken_play_creation,
+            profile.scramble_trigger,
+            profile.sack_risk,
+            profile.throwaway_discipline,
+            source,
+            profile.notes,
+        ),
     )
 
 

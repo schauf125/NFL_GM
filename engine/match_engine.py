@@ -18,8 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from engine.qb_behavior import player_qb_behavior_table_exists, profile_from_mapping, qb_behavior_profile
 
-ENGINE_VERSION = "0.1.4"
+
+ENGINE_VERSION = "0.1.6"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
@@ -42,6 +44,34 @@ def average(values: Iterable[float], default: float = 50.0) -> float:
     if not values:
         return default
     return sum(values) / len(values)
+
+
+def sack_credit_weight(player: "PlayerSnapshot") -> float:
+    score = weighted_average(player, SACK_CREDIT_WEIGHTS)
+    explosive = average(
+        [
+            player.rating("speed_rush"),
+            player.rating("finesse_rush"),
+            player.rating("sack_finish"),
+            player.rating("acceleration"),
+        ]
+    )
+    anchor = average(
+        [
+            player.rating("gap_integrity"),
+            player.rating("double_team_takeon"),
+            player.rating("block_shedding"),
+            player.rating("strength"),
+        ]
+    )
+    weight = max(1.0, score - 55.0) ** 2
+    if player.position in {"EDGE", "OLB", "DE"}:
+        weight *= 1.15
+    if player.position in {"IDL", "DT", "NT"}:
+        weight *= 0.90
+        if anchor >= explosive + 10:
+            weight *= 0.45
+    return max(0.05, weight)
 
 
 def clock_string(tenths: int) -> str:
@@ -154,6 +184,16 @@ PASS_RUSH_WEIGHTS = {
     "strength": 6,
     "stamina": 3,
 }
+SACK_CREDIT_WEIGHTS = {
+    "sack_finish": 14,
+    "rush_plan": 10,
+    "speed_rush": 9,
+    "finesse_rush": 8,
+    "power_rush": 7,
+    "acceleration": 6,
+    "strength": 2,
+    "stamina": 2,
+}
 RUN_DEF_WEIGHTS = {
     "gap_integrity": 12,
     "run_diagnostics": 12,
@@ -183,6 +223,14 @@ TACKLE_WEIGHTS = {
     "pursuit_angle": 6,
     "hit_power": 5,
     "strength": 4,
+}
+ASSIST_TACKLE_WEIGHTS = {
+    "assist_tackle": 12,
+    "tackle_wrap": 9,
+    "pursuit_angle": 8,
+    "play_recognition": 5,
+    "speed": 4,
+    "strength": 3,
 }
 KICK_WEIGHTS = {
     "kick_power": 9,
@@ -237,6 +285,7 @@ class PlayerSnapshot:
     position: str
     ratings: dict[str, int]
     role_scores: dict[str, float] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def rating(self, key: str, default: float = 50.0) -> float:
         return float(self.ratings.get(key, default))
@@ -728,16 +777,35 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapsho
     for row in role_rows:
         role_by_player[int(row["player_id"])][row["role_key"]] = float(row["role_score"])
 
+    qb_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_qb_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_qb_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            qb_behavior_by_player[int(row["player_id"])] = (profile_from_mapping(dict(row)), str(row["source"]))
+
     players_by_id = {}
     roster = []
     for row in player_rows:
         name = f"{row['first_name']} {row['last_name']}"
+        metadata = {}
+        if int(row["player_id"]) in qb_behavior_by_player:
+            profile, source = qb_behavior_by_player[int(row["player_id"])]
+            metadata["qb_behavior_profile"] = profile
+            metadata["qb_behavior_source"] = source
         player = PlayerSnapshot(
             player_id=int(row["player_id"]),
             name=name,
             position=row["position"],
             ratings=ratings_by_player[int(row["player_id"])],
             role_scores=role_by_player[int(row["player_id"])],
+            metadata=metadata,
         )
         players_by_id[player.player_id] = player
         roster.append(player)
@@ -969,8 +1037,18 @@ class MatchEngine:
         fg_distance = 100 - field_pos + 17
         score_diff = self.current_score_diff(offense)
         late_trailing = self.quarter >= 4 and score_diff < 0
-        if field_pos >= 63 and fg_distance <= 57 and not (late_trailing and distance <= 4 and field_pos >= 55):
+
+        if field_pos >= 75 and fg_distance <= 42:
+            if late_trailing and distance <= 4:
+                return "go"
+            if distance <= 1 and self.rng.random() < 0.38:
+                return "go"
             return "field_goal"
+
+        in_makeable_field_goal_range = field_pos >= 63 and fg_distance <= 57
+        if in_makeable_field_goal_range and not (late_trailing and distance <= 4 and field_pos >= 55):
+            return "field_goal"
+
         go_prob = 0.04
         if field_pos >= 45 and distance <= 1:
             go_prob = 0.62
@@ -980,6 +1058,8 @@ class MatchEngine:
             go_prob = 0.55
         if self.rng.random() < go_prob:
             return "go"
+        if in_makeable_field_goal_range:
+            return "field_goal"
         return "punt"
 
     def should_kneel(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int) -> bool:
@@ -1282,7 +1362,23 @@ class MatchEngine:
         if not rb_candidates:
             rb_candidates = [offense.starter("RB")]
         qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
-        designed_qb_run = qb_scramble_score >= 76 and self.rng.random() < 0.075
+        profile = qb_behavior_profile(qb)
+        qb_run_chance = clamp(
+            (qb_scramble_score - 70) * 0.0030
+            + (profile.scramble_trigger - 60) * 0.0010
+            + (profile.pocket_drift - 60) * 0.0004,
+            0.0,
+            0.105,
+        )
+        if distance <= 3 and field_pos >= 50:
+            qb_run_chance += 0.018
+        if field_pos >= 80 and distance <= 5:
+            qb_run_chance += 0.014
+        if profile.pocket_drift >= 85:
+            qb_run_chance += (profile.pocket_drift - 85) * 0.0015
+        if down >= 3 and distance >= 7:
+            qb_run_chance *= 0.55
+        designed_qb_run = qb_scramble_score >= 68 and self.rng.random() < clamp(qb_run_chance, 0.0, 0.13)
         runner = qb if designed_qb_run else weighted_choice(
             self.rng,
             [(player, 1.0 / (idx + 1.4)) for idx, player in enumerate(rb_candidates)],
@@ -1291,18 +1387,24 @@ class MatchEngine:
         self._last_play_concept = concept
         run_block = offense.run_block_score()
         run_def = defense.run_defense_score()
-        runner_score = weighted_average(runner, RB_RUN_WEIGHTS if runner.player_id != qb.player_id else QB_SCRAMBLE_WEIGHTS)
+        is_qb_run = runner.player_id == qb.player_id
+        runner_score = weighted_average(runner, RB_RUN_WEIGHTS if not is_qb_run else QB_SCRAMBLE_WEIGHTS)
         tackling = defense.tackling_score()
         trench_advantage = run_block - run_def
         runner_advantage = runner_score - tackling
 
         stuff_chance = clamp(0.155 - trench_advantage * 0.0022 - runner_advantage * 0.0007, 0.055, 0.285)
         explosive_chance = clamp(0.030 + (runner.rating("speed") - 70) * 0.0018 + (runner.rating("elusiveness") - tackling) * 0.0012, 0.010, 0.115)
+        if is_qb_run:
+            stuff_chance = clamp(stuff_chance - 0.025 - (profile.pressure_escape - 70) * 0.00035, 0.035, 0.235)
+            explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.155)
 
         if self.rng.random() < stuff_chance:
             yards = int(round(self.rng.gauss(-1.2, 1.5)))
         else:
             mean = 4.05 + trench_advantage * 0.045 + runner_advantage * 0.020
+            if is_qb_run:
+                mean += 1.05 + (profile.pressure_escape - 70) * 0.025
             yards = int(round(self.rng.gauss(mean, 3.0)))
             if self.rng.random() < explosive_chance:
                 yards += int(round(self.rng.lognormvariate(2.15, 0.42)))
@@ -1310,40 +1412,52 @@ class MatchEngine:
         if field_pos + yards >= 100:
             yards = max(0, 100 - field_pos)
 
-        fumble_chance = clamp(0.010 + (58 - runner.rating("ball_security")) * 0.00038 + (defense.tackling_score() - 65) * 0.00008, 0.002, 0.035)
-        if self.rng.random() < fumble_chance:
-            recovery_spot = int(clamp(field_pos + yards, 1, 99))
-            return_yards = max(0, int(round(self.rng.gauss(7, 6))))
+        new_field = field_pos + yards
+        touchdown = new_field >= 100
+        tackler = None if touchdown else self.select_run_tackler(defense, yards)
+
+        fumble_kind = "scramble" if is_qb_run else "run"
+        if tackler and self.rng.random() < self.fumble_event_chance(runner, tackler, defense, yards, play_kind=fumble_kind):
+            recovery_spot = int(clamp(new_field, 1, 99))
+            defense_recovered = self.rng.random() < self.defense_fumble_recovery_chance(
+                runner,
+                tackler,
+                yards,
+                play_kind=fumble_kind,
+            )
+            return_yards = max(0, int(round(self.rng.gauss(7, 6)))) if defense_recovered else 0
             return_field = 100 - recovery_spot + return_yards
-            new_field = int(clamp(return_field, 1, 99))
-            defender = self.select_tackler(defense, yards)
+            turnover_field = int(clamp(return_field, 1, 99))
             self.team_stats[offense.team_id]["plays"] += 1
             self.team_stats[offense.team_id]["rush_attempts"] += 1
             self.team_stats[offense.team_id]["rush_yards"] += yards
             self.team_stats[offense.team_id]["total_yards"] += yards
-            self.team_stats[offense.team_id]["turnovers"] += 1
-            self.team_stats[offense.team_id]["fumbles_lost"] += 1
+            self.team_stats[offense.team_id]["fumbles"] += 1
             self.player_stats[runner.player_id]["rush_attempts"] += 1
             self.player_stats[runner.player_id]["rush_yards"] += yards
             self.player_stats[runner.player_id]["fumbles"] += 1
-            self.player_stats[defender.player_id]["tackles"] += 1
-            self.player_stats[defender.player_id]["fumble_recoveries"] += 1
-            self.player_stats[defender.player_id]["forced_fumbles"] += 1
-            self.player_stats[defender.player_id]["fumble_return_yards"] += return_yards
+            self.credit_tackle(defense, tackler, yards, play_kind=fumble_kind)
+            self.player_stats[tackler.player_id]["forced_fumbles"] += 1
+            if not defense_recovered:
+                self.player_stats[runner.player_id]["offensive_fumble_recoveries"] += 1
+                desc = f"{runner.name} runs for {yards} and fumbles, but {offense.abbreviation} recovers."
+                return "normal", yards, 0, 0, desc, offense, int(clamp(new_field, 1, 99)), down, distance, runner, tackler
+            self.team_stats[offense.team_id]["turnovers"] += 1
+            self.team_stats[offense.team_id]["fumbles_lost"] += 1
+            self.player_stats[runner.player_id]["fumbles_lost"] += 1
+            self.player_stats[tackler.player_id]["fumble_recoveries"] += 1
+            self.player_stats[tackler.player_id]["fumble_return_yards"] += return_yards
             if return_field >= 100:
                 self.add_score(defense, 6)
                 self.team_stats[defense.team_id]["defensive_tds"] += 1
-                self.player_stats[defender.player_id]["defensive_tds"] += 1
-                self.player_stats[defender.player_id]["fumble_return_tds"] += 1
+                self.player_stats[tackler.player_id]["defensive_tds"] += 1
+                self.player_stats[tackler.player_id]["fumble_return_tds"] += 1
                 try_result = self.try_after_touchdown(defense, offense)
-                desc = f"{runner.name} runs for {yards} but fumbles. {defender.name} returns it for a touchdown. {try_result}"
-                return "defensive_touchdown", yards, 0, 0, desc, offense, 25, 1, 10, runner, defender
-            desc = f"{runner.name} runs for {yards} but fumbles. {defender.name} recovers."
-            return "turnover", yards, 0, 0, desc, defense, new_field, 1, 10, runner, defender
+                desc = f"{runner.name} runs for {yards} but fumbles. {tackler.name} returns it for a touchdown. {try_result}"
+                return "defensive_touchdown", yards, 0, 0, desc, offense, 25, 1, 10, runner, tackler
+            desc = f"{runner.name} runs for {yards} but fumbles. {tackler.name} recovers."
+            return "turnover", yards, 0, 0, desc, defense, turnover_field, 1, 10, runner, tackler
 
-        new_field = field_pos + yards
-        touchdown = new_field >= 100
-        tackler = None if touchdown else self.select_tackler(defense, yards)
         self.team_stats[offense.team_id]["plays"] += 1
         self.team_stats[offense.team_id]["rush_attempts"] += 1
         self.team_stats[offense.team_id]["rush_yards"] += yards
@@ -1351,7 +1465,7 @@ class MatchEngine:
         self.player_stats[runner.player_id]["rush_attempts"] += 1
         self.player_stats[runner.player_id]["rush_yards"] += yards
         if tackler:
-            self.player_stats[tackler.player_id]["tackles"] += 1
+            self.credit_tackle(defense, tackler, yards, play_kind="run")
         if touchdown:
             self.add_score(offense, 6)
             self.player_stats[runner.player_id]["rush_tds"] += 1
@@ -1364,8 +1478,69 @@ class MatchEngine:
             desc += f", tackled by {tackler.name}"
         return "normal", yards, 0, 0, desc + ".", offense, int(clamp(new_field, 1, 99)), down, distance, runner, tackler
 
+    def qb_scramble_play(
+        self,
+        offense: TeamSnapshot,
+        defense: TeamSnapshot,
+        qb: PlayerSnapshot,
+        field_pos: int,
+        *,
+        pressured: bool,
+    ) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
+        qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
+        profile = qb_behavior_profile(qb)
+        run_def = defense.run_defense_score()
+        mean = (
+            5.7
+            + (qb_scramble_score - 70) * 0.100
+            + (profile.pressure_escape - 70) * 0.035
+            + (profile.broken_play_creation - 70) * 0.015
+            + (profile.pocket_drift - 70) * 0.035
+            - (run_def - 65) * 0.020
+        )
+        if pressured:
+            mean -= 0.9
+        yards = int(round(self.rng.gauss(mean, 4.0)))
+        explosive_chance = clamp(
+            0.028
+            + (qb.rating("speed") - 70) * 0.0016
+            + (qb.rating("elusiveness") - defense.tackling_score()) * 0.0010,
+            0.006,
+            0.130,
+        )
+        explosive_chance = clamp(explosive_chance + (profile.broken_play_creation - 70) * 0.0008, 0.006, 0.150)
+        if self.rng.random() < explosive_chance:
+            yards += int(round(self.rng.lognormvariate(1.95, 0.42)))
+        yards = int(clamp(yards, -5, 45))
+        if field_pos + yards >= 100:
+            yards = max(0, 100 - field_pos)
+
+        new_field = field_pos + yards
+        touchdown = new_field >= 100
+        tackler = None if touchdown else self.select_run_tackler(defense, yards)
+        self.team_stats[offense.team_id]["plays"] += 1
+        self.team_stats[offense.team_id]["rush_attempts"] += 1
+        self.team_stats[offense.team_id]["rush_yards"] += yards
+        self.team_stats[offense.team_id]["total_yards"] += yards
+        self.player_stats[qb.player_id]["rush_attempts"] += 1
+        self.player_stats[qb.player_id]["rush_yards"] += yards
+        if tackler:
+            self.credit_tackle(defense, tackler, yards, play_kind="scramble")
+        if touchdown:
+            self.add_score(offense, 6)
+            self.player_stats[qb.player_id]["rush_tds"] += 1
+            try_result = self.try_after_touchdown(offense, defense)
+            desc = f"{qb.name} scrambles for a {max(0, 100 - field_pos)} yard touchdown. {try_result}"
+            return "touchdown", yards, 6, 0, desc, self.opponent(offense), 25, 1, 10, None, None
+
+        desc = f"{qb.name} scrambles for {yards} yards"
+        if tackler:
+            desc += f", tackled by {tackler.name}"
+        return "normal", yards, 0, 0, desc + ".", offense, int(clamp(new_field, 1, 99)), 1, 10, None, tackler
+
     def pass_play(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
         qb = offense.starter("QB")
+        profile = qb_behavior_profile(qb)
         concept = self.choose_pass_concept(offense, defense, down, distance, field_pos)
         self._last_play_concept = concept
         depth_profile = {
@@ -1407,9 +1582,73 @@ class MatchEngine:
             self.team_stats[defense.team_id]["sacks"] += 1
             self.player_stats[qb.player_id]["sacks_taken"] += 1
             self.player_stats[rusher.player_id]["sacks"] += 1
-            self.player_stats[rusher.player_id]["tackles"] += 1
+            self.credit_tackle(defense, rusher, -loss, play_kind="sack", force_solo=True)
+            if field_pos - loss > 0 and self.rng.random() < self.fumble_event_chance(qb, rusher, defense, -loss, play_kind="sack"):
+                recovery_spot = int(clamp(field_pos - loss, 1, 99))
+                defense_recovered = self.rng.random() < self.defense_fumble_recovery_chance(
+                    qb,
+                    rusher,
+                    -loss,
+                    play_kind="sack",
+                )
+                return_yards = max(0, int(round(self.rng.gauss(5, 6)))) if defense_recovered else 0
+                return_field = 100 - recovery_spot + return_yards
+                turnover_field = int(clamp(return_field, 1, 99))
+                self.team_stats[offense.team_id]["fumbles"] += 1
+                self.player_stats[qb.player_id]["fumbles"] += 1
+                self.player_stats[rusher.player_id]["forced_fumbles"] += 1
+                if not defense_recovered:
+                    self.player_stats[qb.player_id]["offensive_fumble_recoveries"] += 1
+                    desc = f"{rusher.name} sacks {qb.name} for a loss of {loss}. {qb.name} fumbles, but {offense.abbreviation} recovers."
+                    return "normal", -loss, 0, 0, desc, offense, int(clamp(field_pos - loss, 1, 99)), down, distance, qb, rusher
+                self.team_stats[offense.team_id]["turnovers"] += 1
+                self.team_stats[offense.team_id]["fumbles_lost"] += 1
+                self.player_stats[qb.player_id]["fumbles_lost"] += 1
+                self.player_stats[rusher.player_id]["fumble_recoveries"] += 1
+                self.player_stats[rusher.player_id]["fumble_return_yards"] += return_yards
+                if return_field >= 100:
+                    self.add_score(defense, 6)
+                    self.team_stats[defense.team_id]["defensive_tds"] += 1
+                    self.player_stats[rusher.player_id]["defensive_tds"] += 1
+                    self.player_stats[rusher.player_id]["fumble_return_tds"] += 1
+                    try_result = self.try_after_touchdown(defense, offense)
+                    desc = f"{rusher.name} strip-sacks {qb.name} and returns it for a touchdown. {try_result}"
+                    return "defensive_touchdown", -loss, 0, 0, desc, offense, 25, 1, 10, qb, rusher
+                desc = f"{rusher.name} strip-sacks {qb.name}. {rusher.name} recovers."
+                return "turnover", -loss, 0, 0, desc, defense, turnover_field, 1, 10, qb, rusher
             desc = f"{rusher.name} sacks {qb.name} for a loss of {loss}."
             return "normal", -loss, 0, 0, desc, offense, int(clamp(field_pos - loss, 1, 99)), down, distance, qb, rusher
+
+        qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
+        if pressured:
+            scramble_chance = clamp(
+                (qb_scramble_score - 66) * 0.0060
+                + (profile.pressure_escape - 60) * 0.0030
+                + (profile.scramble_trigger - 60) * 0.0030
+                + (profile.pocket_drift - 65) * 0.0015
+                - (qb.rating("throw_release") - 72) * 0.0015,
+                0.0,
+                0.32,
+            )
+            if profile.pocket_drift >= 85:
+                scramble_chance += clamp(
+                    (profile.pocket_drift - 85) * 0.0040
+                    + (profile.broken_play_creation - 80) * 0.0010,
+                    0.0,
+                    0.070,
+                )
+        elif concept in {"intermediate", "deep"}:
+            scramble_chance = clamp(
+                (profile.pocket_drift - 72) * 0.0015
+                + (profile.scramble_trigger - 72) * 0.0012,
+                0.0,
+                0.08,
+            )
+        else:
+            scramble_chance = 0.0
+        if self.rng.random() < scramble_chance:
+            self._last_play_concept = "scramble"
+            return self.qb_scramble_play(offense, defense, qb, field_pos, pressured=pressured)
 
         target = self.select_receiver(offense, concept)
         defender = self.select_coverage_defender(defense, target, concept)
@@ -1440,12 +1679,19 @@ class MatchEngine:
             completion_chance -= 0.120
         completion_chance = clamp(completion_chance, 0.205, 0.865)
 
-        interception_chance = 0.012 + max(0, air_yards - 8) * 0.00075
-        interception_chance += max(0, coverage_score - qb_score) * 0.00035
-        interception_chance += max(0, 62 - qb.rating("discipline")) * 0.00018
+        interception_chance = 0.0145 + max(0, air_yards - 6) * 0.00095
+        interception_chance += max(0, coverage_score - qb_score) * 0.00048
+        interception_chance += max(0, 64 - qb.rating("discipline")) * 0.00024
+        interception_chance += (profile.deep_aggression - 50) * 0.00010
+        interception_chance += (profile.sack_risk - 50) * 0.00006
+        interception_chance -= (profile.throwaway_discipline - 50) * 0.00006
+        if concept == "screen":
+            interception_chance -= 0.0050
+        elif concept == "quick":
+            interception_chance -= 0.0025
         if pressured:
-            interception_chance += 0.011
-        interception_chance = clamp(interception_chance, 0.002, 0.065)
+            interception_chance += 0.014
+        interception_chance = clamp(interception_chance, 0.003, 0.080)
 
         self.team_stats[offense.team_id]["plays"] += 1
         self.team_stats[offense.team_id]["pass_attempts"] += 1
@@ -1499,23 +1745,38 @@ class MatchEngine:
         if field_pos + yards >= 100:
             yards = max(0, 100 - field_pos)
 
-        catch_fumble = clamp(0.006 + (58 - target.rating("ball_security")) * 0.00025 + (defender.rating("forced_fumble") - 60) * 0.00008, 0.001, 0.027)
-        if self.rng.random() < catch_fumble:
-            fumble_spot = int(clamp(field_pos + yards, 1, 99))
-            return_yards = max(0, int(round(self.rng.gauss(6, 5))))
+        new_field = field_pos + yards
+        touchdown = new_field >= 100
+
+        if not touchdown and self.rng.random() < self.fumble_event_chance(target, defender, defense, yards, play_kind="pass"):
+            fumble_spot = int(clamp(new_field, 1, 99))
+            defense_recovered = self.rng.random() < self.defense_fumble_recovery_chance(
+                target,
+                defender,
+                yards,
+                play_kind="pass",
+            )
+            return_yards = max(0, int(round(self.rng.gauss(6, 5)))) if defense_recovered else 0
             return_field = 100 - fumble_spot + return_yards
-            new_field = int(clamp(return_field, 1, 99))
+            turnover_field = int(clamp(return_field, 1, 99))
             self.team_stats[offense.team_id]["pass_completions"] += 1
             self.team_stats[offense.team_id]["pass_yards"] += yards
             self.team_stats[offense.team_id]["total_yards"] += yards
-            self.team_stats[offense.team_id]["turnovers"] += 1
-            self.team_stats[offense.team_id]["fumbles_lost"] += 1
+            self.team_stats[offense.team_id]["fumbles"] += 1
             self.player_stats[qb.player_id]["pass_completions"] += 1
             self.player_stats[qb.player_id]["pass_yards"] += yards
             self.player_stats[target.player_id]["receptions"] += 1
             self.player_stats[target.player_id]["receiving_yards"] += yards
             self.player_stats[target.player_id]["fumbles"] += 1
+            self.credit_tackle(defense, defender, yards, play_kind="pass")
             self.player_stats[defender.player_id]["forced_fumbles"] += 1
+            if not defense_recovered:
+                self.player_stats[target.player_id]["offensive_fumble_recoveries"] += 1
+                desc = f"{target.name} catches it for {yards}, then fumbles. {offense.abbreviation} recovers."
+                return "normal", yards, 0, 0, desc, offense, int(clamp(new_field, 1, 99)), down, distance, target, defender
+            self.team_stats[offense.team_id]["turnovers"] += 1
+            self.team_stats[offense.team_id]["fumbles_lost"] += 1
+            self.player_stats[target.player_id]["fumbles_lost"] += 1
             self.player_stats[defender.player_id]["fumble_recoveries"] += 1
             self.player_stats[defender.player_id]["fumble_return_yards"] += return_yards
             if return_field >= 100:
@@ -1527,10 +1788,8 @@ class MatchEngine:
                 desc = f"{target.name} catches it for {yards}, then fumbles. {defender.name} returns it for a touchdown. {try_result}"
                 return "defensive_touchdown", yards, 0, 0, desc, offense, 25, 1, 10, target, defender
             desc = f"{target.name} catches it for {yards}, then fumbles. {defender.name} recovers."
-            return "turnover", yards, 0, 0, desc, defense, new_field, 1, 10, target, defender
+            return "turnover", yards, 0, 0, desc, defense, turnover_field, 1, 10, target, defender
 
-        new_field = field_pos + yards
-        touchdown = new_field >= 100
         self.team_stats[offense.team_id]["pass_completions"] += 1
         self.team_stats[offense.team_id]["pass_yards"] += yards
         self.team_stats[offense.team_id]["total_yards"] += yards
@@ -1539,8 +1798,8 @@ class MatchEngine:
         self.player_stats[target.player_id]["receptions"] += 1
         self.player_stats[target.player_id]["receiving_yards"] += yards
         if not touchdown:
-            tackler = self.select_tackler(defense, yards)
-            self.player_stats[tackler.player_id]["tackles"] += 1
+            tackler = self.select_pass_tackler(defense, yards, defender)
+            self.credit_tackle(defense, tackler, yards, play_kind="pass")
             desc = f"{qb.name} completes to {target.name} for {yards}, tackled by {tackler.name}."
         else:
             self.add_score(offense, 6)
@@ -1581,7 +1840,166 @@ class MatchEngine:
 
     def select_pass_rusher(self, defense: TeamSnapshot) -> PlayerSnapshot:
         rushers = defense.defensive_front() or defense.roster[:5]
-        return weighted_choice(self.rng, [(p, weighted_average(p, PASS_RUSH_WEIGHTS)) for p in rushers])
+        return weighted_choice(self.rng, [(p, sack_credit_weight(p)) for p in rushers])
+
+    def fumble_event_chance(
+        self,
+        ball_carrier: PlayerSnapshot,
+        defender: PlayerSnapshot,
+        defense: TeamSnapshot,
+        yards: int,
+        *,
+        play_kind: str,
+    ) -> float:
+        security = average(
+            [
+                ball_carrier.rating("ball_security"),
+                ball_carrier.rating("balance"),
+                ball_carrier.rating("composure"),
+            ]
+        )
+        contact = average(
+            [
+                defender.rating("forced_fumble"),
+                defender.rating("hit_power"),
+                defender.rating("tackle_wrap"),
+            ]
+        )
+        chance = {
+            "run": 0.0215,
+            "scramble": 0.0275,
+            "pass": 0.0155,
+            "sack": 0.0480,
+        }.get(play_kind, 0.0160)
+        chance += (contact - security) * 0.00055
+        chance += (defense.tackling_score() - 68) * 0.00008
+        if yards <= 2:
+            chance += 0.0030
+        elif yards >= 12:
+            chance += 0.0020
+        if play_kind == "sack":
+            chance += max(0, defender.rating("sack_finish") - 70) * 0.00022
+            chance += max(0, 72 - ball_carrier.rating("ball_security")) * 0.00022
+        if ball_carrier.position == "QB" and play_kind in {"scramble", "sack"}:
+            chance += 0.0040
+        return clamp(chance, 0.0040, 0.0700 if play_kind == "sack" else 0.0460)
+
+    def defense_fumble_recovery_chance(
+        self,
+        ball_carrier: PlayerSnapshot,
+        defender: PlayerSnapshot,
+        yards: int,
+        *,
+        play_kind: str,
+    ) -> float:
+        chance = 0.455
+        chance += (defender.rating("play_recognition") - ball_carrier.rating("composure")) * 0.0010
+        chance += (defender.rating("forced_fumble") - ball_carrier.rating("ball_security")) * 0.0008
+        if play_kind == "sack":
+            chance += 0.070
+        elif play_kind == "pass" and yards >= 10:
+            chance -= 0.025
+        elif play_kind in {"run", "scramble"} and yards <= 2:
+            chance += 0.030
+        return clamp(chance, 0.350, 0.640)
+
+    def credit_tackle(
+        self,
+        defense: TeamSnapshot,
+        primary: PlayerSnapshot,
+        yards: int,
+        *,
+        play_kind: str,
+        force_solo: bool = False,
+    ) -> None:
+        assisted = False if force_solo else self.rng.random() < self.assisted_tackle_chance(primary, yards, play_kind)
+        if assisted:
+            self.player_stats[primary.player_id]["assisted_tackles"] += 1
+        else:
+            self.player_stats[primary.player_id]["solo_tackles"] += 1
+        self.player_stats[primary.player_id]["tackles"] += 1
+
+        if not assisted:
+            return
+
+        used = {primary.player_id}
+        assist_count = 1 + (1 if self.rng.random() < 0.08 else 0)
+        for _idx in range(assist_count):
+            helper = self.select_assist_tackler(defense, yards, play_kind, used)
+            if not helper:
+                return
+            used.add(helper.player_id)
+            self.player_stats[helper.player_id]["assisted_tackles"] += 1
+            self.player_stats[helper.player_id]["tackles"] += 1
+
+    def assisted_tackle_chance(self, primary: PlayerSnapshot, yards: int, play_kind: str) -> float:
+        if play_kind == "sack":
+            return 0.0
+
+        chance = 0.305
+        if play_kind == "run":
+            chance += 0.060
+        elif play_kind == "pass":
+            chance -= 0.035
+        elif play_kind == "scramble":
+            chance += 0.010
+
+        if yards <= 2:
+            chance += 0.075
+        elif yards <= 6:
+            chance += 0.020
+        elif yards >= 15:
+            chance -= 0.085
+
+        chance -= (primary.rating("solo_tackle") - 70) * 0.0022
+        chance += (primary.rating("assist_tackle") - 70) * 0.0012
+        chance -= (primary.rating("open_field_tackle") - 70) * 0.0009
+        return clamp(chance, 0.150, 0.585)
+
+    def select_assist_tackler(
+        self,
+        defense: TeamSnapshot,
+        yards: int,
+        play_kind: str,
+        exclude_player_ids: set[int],
+    ) -> PlayerSnapshot | None:
+        if play_kind == "pass":
+            if yards <= 5:
+                pool = defense.linebackers() + defense.secondary()
+            elif yards <= 14:
+                pool = defense.secondary() + defense.linebackers()
+            else:
+                pool = defense.secondary()
+        elif play_kind == "scramble":
+            pool = defense.linebackers() + defense.secondary()
+        else:
+            if yards <= 2:
+                pool = defense.linebackers() + defense.unique_starters(["LDL", "NT", "RDL", "SS"])
+            elif yards <= 8:
+                pool = defense.linebackers() + defense.unique_starters(["SS", "FS", "NB"])
+            else:
+                pool = defense.secondary() + defense.linebackers()
+
+        pool = [player for player in (pool or defense.roster[:11]) if player.player_id not in exclude_player_ids]
+        if not pool:
+            return None
+        weights = []
+        for player in pool:
+            weight = weighted_average(player, ASSIST_TACKLE_WEIGHTS)
+            if player.position in {"LB", "ILB", "OLB"}:
+                weight *= 1.16
+            if play_kind in {"run", "scramble"} and player.position in {"EDGE", "DE"}:
+                weight *= 0.32
+            if play_kind == "run" and yards <= 2 and player.position in {"IDL", "DT", "NT"}:
+                weight *= 1.05
+            if play_kind == "run" and yards <= 2 and player.position in {"LB", "ILB"}:
+                weight *= 1.12
+            if play_kind in {"run", "scramble"} and 3 <= yards <= 10 and player.position in {"S", "FS", "SS", "NB"}:
+                weight *= 1.10
+            if yards >= 10 and player.position in {"CB", "S", "FS", "SS"}:
+                weight *= 1.10
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights)
 
     def select_tackler(self, defense: TeamSnapshot, yards: int) -> PlayerSnapshot:
         if yards <= 4:
@@ -1591,6 +2009,51 @@ class MatchEngine:
         else:
             pool = defense.secondary() + defense.linebackers()
         pool = pool or defense.roster[:11]
+        return weighted_choice(self.rng, [(p, weighted_average(p, TACKLE_WEIGHTS)) for p in pool])
+
+    def select_run_tackler(self, defense: TeamSnapshot, yards: int) -> PlayerSnapshot:
+        if yards < 0:
+            pool = defense.unique_starters(["LDL", "NT", "RDL", "MLB", "WLB", "SLB", "LEDGE", "REDGE"])
+        elif yards <= 2:
+            pool = defense.unique_starters(["MLB", "WLB", "SLB", "LDL", "NT", "RDL", "SS"])
+        elif yards <= 7:
+            pool = defense.linebackers() + defense.unique_starters(["SS", "FS", "NB", "LDL", "NT", "RDL"])
+        elif yards <= 14:
+            pool = defense.linebackers() + defense.secondary()
+        else:
+            pool = defense.secondary() + defense.linebackers()
+        pool = pool or defense.roster[:11]
+        weights = []
+        for player in pool:
+            weight = weighted_average(player, TACKLE_WEIGHTS)
+            if yards < 0 and player.position in {"EDGE", "OLB", "DE"}:
+                weight *= 0.85
+            elif yards <= 7 and player.position in {"EDGE", "DE"}:
+                weight *= 0.30
+            if yards <= 2 and player.position in {"IDL", "DT", "NT"}:
+                weight *= 0.95
+            if yards <= 7 and player.position in {"LB", "ILB", "OLB"}:
+                weight *= 1.25
+            if 3 <= yards <= 10 and player.position in {"S", "FS", "SS", "NB"}:
+                weight *= 1.15
+            if 3 <= yards <= 7 and player.position in {"IDL", "DT", "NT"}:
+                weight *= 0.82
+            if yards >= 8 and player.position in {"CB", "S", "FS", "SS"}:
+                weight *= 1.18
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights)
+
+    def select_pass_tackler(self, defense: TeamSnapshot, yards: int, coverage_defender: PlayerSnapshot | None) -> PlayerSnapshot:
+        if coverage_defender and coverage_defender.position not in {"EDGE", "DE", "IDL", "DT", "NT", "OL"}:
+            if self.rng.random() < clamp(0.58 - max(0, yards - 8) * 0.012, 0.32, 0.72):
+                return coverage_defender
+        if yards <= 5:
+            pool = defense.linebackers() + defense.secondary()
+        elif yards <= 14:
+            pool = defense.secondary() + defense.linebackers()
+        else:
+            pool = defense.secondary()
+        pool = pool or defense.linebackers() or defense.roster[:11]
         return weighted_choice(self.rng, [(p, weighted_average(p, TACKLE_WEIGHTS)) for p in pool])
 
     def select_returner(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:

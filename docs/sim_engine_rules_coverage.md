@@ -21,7 +21,7 @@ Rule references were checked on 2026-05-04 against NFL Football Operations:
 ## Current Engine Baseline
 
 - File: `engine/match_engine.py`
-- Version: `0.1.4`
+- Version: `0.1.6`
 - Core model: per-play probabilistic engine with tenths-of-a-second game clock.
 - Not yet a true spatial 0.1-second player-movement simulation.
 
@@ -103,7 +103,7 @@ Rule references were checked on 2026-05-04 against NFL Football Operations:
 | Environment | Weather | Missing | No weather/stadium effects on passing/kicking/fumbles. |
 | Environment | Home field | Missing | No crowd/noise/travel effects. |
 | Review | Replay/challenge | Missing | Can be safely deferred. |
-| Stats | Team/player box score | Implemented | Core passing/rushing/receiving/defense/kicking stats exist. |
+| Stats | Team/player box score | Implemented | Core passing/rushing/receiving/defense/kicking stats exist. Defensive tackles now split solo/assisted while keeping combined tackles. |
 | Stats | Return stats | Partial | Kickoff, punt, INT, fumble, and blocked-kick return stats exist. Coverage tackles and return-team blocking stats are missing. |
 | Stats | Penalty player attribution | Missing | Team penalties exist; no offender/drawn-by player stats. |
 | Stats | Drive/play persistence | Implemented | Game runs, drives, plays, team stats, and player stats persist. |
@@ -129,6 +129,20 @@ Engine version `0.1.4` adds the first penalty-enforcement pass:
 - Half-distance enforcement near the goal line.
 - Previous-spot, spot-foul, dead-ball, and best-of-previous/dead-ball style enforcement.
 - Defensive penalty first downs, declined-penalty counts, and offsetting-penalty counts.
+
+Engine version `0.1.5` adds the first NFL-style defensive tackle-crediting pass:
+
+- `tackles` now represents combined tackles for compatibility with existing leaders and progression logic.
+- `solo_tackles` and `assisted_tackles` are credited separately on run, pass, scramble, sack, and catch-fumble stops.
+- Assisted tackle chances vary by play type, yardage, and the primary defender's solo/open-field/assist tackle ratings.
+- Assisted stops can credit one or two additional nearby defenders using `assist_tackle`, `pursuit_angle`, `tackle_wrap`, and play-recognition ratings.
+
+Engine version `0.1.6` adds the first turnover-rate calibration pass:
+
+- Interception odds are tuned toward NFL-like per-attempt rates and now react to QB behavior profile risk, deep aggression, throwaway discipline, pressure, depth, and coverage advantage.
+- Fumbles are no longer automatically lost; offenses can recover their own run, catch, scramble, and strip-sack fumbles.
+- Lost fumbles are calibrated separately from total fumbles, with recovery odds influenced by defender play recognition/forced-fumble skill and ball-carrier security/composure.
+- Strip-sack fumbles can produce normal offensive recoveries, defensive recoveries, or defensive touchdowns.
 
 ## Recommended Next Code Task
 

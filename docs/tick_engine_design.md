@@ -13,7 +13,7 @@ The current vertical slice resolves one passing play with 0.1-second ticks. It r
 
 ## Architecture Decisions
 
-- Tick logs are debug-only. Normal output stores meaningful play events such as snap, pressure, throw, sack, completion, breakup, interception, and late throw. Full per-tick route state is available through `TickConfig(debug_ticks=True)` or `tools\tick_playtest.py --debug-ticks`.
+- Tick logs are debug-only. Normal output stores meaningful play events such as snap, pressure, throw, hot throw, scramble, sack, completion, breakup, interception, and late throw. Full per-tick route state is available through `TickConfig(debug_ticks=True)` or `tools\tick_playtest.py --debug-ticks`.
 - The first version uses scalar route separation, pressure timing, and open-score values rather than true X/Y player coordinates. This keeps the ratings model testable before committing to a full spatial physics layer.
 - Routes are generated from broad concepts for now. Real playbook route combinations can replace the concept generator later.
 - `match_engine.py` should remain the orchestrator for drives, clock, scoring, penalties, special teams, stats, and persistence. The tick engine should resolve play physics and return a result that can be translated into the current play contract.
@@ -24,12 +24,15 @@ The current vertical slice resolves one passing play with 0.1-second ticks. It r
 The prototype models:
 
 - QB decision cadence from processing speed, play recognition, composure.
+- QB behavior profiles from `engine\qb_behavior.py`, including rhythm, pocket drift, checkdown willingness, deep aggression, pressure escape, broken-play creation, sack risk, and throwaway discipline. Real QBs use named overrides or stored player profiles; generated rookie QBs get draft-prospect behavior profiles that copy into player profiles when selected.
 - Route depths and break timing by concept.
+- Coverage matchups by offensive slot and receiver type so outside WRs draw corners, slot WRs usually draw nickels, and backs/TEs draw linebackers or safeties before fallback coverage.
+- Concept-aware read progression, including primary/secondary/outlet route roles and target priority bonuses for better receivers and intended concept depths.
 - Receiver release, route timing, route snap, and separation.
 - Coverage using press, man/zone-style coverage weights, agility, and play recognition.
 - Pass rush versus pass protection with pressure arrival ticks.
-- Sacks after pressure.
-- Target choice when a route becomes open.
+- Pressure behavior with hot throws, broken-play throws, throwaways, mobile-QB scrambles, broken pressure escapes, and sacks after pressure.
+- Target choice when a route becomes open inside the current read window.
 - Completion, interception, breakup, and YAC probabilities.
 
 ## Current Return Shape
@@ -39,7 +42,7 @@ The prototype models:
 - concept and outcome
 - yards, air yards, YAC
 - elapsed ticks and seconds
-- QB, target, defender, rusher
+- QB, QB behavior profile, target, defender, rusher
 - throw tick, pressure tick, sack tick
 - completion and interception probabilities
 - route states
