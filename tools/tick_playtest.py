@@ -132,6 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--field-pos", type=int, default=25, help="Offense field position from own goal, 1-99.")
     parser.add_argument("--concept", choices=tick_engine.PASS_CONCEPTS)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--debug-ticks", action="store_true", help="Include every tick's route state in the event log.")
     parser.add_argument("--events", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--routes", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--json", type=Path, help="Write full result payload to JSON.")
@@ -144,6 +145,7 @@ def main() -> int:
     with connect(args.db) as con:
         offense = match_engine.load_team(con, team_id(con, args.away), args.season)
         defense = match_engine.load_team(con, team_id(con, args.home), args.season)
+    config = tick_engine.TickConfig(debug_ticks=args.debug_ticks)
     result = tick_engine.resolve_pass_tick(
         offense,
         defense,
@@ -152,6 +154,7 @@ def main() -> int:
         field_pos=args.field_pos,
         concept=args.concept,
         seed=args.seed,
+        config=config,
     )
     print_result(result, show_events=args.events, show_routes=args.routes)
     if args.json:

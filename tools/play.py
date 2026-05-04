@@ -809,6 +809,8 @@ def action_tick_playtest(args: argparse.Namespace) -> None:
         script_args.extend(["--concept", args.concept])
     if args.seed is not None:
         script_args.extend(["--seed", str(args.seed)])
+    if args.debug_ticks:
+        script_args.append("--debug-ticks")
     if not args.events:
         script_args.append("--no-events")
     if not args.routes:
@@ -1306,6 +1308,7 @@ def build_parser() -> argparse.ArgumentParser:
     tick_playtest_parser.add_argument("--field-pos", type=int, default=25)
     tick_playtest_parser.add_argument("--concept", choices=("screen", "quick", "short", "intermediate", "deep"))
     tick_playtest_parser.add_argument("--seed", type=int)
+    tick_playtest_parser.add_argument("--debug-ticks", action="store_true")
     tick_playtest_parser.add_argument("--events", action=argparse.BooleanOptionalAction, default=True)
     tick_playtest_parser.add_argument("--routes", action=argparse.BooleanOptionalAction, default=True)
     tick_playtest_parser.add_argument("--json", type=Path)

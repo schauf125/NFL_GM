@@ -42,6 +42,7 @@ class TickConfig:
     sack_after_pressure_ticks: int = 7
     scramble_after_pressure_ticks: int = 5
     open_threshold: float = 1.15
+    debug_ticks: bool = False
 
 
 @dataclass
@@ -330,6 +331,31 @@ class TickPassResolver:
             for route in routes:
                 self.update_route(route, tick)
             best_open_score = max(best_open_score, max(route.final_open_score for route in routes))
+            if self.config.debug_ticks:
+                best_route = max(routes, key=lambda route: route.final_open_score)
+                events.append(
+                    TickEvent(
+                        tick,
+                        tick * self.config.tick_seconds,
+                        "tick_state",
+                        f"Best route: {best_route.receiver.name} at {best_route.final_open_score:.2f}.",
+                        {
+                            "best_receiver": best_route.receiver.name,
+                            "best_open_score": round(best_route.final_open_score, 2),
+                            "routes": [
+                                {
+                                    "receiver": route.receiver.name,
+                                    "defender": route.defender.name,
+                                    "depth": route.depth,
+                                    "break_tick": route.break_tick,
+                                    "separation": round(route.separation, 2),
+                                    "open_score": round(route.final_open_score, 2),
+                                }
+                                for route in routes
+                            ],
+                        },
+                    )
+                )
             if pressure_tick is not None and tick == pressure_tick:
                 pressured = True
                 events.append(TickEvent(tick, tick * self.config.tick_seconds, "pressure", f"{rusher.name} compresses the pocket.", {"pressure_score": round(pressure_score, 2)}))

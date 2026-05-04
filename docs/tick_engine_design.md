@@ -11,6 +11,14 @@ This document tracks the first base build of the 0.1-second tick system.
 
 The current vertical slice resolves one passing play with 0.1-second ticks. It reads existing `TeamSnapshot` and `PlayerSnapshot` objects, uses the same rating keys as the match engine, and returns a structured `TickPassResult` plus route and event logs.
 
+## Architecture Decisions
+
+- Tick logs are debug-only. Normal output stores meaningful play events such as snap, pressure, throw, sack, completion, breakup, interception, and late throw. Full per-tick route state is available through `TickConfig(debug_ticks=True)` or `tools\tick_playtest.py --debug-ticks`.
+- The first version uses scalar route separation, pressure timing, and open-score values rather than true X/Y player coordinates. This keeps the ratings model testable before committing to a full spatial physics layer.
+- Routes are generated from broad concepts for now. Real playbook route combinations can replace the concept generator later.
+- `match_engine.py` should remain the orchestrator for drives, clock, scoring, penalties, special teams, stats, and persistence. The tick engine should resolve play physics and return a result that can be translated into the current play contract.
+- Stamina, fatigue, durability, and injuries are deferred.
+
 ## Pass-Play Slice
 
 The prototype models:
@@ -35,7 +43,8 @@ The prototype models:
 - throw tick, pressure tick, sack tick
 - completion and interception probabilities
 - route states
-- event log
+- meaningful event log
+- optional full per-tick debug trace
 
 ## Intended Integration Path
 
@@ -47,8 +56,6 @@ The prototype models:
 
 ## Open Architecture Questions
 
-1. Should the final tick system log every tick, or only meaningful events by default with full tick traces available in debug mode?
-2. Should player movement be represented as true X/Y coordinates immediately, or should this intermediate scalar model prove the ratings first?
-3. Should play calls choose exact route combinations from playbook data, or should the engine synthesize routes from concepts for now?
-4. Should coaching traits and play-caller tendencies affect route priority/throw timing in the tick engine, or stay outside in the orchestrator?
-5. Should fatigue/stamina mutate during every tick, every play, or only at drive/series boundaries?
+1. When tick passing is wired into `match_engine.py`, should it be enabled per game, per team, or globally by engine setting?
+2. Should coaching traits and play-caller tendencies affect route priority/throw timing inside the tick engine, or should the orchestrator pre-select those tendencies before calling it?
+3. What should the next tick slice be: designed runs, QB scrambles, or pass protection/receiver route packages with more playbook detail?
