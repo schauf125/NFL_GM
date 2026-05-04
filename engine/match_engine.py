@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-ENGINE_VERSION = "0.1.2"
+ENGINE_VERSION = "0.1.3"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
@@ -775,10 +775,15 @@ class MatchEngine:
         self.second_half_receiver = home if self.first_half_receiver.team_id == away.team_id else away
         self.ot_first_drive_team_id: int | None = None
         self.ot_possessions: set[int] = set()
+        self.timeouts = {away.team_id: 3, home.team_id: 3}
+        self.two_minute_warnings: set[int] = set()
         self._last_play_concept: str | None = None
 
     def opponent(self, team: TeamSnapshot) -> TeamSnapshot:
         return self.home if team.team_id == self.away.team_id else self.away
+
+    def team_by_id(self, team_id: int) -> TeamSnapshot:
+        return self.away if team_id == self.away.team_id else self.home
 
     def current_score_diff(self, offense: TeamSnapshot) -> int:
         return self.score[offense.team_id] - self.score[self.opponent(offense).team_id]
@@ -825,8 +830,14 @@ class MatchEngine:
     def special_teams_snap_players(self, team: TeamSnapshot, play_type: str) -> list[PlayerSnapshot]:
         if play_type in {"field_goal", "extra_point"}:
             return team.unique_starters(["PK", "LS", "PT"])
+        if play_type in {"kickoff", "safety_kick"}:
+            return team.unique_starters(["KO", "LS", "MLB", "WLB", "SLB", "LCB", "RCB", "NB", "FS", "SS", "RB"])
+        if play_type == "kick_return":
+            return team.unique_starters(["RB", "FB", "TE", "LWR", "RWR", "SWR", "MLB", "WLB", "LCB", "RCB", "FS"])
         if play_type == "punt":
             return team.unique_starters(["PT", "LS"])
+        if play_type == "punt_return":
+            return team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "NB", "FS", "SS", "MLB", "WLB"])
         return []
 
     def count_scrimmage_snap(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str, concept: str) -> None:
@@ -836,14 +847,59 @@ class MatchEngine:
     def count_special_teams_snap(self, team: TeamSnapshot, play_type: str) -> None:
         self.add_snaps(self.special_teams_snap_players(team, play_type), "special_teams_snaps")
 
+    def count_special_teams_play(self, kicking_team: TeamSnapshot, receiving_team: TeamSnapshot, play_type: str) -> None:
+        self.count_special_teams_snap(kicking_team, play_type)
+        if play_type in {"kickoff", "safety_kick"}:
+            self.count_special_teams_snap(receiving_team, "kick_return")
+        elif play_type == "punt":
+            self.count_special_teams_snap(receiving_team, "punt_return")
+
     def consume_clock(self, live_tenths: int, runoff_tenths: int) -> tuple[int, int]:
         live_tenths = max(1, int(live_tenths))
         runoff_tenths = max(0, int(runoff_tenths))
         total = live_tenths + runoff_tenths
+        warning_tenths = 2 * 60 * TENTHS_PER_SECOND
+        if self.quarter in {2, 4} and self.quarter not in self.two_minute_warnings:
+            if self.clock_tenths > warning_tenths and self.clock_tenths - total <= warning_tenths:
+                consumed = self.clock_tenths - warning_tenths
+                self.clock_tenths = warning_tenths
+                self.two_minute_warnings.add(self.quarter)
+                return consumed, max(0, consumed - live_tenths)
         consumed = min(self.clock_tenths, total)
         self.clock_tenths -= consumed
         consumed_runoff = max(0, consumed - live_tenths)
         return consumed, consumed_runoff
+
+    def reset_half_timeouts(self) -> None:
+        self.timeouts[self.away.team_id] = 3
+        self.timeouts[self.home.team_id] = 3
+
+    def reset_overtime_timeouts(self) -> None:
+        self.timeouts[self.away.team_id] = 2
+        self.timeouts[self.home.team_id] = 2
+
+    def maybe_use_timeout(
+        self,
+        offense: TeamSnapshot,
+        defense: TeamSnapshot,
+        *,
+        play_type: str,
+        runoff_tenths: int,
+        stops_clock: bool,
+    ) -> tuple[int, str]:
+        if runoff_tenths <= 0 or stops_clock or self.quarter not in {2, 4, 5}:
+            return runoff_tenths, ""
+        offense_diff = self.current_score_diff(offense)
+        defense_diff = -offense_diff
+        if offense_diff < 0 and self.clock_tenths <= 2 * 60 * TENTHS_PER_SECOND and self.timeouts[offense.team_id] > 0:
+            self.timeouts[offense.team_id] -= 1
+            self.team_stats[offense.team_id]["timeouts_used"] += 1
+            return 0, f" {offense.abbreviation} timeout."
+        if defense_diff < 0 and self.clock_tenths <= 5 * 60 * TENTHS_PER_SECOND and play_type == "run" and self.timeouts[defense.team_id] > 0:
+            self.timeouts[defense.team_id] -= 1
+            self.team_stats[defense.team_id]["timeouts_used"] += 1
+            return 0, f" {defense.abbreviation} timeout."
+        return runoff_tenths, ""
 
     def advance_dead_quarter_if_needed(self, offense: TeamSnapshot, field_pos: int, down: int, distance: int) -> tuple[bool, TeamSnapshot, int, int, int]:
         if self.clock_tenths > 0:
@@ -901,6 +957,39 @@ class MatchEngine:
             return "go"
         return "punt"
 
+    def should_kneel(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int) -> bool:
+        if self.quarter != 4 or self.current_score_diff(offense) <= 0 or down >= 4:
+            return False
+        if self.timeouts[defense.team_id] > 0:
+            return False
+        remaining_kneel_clock = (4 - down) * 42 * TENTHS_PER_SECOND
+        return self.clock_tenths <= remaining_kneel_clock
+
+    def kneel_play(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[int, str, PlayerSnapshot]:
+        qb = offense.starter("QB")
+        yards = -1 if field_pos > 1 else 0
+        self.team_stats[offense.team_id]["plays"] += 1
+        self.team_stats[offense.team_id]["rush_attempts"] += 1
+        self.team_stats[offense.team_id]["rush_yards"] += yards
+        self.team_stats[offense.team_id]["total_yards"] += yards
+        self.player_stats[qb.player_id]["rush_attempts"] += 1
+        self.player_stats[qb.player_id]["rush_yards"] += yards
+        return yards, f"{qb.name} takes a knee.", qb
+
+    def should_spike(self, offense: TeamSnapshot, down: int, field_pos: int) -> bool:
+        if self.quarter not in {2, 4, 5} or down >= 4:
+            return False
+        if self.current_score_diff(offense) > 0 or self.timeouts[offense.team_id] > 0:
+            return False
+        return self.clock_tenths <= 38 * TENTHS_PER_SECOND and field_pos >= 45
+
+    def spike_play(self, offense: TeamSnapshot) -> tuple[str, PlayerSnapshot]:
+        qb = offense.starter("QB")
+        self.team_stats[offense.team_id]["plays"] += 1
+        self.team_stats[offense.team_id]["pass_attempts"] += 1
+        self.player_stats[qb.player_id]["pass_attempts"] += 1
+        return f"{qb.name} spikes the ball to stop the clock.", qb
+
     def choose_run_concept(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
         return self.rng.choice(["inside_zone", "outside_zone", "power", "draw"])
 
@@ -919,24 +1008,79 @@ class MatchEngine:
     def maybe_penalty(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str) -> tuple[int, str, bool] | None:
         offense_discipline = offense.discipline_score()
         defense_discipline = defense.discipline_score()
-        base = 0.041
+        base = 0.052
         penalty_chance = base + max(0, 60 - offense_discipline) * 0.00045 + max(0, 60 - defense_discipline) * 0.00025
         if self.rng.random() >= penalty_chance:
             return None
-        if self.rng.random() < 0.62:
-            yards = -10 if play_type == "pass" and self.rng.random() < 0.55 else -5
-            label = "offensive holding" if yards == -10 else "false start"
+        roll = self.rng.random()
+        if roll < 0.54:
+            if play_type == "pass":
+                choice = weighted_choice(
+                    self.rng,
+                    [
+                        ("offensive holding", 0.40),
+                        ("false start", 0.22),
+                        ("offensive pass interference", 0.14),
+                        ("intentional grounding", 0.12),
+                        ("delay of game", 0.12),
+                    ],
+                )
+            else:
+                choice = weighted_choice(
+                    self.rng,
+                    [
+                        ("offensive holding", 0.48),
+                        ("false start", 0.30),
+                        ("illegal formation", 0.12),
+                        ("delay of game", 0.10),
+                    ],
+                )
+            yards = {
+                "offensive holding": -10,
+                "offensive pass interference": -10,
+                "intentional grounding": -10,
+                "false start": -5,
+                "delay of game": -5,
+                "illegal formation": -5,
+            }[choice]
             self.team_stats[offense.team_id]["penalties"] += 1
             self.team_stats[offense.team_id]["penalty_yards"] += abs(yards)
-            return yards, label, False
-        if self.rng.random() < 0.70:
+            return yards, choice, False
+
+        if play_type == "pass":
+            label = weighted_choice(
+                self.rng,
+                [
+                    ("defensive offside", 0.22),
+                    ("defensive holding", 0.24),
+                    ("illegal contact", 0.18),
+                    ("defensive pass interference", 0.20),
+                    ("roughing the passer", 0.10),
+                    ("facemask", 0.06),
+                ],
+            )
+        else:
+            label = weighted_choice(
+                self.rng,
+                [
+                    ("defensive offside", 0.46),
+                    ("defensive holding", 0.20),
+                    ("facemask", 0.20),
+                    ("unnecessary roughness", 0.14),
+                ],
+            )
+        if label == "defensive pass interference":
+            yards = int(clamp(round(self.rng.gauss(17, 8)), 5, 45))
+            automatic_first_down = True
+        elif label in {"roughing the passer", "facemask", "unnecessary roughness"}:
+            yards = 15
+            automatic_first_down = True
+        elif label in {"defensive holding", "illegal contact"}:
             yards = 5
-            label = "defensive offside"
-            automatic_first_down = False
+            automatic_first_down = True
         else:
             yards = 5
-            label = "defensive holding"
-            automatic_first_down = True
+            automatic_first_down = False
         self.team_stats[defense.team_id]["penalties"] += 1
         self.team_stats[defense.team_id]["penalty_yards"] += yards
         return yards, label, automatic_first_down
@@ -986,7 +1130,8 @@ class MatchEngine:
         if self.rng.random() < fumble_chance:
             recovery_spot = int(clamp(field_pos + yards, 1, 99))
             return_yards = max(0, int(round(self.rng.gauss(7, 6))))
-            new_field = int(clamp(100 - recovery_spot + return_yards, 1, 99))
+            return_field = 100 - recovery_spot + return_yards
+            new_field = int(clamp(return_field, 1, 99))
             defender = self.select_tackler(defense, yards)
             self.team_stats[offense.team_id]["plays"] += 1
             self.team_stats[offense.team_id]["rush_attempts"] += 1
@@ -1000,6 +1145,15 @@ class MatchEngine:
             self.player_stats[defender.player_id]["tackles"] += 1
             self.player_stats[defender.player_id]["fumble_recoveries"] += 1
             self.player_stats[defender.player_id]["forced_fumbles"] += 1
+            self.player_stats[defender.player_id]["fumble_return_yards"] += return_yards
+            if return_field >= 100:
+                self.add_score(defense, 6)
+                self.team_stats[defense.team_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["fumble_return_tds"] += 1
+                try_result = self.try_after_touchdown(defense, offense)
+                desc = f"{runner.name} runs for {yards} but fumbles. {defender.name} returns it for a touchdown. {try_result}"
+                return "defensive_touchdown", yards, 0, 0, desc, offense, 25, 1, 10, runner, defender
             desc = f"{runner.name} runs for {yards} but fumbles. {defender.name} recovers."
             return "turnover", yards, 0, 0, desc, defense, new_field, 1, 10, runner, defender
 
@@ -1017,8 +1171,8 @@ class MatchEngine:
         if touchdown:
             self.add_score(offense, 6)
             self.player_stats[runner.player_id]["rush_tds"] += 1
-            xp = self.extra_point(offense)
-            desc = f"{runner.name} scores on a {max(0, 100 - field_pos)} yard run. {xp}"
+            try_result = self.try_after_touchdown(offense, defense)
+            desc = f"{runner.name} scores on a {max(0, 100 - field_pos)} yard run. {try_result}"
             return "touchdown", yards, 6, 0, desc, self.opponent(offense), 25, 1, 10, runner, None
 
         desc = f"{runner.name} runs {yards} yards"
@@ -1117,13 +1271,23 @@ class MatchEngine:
         if self.rng.random() < interception_chance:
             return_yards = max(0, int(round(self.rng.gauss(11, 9))))
             pick_spot = int(clamp(field_pos + max(0, air_yards), 1, 99))
-            new_field = int(clamp(100 - pick_spot + return_yards, 1, 99))
+            return_field = 100 - pick_spot + return_yards
+            new_field = int(clamp(return_field, 1, 99))
             self.team_stats[offense.team_id]["turnovers"] += 1
             self.team_stats[offense.team_id]["interceptions_thrown"] += 1
             self.team_stats[defense.team_id]["interceptions"] += 1
             self.player_stats[qb.player_id]["interceptions_thrown"] += 1
             self.player_stats[defender.player_id]["interceptions"] += 1
+            self.player_stats[defender.player_id]["interception_return_yards"] += return_yards
             self.player_stats[defender.player_id]["pass_deflections"] += 1
+            if return_field >= 100:
+                self.add_score(defense, 6)
+                self.team_stats[defense.team_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["interception_return_tds"] += 1
+                try_result = self.try_after_touchdown(defense, offense)
+                desc = f"{qb.name} is intercepted by {defender.name}, who returns it for a touchdown. {try_result}"
+                return "defensive_touchdown", 0, 0, 0, desc, offense, 25, 1, 10, target, defender
             desc = f"{qb.name} is intercepted by {defender.name} targeting {target.name}."
             return "turnover", 0, 0, 0, desc, defense, new_field, 1, 10, target, defender
 
@@ -1154,7 +1318,9 @@ class MatchEngine:
         catch_fumble = clamp(0.006 + (58 - target.rating("ball_security")) * 0.00025 + (defender.rating("forced_fumble") - 60) * 0.00008, 0.001, 0.027)
         if self.rng.random() < catch_fumble:
             fumble_spot = int(clamp(field_pos + yards, 1, 99))
-            new_field = int(clamp(100 - fumble_spot + max(0, int(round(self.rng.gauss(6, 5)))), 1, 99))
+            return_yards = max(0, int(round(self.rng.gauss(6, 5))))
+            return_field = 100 - fumble_spot + return_yards
+            new_field = int(clamp(return_field, 1, 99))
             self.team_stats[offense.team_id]["pass_completions"] += 1
             self.team_stats[offense.team_id]["pass_yards"] += yards
             self.team_stats[offense.team_id]["total_yards"] += yards
@@ -1167,6 +1333,15 @@ class MatchEngine:
             self.player_stats[target.player_id]["fumbles"] += 1
             self.player_stats[defender.player_id]["forced_fumbles"] += 1
             self.player_stats[defender.player_id]["fumble_recoveries"] += 1
+            self.player_stats[defender.player_id]["fumble_return_yards"] += return_yards
+            if return_field >= 100:
+                self.add_score(defense, 6)
+                self.team_stats[defense.team_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["defensive_tds"] += 1
+                self.player_stats[defender.player_id]["fumble_return_tds"] += 1
+                try_result = self.try_after_touchdown(defense, offense)
+                desc = f"{target.name} catches it for {yards}, then fumbles. {defender.name} returns it for a touchdown. {try_result}"
+                return "defensive_touchdown", yards, 0, 0, desc, offense, 25, 1, 10, target, defender
             desc = f"{target.name} catches it for {yards}, then fumbles. {defender.name} recovers."
             return "turnover", yards, 0, 0, desc, defense, new_field, 1, 10, target, defender
 
@@ -1188,8 +1363,8 @@ class MatchEngine:
             self.team_stats[offense.team_id]["pass_tds"] += 1
             self.player_stats[qb.player_id]["pass_tds"] += 1
             self.player_stats[target.player_id]["receiving_tds"] += 1
-            xp = self.extra_point(offense)
-            desc = f"{qb.name} hits {target.name} for a {max(0, 100 - field_pos)} yard touchdown. {xp}"
+            try_result = self.try_after_touchdown(offense, defense)
+            desc = f"{qb.name} hits {target.name} for a {max(0, 100 - field_pos)} yard touchdown. {try_result}"
             return "touchdown", yards, 6, 0, desc, self.opponent(offense), 25, 1, 10, target, defender
 
         return "normal", yards, 0, 0, desc, offense, int(clamp(new_field, 1, 99)), down, distance, target, defender
@@ -1234,6 +1409,71 @@ class MatchEngine:
         pool = pool or defense.roster[:11]
         return weighted_choice(self.rng, [(p, weighted_average(p, TACKLE_WEIGHTS)) for p in pool])
 
+    def select_returner(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:
+        if play_type == "punt":
+            pool = team.unique_starters(["SWR", "LWR", "RWR", "RB", "LCB", "RCB", "NB"])
+        else:
+            pool = team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "FS"])
+        pool = pool or team.receiving_options() or team.roster[:5]
+        return weighted_choice(
+            self.rng,
+            [
+                (
+                    player,
+                    average(
+                        [
+                            weighted_average(player, YAC_WEIGHTS),
+                            player.rating("ball_security"),
+                            player.rating("play_recognition"),
+                        ]
+                    ),
+                )
+                for player in pool
+            ],
+        )
+
+    def try_after_touchdown(self, offense: TeamSnapshot, defense: TeamSnapshot) -> str:
+        diff = self.current_score_diff(offense)
+        late = self.quarter >= 4 or self.quarter == 5
+        go_for_two = False
+        if late and diff in {-2, 1, 5, 10}:
+            go_for_two = True
+        elif late and diff < 0 and abs(diff) in {2, 5, 10, 13}:
+            go_for_two = True
+        elif self.rng.random() < 0.012:
+            go_for_two = True
+
+        if not go_for_two:
+            return self.extra_point(offense)
+
+        qb = offense.starter("QB")
+        runner = offense.starter("RB")
+        target = self.select_receiver(offense, "short")
+        pass_try = self.rng.random() < 0.58
+        self.count_scrimmage_snap(offense, defense, "pass" if pass_try else "run", "two_point")
+        self.team_stats[offense.team_id]["two_point_attempts"] += 1
+        self.player_stats[qb.player_id if pass_try else runner.player_id]["two_point_attempts"] += 1
+
+        offense_score = average(
+            [
+                weighted_average(qb, QB_PASS_WEIGHTS) if pass_try else weighted_average(runner, RB_RUN_WEIGHTS),
+                weighted_average(target, RECEIVER_WEIGHTS) if pass_try else offense.run_block_score(),
+                offense.discipline_score(),
+            ]
+        )
+        defense_score = average([defense.coverage_score() if pass_try else defense.run_defense_score(), defense.tackling_score()])
+        make_chance = clamp(0.465 + (offense_score - defense_score) * 0.004, 0.280, 0.680)
+        if self.rng.random() < make_chance:
+            self.add_score(offense, 2)
+            self.team_stats[offense.team_id]["two_point_made"] += 1
+            if pass_try:
+                self.player_stats[qb.player_id]["two_point_passes"] += 1
+                self.player_stats[target.player_id]["two_point_conversions"] += 1
+                return f"{qb.name} converts the two-point try to {target.name}."
+            self.player_stats[runner.player_id]["two_point_conversions"] += 1
+            return f"{runner.name} runs in the two-point try."
+        return "Two-point try failed."
+
     def extra_point(self, offense: TeamSnapshot) -> str:
         kicker = offense.starter("PK")
         make = clamp(0.925 + (weighted_average(kicker, KICK_WEIGHTS) - 65) * 0.0022, 0.82, 0.995)
@@ -1255,6 +1495,21 @@ class MatchEngine:
         make = clamp(make, 0.18, 0.985)
         self.team_stats[offense.team_id]["fg_attempts"] += 1
         self.player_stats[kicker.player_id]["fg_attempts"] += 1
+        block_chance = clamp(0.010 + (72 - kick_score) * 0.00022 + (defense.discipline_score() - 70) * 0.00008, 0.004, 0.026)
+        if self.rng.random() < block_chance:
+            blocker = self.select_tackler(defense, 0)
+            return_yards = max(0, int(round(self.rng.gauss(8, 9))))
+            return_field = 100 - field_pos + return_yards
+            self.team_stats[defense.team_id]["blocked_kicks"] += 1
+            self.player_stats[blocker.player_id]["blocked_kicks"] += 1
+            self.player_stats[blocker.player_id]["field_goal_return_yards"] += return_yards
+            if return_field >= 100:
+                self.add_score(defense, 6)
+                self.team_stats[defense.team_id]["special_teams_tds"] += 1
+                self.player_stats[blocker.player_id]["special_teams_tds"] += 1
+                try_result = self.try_after_touchdown(defense, offense)
+                return "field_goal_return_touchdown", offense, 25, f"{blocker.name} blocks the field goal and returns it for a touchdown. {try_result}"
+            return "blocked_field_goal", defense, int(clamp(return_field, 1, 99)), f"{blocker.name} blocks the {distance} yard field goal."
         if self.rng.random() < make:
             self.add_score(offense, 3)
             self.team_stats[offense.team_id]["fg_made"] += 1
@@ -1264,20 +1519,177 @@ class MatchEngine:
         new_field = 25 if distance >= 56 else int(clamp(100 - field_pos, 20, 99))
         return "missed_field_goal", defense, new_field, f"{kicker.name} misses a {distance} yard field goal."
 
-    def punt(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[TeamSnapshot, int, str]:
+    def punt(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[str, TeamSnapshot, int, str, PlayerSnapshot | None]:
         punter = offense.starter("PT")
+        returner = self.select_returner(defense, "punt")
         punt_score = weighted_average(punter, PUNT_WEIGHTS)
+        block_chance = clamp(0.012 + (defense.discipline_score() - 70) * 0.00008 - (punt_score - 65) * 0.00008, 0.004, 0.030)
+        if self.rng.random() < block_chance:
+            blocker = self.select_tackler(defense, 0)
+            return_yards = max(0, int(round(self.rng.gauss(7, 8))))
+            return_field = 100 - field_pos + return_yards
+            self.team_stats[offense.team_id]["punts"] += 1
+            self.player_stats[punter.player_id]["punts"] += 1
+            self.team_stats[defense.team_id]["blocked_punts"] += 1
+            self.player_stats[blocker.player_id]["blocked_punts"] += 1
+            self.player_stats[blocker.player_id]["punt_return_yards"] += return_yards
+            if return_field >= 100:
+                self.add_score(defense, 6)
+                self.team_stats[defense.team_id]["special_teams_tds"] += 1
+                self.player_stats[blocker.player_id]["special_teams_tds"] += 1
+                self.player_stats[blocker.player_id]["punt_return_tds"] += 1
+                try_result = self.try_after_touchdown(defense, offense)
+                return "punt_return_touchdown", offense, 25, f"{blocker.name} blocks the punt and returns it for a touchdown. {try_result}", blocker
+            return "blocked_punt", defense, int(clamp(return_field, 1, 99)), f"{blocker.name} blocks the punt.", blocker
+
         gross = int(clamp(round(self.rng.gauss(43 + (punt_score - 60) * 0.13, 7)), 22, 70))
-        return_yards = max(0, int(round(self.rng.gauss(7 - (punt_score - 60) * 0.025, 5))))
         absolute_landing = field_pos + gross
         self.team_stats[offense.team_id]["punts"] += 1
         self.team_stats[offense.team_id]["punt_yards"] += gross
         self.player_stats[punter.player_id]["punts"] += 1
         self.player_stats[punter.player_id]["punt_yards"] += gross
         if absolute_landing >= 100:
-            return defense, 20, f"{punter.name} punts {gross} yards for a touchback."
-        opponent_field = int(clamp(100 - absolute_landing + return_yards, 1, 99))
-        return defense, opponent_field, f"{punter.name} punts {gross} yards, returned {return_yards}."
+            return "punt", defense, 20, f"{punter.name} punts {gross} yards for a touchback.", None
+        fair_catch_chance = clamp(0.12 + max(0, absolute_landing - 70) * 0.010 + (punt_score - 65) * 0.002, 0.08, 0.55)
+        if self.rng.random() < fair_catch_chance:
+            opponent_field = int(clamp(100 - absolute_landing, 1, 99))
+            self.team_stats[defense.team_id]["fair_catches"] += 1
+            self.player_stats[returner.player_id]["fair_catches"] += 1
+            return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} fair catches it.", returner
+
+        return_score = weighted_average(returner, YAC_WEIGHTS)
+        return_yards = max(0, int(round(self.rng.gauss(7 - (punt_score - 60) * 0.025 + (return_score - 65) * 0.045, 6))))
+        return_field = 100 - absolute_landing + return_yards
+        opponent_field = int(clamp(return_field, 1, 99))
+        self.team_stats[defense.team_id]["punt_returns"] += 1
+        self.team_stats[defense.team_id]["punt_return_yards"] += return_yards
+        self.player_stats[returner.player_id]["punt_returns"] += 1
+        self.player_stats[returner.player_id]["punt_return_yards"] += return_yards
+        if return_field >= 100:
+            self.add_score(defense, 6)
+            self.team_stats[defense.team_id]["special_teams_tds"] += 1
+            self.player_stats[returner.player_id]["special_teams_tds"] += 1
+            self.player_stats[returner.player_id]["punt_return_tds"] += 1
+            try_result = self.try_after_touchdown(defense, offense)
+            return "punt_return_touchdown", offense, 25, f"{returner.name} returns {punter.name}'s punt for a touchdown. {try_result}", returner
+        return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} returns it {return_yards}.", returner
+
+    def record_free_kick(
+        self,
+        kicking_team: TeamSnapshot,
+        receiving_team: TeamSnapshot,
+        *,
+        concept: str,
+        start_yardline: int,
+        yards: int,
+        live_tenths: int,
+        description: str,
+        returner: PlayerSnapshot | None = None,
+        touchdown: bool = False,
+        turnover: bool = False,
+    ) -> None:
+        self.count_special_teams_play(kicking_team, receiving_team, "safety_kick" if concept == "safety_kick" else "kickoff")
+        if live_tenths > 0:
+            consumed, runoff = self.consume_clock(live_tenths, 0)
+        else:
+            consumed, runoff = 0, 0
+        self.play_number += 1
+        self.add_play_event(
+            PlayEvent(
+                play_number=self.play_number,
+                drive_number=0,
+                quarter=self.quarter,
+                clock_tenths=self.clock_tenths,
+                offense_team_id=kicking_team.team_id,
+                defense_team_id=receiving_team.team_id,
+                down=0,
+                distance=0,
+                yardline=start_yardline,
+                play_type="kickoff",
+                concept=concept,
+                yards_gained=yards,
+                offense_player_id=kicking_team.starter("KO").player_id if kicking_team.starter("KO") else None,
+                target_player_id=returner.player_id if returner else None,
+                defense_player_id=returner.player_id if returner else None,
+                is_touchdown=1 if touchdown else 0,
+                is_turnover=1 if turnover else 0,
+                clock_elapsed_tenths=consumed,
+                runoff_tenths=runoff,
+                description=description,
+            )
+        )
+
+    def kickoff(
+        self,
+        kicking_team: TeamSnapshot,
+        receiving_team: TeamSnapshot,
+        *,
+        reason: str = "kickoff",
+        safety_kick: bool = False,
+        onside: bool = False,
+    ) -> tuple[str, TeamSnapshot, int]:
+        kicker = kicking_team.starter("KO") or kicking_team.starter("PK")
+        returner = self.select_returner(receiving_team, "kickoff")
+        kick_score = weighted_average(kicker, KICK_WEIGHTS)
+        start_yardline = 20 if safety_kick else 35
+        concept = "safety_kick" if safety_kick else "onside_kick" if onside else reason
+        self.team_stats[kicking_team.team_id]["kickoffs"] += 1
+        self.player_stats[kicker.player_id]["kickoffs"] += 1
+
+        if onside:
+            recovery_chance = clamp(0.115 + (kick_score - 65) * 0.0015 - (receiving_team.discipline_score() - 65) * 0.0012, 0.045, 0.210)
+            recovered = self.rng.random() < recovery_chance
+            self.team_stats[kicking_team.team_id]["onside_kicks"] += 1
+            if recovered:
+                self.team_stats[kicking_team.team_id]["onside_recoveries"] += 1
+                self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=11, live_tenths=18, description=f"{kicking_team.abbreviation} recovers the onside kick.", turnover=True)
+                return "recovered", kicking_team, 46
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=10, live_tenths=14, description=f"{receiving_team.abbreviation} covers the onside kick.", returner=returner)
+            return "normal", receiving_team, 54
+
+        roll = self.rng.random()
+        if roll < 0.035:
+            self.team_stats[kicking_team.team_id]["kickoffs_out_of_bounds"] += 1
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=25, live_tenths=0, description=f"{kicker.name}'s kickoff is out of bounds. {receiving_team.abbreviation} starts at the 40.")
+            return "normal", receiving_team, 40
+        if roll < 0.075:
+            self.team_stats[kicking_team.team_id]["kickoffs_short"] += 1
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=18, live_tenths=0, description=f"{kicker.name}'s kickoff lands short of the landing zone. {receiving_team.abbreviation} starts at the 40.")
+            return "normal", receiving_team, 40
+        if roll < 0.255:
+            self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=65, live_tenths=0, description=f"{kicker.name}'s kickoff reaches the end zone for a touchback. {receiving_team.abbreviation} starts at the 35.")
+            return "normal", receiving_team, 35
+        if roll < 0.325:
+            self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=60, live_tenths=0, description=f"{kicker.name}'s kickoff lands in the landing zone and is downed. {receiving_team.abbreviation} starts at the 20.")
+            return "normal", receiving_team, 20
+
+        return_score = weighted_average(returner, YAC_WEIGHTS)
+        coverage_score = average([kicking_team.discipline_score(), kicking_team.tackling_score()])
+        caught_at = int(clamp(round(self.rng.gauss(5, 4)), 0, 20))
+        return_yards = max(0, int(round(self.rng.gauss(24 + (return_score - coverage_score) * 0.075, 8))))
+        return_field = caught_at + return_yards
+        self.team_stats[receiving_team.team_id]["kickoff_returns"] += 1
+        self.team_stats[receiving_team.team_id]["kickoff_return_yards"] += return_yards
+        self.player_stats[returner.player_id]["kickoff_returns"] += 1
+        self.player_stats[returner.player_id]["kickoff_return_yards"] += return_yards
+        if return_field >= 100:
+            self.add_score(receiving_team, 6)
+            if self.quarter == 5:
+                self.ot_possessions.add(receiving_team.team_id)
+            self.team_stats[receiving_team.team_id]["special_teams_tds"] += 1
+            self.player_stats[returner.player_id]["special_teams_tds"] += 1
+            self.player_stats[returner.player_id]["kickoff_return_tds"] += 1
+            try_result = self.try_after_touchdown(receiving_team, kicking_team)
+            desc = f"{returner.name} returns {kicker.name}'s kickoff for a touchdown. {try_result}"
+            self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=100, live_tenths=85, description=desc, returner=returner, touchdown=True)
+            return "touchdown", kicking_team, 25
+
+        field_pos = int(clamp(return_field, 1, 99))
+        desc = f"{returner.name} returns {kicker.name}'s kickoff {return_yards} yards to {format_yardline(field_pos)}."
+        self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=return_yards, live_tenths=int(clamp(round(self.rng.gauss(58, 11)), 35, 95)), description=desc, returner=returner)
+        return "normal", receiving_team, field_pos
 
     def record_play(
         self,
@@ -1302,7 +1714,10 @@ class MatchEngine:
         if play_type in {"run", "pass"}:
             self.count_scrimmage_snap(offense, defense, play_type, concept)
         elif play_type in {"field_goal", "punt"}:
-            self.count_special_teams_snap(offense, play_type)
+            if play_type == "punt":
+                self.count_special_teams_play(offense, defense, "punt")
+            else:
+                self.count_special_teams_snap(offense, play_type)
         self.play_number += 1
         self.add_play_event(
             PlayEvent(
@@ -1354,22 +1769,78 @@ class MatchEngine:
                 drive.result = "half_end" if self.quarter == 3 else "game_end"
                 offense, field_pos, down, distance = new_offense, new_field, new_down, new_distance
                 break
+            if self.should_kneel(offense, defense, down):
+                old_field = field_pos
+                yards, desc, qb = self.kneel_play(offense, defense, field_pos)
+                live = 18
+                runoff = 420
+                consumed, actual_runoff = self.consume_clock(live, runoff)
+                self.record_play(
+                    self.drive_number,
+                    offense,
+                    defense,
+                    down,
+                    distance,
+                    old_field,
+                    "run",
+                    "kneel",
+                    yards,
+                    consumed - actual_runoff,
+                    actual_runoff,
+                    desc,
+                    offense_player=qb,
+                )
+                field_pos = int(clamp(field_pos + yards, 1, 99))
+                drive_yards += yards
+                down += 1
+                if self.clock_tenths <= 0:
+                    drive.result = "game_end"
+                    break
+                if down > 4:
+                    drive.result = "turnover_on_downs"
+                    offense, field_pos = defense, int(clamp(100 - field_pos, 1, 99))
+                    break
+                continue
+            if self.should_spike(offense, down, field_pos):
+                desc, qb = self.spike_play(offense)
+                consumed, runoff = self.consume_clock(10, 0)
+                self.record_play(
+                    self.drive_number,
+                    offense,
+                    defense,
+                    down,
+                    distance,
+                    field_pos,
+                    "pass",
+                    "spike",
+                    0,
+                    consumed,
+                    runoff,
+                    desc,
+                    offense_player=qb,
+                )
+                down += 1
+                if down > 4:
+                    drive.result = "turnover_on_downs"
+                    offense, field_pos = defense, int(clamp(100 - field_pos, 1, 99))
+                    break
+                continue
             if down == 4:
                 decision = self.fourth_down_decision(offense, defense, down, distance, field_pos)
                 if decision == "field_goal":
                     outcome, next_offense, next_field, desc = self.field_goal(offense, defense, field_pos)
                     live = max(25, int(round(self.rng.gauss(42, 7))))
                     consumed, runoff = self.consume_clock(live, 0)
-                    self.record_play(self.drive_number, offense, defense, down, distance, field_pos, "field_goal", "field_goal", 0, consumed, runoff, desc, offense_player=offense.starter("PK"))
+                    self.record_play(self.drive_number, offense, defense, down, distance, field_pos, "field_goal", outcome, 0, consumed, runoff, desc, offense_player=offense.starter("PK"), touchdown=outcome == "field_goal_return_touchdown")
                     drive.result = outcome
                     offense, field_pos = next_offense, next_field
                     break
                 if decision == "punt":
-                    next_offense, next_field, desc = self.punt(offense, defense, field_pos)
+                    outcome, next_offense, next_field, desc, returner = self.punt(offense, defense, field_pos)
                     live = max(30, int(round(self.rng.gauss(47, 7))))
                     consumed, runoff = self.consume_clock(live, 0)
-                    self.record_play(self.drive_number, offense, defense, down, distance, field_pos, "punt", "punt", 0, consumed, runoff, desc, offense_player=offense.starter("PT"))
-                    drive.result = "punt"
+                    self.record_play(self.drive_number, offense, defense, down, distance, field_pos, "punt", outcome, 0, consumed, runoff, desc, offense_player=offense.starter("PT"), defense_player=returner, touchdown=outcome == "punt_return_touchdown")
+                    drive.result = outcome
                     offense, field_pos = next_offense, next_field
                     break
 
@@ -1406,9 +1877,11 @@ class MatchEngine:
                 outcome, yards, _points, _unused, desc, next_offense, next_field, _down, _dist, target, defender = self.pass_play(offense, defense, down, distance, field_pos)
                 live = int(clamp(round(self.rng.gauss(42 if yards == 0 else 58, 13)), 18, 110))
                 stops_clock = yards == 0 and outcome == "normal"
-                if outcome in {"touchdown", "turnover"}:
+                if outcome in {"touchdown", "turnover", "defensive_touchdown"}:
                     stops_clock = True
                 runoff = 0 if stops_clock else int(clamp(round(self.rng.gauss(285, 55)), 90, 410))
+                runoff, timeout_desc = self.maybe_use_timeout(offense, defense, play_type="pass", runoff_tenths=runoff, stops_clock=stops_clock)
+                desc += timeout_desc
                 consumed, actual_runoff = self.consume_clock(live, runoff)
                 self.record_play(
                     self.drive_number,
@@ -1426,13 +1899,16 @@ class MatchEngine:
                     offense_player=offense.starter("QB"),
                     target_player=target,
                     defense_player=defender,
-                    touchdown=outcome == "touchdown",
-                    turnover=outcome == "turnover",
+                    touchdown=outcome in {"touchdown", "defensive_touchdown"},
+                    turnover=outcome in {"turnover", "defensive_touchdown"},
                 )
             else:
                 outcome, yards, _points, _unused, desc, next_offense, next_field, _down, _dist, runner, tackler = self.run_play(offense, defense, down, distance, field_pos)
                 live = int(clamp(round(self.rng.gauss(58, 16)), 25, 120))
-                runoff = 0 if outcome in {"touchdown", "turnover"} else int(clamp(round(self.rng.gauss(305, 55)), 110, 420))
+                runoff = 0 if outcome in {"touchdown", "turnover", "defensive_touchdown"} else int(clamp(round(self.rng.gauss(305, 55)), 110, 420))
+                stops_clock = outcome in {"touchdown", "turnover", "defensive_touchdown"}
+                runoff, timeout_desc = self.maybe_use_timeout(offense, defense, play_type="run", runoff_tenths=runoff, stops_clock=stops_clock)
+                desc += timeout_desc
                 consumed, actual_runoff = self.consume_clock(live, runoff)
                 self.record_play(
                     self.drive_number,
@@ -1449,11 +1925,11 @@ class MatchEngine:
                     desc,
                     offense_player=runner,
                     defense_player=tackler,
-                    touchdown=outcome == "touchdown",
-                    turnover=outcome == "turnover",
+                    touchdown=outcome in {"touchdown", "defensive_touchdown"},
+                    turnover=outcome in {"turnover", "defensive_touchdown"},
                 )
 
-            if outcome in {"touchdown", "turnover"}:
+            if outcome in {"touchdown", "turnover", "defensive_touchdown"}:
                 if outcome == "touchdown":
                     drive_yards += max(0, yards)
                 drive.result = outcome
@@ -1464,6 +1940,7 @@ class MatchEngine:
             drive_yards += yards
             if old_field + yards <= 0:
                 self.add_score(defense, 2)
+                self.team_stats[defense.team_id]["safeties"] += 1
                 drive.result = "safety"
                 offense, field_pos = defense, 25
                 break
@@ -1494,50 +1971,124 @@ class MatchEngine:
             game_finished = True
         return offense, field_pos, game_finished
 
+    def free_kick_clock_available(self) -> bool:
+        if self.clock_tenths > 0:
+            return True
+        if self.quarter in {1, 3}:
+            self.quarter += 1
+            self.clock_tenths = REGULATION_QUARTER_TENTHS
+            return True
+        return False
+
+    def should_attempt_onside(self, kicking_team: TeamSnapshot) -> bool:
+        if self.current_score_diff(kicking_team) >= 0:
+            return False
+        if self.quarter < 4:
+            return False
+        return self.clock_tenths <= 5 * 60 * TENTHS_PER_SECOND
+
+    def resolve_free_kick(
+        self,
+        kicking_team: TeamSnapshot,
+        receiving_team: TeamSnapshot,
+        *,
+        reason: str,
+        safety_kick: bool = False,
+        allow_onside: bool = True,
+    ) -> tuple[TeamSnapshot, int]:
+        attempts = 0
+        while attempts < 4:
+            attempts += 1
+            if reason not in {"opening", "second_half", "overtime"} and not self.free_kick_clock_available():
+                return receiving_team, 25
+            onside = allow_onside and not safety_kick and self.should_attempt_onside(kicking_team)
+            outcome, next_offense, next_field = self.kickoff(
+                kicking_team,
+                receiving_team,
+                reason=reason,
+                safety_kick=safety_kick,
+                onside=onside,
+            )
+            if outcome != "touchdown":
+                return next_offense, next_field
+            kicking_team, receiving_team = receiving_team, kicking_team
+            reason = "post_score"
+            safety_kick = False
+            allow_onside = True
+        return receiving_team, 25
+
+    def possession_after_drive(self, drive: DriveRecord, fallback_offense: TeamSnapshot, fallback_field: int) -> tuple[TeamSnapshot, int, bool]:
+        if drive.result == "half_end":
+            self.reset_half_timeouts()
+            receiver = self.second_half_receiver
+            return (*self.resolve_free_kick(self.opponent(receiver), receiver, reason="second_half"), False)
+        if drive.result in {"touchdown", "field_goal"}:
+            scoring = self.team_by_id(drive.offense_team_id)
+            receiving = self.team_by_id(drive.defense_team_id)
+            return (*self.resolve_free_kick(scoring, receiving, reason="post_score"), False)
+        if drive.result in {"defensive_touchdown", "field_goal_return_touchdown", "punt_return_touchdown"}:
+            scoring = self.team_by_id(drive.defense_team_id)
+            receiving = self.team_by_id(drive.offense_team_id)
+            return (*self.resolve_free_kick(scoring, receiving, reason="post_score"), False)
+        if drive.result == "safety":
+            kicking = self.team_by_id(drive.offense_team_id)
+            receiving = self.team_by_id(drive.defense_team_id)
+            return (*self.resolve_free_kick(kicking, receiving, reason="safety_kick", safety_kick=True, allow_onside=False), False)
+        return fallback_offense, fallback_field, False
+
     def total_elapsed_tenths(self) -> int:
         if self.quarter <= 4:
             return (self.quarter - 1) * REGULATION_QUARTER_TENTHS + (REGULATION_QUARTER_TENTHS - self.clock_tenths)
         return 4 * REGULATION_QUARTER_TENTHS + (OVERTIME_TENTHS - self.clock_tenths)
 
-    def overtime_should_continue(self, last_offense: TeamSnapshot | None = None, last_result: str | None = None) -> bool:
+    def overtime_should_continue(self) -> bool:
         away_score = self.score[self.away.team_id]
         home_score = self.score[self.home.team_id]
         if self.clock_tenths <= 0:
             return False
         if away_score == home_score:
             return True
-        if last_result == "touchdown":
-            return False
         if len(self.ot_possessions) < 2:
             return True
         return False
 
     def simulate(self) -> GameResult:
-        offense = self.first_half_receiver
-        field_pos = 25
+        offense, field_pos = self.resolve_free_kick(
+            self.opponent(self.first_half_receiver),
+            self.first_half_receiver,
+            reason="opening",
+            allow_onside=False,
+        )
         finished = False
         while not finished:
             offense, field_pos, finished = self.run_drive(offense, field_pos)
+            if self.drives:
+                last_drive = self.drives[-1]
+                if not finished:
+                    offense, field_pos, _ = self.possession_after_drive(last_drive, offense, field_pos)
             if self.quarter >= 4 and self.clock_tenths == 0:
                 finished = True
 
         if self.score[self.away.team_id] == self.score[self.home.team_id]:
             self.quarter = 5
             self.clock_tenths = OVERTIME_TENTHS
-            offense = self.rng.choice([self.away, self.home])
-            field_pos = 25
+            self.reset_overtime_timeouts()
+            self.ot_possessions.clear()
+            receiver = self.rng.choice([self.away, self.home])
+            offense, field_pos = self.resolve_free_kick(self.opponent(receiver), receiver, reason="overtime", allow_onside=False)
             while self.overtime_should_continue():
                 current_offense_id = offense.team_id
-                before_score = dict(self.score)
                 offense, field_pos, finished = self.run_drive(offense, field_pos)
                 self.ot_possessions.add(current_offense_id)
-                scored_td = self.score[current_offense_id] >= before_score[current_offense_id] + 6
-                if scored_td and len(self.ot_possessions) == 1:
+                last_drive = self.drives[-1] if self.drives else None
+                if last_drive and last_drive.result in {"defensive_touchdown", "field_goal_return_touchdown", "punt_return_touchdown", "safety"} and len(self.ot_possessions) == 1:
                     break
                 if self.clock_tenths <= 0:
                     break
                 if len(self.ot_possessions) >= 2 and self.score[self.away.team_id] != self.score[self.home.team_id]:
                     break
+                if last_drive:
+                    offense, field_pos, _ = self.possession_after_drive(last_drive, offense, field_pos)
 
         return GameResult(
             schedule_game_id=self.schedule_game_id,
