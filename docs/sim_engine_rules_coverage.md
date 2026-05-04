@@ -21,7 +21,7 @@ Rule references were checked on 2026-05-04 against NFL Football Operations:
 ## Current Engine Baseline
 
 - File: `engine/match_engine.py`
-- Version: `0.1.3`
+- Version: `0.1.4`
 - Core model: per-play probabilistic engine with tenths-of-a-second game clock.
 - Not yet a true spatial 0.1-second player-movement simulation.
 
@@ -79,12 +79,12 @@ Rule references were checked on 2026-05-04 against NFL Football Operations:
 | Penalties | Offensive holding | Implemented | Basic offensive live-ball penalty exists. |
 | Penalties | Defensive offside | Implemented | Basic defensive penalty exists. |
 | Penalties | Defensive holding | Implemented | Basic automatic first down exists. |
-| Penalties | DPI / OPI | Partial | DPI/OPI branches exist with simplified enforcement. |
-| Penalties | Illegal contact | Partial | Illegal contact exists as a defensive pass penalty branch. |
+| Penalties | DPI / OPI | Partial | DPI is a spot-foul style automatic first down; OPI is enforced from the previous spot. Receiver/contact details remain abstracted. |
+| Penalties | Illegal contact | Partial | Illegal contact exists as a defensive pass penalty branch with automatic-first-down enforcement. |
 | Penalties | Roughing passer/kicker | Partial | Roughing the passer exists; roughing/running into the kicker is still missing. |
 | Penalties | Facemask / personal fouls | Partial | Facemask and unnecessary roughness branches exist with simplified enforcement. |
-| Penalties | Intentional grounding | Partial | Intentional grounding exists as an offensive pass penalty branch. |
-| Penalties | Offset/decline/enforcement complexity | Missing | Current penalties are directly applied and never declined/offset. |
+| Penalties | Intentional grounding | Partial | Intentional grounding exists as an offensive pass penalty with loss-of-down enforcement. Pocket/pass-location details remain abstracted. |
+| Penalties | Offset/decline/enforcement complexity | Partial | Accepted, declined, offsetting, half-distance, previous-spot, spot-foul, dead-ball, automatic-first-down, and loss-of-down handling exist for scrimmage plays. Full NFL special cases are not complete. |
 | Special teams | FG/XP snap counts | Implemented | Specialist snap counts added in engine 0.1.2. |
 | Special teams | Punt snap counts | Implemented | Specialist snap counts added in engine 0.1.2. |
 | Special teams | Kickoff snap counts | Implemented | Kickoff/safety-kick and return-team special teams snaps are counted. |
@@ -121,12 +121,21 @@ Engine version `0.1.3` adds the first broad rules pass:
 - Expanded first-pass penalty branches for DPI, OPI, illegal contact, roughing the passer, facemask, unnecessary roughness, intentional grounding, delay of game, and illegal formation.
 - Punt returns, fair catches, blocked punts, blocked field goals, and broader special-teams snap counts.
 
+Engine version `0.1.4` adds the first penalty-enforcement pass:
+
+- Dead-ball/no-play flags such as false start, delay of game, and neutral zone infraction.
+- Live-ball flags that can be accepted or declined after the play result is known.
+- Offsetting live-ball fouls that replay the down.
+- Half-distance enforcement near the goal line.
+- Previous-spot, spot-foul, dead-ball, and best-of-previous/dead-ball style enforcement.
+- Defensive penalty first downs, declined-penalty counts, and offsetting-penalty counts.
+
 ## Recommended Next Code Task
 
 The next engine pass should refine the pieces that are now present but still too coarse:
 
-1. Add penalty decline, offset, spot-foul, half-the-distance, and special-teams enforcement logic.
+1. Add special-teams penalty enforcement: roughing/running into kicker, kick-catch interference, return holding, and free-kick replay/add-on choices.
 2. Improve timeout and tempo strategy with explicit hurry-up, chew-clock, field-goal unit, and sideline/out-of-bounds clock behavior.
-3. Add roughing/running into the kicker, blocked extra points, defensive conversion scores, and missed-FG returns.
+3. Add blocked extra points, defensive conversion scores, and missed-FG returns.
 4. Attribute return coverage tackles, assisted tackles on returns, return-team blocking quality, and long-snapper quality effects.
 5. Start using weather, stadium, stamina, and durability so game conditions and roster construction matter more.

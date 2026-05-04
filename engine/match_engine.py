@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-ENGINE_VERSION = "0.1.3"
+ENGINE_VERSION = "0.1.4"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
@@ -428,6 +428,31 @@ class DriveRecord:
     yards: int = 0
     points: int = 0
     time_elapsed_tenths: int = 0
+
+
+@dataclass(frozen=True)
+class PenaltyFlag:
+    label: str
+    side: str
+    yards: int
+    timing: str
+    enforcement: str = "previous"
+    no_play: bool = False
+    automatic_first_down: bool = False
+    loss_of_down: bool = False
+    spot_yards: int | None = None
+    personal_foul: bool = False
+
+
+@dataclass(frozen=True)
+class PenaltyDecision:
+    field_pos: int
+    down: int
+    distance: int
+    enforced_yards: int
+    first_down: bool = False
+    turnover_on_downs: bool = False
+    keeps_play: bool = False
 
 
 @dataclass
@@ -1005,85 +1030,244 @@ class MatchEngine:
             ],
         )
 
-    def maybe_penalty(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str) -> tuple[int, str, bool] | None:
+    def state_snapshot(self) -> tuple[dict[int, int], dict[int, Counter], dict[int, Counter], dict[int, int]]:
+        return (
+            dict(self.score),
+            {team_id: Counter(stats) for team_id, stats in self.team_stats.items()},
+            {player_id: Counter(stats) for player_id, stats in self.player_stats.items()},
+            dict(self.timeouts),
+        )
+
+    def restore_state_snapshot(self, snapshot: tuple[dict[int, int], dict[int, Counter], dict[int, Counter], dict[int, int]]) -> None:
+        score, team_stats, player_stats, timeouts = snapshot
+        self.score = dict(score)
+        self.team_stats = defaultdict(Counter, {team_id: Counter(stats) for team_id, stats in team_stats.items()})
+        self.player_stats = defaultdict(Counter, {player_id: Counter(stats) for player_id, stats in player_stats.items()})
+        self.timeouts = dict(timeouts)
+
+    def penalty_team(self, flag: PenaltyFlag, offense: TeamSnapshot, defense: TeamSnapshot) -> TeamSnapshot:
+        return offense if flag.side == "offense" else defense
+
+    def mark_penalty_accepted(self, flag: PenaltyFlag, offense: TeamSnapshot, defense: TeamSnapshot, enforced_yards: int, first_down: bool) -> None:
+        penalized = self.penalty_team(flag, offense, defense)
+        self.team_stats[penalized.team_id]["penalties"] += 1
+        self.team_stats[penalized.team_id]["penalty_yards"] += abs(enforced_yards)
+        if first_down and flag.side == "defense":
+            self.team_stats[offense.team_id]["first_downs"] += 1
+            self.team_stats[offense.team_id]["penalty_first_downs"] += 1
+
+    def mark_penalty_declined(self, flag: PenaltyFlag, offense: TeamSnapshot, defense: TeamSnapshot) -> None:
+        penalized = self.penalty_team(flag, offense, defense)
+        self.team_stats[penalized.team_id]["declined_penalties"] += 1
+
+    def mark_offsetting_penalties(self, flags: list[PenaltyFlag], offense: TeamSnapshot, defense: TeamSnapshot) -> None:
+        for flag in flags:
+            penalized = self.penalty_team(flag, offense, defense)
+            self.team_stats[penalized.team_id]["offsetting_penalties"] += 1
+
+    def apply_penalty_distance(self, spot: int, signed_yards: int) -> tuple[int, int]:
+        spot = int(clamp(spot, 1, 99))
+        if signed_yards > 0:
+            max_yards = max(1, math.ceil((100 - spot) / 2)) if signed_yards > (100 - spot) / 2 else signed_yards
+            new_field = int(clamp(spot + min(signed_yards, max_yards), 1, 99))
+        else:
+            distance = abs(signed_yards)
+            max_yards = max(1, math.ceil(spot / 2)) if distance > spot / 2 else distance
+            new_field = int(clamp(spot - min(distance, max_yards), 1, 99))
+        return new_field, new_field - spot
+
+    def penalty_decision(
+        self,
+        flag: PenaltyFlag,
+        *,
+        snap_down: int,
+        snap_distance: int,
+        snap_field: int,
+        dead_field: int,
+        play_outcome: str | None = None,
+    ) -> PenaltyDecision:
+        line_to_gain = min(100, snap_field + snap_distance)
+        if flag.side == "offense":
+            spot = dead_field if flag.enforcement == "dead_ball" else snap_field
+            new_field, enforced_yards = self.apply_penalty_distance(spot, -flag.yards)
+            new_down = snap_down + 1 if flag.loss_of_down else snap_down
+            if new_down > 4:
+                return PenaltyDecision(
+                    field_pos=new_field,
+                    down=new_down,
+                    distance=max(1, line_to_gain - new_field),
+                    enforced_yards=enforced_yards,
+                    turnover_on_downs=True,
+                )
+            return PenaltyDecision(
+                field_pos=new_field,
+                down=new_down,
+                distance=max(1, line_to_gain - new_field),
+                enforced_yards=enforced_yards,
+            )
+
+        if flag.enforcement == "spot" and flag.spot_yards is not None:
+            new_field = int(clamp(snap_field + flag.spot_yards, 1, 99))
+            enforced_yards = new_field - snap_field
+        elif flag.enforcement == "best_previous_or_dead":
+            previous_field, previous_yards = self.apply_penalty_distance(snap_field, flag.yards)
+            dead_ball_field, dead_ball_yards = self.apply_penalty_distance(dead_field, flag.yards)
+            if play_outcome in {"turnover", "defensive_touchdown"}:
+                new_field, enforced_yards = previous_field, previous_yards
+            elif dead_ball_field >= previous_field:
+                new_field, enforced_yards = dead_ball_field, dead_ball_yards
+            else:
+                new_field, enforced_yards = previous_field, previous_yards
+        elif flag.enforcement == "dead_ball":
+            new_field, enforced_yards = self.apply_penalty_distance(dead_field, flag.yards)
+        else:
+            new_field, enforced_yards = self.apply_penalty_distance(snap_field, flag.yards)
+
+        first_down = flag.automatic_first_down or new_field >= line_to_gain
+        if first_down:
+            return PenaltyDecision(
+                field_pos=new_field,
+                down=1,
+                distance=min(10, max(1, 100 - new_field)),
+                enforced_yards=enforced_yards,
+                first_down=True,
+                keeps_play=flag.enforcement in {"dead_ball", "best_previous_or_dead"} and play_outcome not in {"turnover", "defensive_touchdown"},
+            )
+        return PenaltyDecision(
+            field_pos=new_field,
+            down=snap_down,
+            distance=max(1, line_to_gain - new_field),
+            enforced_yards=enforced_yards,
+            keeps_play=flag.enforcement in {"dead_ball", "best_previous_or_dead"} and play_outcome not in {"turnover", "defensive_touchdown"},
+        )
+
+    def penalty_description(self, flag: PenaltyFlag, team: TeamSnapshot, decision: PenaltyDecision, accepted: bool = True) -> str:
+        yards = abs(decision.enforced_yards) if accepted else flag.yards
+        if accepted:
+            suffix = ", automatic first down" if decision.first_down and flag.side == "defense" else ""
+            if flag.loss_of_down:
+                suffix += ", loss of down"
+            return f"Penalty: {flag.label} on {team.abbreviation}, {yards} yards accepted{suffix}."
+        return f"Penalty declined: {flag.label} on {team.abbreviation}."
+
+    def should_accept_penalty(
+        self,
+        flag: PenaltyFlag,
+        decision: PenaltyDecision,
+        *,
+        snap_down: int,
+        snap_distance: int,
+        play_yards: int,
+        outcome: str,
+    ) -> bool:
+        if flag.side == "defense":
+            if outcome == "touchdown":
+                return False
+            if outcome in {"turnover", "defensive_touchdown"}:
+                return True
+            if decision.first_down and play_yards < snap_distance:
+                return True
+            if decision.enforced_yards >= max(1, play_yards):
+                return True
+            return False
+
+        if outcome in {"turnover", "defensive_touchdown"}:
+            return False
+        if outcome == "touchdown":
+            return True
+        if flag.loss_of_down:
+            return play_yards >= 0 or snap_down < 4
+        if snap_down >= 3 and play_yards < snap_distance:
+            return False
+        if play_yards < 0:
+            return False
+        return True
+
+    def make_presnap_penalty(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str) -> PenaltyFlag | None:
         offense_discipline = offense.discipline_score()
         defense_discipline = defense.discipline_score()
-        base = 0.052
-        penalty_chance = base + max(0, 60 - offense_discipline) * 0.00045 + max(0, 60 - defense_discipline) * 0.00025
-        if self.rng.random() >= penalty_chance:
+        chance = 0.017 + max(0, 62 - offense_discipline) * 0.00020 + max(0, 62 - defense_discipline) * 0.00012
+        if self.rng.random() >= chance:
             return None
-        roll = self.rng.random()
-        if roll < 0.54:
-            if play_type == "pass":
-                choice = weighted_choice(
-                    self.rng,
-                    [
-                        ("offensive holding", 0.40),
-                        ("false start", 0.22),
-                        ("offensive pass interference", 0.14),
-                        ("intentional grounding", 0.12),
-                        ("delay of game", 0.12),
-                    ],
-                )
-            else:
-                choice = weighted_choice(
-                    self.rng,
-                    [
-                        ("offensive holding", 0.48),
-                        ("false start", 0.30),
-                        ("illegal formation", 0.12),
-                        ("delay of game", 0.10),
-                    ],
-                )
-            yards = {
-                "offensive holding": -10,
-                "offensive pass interference": -10,
-                "intentional grounding": -10,
-                "false start": -5,
-                "delay of game": -5,
-                "illegal formation": -5,
-            }[choice]
-            self.team_stats[offense.team_id]["penalties"] += 1
-            self.team_stats[offense.team_id]["penalty_yards"] += abs(yards)
-            return yards, choice, False
+        if self.rng.random() < 0.62:
+            label = "false start" if self.rng.random() < 0.70 else "delay of game"
+            return PenaltyFlag(label=label, side="offense", yards=5, timing="dead_ball", no_play=True)
+        return PenaltyFlag(label="neutral zone infraction", side="defense", yards=5, timing="dead_ball", no_play=True)
 
+    def offensive_live_penalty(self, play_type: str) -> PenaltyFlag:
         if play_type == "pass":
             label = weighted_choice(
                 self.rng,
                 [
-                    ("defensive offside", 0.22),
-                    ("defensive holding", 0.24),
-                    ("illegal contact", 0.18),
-                    ("defensive pass interference", 0.20),
-                    ("roughing the passer", 0.10),
-                    ("facemask", 0.06),
+                    ("offensive holding", 0.42),
+                    ("offensive pass interference", 0.18),
+                    ("intentional grounding", 0.16),
+                    ("illegal formation", 0.14),
+                    ("ineligible player downfield", 0.10),
                 ],
             )
         else:
             label = weighted_choice(
                 self.rng,
                 [
-                    ("defensive offside", 0.46),
-                    ("defensive holding", 0.20),
-                    ("facemask", 0.20),
-                    ("unnecessary roughness", 0.14),
+                    ("offensive holding", 0.62),
+                    ("illegal formation", 0.20),
+                    ("illegal block above the waist", 0.18),
+                ],
+            )
+        if label == "intentional grounding":
+            return PenaltyFlag(label=label, side="offense", yards=10, timing="live_ball", loss_of_down=True)
+        yards = 5 if label in {"illegal formation", "ineligible player downfield"} else 10
+        return PenaltyFlag(label=label, side="offense", yards=yards, timing="live_ball")
+
+    def defensive_live_penalty(self, play_type: str, field_pos: int) -> PenaltyFlag:
+        if play_type == "pass":
+            label = weighted_choice(
+                self.rng,
+                [
+                    ("defensive offside", 0.18),
+                    ("defensive holding", 0.22),
+                    ("illegal contact", 0.16),
+                    ("defensive pass interference", 0.20),
+                    ("roughing the passer", 0.12),
+                    ("facemask", 0.07),
+                    ("unnecessary roughness", 0.05),
+                ],
+            )
+        else:
+            label = weighted_choice(
+                self.rng,
+                [
+                    ("defensive offside", 0.38),
+                    ("defensive holding", 0.18),
+                    ("facemask", 0.24),
+                    ("unnecessary roughness", 0.20),
                 ],
             )
         if label == "defensive pass interference":
-            yards = int(clamp(round(self.rng.gauss(17, 8)), 5, 45))
-            automatic_first_down = True
-        elif label in {"roughing the passer", "facemask", "unnecessary roughness"}:
-            yards = 15
-            automatic_first_down = True
-        elif label in {"defensive holding", "illegal contact"}:
-            yards = 5
-            automatic_first_down = True
+            max_spot = max(1, 99 - field_pos)
+            spot_yards = int(clamp(round(self.rng.gauss(17, 9)), 1, max_spot))
+            return PenaltyFlag(label=label, side="defense", yards=spot_yards, timing="live_ball", enforcement="spot", automatic_first_down=True, spot_yards=spot_yards)
+        if label in {"roughing the passer", "facemask", "unnecessary roughness"}:
+            return PenaltyFlag(label=label, side="defense", yards=15, timing="live_ball", enforcement="best_previous_or_dead", automatic_first_down=True, personal_foul=True)
+        if label in {"defensive holding", "illegal contact"}:
+            return PenaltyFlag(label=label, side="defense", yards=5, timing="live_ball", automatic_first_down=True)
+        return PenaltyFlag(label=label, side="defense", yards=5, timing="live_ball")
+
+    def maybe_live_penalties(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str, field_pos: int) -> list[PenaltyFlag]:
+        offense_discipline = offense.discipline_score()
+        defense_discipline = defense.discipline_score()
+        base = 0.041
+        penalty_chance = base + max(0, 60 - offense_discipline) * 0.00045 + max(0, 60 - defense_discipline) * 0.00025
+        if self.rng.random() >= penalty_chance:
+            return []
+        if self.rng.random() < 0.54:
+            flags = [self.offensive_live_penalty(play_type)]
         else:
-            yards = 5
-            automatic_first_down = False
-        self.team_stats[defense.team_id]["penalties"] += 1
-        self.team_stats[defense.team_id]["penalty_yards"] += yards
-        return yards, label, automatic_first_down
+            flags = [self.defensive_live_penalty(play_type, field_pos)]
+        if self.rng.random() < 0.055:
+            flags.append(self.defensive_live_penalty(play_type, field_pos) if flags[0].side == "offense" else self.offensive_live_penalty(play_type))
+        return flags
 
     def run_play(
         self,
@@ -1846,33 +2030,30 @@ class MatchEngine:
 
             is_pass = self.play_call_is_pass(offense, defense, down, distance, field_pos)
             play_type = "pass" if is_pass else "run"
-            penalty = self.maybe_penalty(offense, defense, play_type)
-            if penalty:
-                penalty_yards, label, automatic_first_down = penalty
+            presnap_penalty = self.make_presnap_penalty(offense, defense, play_type)
+            if presnap_penalty:
+                decision = self.penalty_decision(
+                    presnap_penalty,
+                    snap_down=down,
+                    snap_distance=distance,
+                    snap_field=field_pos,
+                    dead_field=field_pos,
+                )
                 snap_down = down
                 snap_distance = distance
                 snap_field = field_pos
-                live = 10
-                consumed, runoff = self.consume_clock(live, 0)
-                field_pos = int(clamp(snap_field + penalty_yards, 1, 99))
-                desc = f"Penalty: {label}, {abs(penalty_yards)} yards"
-                if penalty_yards > 0:
-                    remaining = snap_distance - penalty_yards
-                    if automatic_first_down or remaining <= 0:
-                        self.team_stats[offense.team_id]["first_downs"] += 1
-                        down = 1
-                        distance = min(10, max(1, 100 - field_pos))
-                        if automatic_first_down:
-                            desc += ", automatic first down"
-                    else:
-                        distance = max(1, remaining)
-                else:
-                    distance = snap_distance + abs(penalty_yards)
-                self.record_play(self.drive_number, offense, defense, snap_down, snap_distance, snap_field, "penalty", label, penalty_yards, consumed, runoff, desc + ".")
+                self.mark_penalty_accepted(presnap_penalty, offense, defense, decision.enforced_yards, decision.first_down)
+                field_pos = decision.field_pos
+                down = decision.down
+                distance = decision.distance
+                desc = self.penalty_description(presnap_penalty, self.penalty_team(presnap_penalty, offense, defense), decision)
+                self.record_play(self.drive_number, offense, defense, snap_down, snap_distance, snap_field, "penalty", presnap_penalty.label, decision.enforced_yards, 0, 0, desc)
                 continue
 
             old_field = field_pos
             self._last_play_concept = None
+            live_flags = self.maybe_live_penalties(offense, defense, play_type, field_pos)
+            state_snapshot = self.state_snapshot() if live_flags else None
             if is_pass:
                 outcome, yards, _points, _unused, desc, next_offense, next_field, _down, _dist, target, defender = self.pass_play(offense, defense, down, distance, field_pos)
                 live = int(clamp(round(self.rng.gauss(42 if yards == 0 else 58, 13)), 18, 110))
@@ -1883,25 +2064,9 @@ class MatchEngine:
                 runoff, timeout_desc = self.maybe_use_timeout(offense, defense, play_type="pass", runoff_tenths=runoff, stops_clock=stops_clock)
                 desc += timeout_desc
                 consumed, actual_runoff = self.consume_clock(live, runoff)
-                self.record_play(
-                    self.drive_number,
-                    offense,
-                    defense,
-                    down,
-                    distance,
-                    old_field,
-                    "pass",
-                    self._last_play_concept or "pass",
-                    yards,
-                    consumed - actual_runoff,
-                    actual_runoff,
-                    desc,
-                    offense_player=offense.starter("QB"),
-                    target_player=target,
-                    defense_player=defender,
-                    touchdown=outcome in {"touchdown", "defensive_touchdown"},
-                    turnover=outcome in {"turnover", "defensive_touchdown"},
-                )
+                offense_player = offense.starter("QB")
+                target_player = target
+                defense_player = defender
             else:
                 outcome, yards, _points, _unused, desc, next_offense, next_field, _down, _dist, runner, tackler = self.run_play(offense, defense, down, distance, field_pos)
                 live = int(clamp(round(self.rng.gauss(58, 16)), 25, 120))
@@ -1910,24 +2075,124 @@ class MatchEngine:
                 runoff, timeout_desc = self.maybe_use_timeout(offense, defense, play_type="run", runoff_tenths=runoff, stops_clock=stops_clock)
                 desc += timeout_desc
                 consumed, actual_runoff = self.consume_clock(live, runoff)
-                self.record_play(
-                    self.drive_number,
-                    offense,
-                    defense,
-                    down,
-                    distance,
-                    old_field,
-                    "run",
-                    self._last_play_concept or "run",
-                    yards,
-                    consumed - actual_runoff,
-                    actual_runoff,
-                    desc,
-                    offense_player=runner,
-                    defense_player=tackler,
-                    touchdown=outcome in {"touchdown", "defensive_touchdown"},
-                    turnover=outcome in {"turnover", "defensive_touchdown"},
+                offense_player = runner
+                target_player = None
+                defense_player = tackler
+
+            play_concept = self._last_play_concept or play_type
+            live_elapsed = consumed - actual_runoff
+            dead_field = int(clamp(old_field + yards, 1, 99))
+            if live_flags:
+                if len({flag.side for flag in live_flags}) > 1:
+                    if state_snapshot:
+                        self.restore_state_snapshot(state_snapshot)
+                    self.mark_offsetting_penalties(live_flags, offense, defense)
+                    self.count_scrimmage_snap(offense, defense, play_type, play_concept)
+                    labels = " and ".join(f"{flag.label} on {self.penalty_team(flag, offense, defense).abbreviation}" for flag in live_flags)
+                    self.record_play(
+                        self.drive_number,
+                        offense,
+                        defense,
+                        down,
+                        distance,
+                        old_field,
+                        "penalty",
+                        "offsetting",
+                        0,
+                        live_elapsed,
+                        actual_runoff,
+                        f"Offsetting penalties: {labels}. Replay down.",
+                    )
+                    continue
+
+                flag = live_flags[0]
+                decision = self.penalty_decision(
+                    flag,
+                    snap_down=down,
+                    snap_distance=distance,
+                    snap_field=old_field,
+                    dead_field=dead_field,
+                    play_outcome=outcome,
                 )
+                if self.should_accept_penalty(flag, decision, snap_down=down, snap_distance=distance, play_yards=yards, outcome=outcome):
+                    penalized = self.penalty_team(flag, offense, defense)
+                    if not decision.keeps_play:
+                        if state_snapshot:
+                            self.restore_state_snapshot(state_snapshot)
+                        self.mark_penalty_accepted(flag, offense, defense, decision.enforced_yards, decision.first_down)
+                        self.count_scrimmage_snap(offense, defense, play_type, play_concept)
+                        self.record_play(
+                            self.drive_number,
+                            offense,
+                            defense,
+                            down,
+                            distance,
+                            old_field,
+                            "penalty",
+                            flag.label,
+                            decision.enforced_yards,
+                            live_elapsed,
+                            actual_runoff,
+                            self.penalty_description(flag, penalized, decision),
+                        )
+                        field_pos = decision.field_pos
+                        down = decision.down
+                        distance = decision.distance
+                        if decision.turnover_on_downs:
+                            drive.result = "turnover_on_downs"
+                            offense, field_pos = defense, int(clamp(100 - field_pos, 1, 99))
+                            break
+                        continue
+
+                    self.mark_penalty_accepted(flag, offense, defense, decision.enforced_yards, decision.first_down)
+                    desc = f"{desc} {self.penalty_description(flag, penalized, decision)}"
+                    self.record_play(
+                        self.drive_number,
+                        offense,
+                        defense,
+                        down,
+                        distance,
+                        old_field,
+                        play_type,
+                        play_concept,
+                        yards,
+                        live_elapsed,
+                        actual_runoff,
+                        desc,
+                        offense_player=offense_player,
+                        target_player=target_player,
+                        defense_player=defense_player,
+                        touchdown=outcome in {"touchdown", "defensive_touchdown"},
+                        turnover=outcome in {"turnover", "defensive_touchdown"},
+                    )
+                    drive_yards += yards
+                    field_pos = decision.field_pos
+                    down = decision.down
+                    distance = decision.distance
+                    continue
+
+                self.mark_penalty_declined(flag, offense, defense)
+                desc = f"{desc} {self.penalty_description(flag, self.penalty_team(flag, offense, defense), decision, accepted=False)}"
+
+            self.record_play(
+                self.drive_number,
+                offense,
+                defense,
+                down,
+                distance,
+                old_field,
+                play_type,
+                play_concept,
+                yards,
+                live_elapsed,
+                actual_runoff,
+                desc,
+                offense_player=offense_player,
+                target_player=target_player,
+                defense_player=defense_player,
+                touchdown=outcome in {"touchdown", "defensive_touchdown"},
+                turnover=outcome in {"turnover", "defensive_touchdown"},
+            )
 
             if outcome in {"touchdown", "turnover", "defensive_touchdown"}:
                 if outcome == "touchdown":
