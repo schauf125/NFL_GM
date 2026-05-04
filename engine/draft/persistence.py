@@ -12,6 +12,14 @@ from .repository import (
     DraftClass,
     DraftProspectCombineResult,
     DraftProspectQBBehaviorProfile,
+    DraftProspectRBBehaviorProfile,
+    DraftProspectReceiverBehaviorProfile,
+    DraftProspectOLBehaviorProfile,
+    DraftProspectEdgeBehaviorProfile,
+    DraftProspectIDLBehaviorProfile,
+    DraftProspectLBBehaviorProfile,
+    DraftProspectSecondaryBehaviorProfile,
+    DraftProspectSpecialistBehaviorProfile,
     DraftProspectPrivateWorkout,
     DraftProspectProDayResult,
     DraftProspectRating,
@@ -19,6 +27,14 @@ from .repository import (
     create_draft_class,
     replace_prospect_combine_result,
     replace_prospect_qb_behavior_profile,
+    replace_prospect_rb_behavior_profile,
+    replace_prospect_receiver_behavior_profile,
+    replace_prospect_ol_behavior_profile,
+    replace_prospect_edge_behavior_profile,
+    replace_prospect_idl_behavior_profile,
+    replace_prospect_lb_behavior_profile,
+    replace_prospect_secondary_behavior_profile,
+    replace_prospect_specialist_behavior_profile,
     replace_prospect_private_workout,
     replace_prospect_pro_day_result,
     replace_prospect_sim_profile,
@@ -26,6 +42,14 @@ from .repository import (
 from .schema import ensure_schema
 from .senior_bowl import senior_bowl_status
 from engine.qb_behavior import generated_qb_behavior_profile
+from engine.rb_behavior import generated_rb_behavior_profile
+from engine.receiver_behavior import generated_receiver_behavior_profile
+from engine.ol_behavior import generated_ol_behavior_profile
+from engine.edge_behavior import generated_edge_behavior_profile
+from engine.idl_behavior import generated_idl_behavior_profile
+from engine.lb_behavior import generated_lb_behavior_profile
+from engine.secondary_behavior import generated_secondary_behavior_profile
+from engine.specialist_behavior import generated_specialist_behavior_profile
 
 
 @dataclass(frozen=True)
@@ -124,6 +148,183 @@ def persist_draft_class(
                 ),
                 ensure=False,
             )
+        if row.position.upper() in {"RB", "FB"}:
+            rb_profile = generated_rb_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_rb_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectRBBehaviorProfile(
+                    label=rb_profile.label,
+                    early_down_gravity=int(round(rb_profile.early_down_gravity)),
+                    patience=int(round(rb_profile.patience)),
+                    one_cut_decisiveness=int(round(rb_profile.one_cut_decisiveness)),
+                    bounce_tendency=int(round(rb_profile.bounce_tendency)),
+                    home_run_hunting=int(round(rb_profile.home_run_hunting)),
+                    contact_appetite=int(round(rb_profile.contact_appetite)),
+                    space_creation=int(round(rb_profile.space_creation)),
+                    pass_game_usage=int(round(rb_profile.pass_game_usage)),
+                    short_yardage_trust=int(round(rb_profile.short_yardage_trust)),
+                    ball_security_mindset=int(round(rb_profile.ball_security_mindset)),
+                    notes=rb_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"WR", "TE"}:
+            receiver_profile = generated_receiver_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_receiver_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectReceiverBehaviorProfile(
+                    label=receiver_profile.label,
+                    target_gravity=int(round(receiver_profile.target_gravity)),
+                    release_urgency=int(round(receiver_profile.release_urgency)),
+                    route_pacing=int(round(receiver_profile.route_pacing)),
+                    vertical_intent=int(round(receiver_profile.vertical_intent)),
+                    middle_comfort=int(round(receiver_profile.middle_comfort)),
+                    contested_alpha=int(round(receiver_profile.contested_alpha)),
+                    sideline_awareness=int(round(receiver_profile.sideline_awareness)),
+                    yac_intent=int(round(receiver_profile.yac_intent)),
+                    scramble_drill=int(round(receiver_profile.scramble_drill)),
+                    catch_security=int(round(receiver_profile.catch_security)),
+                    notes=receiver_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"OT", "OG", "C"}:
+            ol_profile = generated_ol_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_ol_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectOLBehaviorProfile(
+                    label=ol_profile.label,
+                    pass_set_patience=int(round(ol_profile.pass_set_patience)),
+                    mirror_vs_speed=int(round(ol_profile.mirror_vs_speed)),
+                    anchor_vs_power=int(round(ol_profile.anchor_vs_power)),
+                    hand_timing=int(round(ol_profile.hand_timing)),
+                    stunt_awareness=int(round(ol_profile.stunt_awareness)),
+                    drive_finish=int(round(ol_profile.drive_finish)),
+                    reach_range=int(round(ol_profile.reach_range)),
+                    combo_timing=int(round(ol_profile.combo_timing)),
+                    second_level_climb=int(round(ol_profile.second_level_climb)),
+                    penalty_control=int(round(ol_profile.penalty_control)),
+                    notes=ol_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"EDGE", "OLB"}:
+            edge_profile = generated_edge_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_edge_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectEdgeBehaviorProfile(
+                    label=edge_profile.label,
+                    getoff_timing=int(round(edge_profile.getoff_timing)),
+                    speed_arc=int(round(edge_profile.speed_arc)),
+                    power_collapse=int(round(edge_profile.power_collapse)),
+                    counter_plan=int(round(edge_profile.counter_plan)),
+                    stunt_timing=int(round(edge_profile.stunt_timing)),
+                    contain_discipline=int(round(edge_profile.contain_discipline)),
+                    run_squeeze=int(round(edge_profile.run_squeeze)),
+                    backside_pursuit=int(round(edge_profile.backside_pursuit)),
+                    finish_skill=int(round(edge_profile.finish_skill)),
+                    rush_discipline=int(round(edge_profile.rush_discipline)),
+                    notes=edge_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"IDL", "DT", "NT"}:
+            idl_profile = generated_idl_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_idl_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectIDLBehaviorProfile(
+                    label=idl_profile.label,
+                    getoff_timing=int(round(idl_profile.getoff_timing)),
+                    penetration_burst=int(round(idl_profile.penetration_burst)),
+                    power_collapse=int(round(idl_profile.power_collapse)),
+                    double_team_anchor=int(round(idl_profile.double_team_anchor)),
+                    gap_control=int(round(idl_profile.gap_control)),
+                    block_shed_timing=int(round(idl_profile.block_shed_timing)),
+                    stunt_timing=int(round(idl_profile.stunt_timing)),
+                    rush_counter_plan=int(round(idl_profile.rush_counter_plan)),
+                    finish_skill=int(round(idl_profile.finish_skill)),
+                    rush_discipline=int(round(idl_profile.rush_discipline)),
+                    notes=idl_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"ILB", "LB", "OLB"}:
+            lb_profile = generated_lb_behavior_profile(row.archetype, row.ratings, position=row.position.upper())
+            replace_prospect_lb_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectLBBehaviorProfile(
+                    label=lb_profile.label,
+                    trigger_quickness=int(round(lb_profile.trigger_quickness)),
+                    gap_fit_discipline=int(round(lb_profile.gap_fit_discipline)),
+                    scrape_range=int(round(lb_profile.scrape_range)),
+                    traffic_navigation=int(round(lb_profile.traffic_navigation)),
+                    zone_landmark_depth=int(round(lb_profile.zone_landmark_depth)),
+                    man_match_carry=int(round(lb_profile.man_match_carry)),
+                    blitz_timing=int(round(lb_profile.blitz_timing)),
+                    tackle_finish=int(round(lb_profile.tackle_finish)),
+                    rally_support=int(round(lb_profile.rally_support)),
+                    penalty_control=int(round(lb_profile.penalty_control)),
+                    notes=lb_profile.notes,
+                ),
+                ensure=False,
+            )
+        if row.position.upper() in {"CB", "NB", "FS", "SS", "S"}:
+            secondary_profile = generated_secondary_behavior_profile(
+                row.archetype,
+                row.ratings,
+                position=row.position.upper(),
+            )
+            replace_prospect_secondary_behavior_profile(
+                con,
+                prospect_id,
+                DraftProspectSecondaryBehaviorProfile(
+                    label=secondary_profile.label,
+                    press_timing=int(round(secondary_profile.press_timing)),
+                    man_mirror=int(round(secondary_profile.man_mirror)),
+                    zone_eye_discipline=int(round(secondary_profile.zone_eye_discipline)),
+                    break_trigger=int(round(secondary_profile.break_trigger)),
+                    deep_range=int(round(secondary_profile.deep_range)),
+                    ball_play_timing=int(round(secondary_profile.ball_play_timing)),
+                    catch_point_compete=int(round(secondary_profile.catch_point_compete)),
+                    slot_traffic=int(round(secondary_profile.slot_traffic)),
+                    run_support_fit=int(round(secondary_profile.run_support_fit)),
+                    tackle_finish=int(round(secondary_profile.tackle_finish)),
+                    penalty_control=int(round(secondary_profile.penalty_control)),
+                    notes=secondary_profile.notes,
+                ),
+                ensure=False,
+            )
+        specialist_profile = generated_specialist_behavior_profile(
+            row.archetype,
+            row.ratings,
+            position=row.position.upper(),
+        )
+        replace_prospect_specialist_behavior_profile(
+            con,
+            prospect_id,
+            DraftProspectSpecialistBehaviorProfile(
+                label=specialist_profile.label,
+                kick_operation=int(round(specialist_profile.kick_operation)),
+                kickoff_control=int(round(specialist_profile.kickoff_control)),
+                punt_hang_time=int(round(specialist_profile.punt_hang_time)),
+                punt_placement=int(round(specialist_profile.punt_placement)),
+                snap_accuracy=int(round(specialist_profile.snap_accuracy)),
+                lane_release=int(round(specialist_profile.lane_release)),
+                gunner_speed=int(round(specialist_profile.gunner_speed)),
+                return_lane_vision=int(round(specialist_profile.return_lane_vision)),
+                block_timing=int(round(specialist_profile.block_timing)),
+                coverage_tackle=int(round(specialist_profile.coverage_tackle)),
+                penalty_control=int(round(specialist_profile.penalty_control)),
+                notes=specialist_profile.notes,
+            ),
+            ensure=False,
+        )
         replace_prospect_combine_result(
             con,
             prospect_id,

@@ -26,6 +26,14 @@ if str(DATABASE_DIR) not in sys.path:
 
 from engine.draft.schema import ensure_schema as ensure_draft_schema
 from engine.qb_behavior import ensure_player_qb_behavior_schema
+from engine.rb_behavior import ensure_player_rb_behavior_schema
+from engine.receiver_behavior import ensure_player_receiver_behavior_schema
+from engine.ol_behavior import ensure_player_ol_behavior_schema
+from engine.edge_behavior import ensure_player_edge_behavior_schema
+from engine.idl_behavior import ensure_player_idl_behavior_schema
+from engine.lb_behavior import ensure_player_lb_behavior_schema
+from engine.secondary_behavior import ensure_player_secondary_behavior_schema
+from engine.specialist_behavior import ensure_player_specialist_behavior_schema
 from migrate_legacy_sim_ratings import ensure_sim_rating_schema
 from setup_contract_years import (
     ensure_schema as ensure_contract_schema,
@@ -77,6 +85,14 @@ def ensure_all_schema(con: sqlite3.Connection) -> None:
     ensure_transaction_schema(con)
     ensure_draft_schema(con)
     ensure_player_qb_behavior_schema(con)
+    ensure_player_rb_behavior_schema(con)
+    ensure_player_receiver_behavior_schema(con)
+    ensure_player_ol_behavior_schema(con)
+    ensure_player_edge_behavior_schema(con)
+    ensure_player_idl_behavior_schema(con)
+    ensure_player_lb_behavior_schema(con)
+    ensure_player_secondary_behavior_schema(con)
+    ensure_player_specialist_behavior_schema(con)
     player_personalities.ensure_schema(con)
     player_personalities.seed_trait_definitions(con)
     player_development_modifiers.seed_master_data(con)
@@ -676,6 +692,469 @@ def copy_qb_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_i
     return 1
 
 
+def copy_rb_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_rb_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_rb_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_rb_behavior_profiles (
+            player_id, season, label, early_down_gravity, patience,
+            one_cut_decisiveness, bounce_tendency, home_run_hunting,
+            contact_appetite, space_creation, pass_game_usage,
+            short_yardage_trust, ball_security_mindset, source, notes,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            early_down_gravity = excluded.early_down_gravity,
+            patience = excluded.patience,
+            one_cut_decisiveness = excluded.one_cut_decisiveness,
+            bounce_tendency = excluded.bounce_tendency,
+            home_run_hunting = excluded.home_run_hunting,
+            contact_appetite = excluded.contact_appetite,
+            space_creation = excluded.space_creation,
+            pass_game_usage = excluded.pass_game_usage,
+            short_yardage_trust = excluded.short_yardage_trust,
+            ball_security_mindset = excluded.ball_security_mindset,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["early_down_gravity"]),
+            int(row["patience"]),
+            int(row["one_cut_decisiveness"]),
+            int(row["bounce_tendency"]),
+            int(row["home_run_hunting"]),
+            int(row["contact_appetite"]),
+            int(row["space_creation"]),
+            int(row["pass_game_usage"]),
+            int(row["short_yardage_trust"]),
+            int(row["ball_security_mindset"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_receiver_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_receiver_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_receiver_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_receiver_behavior_profiles (
+            player_id, season, label, target_gravity, release_urgency,
+            route_pacing, vertical_intent, middle_comfort, contested_alpha,
+            sideline_awareness, yac_intent, scramble_drill, catch_security,
+            source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            target_gravity = excluded.target_gravity,
+            release_urgency = excluded.release_urgency,
+            route_pacing = excluded.route_pacing,
+            vertical_intent = excluded.vertical_intent,
+            middle_comfort = excluded.middle_comfort,
+            contested_alpha = excluded.contested_alpha,
+            sideline_awareness = excluded.sideline_awareness,
+            yac_intent = excluded.yac_intent,
+            scramble_drill = excluded.scramble_drill,
+            catch_security = excluded.catch_security,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["target_gravity"]),
+            int(row["release_urgency"]),
+            int(row["route_pacing"]),
+            int(row["vertical_intent"]),
+            int(row["middle_comfort"]),
+            int(row["contested_alpha"]),
+            int(row["sideline_awareness"]),
+            int(row["yac_intent"]),
+            int(row["scramble_drill"]),
+            int(row["catch_security"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_ol_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_ol_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_ol_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_ol_behavior_profiles (
+            player_id, season, label, pass_set_patience, mirror_vs_speed,
+            anchor_vs_power, hand_timing, stunt_awareness, drive_finish,
+            reach_range, combo_timing, second_level_climb, penalty_control,
+            source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            pass_set_patience = excluded.pass_set_patience,
+            mirror_vs_speed = excluded.mirror_vs_speed,
+            anchor_vs_power = excluded.anchor_vs_power,
+            hand_timing = excluded.hand_timing,
+            stunt_awareness = excluded.stunt_awareness,
+            drive_finish = excluded.drive_finish,
+            reach_range = excluded.reach_range,
+            combo_timing = excluded.combo_timing,
+            second_level_climb = excluded.second_level_climb,
+            penalty_control = excluded.penalty_control,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["pass_set_patience"]),
+            int(row["mirror_vs_speed"]),
+            int(row["anchor_vs_power"]),
+            int(row["hand_timing"]),
+            int(row["stunt_awareness"]),
+            int(row["drive_finish"]),
+            int(row["reach_range"]),
+            int(row["combo_timing"]),
+            int(row["second_level_climb"]),
+            int(row["penalty_control"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_edge_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_edge_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_edge_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_edge_behavior_profiles (
+            player_id, season, label, getoff_timing, speed_arc, power_collapse,
+            counter_plan, stunt_timing, contain_discipline, run_squeeze,
+            backside_pursuit, finish_skill, rush_discipline, source, notes,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            getoff_timing = excluded.getoff_timing,
+            speed_arc = excluded.speed_arc,
+            power_collapse = excluded.power_collapse,
+            counter_plan = excluded.counter_plan,
+            stunt_timing = excluded.stunt_timing,
+            contain_discipline = excluded.contain_discipline,
+            run_squeeze = excluded.run_squeeze,
+            backside_pursuit = excluded.backside_pursuit,
+            finish_skill = excluded.finish_skill,
+            rush_discipline = excluded.rush_discipline,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["getoff_timing"]),
+            int(row["speed_arc"]),
+            int(row["power_collapse"]),
+            int(row["counter_plan"]),
+            int(row["stunt_timing"]),
+            int(row["contain_discipline"]),
+            int(row["run_squeeze"]),
+            int(row["backside_pursuit"]),
+            int(row["finish_skill"]),
+            int(row["rush_discipline"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_idl_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_idl_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_idl_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_idl_behavior_profiles (
+            player_id, season, label, getoff_timing, penetration_burst,
+            power_collapse, double_team_anchor, gap_control,
+            block_shed_timing, stunt_timing, rush_counter_plan,
+            finish_skill, rush_discipline, source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            getoff_timing = excluded.getoff_timing,
+            penetration_burst = excluded.penetration_burst,
+            power_collapse = excluded.power_collapse,
+            double_team_anchor = excluded.double_team_anchor,
+            gap_control = excluded.gap_control,
+            block_shed_timing = excluded.block_shed_timing,
+            stunt_timing = excluded.stunt_timing,
+            rush_counter_plan = excluded.rush_counter_plan,
+            finish_skill = excluded.finish_skill,
+            rush_discipline = excluded.rush_discipline,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["getoff_timing"]),
+            int(row["penetration_burst"]),
+            int(row["power_collapse"]),
+            int(row["double_team_anchor"]),
+            int(row["gap_control"]),
+            int(row["block_shed_timing"]),
+            int(row["stunt_timing"]),
+            int(row["rush_counter_plan"]),
+            int(row["finish_skill"]),
+            int(row["rush_discipline"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_lb_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_lb_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_lb_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_lb_behavior_profiles (
+            player_id, season, label, trigger_quickness, gap_fit_discipline,
+            scrape_range, traffic_navigation, zone_landmark_depth,
+            man_match_carry, blitz_timing, tackle_finish, rally_support,
+            penalty_control, source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            trigger_quickness = excluded.trigger_quickness,
+            gap_fit_discipline = excluded.gap_fit_discipline,
+            scrape_range = excluded.scrape_range,
+            traffic_navigation = excluded.traffic_navigation,
+            zone_landmark_depth = excluded.zone_landmark_depth,
+            man_match_carry = excluded.man_match_carry,
+            blitz_timing = excluded.blitz_timing,
+            tackle_finish = excluded.tackle_finish,
+            rally_support = excluded.rally_support,
+            penalty_control = excluded.penalty_control,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["trigger_quickness"]),
+            int(row["gap_fit_discipline"]),
+            int(row["scrape_range"]),
+            int(row["traffic_navigation"]),
+            int(row["zone_landmark_depth"]),
+            int(row["man_match_carry"]),
+            int(row["blitz_timing"]),
+            int(row["tackle_finish"]),
+            int(row["rally_support"]),
+            int(row["penalty_control"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_secondary_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_secondary_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_secondary_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_secondary_behavior_profiles (
+            player_id, season, label, press_timing, man_mirror,
+            zone_eye_discipline, break_trigger, deep_range,
+            ball_play_timing, catch_point_compete, slot_traffic,
+            run_support_fit, tackle_finish, penalty_control,
+            source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            press_timing = excluded.press_timing,
+            man_mirror = excluded.man_mirror,
+            zone_eye_discipline = excluded.zone_eye_discipline,
+            break_trigger = excluded.break_trigger,
+            deep_range = excluded.deep_range,
+            ball_play_timing = excluded.ball_play_timing,
+            catch_point_compete = excluded.catch_point_compete,
+            slot_traffic = excluded.slot_traffic,
+            run_support_fit = excluded.run_support_fit,
+            tackle_finish = excluded.tackle_finish,
+            penalty_control = excluded.penalty_control,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["press_timing"]),
+            int(row["man_mirror"]),
+            int(row["zone_eye_discipline"]),
+            int(row["break_trigger"]),
+            int(row["deep_range"]),
+            int(row["ball_play_timing"]),
+            int(row["catch_point_compete"]),
+            int(row["slot_traffic"]),
+            int(row["run_support_fit"]),
+            int(row["tackle_finish"]),
+            int(row["penalty_control"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
+def copy_specialist_behavior_profile(con: sqlite3.Connection, prospect_id: int, player_id: int, season: int) -> int:
+    ensure_player_specialist_behavior_schema(con)
+    row = con.execute(
+        """
+        SELECT *
+        FROM draft_prospect_specialist_behavior_profiles
+        WHERE prospect_id = ?
+        """,
+        (prospect_id,),
+    ).fetchone()
+    if not row:
+        return 0
+    con.execute(
+        """
+        INSERT INTO player_specialist_behavior_profiles (
+            player_id, season, label, kick_operation, kickoff_control,
+            punt_hang_time, punt_placement, snap_accuracy,
+            lane_release, gunner_speed, return_lane_vision,
+            block_timing, coverage_tackle, penalty_control,
+            source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft_selection', ?, datetime('now'))
+        ON CONFLICT(player_id, season) DO UPDATE SET
+            label = excluded.label,
+            kick_operation = excluded.kick_operation,
+            kickoff_control = excluded.kickoff_control,
+            punt_hang_time = excluded.punt_hang_time,
+            punt_placement = excluded.punt_placement,
+            snap_accuracy = excluded.snap_accuracy,
+            lane_release = excluded.lane_release,
+            gunner_speed = excluded.gunner_speed,
+            return_lane_vision = excluded.return_lane_vision,
+            block_timing = excluded.block_timing,
+            coverage_tackle = excluded.coverage_tackle,
+            penalty_control = excluded.penalty_control,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        (
+            player_id,
+            season,
+            row["label"],
+            int(row["kick_operation"]),
+            int(row["kickoff_control"]),
+            int(row["punt_hang_time"]),
+            int(row["punt_placement"]),
+            int(row["snap_accuracy"]),
+            int(row["lane_release"]),
+            int(row["gunner_speed"]),
+            int(row["return_lane_vision"]),
+            int(row["block_timing"]),
+            int(row["coverage_tackle"]),
+            int(row["penalty_control"]),
+            row["notes"],
+        ),
+    )
+    return 1
+
+
 def convert_undrafted_prospect_to_free_agent(
     con: sqlite3.Connection,
     *,
@@ -699,6 +1178,14 @@ def convert_undrafted_prospect_to_free_agent(
     )
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    receiver_behavior_rows = copy_receiver_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    ol_behavior_rows = copy_ol_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    edge_behavior_rows = copy_edge_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    idl_behavior_rows = copy_idl_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    lb_behavior_rows = copy_lb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    secondary_behavior_rows = copy_secondary_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
+    specialist_behavior_rows = copy_specialist_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, draft_year)
     insert_primary_flex(con, prospect, player_id)
     insert_career_shell(con, player_id, "FA")
@@ -743,6 +1230,14 @@ def convert_undrafted_prospect_to_free_agent(
         "converted": True,
         "ratings": rating_rows,
         "qb_behavior_profiles": qb_behavior_rows,
+        "rb_behavior_profiles": rb_behavior_rows,
+        "receiver_behavior_profiles": receiver_behavior_rows,
+        "ol_behavior_profiles": ol_behavior_rows,
+        "edge_behavior_profiles": edge_behavior_rows,
+        "idl_behavior_profiles": idl_behavior_rows,
+        "lb_behavior_profiles": lb_behavior_rows,
+        "secondary_behavior_profiles": secondary_behavior_rows,
+        "specialist_behavior_profiles": specialist_behavior_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1165,6 +1660,14 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
     )
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    receiver_behavior_rows = copy_receiver_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    ol_behavior_rows = copy_ol_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    edge_behavior_rows = copy_edge_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    idl_behavior_rows = copy_idl_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    lb_behavior_rows = copy_lb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    secondary_behavior_rows = copy_secondary_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
+    specialist_behavior_rows = copy_specialist_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     insert_primary_flex(con, prospect, player_id)
     insert_career_shell(con, player_id, team_abbr)
@@ -1221,6 +1724,14 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         "college": prospect["college"],
         "ratings": rating_rows,
         "qb_behavior_profiles": qb_behavior_rows,
+        "rb_behavior_profiles": rb_behavior_rows,
+        "receiver_behavior_profiles": receiver_behavior_rows,
+        "ol_behavior_profiles": ol_behavior_rows,
+        "edge_behavior_profiles": edge_behavior_rows,
+        "idl_behavior_profiles": idl_behavior_rows,
+        "lb_behavior_profiles": lb_behavior_rows,
+        "secondary_behavior_profiles": secondary_behavior_rows,
+        "specialist_behavior_profiles": specialist_behavior_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1253,6 +1764,14 @@ def print_selection(result: dict[str, Any], *, dry_run: bool) -> None:
     print(
         f"Copied: {result['ratings']} ratings, {result['role_assignments']} role assignments, "
         f"{result.get('qb_behavior_profiles', 0)} QB behavior profiles, "
+        f"{result.get('rb_behavior_profiles', 0)} RB behavior profiles, "
+        f"{result.get('receiver_behavior_profiles', 0)} receiver behavior profiles, "
+        f"{result.get('ol_behavior_profiles', 0)} OL behavior profiles, "
+        f"{result.get('edge_behavior_profiles', 0)} Edge behavior profiles, "
+        f"{result.get('idl_behavior_profiles', 0)} IDL behavior profiles, "
+        f"{result.get('lb_behavior_profiles', 0)} LB behavior profiles, "
+        f"{result.get('secondary_behavior_profiles', 0)} secondary behavior profiles, "
+        f"{result.get('specialist_behavior_profiles', 0)} specialist behavior profiles, "
         f"{result['role_scores']} role scores, {result['personalities']} hidden personality traits, "
         f"{result.get('development_modifiers', 0)} development modifiers, "
         f"{result.get('scheme_fits', 0)} scheme fits"

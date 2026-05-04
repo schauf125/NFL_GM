@@ -375,6 +375,168 @@ def create_schema(conn):
             PRIMARY KEY (player_id, season)
         );
 
+        CREATE TABLE IF NOT EXISTS player_rb_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            early_down_gravity INTEGER NOT NULL CHECK (early_down_gravity BETWEEN 0 AND 100),
+            patience INTEGER NOT NULL CHECK (patience BETWEEN 0 AND 100),
+            one_cut_decisiveness INTEGER NOT NULL CHECK (one_cut_decisiveness BETWEEN 0 AND 100),
+            bounce_tendency INTEGER NOT NULL CHECK (bounce_tendency BETWEEN 0 AND 100),
+            home_run_hunting INTEGER NOT NULL CHECK (home_run_hunting BETWEEN 0 AND 100),
+            contact_appetite INTEGER NOT NULL CHECK (contact_appetite BETWEEN 0 AND 100),
+            space_creation INTEGER NOT NULL CHECK (space_creation BETWEEN 0 AND 100),
+            pass_game_usage INTEGER NOT NULL CHECK (pass_game_usage BETWEEN 0 AND 100),
+            short_yardage_trust INTEGER NOT NULL CHECK (short_yardage_trust BETWEEN 0 AND 100),
+            ball_security_mindset INTEGER NOT NULL CHECK (ball_security_mindset BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_receiver_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            target_gravity INTEGER NOT NULL CHECK (target_gravity BETWEEN 0 AND 100),
+            release_urgency INTEGER NOT NULL CHECK (release_urgency BETWEEN 0 AND 100),
+            route_pacing INTEGER NOT NULL CHECK (route_pacing BETWEEN 0 AND 100),
+            vertical_intent INTEGER NOT NULL CHECK (vertical_intent BETWEEN 0 AND 100),
+            middle_comfort INTEGER NOT NULL CHECK (middle_comfort BETWEEN 0 AND 100),
+            contested_alpha INTEGER NOT NULL CHECK (contested_alpha BETWEEN 0 AND 100),
+            sideline_awareness INTEGER NOT NULL CHECK (sideline_awareness BETWEEN 0 AND 100),
+            yac_intent INTEGER NOT NULL CHECK (yac_intent BETWEEN 0 AND 100),
+            scramble_drill INTEGER NOT NULL CHECK (scramble_drill BETWEEN 0 AND 100),
+            catch_security INTEGER NOT NULL CHECK (catch_security BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_ol_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            pass_set_patience INTEGER NOT NULL CHECK (pass_set_patience BETWEEN 0 AND 100),
+            mirror_vs_speed INTEGER NOT NULL CHECK (mirror_vs_speed BETWEEN 0 AND 100),
+            anchor_vs_power INTEGER NOT NULL CHECK (anchor_vs_power BETWEEN 0 AND 100),
+            hand_timing INTEGER NOT NULL CHECK (hand_timing BETWEEN 0 AND 100),
+            stunt_awareness INTEGER NOT NULL CHECK (stunt_awareness BETWEEN 0 AND 100),
+            drive_finish INTEGER NOT NULL CHECK (drive_finish BETWEEN 0 AND 100),
+            reach_range INTEGER NOT NULL CHECK (reach_range BETWEEN 0 AND 100),
+            combo_timing INTEGER NOT NULL CHECK (combo_timing BETWEEN 0 AND 100),
+            second_level_climb INTEGER NOT NULL CHECK (second_level_climb BETWEEN 0 AND 100),
+            penalty_control INTEGER NOT NULL CHECK (penalty_control BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_edge_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            getoff_timing INTEGER NOT NULL CHECK (getoff_timing BETWEEN 0 AND 100),
+            speed_arc INTEGER NOT NULL CHECK (speed_arc BETWEEN 0 AND 100),
+            power_collapse INTEGER NOT NULL CHECK (power_collapse BETWEEN 0 AND 100),
+            counter_plan INTEGER NOT NULL CHECK (counter_plan BETWEEN 0 AND 100),
+            stunt_timing INTEGER NOT NULL CHECK (stunt_timing BETWEEN 0 AND 100),
+            contain_discipline INTEGER NOT NULL CHECK (contain_discipline BETWEEN 0 AND 100),
+            run_squeeze INTEGER NOT NULL CHECK (run_squeeze BETWEEN 0 AND 100),
+            backside_pursuit INTEGER NOT NULL CHECK (backside_pursuit BETWEEN 0 AND 100),
+            finish_skill INTEGER NOT NULL CHECK (finish_skill BETWEEN 0 AND 100),
+            rush_discipline INTEGER NOT NULL CHECK (rush_discipline BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_idl_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            getoff_timing INTEGER NOT NULL CHECK (getoff_timing BETWEEN 0 AND 100),
+            penetration_burst INTEGER NOT NULL CHECK (penetration_burst BETWEEN 0 AND 100),
+            power_collapse INTEGER NOT NULL CHECK (power_collapse BETWEEN 0 AND 100),
+            double_team_anchor INTEGER NOT NULL CHECK (double_team_anchor BETWEEN 0 AND 100),
+            gap_control INTEGER NOT NULL CHECK (gap_control BETWEEN 0 AND 100),
+            block_shed_timing INTEGER NOT NULL CHECK (block_shed_timing BETWEEN 0 AND 100),
+            stunt_timing INTEGER NOT NULL CHECK (stunt_timing BETWEEN 0 AND 100),
+            rush_counter_plan INTEGER NOT NULL CHECK (rush_counter_plan BETWEEN 0 AND 100),
+            finish_skill INTEGER NOT NULL CHECK (finish_skill BETWEEN 0 AND 100),
+            rush_discipline INTEGER NOT NULL CHECK (rush_discipline BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_lb_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            trigger_quickness INTEGER NOT NULL CHECK (trigger_quickness BETWEEN 0 AND 100),
+            gap_fit_discipline INTEGER NOT NULL CHECK (gap_fit_discipline BETWEEN 0 AND 100),
+            scrape_range INTEGER NOT NULL CHECK (scrape_range BETWEEN 0 AND 100),
+            traffic_navigation INTEGER NOT NULL CHECK (traffic_navigation BETWEEN 0 AND 100),
+            zone_landmark_depth INTEGER NOT NULL CHECK (zone_landmark_depth BETWEEN 0 AND 100),
+            man_match_carry INTEGER NOT NULL CHECK (man_match_carry BETWEEN 0 AND 100),
+            blitz_timing INTEGER NOT NULL CHECK (blitz_timing BETWEEN 0 AND 100),
+            tackle_finish INTEGER NOT NULL CHECK (tackle_finish BETWEEN 0 AND 100),
+            rally_support INTEGER NOT NULL CHECK (rally_support BETWEEN 0 AND 100),
+            penalty_control INTEGER NOT NULL CHECK (penalty_control BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_secondary_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            press_timing INTEGER NOT NULL CHECK (press_timing BETWEEN 0 AND 100),
+            man_mirror INTEGER NOT NULL CHECK (man_mirror BETWEEN 0 AND 100),
+            zone_eye_discipline INTEGER NOT NULL CHECK (zone_eye_discipline BETWEEN 0 AND 100),
+            break_trigger INTEGER NOT NULL CHECK (break_trigger BETWEEN 0 AND 100),
+            deep_range INTEGER NOT NULL CHECK (deep_range BETWEEN 0 AND 100),
+            ball_play_timing INTEGER NOT NULL CHECK (ball_play_timing BETWEEN 0 AND 100),
+            catch_point_compete INTEGER NOT NULL CHECK (catch_point_compete BETWEEN 0 AND 100),
+            slot_traffic INTEGER NOT NULL CHECK (slot_traffic BETWEEN 0 AND 100),
+            run_support_fit INTEGER NOT NULL CHECK (run_support_fit BETWEEN 0 AND 100),
+            tackle_finish INTEGER NOT NULL CHECK (tackle_finish BETWEEN 0 AND 100),
+            penalty_control INTEGER NOT NULL CHECK (penalty_control BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
+        CREATE TABLE IF NOT EXISTS player_specialist_behavior_profiles (
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            kick_operation INTEGER NOT NULL CHECK (kick_operation BETWEEN 0 AND 100),
+            kickoff_control INTEGER NOT NULL CHECK (kickoff_control BETWEEN 0 AND 100),
+            punt_hang_time INTEGER NOT NULL CHECK (punt_hang_time BETWEEN 0 AND 100),
+            punt_placement INTEGER NOT NULL CHECK (punt_placement BETWEEN 0 AND 100),
+            snap_accuracy INTEGER NOT NULL CHECK (snap_accuracy BETWEEN 0 AND 100),
+            lane_release INTEGER NOT NULL CHECK (lane_release BETWEEN 0 AND 100),
+            gunner_speed INTEGER NOT NULL CHECK (gunner_speed BETWEEN 0 AND 100),
+            return_lane_vision INTEGER NOT NULL CHECK (return_lane_vision BETWEEN 0 AND 100),
+            block_timing INTEGER NOT NULL CHECK (block_timing BETWEEN 0 AND 100),
+            coverage_tackle INTEGER NOT NULL CHECK (coverage_tackle BETWEEN 0 AND 100),
+            penalty_control INTEGER NOT NULL CHECK (penalty_control BETWEEN 0 AND 100),
+            source TEXT NOT NULL DEFAULT 'manual',
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (player_id, season)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_player_ratings_rating_key
             ON player_ratings(rating_key);
         CREATE INDEX IF NOT EXISTS idx_player_ratings_season_rating
@@ -385,6 +547,22 @@ def create_schema(conn):
             ON player_role_scores(season, role_key, role_score);
         CREATE INDEX IF NOT EXISTS idx_player_qb_behavior_profiles_season
             ON player_qb_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_rb_behavior_profiles_season
+            ON player_rb_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_receiver_behavior_profiles_season
+            ON player_receiver_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_ol_behavior_profiles_season
+            ON player_ol_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_edge_behavior_profiles_season
+            ON player_edge_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_idl_behavior_profiles_season
+            ON player_idl_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_lb_behavior_profiles_season
+            ON player_lb_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_secondary_behavior_profiles_season
+            ON player_secondary_behavior_profiles(season, label);
+        CREATE INDEX IF NOT EXISTS idx_player_specialist_behavior_profiles_season
+            ON player_specialist_behavior_profiles(season, label);
 
         CREATE VIEW IF NOT EXISTS player_sim_ratings_view AS
             SELECT

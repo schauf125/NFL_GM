@@ -18,7 +18,53 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
-from engine.qb_behavior import player_qb_behavior_table_exists, profile_from_mapping, qb_behavior_profile
+from engine.qb_behavior import (
+    player_qb_behavior_table_exists,
+    profile_from_mapping as qb_profile_from_mapping,
+    qb_behavior_profile,
+)
+from engine.rb_behavior import (
+    player_rb_behavior_table_exists,
+    profile_from_mapping as rb_profile_from_mapping,
+    rb_behavior_profile,
+)
+from engine.receiver_behavior import (
+    player_receiver_behavior_table_exists,
+    profile_from_mapping as receiver_profile_from_mapping,
+    receiver_behavior_profile,
+)
+from engine.ol_behavior import (
+    player_ol_behavior_table_exists,
+    profile_from_mapping as ol_profile_from_mapping,
+    ol_behavior_profile,
+)
+from engine.edge_behavior import (
+    player_edge_behavior_table_exists,
+    profile_from_mapping as edge_profile_from_mapping,
+    edge_behavior_profile,
+)
+from engine.idl_behavior import (
+    player_idl_behavior_table_exists,
+    profile_from_mapping as idl_profile_from_mapping,
+    idl_behavior_profile,
+)
+from engine.lb_behavior import (
+    LB_POSITIONS,
+    player_lb_behavior_table_exists,
+    profile_from_mapping as lb_profile_from_mapping,
+    lb_behavior_profile,
+)
+from engine.secondary_behavior import (
+    SECONDARY_POSITIONS,
+    player_secondary_behavior_table_exists,
+    profile_from_mapping as secondary_profile_from_mapping,
+    secondary_behavior_profile,
+)
+from engine.specialist_behavior import (
+    player_specialist_behavior_table_exists,
+    profile_from_mapping as specialist_profile_from_mapping,
+    specialist_behavior_profile,
+)
 
 
 ENGINE_VERSION = "0.1.6"
@@ -66,12 +112,69 @@ def sack_credit_weight(player: "PlayerSnapshot") -> float:
     )
     weight = max(1.0, score - 55.0) ** 2
     if player.position in {"EDGE", "OLB", "DE"}:
-        weight *= 1.15
+        profile = edge_behavior_profile(player)
+        behavior_multiplier = 1.0
+        behavior_multiplier += (profile.finish_skill - 50) * 0.0045
+        behavior_multiplier += (profile.counter_plan - 50) * 0.0025
+        behavior_multiplier += (profile.getoff_timing - 50) * 0.0015
+        if profile.speed_arc >= profile.power_collapse + 10:
+            behavior_multiplier += (profile.speed_arc - 70) * 0.0020
+        weight *= 1.15 * clamp(behavior_multiplier, 0.78, 1.24)
     if player.position in {"IDL", "DT", "NT"}:
-        weight *= 0.90
+        profile = idl_behavior_profile(player)
+        behavior_multiplier = 1.0
+        behavior_multiplier += (profile.finish_skill - 50) * 0.0038
+        behavior_multiplier += (profile.penetration_burst - 50) * 0.0030
+        behavior_multiplier += (profile.rush_counter_plan - 50) * 0.0022
+        behavior_multiplier += (profile.power_collapse - 50) * 0.0014
+        anchor_bias = average([profile.double_team_anchor, profile.gap_control]) - average(
+            [profile.penetration_burst, profile.finish_skill, profile.rush_counter_plan]
+        )
+        if anchor_bias >= 8:
+            behavior_multiplier *= clamp(1.0 - anchor_bias * 0.024, 0.46, 0.92)
+        weight *= 0.90 * clamp(behavior_multiplier, 0.42, 1.20)
         if anchor >= explosive + 10:
             weight *= 0.45
     return max(0.05, weight)
+
+
+def special_teams_coverage_weight(player: "PlayerSnapshot") -> float:
+    profile = specialist_behavior_profile(player)
+    return average(
+        [
+            profile.lane_release,
+            profile.gunner_speed,
+            profile.coverage_tackle,
+            profile.penalty_control,
+            player.rating("stamina"),
+        ]
+    )
+
+
+def special_teams_return_weight(player: "PlayerSnapshot") -> float:
+    profile = specialist_behavior_profile(player)
+    return average(
+        [
+            weighted_average(player, YAC_WEIGHTS),
+            player.rating("ball_security"),
+            player.rating("play_recognition"),
+            profile.return_lane_vision,
+            profile.lane_release,
+        ]
+    )
+
+
+def special_teams_block_weight(player: "PlayerSnapshot") -> float:
+    profile = specialist_behavior_profile(player)
+    return average(
+        [
+            profile.block_timing,
+            profile.lane_release,
+            player.rating("acceleration"),
+            player.rating("play_recognition"),
+            player.rating("discipline"),
+        ]
+    )
 
 
 def clock_string(tenths: int) -> str:
@@ -375,15 +478,70 @@ class TeamSnapshot:
         if slot in {"LDL", "NT", "RDL"}:
             return max(player.role("interior_rusher"), player.role("nose_run_stopping_dt"), weighted_average(player, RUN_DEF_WEIGHTS))
         if slot in {"MLB", "WLB", "SLB"}:
-            return max(player.role("box_lb"), player.role("coverage_lb"), weighted_average(player, TACKLE_WEIGHTS))
+            score = max(player.role("box_lb"), player.role("coverage_lb"), weighted_average(player, TACKLE_WEIGHTS))
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                if slot == "MLB":
+                    score += (profile.trigger_quickness - 50) * 0.018
+                    score += (profile.gap_fit_discipline - 50) * 0.018
+                    score += (profile.zone_landmark_depth - 50) * 0.010
+                    score += (profile.tackle_finish - 50) * 0.012
+                elif slot == "WLB":
+                    score += (profile.scrape_range - 50) * 0.020
+                    score += (profile.zone_landmark_depth - 50) * 0.014
+                    score += (profile.rally_support - 50) * 0.010
+                else:
+                    score += (profile.gap_fit_discipline - 50) * 0.014
+                    score += (profile.traffic_navigation - 50) * 0.012
+                    score += (profile.blitz_timing - 50) * 0.012
+            return score
         if slot in {"LCB", "RCB", "NB"}:
-            return max(player.role("man_cb"), player.role("zone_cb"), weighted_average(player, COVERAGE_WEIGHTS))
+            score = max(player.role("man_cb"), player.role("zone_cb"), weighted_average(player, COVERAGE_WEIGHTS))
+            if player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                if slot == "NB":
+                    score += (profile.slot_traffic - 50) * 0.024
+                    score += (profile.break_trigger - 50) * 0.014
+                    score += (profile.tackle_finish - 50) * 0.010
+                    score += (profile.zone_eye_discipline - 50) * 0.010
+                else:
+                    score += (profile.man_mirror - 50) * 0.020
+                    score += (profile.press_timing - 50) * 0.014
+                    score += (profile.break_trigger - 50) * 0.012
+                    score += (profile.deep_range - 50) * 0.006
+            return score
         if slot in {"FS", "SS"}:
-            return max(player.role("deep_safety"), player.role("box_safety"), weighted_average(player, COVERAGE_WEIGHTS))
+            score = max(player.role("deep_safety"), player.role("box_safety"), weighted_average(player, COVERAGE_WEIGHTS))
+            if player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                if slot == "FS":
+                    score += (profile.deep_range - 50) * 0.024
+                    score += (profile.zone_eye_discipline - 50) * 0.018
+                    score += (profile.ball_play_timing - 50) * 0.012
+                    score += (profile.break_trigger - 50) * 0.010
+                else:
+                    score += (profile.run_support_fit - 50) * 0.018
+                    score += (profile.tackle_finish - 50) * 0.016
+                    score += (profile.slot_traffic - 50) * 0.012
+                    score += (profile.zone_eye_discipline - 50) * 0.010
+            return score
         if slot in {"PK", "K", "KO"}:
-            return weighted_average(player, KICK_WEIGHTS)
+            score = weighted_average(player, KICK_WEIGHTS)
+            profile = specialist_behavior_profile(player)
+            if slot == "KO":
+                score += (profile.kickoff_control - 50) * 0.020
+            else:
+                score += (profile.kick_operation - 50) * 0.020
+            return score
         if slot in {"PT", "P"}:
-            return weighted_average(player, PUNT_WEIGHTS)
+            score = weighted_average(player, PUNT_WEIGHTS)
+            profile = specialist_behavior_profile(player)
+            score += (profile.punt_hang_time - 50) * 0.014
+            score += (profile.punt_placement - 50) * 0.016
+            return score
+        if slot == "LS":
+            profile = specialist_behavior_profile(player)
+            return player.general_score() * 0.25 + profile.snap_accuracy * 0.50 + profile.penalty_control * 0.15 + profile.coverage_tackle * 0.10
         return player.general_score()
 
     def offensive_line(self) -> list[PlayerSnapshot]:
@@ -404,27 +562,144 @@ class TeamSnapshot:
 
     def run_block_score(self) -> float:
         blockers = self.offensive_line() + self.unique_starters(["TE", "FB"])
-        return average(weighted_average(p, RUN_BLOCK_WEIGHTS) for p in blockers)
+        scores = []
+        for player in blockers:
+            score = weighted_average(player, RUN_BLOCK_WEIGHTS)
+            if player.position in {"OT", "OG", "C"}:
+                profile = ol_behavior_profile(player)
+                score += (profile.drive_finish - 50) * 0.035
+                score += (profile.combo_timing - 50) * 0.026
+                score += (profile.reach_range - 50) * 0.015
+                score += (profile.second_level_climb - 50) * 0.010
+            scores.append(score)
+        return average(scores)
 
     def pass_block_score(self) -> float:
         blockers = self.offensive_line() + self.unique_starters(["TE"])
-        return average(weighted_average(p, PASS_BLOCK_WEIGHTS) for p in blockers)
+        scores = []
+        for player in blockers:
+            score = weighted_average(player, PASS_BLOCK_WEIGHTS)
+            if player.position in {"OT", "OG", "C"}:
+                profile = ol_behavior_profile(player)
+                score += (profile.pass_set_patience - 50) * 0.018
+                score += (profile.mirror_vs_speed - 50) * 0.024
+                score += (profile.anchor_vs_power - 50) * 0.024
+                score += (profile.hand_timing - 50) * 0.018
+                score += (profile.stunt_awareness - 50) * 0.014
+            scores.append(score)
+        return average(scores)
+
+    def offensive_line_profile_summary(self) -> dict[str, float]:
+        profiles = [ol_behavior_profile(player) for player in self.offensive_line() if player.position in {"OT", "OG", "C"}]
+        if not profiles:
+            return {}
+        return {
+            "pass_set_patience": average(profile.pass_set_patience for profile in profiles),
+            "mirror_vs_speed": average(profile.mirror_vs_speed for profile in profiles),
+            "anchor_vs_power": average(profile.anchor_vs_power for profile in profiles),
+            "stunt_awareness": average(profile.stunt_awareness for profile in profiles),
+            "drive_finish": average(profile.drive_finish for profile in profiles),
+            "reach_range": average(profile.reach_range for profile in profiles),
+            "combo_timing": average(profile.combo_timing for profile in profiles),
+            "second_level_climb": average(profile.second_level_climb for profile in profiles),
+            "penalty_control": average(profile.penalty_control for profile in profiles),
+        }
 
     def run_defense_score(self) -> float:
         defenders = self.defensive_front() + self.linebackers()
-        return average(weighted_average(p, RUN_DEF_WEIGHTS) for p in defenders)
+        linebacker_ids = {player.player_id for player in self.linebackers()}
+        scores = []
+        for player in defenders:
+            score = weighted_average(player, RUN_DEF_WEIGHTS)
+            if player.position in LB_POSITIONS and player.player_id in linebacker_ids:
+                profile = lb_behavior_profile(player)
+                score += (profile.trigger_quickness - 50) * 0.022
+                score += (profile.gap_fit_discipline - 50) * 0.026
+                score += (profile.scrape_range - 50) * 0.016
+                score += (profile.traffic_navigation - 50) * 0.016
+                score += (profile.tackle_finish - 50) * 0.012
+            elif player.position in {"EDGE", "OLB", "DE"}:
+                profile = edge_behavior_profile(player)
+                score += (profile.contain_discipline - 50) * 0.024
+                score += (profile.run_squeeze - 50) * 0.022
+                score += (profile.backside_pursuit - 50) * 0.010
+            elif player.position in {"IDL", "DT", "NT"}:
+                profile = idl_behavior_profile(player)
+                score += (profile.double_team_anchor - 50) * 0.024
+                score += (profile.gap_control - 50) * 0.026
+                score += (profile.block_shed_timing - 50) * 0.020
+            scores.append(score)
+        return average(scores)
 
     def pass_rush_score(self) -> float:
         rushers = self.defensive_front()
-        return average(weighted_average(p, PASS_RUSH_WEIGHTS) for p in rushers)
+        scores = []
+        for player in rushers:
+            score = weighted_average(player, PASS_RUSH_WEIGHTS)
+            if player.position in {"EDGE", "OLB", "DE"}:
+                profile = edge_behavior_profile(player)
+                score += (profile.getoff_timing - 50) * 0.016
+                score += (profile.speed_arc - 50) * 0.016
+                score += (profile.power_collapse - 50) * 0.014
+                score += (profile.counter_plan - 50) * 0.014
+                score += (profile.stunt_timing - 50) * 0.010
+                score += (profile.finish_skill - 50) * 0.008
+            elif player.position in {"IDL", "DT", "NT"}:
+                profile = idl_behavior_profile(player)
+                score += (profile.getoff_timing - 50) * 0.010
+                score += (profile.penetration_burst - 50) * 0.014
+                score += (profile.power_collapse - 50) * 0.014
+                score += (profile.stunt_timing - 50) * 0.010
+                score += (profile.rush_counter_plan - 50) * 0.012
+                score += (profile.finish_skill - 50) * 0.006
+            scores.append(score)
+        lb_profiles = [lb_behavior_profile(player) for player in self.linebackers() if player.position in LB_POSITIONS]
+        blitz_bonus = 0.0
+        if lb_profiles:
+            blitz_bonus += max(0.0, average(profile.blitz_timing for profile in lb_profiles) - 50) * 0.007
+            blitz_bonus += max(0.0, average(profile.trigger_quickness for profile in lb_profiles) - 55) * 0.003
+        return average(scores) + blitz_bonus
 
     def coverage_score(self) -> float:
         defenders = self.secondary() + self.linebackers()
-        return average(weighted_average(p, COVERAGE_WEIGHTS) for p in defenders)
+        scores = []
+        for player in defenders:
+            score = weighted_average(player, COVERAGE_WEIGHTS)
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                score += (profile.zone_landmark_depth - 50) * 0.022
+                score += (profile.man_match_carry - 50) * 0.016
+                score += (profile.scrape_range - 50) * 0.008
+                score += (profile.rally_support - 50) * 0.006
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                score += (profile.man_mirror - 50) * 0.014
+                score += (profile.zone_eye_discipline - 50) * 0.014
+                score += (profile.break_trigger - 50) * 0.012
+                score += (profile.deep_range - 50) * 0.008
+                score += (profile.ball_play_timing - 50) * 0.008
+                score += (profile.slot_traffic - 50) * 0.004
+            scores.append(score)
+        return average(scores)
 
     def tackling_score(self) -> float:
         defenders = self.defensive_front() + self.linebackers() + self.secondary()
-        return average(weighted_average(p, TACKLE_WEIGHTS) for p in defenders)
+        scores = []
+        for player in defenders:
+            score = weighted_average(player, TACKLE_WEIGHTS)
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                score += (profile.tackle_finish - 50) * 0.024
+                score += (profile.rally_support - 50) * 0.014
+                score += (profile.scrape_range - 50) * 0.010
+                score += (profile.traffic_navigation - 50) * 0.008
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                score += (profile.tackle_finish - 50) * 0.020
+                score += (profile.run_support_fit - 50) * 0.014
+                score += (profile.slot_traffic - 50) * 0.008
+            scores.append(score)
+        return average(scores)
 
     def discipline_score(self) -> float:
         starters = (
@@ -434,7 +709,26 @@ class TeamSnapshot:
             + self.linebackers()
             + self.secondary()
         )
-        return average(p.rating("discipline") for p in starters)
+        values = []
+        for player in starters:
+            if player.position in {"OT", "OG", "C"}:
+                profile = ol_behavior_profile(player)
+                values.append(player.rating("discipline") * 0.80 + profile.penalty_control * 0.20)
+            elif player.position in {"EDGE", "OLB", "DE"}:
+                profile = edge_behavior_profile(player)
+                values.append(player.rating("discipline") * 0.82 + profile.rush_discipline * 0.18)
+            elif player.position in {"IDL", "DT", "NT"}:
+                profile = idl_behavior_profile(player)
+                values.append(player.rating("discipline") * 0.84 + profile.rush_discipline * 0.16)
+            elif player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                values.append(player.rating("discipline") * 0.80 + profile.penalty_control * 0.20)
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                values.append(player.rating("discipline") * 0.80 + profile.penalty_control * 0.20)
+            else:
+                values.append(player.rating("discipline"))
+        return average(values)
 
 
 @dataclass
@@ -788,7 +1082,120 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapsho
             (season, *player_ids),
         ).fetchall()
         for row in profile_rows:
-            qb_behavior_by_player[int(row["player_id"])] = (profile_from_mapping(dict(row)), str(row["source"]))
+            qb_behavior_by_player[int(row["player_id"])] = (qb_profile_from_mapping(dict(row)), str(row["source"]))
+
+    rb_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_rb_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_rb_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            rb_behavior_by_player[int(row["player_id"])] = (rb_profile_from_mapping(dict(row)), str(row["source"]))
+
+    receiver_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_receiver_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_receiver_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            receiver_behavior_by_player[int(row["player_id"])] = (
+                receiver_profile_from_mapping(dict(row)),
+                str(row["source"]),
+            )
+
+    ol_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_ol_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_ol_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            ol_behavior_by_player[int(row["player_id"])] = (ol_profile_from_mapping(dict(row)), str(row["source"]))
+
+    edge_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_edge_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_edge_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            edge_behavior_by_player[int(row["player_id"])] = (edge_profile_from_mapping(dict(row)), str(row["source"]))
+
+    idl_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_idl_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_idl_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            idl_behavior_by_player[int(row["player_id"])] = (idl_profile_from_mapping(dict(row)), str(row["source"]))
+
+    lb_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_lb_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_lb_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            lb_behavior_by_player[int(row["player_id"])] = (lb_profile_from_mapping(dict(row)), str(row["source"]))
+
+    secondary_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_secondary_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_secondary_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            secondary_behavior_by_player[int(row["player_id"])] = (
+                secondary_profile_from_mapping(dict(row)),
+                str(row["source"]),
+            )
+
+    specialist_behavior_by_player: dict[int, tuple[object, str]] = {}
+    if player_specialist_behavior_table_exists(con):
+        profile_rows = con.execute(
+            f"""
+            SELECT *
+            FROM player_specialist_behavior_profiles
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            (season, *player_ids),
+        ).fetchall()
+        for row in profile_rows:
+            specialist_behavior_by_player[int(row["player_id"])] = (
+                specialist_profile_from_mapping(dict(row)),
+                str(row["source"]),
+            )
 
     players_by_id = {}
     roster = []
@@ -799,6 +1206,38 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapsho
             profile, source = qb_behavior_by_player[int(row["player_id"])]
             metadata["qb_behavior_profile"] = profile
             metadata["qb_behavior_source"] = source
+        if int(row["player_id"]) in rb_behavior_by_player:
+            profile, source = rb_behavior_by_player[int(row["player_id"])]
+            metadata["rb_behavior_profile"] = profile
+            metadata["rb_behavior_source"] = source
+        if int(row["player_id"]) in receiver_behavior_by_player:
+            profile, source = receiver_behavior_by_player[int(row["player_id"])]
+            metadata["receiver_behavior_profile"] = profile
+            metadata["receiver_behavior_source"] = source
+        if int(row["player_id"]) in ol_behavior_by_player:
+            profile, source = ol_behavior_by_player[int(row["player_id"])]
+            metadata["ol_behavior_profile"] = profile
+            metadata["ol_behavior_source"] = source
+        if int(row["player_id"]) in edge_behavior_by_player:
+            profile, source = edge_behavior_by_player[int(row["player_id"])]
+            metadata["edge_behavior_profile"] = profile
+            metadata["edge_behavior_source"] = source
+        if int(row["player_id"]) in idl_behavior_by_player:
+            profile, source = idl_behavior_by_player[int(row["player_id"])]
+            metadata["idl_behavior_profile"] = profile
+            metadata["idl_behavior_source"] = source
+        if int(row["player_id"]) in lb_behavior_by_player:
+            profile, source = lb_behavior_by_player[int(row["player_id"])]
+            metadata["lb_behavior_profile"] = profile
+            metadata["lb_behavior_source"] = source
+        if int(row["player_id"]) in secondary_behavior_by_player:
+            profile, source = secondary_behavior_by_player[int(row["player_id"])]
+            metadata["secondary_behavior_profile"] = profile
+            metadata["secondary_behavior_source"] = source
+        if int(row["player_id"]) in specialist_behavior_by_player:
+            profile, source = specialist_behavior_by_player[int(row["player_id"])]
+            metadata["specialist_behavior_profile"] = profile
+            metadata["specialist_behavior_source"] = source
         player = PlayerSnapshot(
             player_id=int(row["player_id"]),
             name=name,
@@ -920,17 +1359,51 @@ class MatchEngine:
             slots = ["LEDGE", "LDL", "NT", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"]
         return defense.unique_starters(slots)
 
+    def core_special_teamers(
+        self,
+        team: TeamSnapshot,
+        count: int,
+        *,
+        exclude_player_ids: set[int] | None = None,
+    ) -> list[PlayerSnapshot]:
+        exclude_player_ids = set(exclude_player_ids or set())
+        pool = []
+        for player in team.roster:
+            if player.player_id in exclude_player_ids or player.position in {"K", "P"}:
+                continue
+            source = str(player.metadata.get("specialist_behavior_source") or "")
+            has_stored_st_profile = source.startswith("specialist_behavior_") or source == "draft_selection"
+            if not has_stored_st_profile and player.general_score() > 76:
+                continue
+            pool.append(player)
+        return [
+            player
+            for player, _weight in sorted(
+                ((player, special_teams_coverage_weight(player)) for player in pool),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:count]
+        ]
+
     def special_teams_snap_players(self, team: TeamSnapshot, play_type: str) -> list[PlayerSnapshot]:
         if play_type in {"field_goal", "extra_point"}:
             return team.unique_starters(["PK", "LS", "PT"])
         if play_type in {"kickoff", "safety_kick"}:
-            return team.unique_starters(["KO", "LS", "MLB", "WLB", "SLB", "LCB", "RCB", "NB", "FS", "SS", "RB"])
+            players = team.unique_starters(["KO", "LS", "MLB", "WLB", "SLB", "LCB", "RCB", "NB", "FS", "SS", "RB"])
+            players.extend(self.core_special_teamers(team, 3, exclude_player_ids={player.player_id for player in players}))
+            return players
         if play_type == "kick_return":
-            return team.unique_starters(["RB", "FB", "TE", "LWR", "RWR", "SWR", "MLB", "WLB", "LCB", "RCB", "FS"])
+            players = team.unique_starters(["RB", "FB", "TE", "LWR", "RWR", "SWR", "MLB", "WLB", "LCB", "RCB", "FS"])
+            players.extend(self.core_special_teamers(team, 2, exclude_player_ids={player.player_id for player in players}))
+            return players
         if play_type == "punt":
-            return team.unique_starters(["PT", "LS"])
+            players = team.unique_starters(["PT", "LS"])
+            players.extend(self.core_special_teamers(team, 5, exclude_player_ids={player.player_id for player in players}))
+            return players
         if play_type == "punt_return":
-            return team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "NB", "FS", "SS", "MLB", "WLB"])
+            players = team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "NB", "FS", "SS", "MLB", "WLB"])
+            players.extend(self.core_special_teamers(team, 3, exclude_player_ids={player.player_id for player in players}))
+            return players
         return []
 
     def count_scrimmage_snap(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str, concept: str) -> None:
@@ -946,6 +1419,49 @@ class MatchEngine:
             self.count_special_teams_snap(receiving_team, "kick_return")
         elif play_type == "punt":
             self.count_special_teams_snap(receiving_team, "punt_return")
+
+    def kicking_operation_score(self, team: TeamSnapshot, play_type: str) -> float:
+        if play_type in {"field_goal", "extra_point"}:
+            kicker = team.starter("PK")
+            long_snapper = team.starter("LS")
+            holder = team.starter("PT")
+            kicker_profile = specialist_behavior_profile(kicker)
+            snap_profile = specialist_behavior_profile(long_snapper)
+            holder_profile = specialist_behavior_profile(holder)
+            return (
+                kicker_profile.kick_operation * 0.58
+                + snap_profile.snap_accuracy * 0.28
+                + holder_profile.punt_placement * 0.08
+                + average([kicker_profile.penalty_control, snap_profile.penalty_control]) * 0.06
+            )
+        if play_type == "punt":
+            punter = team.starter("PT")
+            long_snapper = team.starter("LS")
+            punter_profile = specialist_behavior_profile(punter)
+            snap_profile = specialist_behavior_profile(long_snapper)
+            return (
+                punter_profile.punt_hang_time * 0.34
+                + punter_profile.punt_placement * 0.34
+                + snap_profile.snap_accuracy * 0.22
+                + average([punter_profile.penalty_control, snap_profile.penalty_control]) * 0.10
+            )
+        return team.discipline_score()
+
+    def special_teams_coverage_score(self, team: TeamSnapshot, play_type: str) -> float:
+        players = self.special_teams_snap_players(team, play_type)
+        if not players:
+            return team.tackling_score()
+        return average(special_teams_coverage_weight(player) for player in players)
+
+    def special_teams_block_score(self, team: TeamSnapshot, play_type: str) -> float:
+        players = self.special_teams_snap_players(team, play_type)
+        if not players:
+            return team.discipline_score()
+        return average(special_teams_block_weight(player) for player in players)
+
+    def select_special_teams_blocker(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:
+        pool = self.special_teams_snap_players(team, play_type) or team.roster[:11]
+        return weighted_choice(self.rng, [(player, special_teams_block_weight(player)) for player in pool])
 
     def consume_clock(self, live_tenths: int, runoff_tenths: int) -> tuple[int, int]:
         live_tenths = max(1, int(live_tenths))
@@ -1031,6 +1547,10 @@ class MatchEngine:
         rb = offense.starter("RB")
         run_identity = weighted_average(rb, RB_RUN_WEIGHTS)
         pass_rate += (pass_identity - run_identity) * 0.002
+        rb_profile = rb_behavior_profile(rb)
+        pass_rate += (rb_profile.pass_game_usage - 50) * 0.0008
+        if down <= 2 and distance <= 3:
+            pass_rate -= (rb_profile.short_yardage_trust - 50) * 0.0008
         return self.rng.random() < clamp(pass_rate, 0.25, 0.86)
 
     def fourth_down_decision(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
@@ -1095,20 +1615,88 @@ class MatchEngine:
         self.player_stats[qb.player_id]["pass_attempts"] += 1
         return f"{qb.name} spikes the ball to stop the clock.", qb
 
-    def choose_run_concept(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
-        return self.rng.choice(["inside_zone", "outside_zone", "power", "draw"])
-
-    def choose_pass_concept(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
+    def choose_run_concept(
+        self,
+        offense: TeamSnapshot,
+        defense: TeamSnapshot,
+        down: int,
+        distance: int,
+        field_pos: int,
+        runner: PlayerSnapshot | None = None,
+    ) -> str:
+        inside = 1.10
+        outside = 0.95
+        power = 0.78
+        draw = 0.52
+        if down >= 3 and distance >= 6:
+            draw += 0.28
+            power -= 0.18
+        if distance <= 2 or field_pos >= 85:
+            power += 0.55
+            draw -= 0.20
+        line = offense.offensive_line_profile_summary()
+        if line:
+            inside += (line["combo_timing"] - 50) * 0.004 + (line["drive_finish"] - 50) * 0.003
+            outside += (line["reach_range"] - 50) * 0.005 + (line["second_level_climb"] - 50) * 0.004
+            power += (line["drive_finish"] - 50) * 0.006 + (line["anchor_vs_power"] - 50) * 0.003
+            draw += (line["pass_set_patience"] - 50) * 0.003 + (line["stunt_awareness"] - 50) * 0.002
+        if runner and runner.position in {"RB", "FB"}:
+            profile = rb_behavior_profile(runner)
+            inside += (profile.patience - 50) * 0.008 + (profile.one_cut_decisiveness - 50) * 0.006
+            outside += (profile.bounce_tendency - 50) * 0.011 + (profile.home_run_hunting - 50) * 0.005
+            power += (profile.contact_appetite - 50) * 0.010 + (profile.short_yardage_trust - 50) * 0.009
+            draw += (profile.pass_game_usage - 50) * 0.006 + (profile.space_creation - 50) * 0.005
         return weighted_choice(
             self.rng,
             [
-                ("quick", 1.25 if distance <= 5 else 0.85),
-                ("short", 1.15),
-                ("intermediate", 1.00),
-                ("deep", 0.45 if down < 3 else 0.70),
-                ("screen", 0.45),
+                ("inside_zone", max(0.10, inside)),
+                ("outside_zone", max(0.10, outside)),
+                ("power", max(0.10, power)),
+                ("draw", max(0.10, draw)),
             ],
         )
+
+    def choose_pass_concept(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
+        receiver_profiles = [
+            receiver_behavior_profile(player)
+            for player in offense.receiving_options()
+            if player.position in {"WR", "TE"}
+        ]
+        vertical = average([profile.vertical_intent for profile in receiver_profiles])
+        route = average([profile.route_pacing for profile in receiver_profiles])
+        middle = average([profile.middle_comfort for profile in receiver_profiles])
+        yac = average([profile.yac_intent for profile in receiver_profiles])
+        contested = average([profile.contested_alpha for profile in receiver_profiles])
+        return weighted_choice(
+            self.rng,
+            [
+                ("quick", (1.25 if distance <= 5 else 0.85) + (route - 50) * 0.0035),
+                ("short", 1.15 + (middle - 50) * 0.0030 + (route - 50) * 0.0025),
+                ("intermediate", 1.00 + (middle - 50) * 0.0025 + (contested - 50) * 0.0018),
+                ("deep", (0.45 if down < 3 else 0.70) + (vertical - 50) * 0.0045 + (contested - 50) * 0.0018),
+                ("screen", 0.45 + (yac - 50) * 0.0035),
+            ],
+        )
+
+    def rb_carry_weight(
+        self,
+        player: PlayerSnapshot,
+        idx: int,
+        *,
+        down: int,
+        distance: int,
+        field_pos: int,
+    ) -> float:
+        profile = rb_behavior_profile(player)
+        talent = weighted_average(player, RB_RUN_WEIGHTS)
+        weight = 1.0 / (idx + 1.4)
+        weight *= 1.0 + clamp((talent - 70) * 0.012, -0.20, 0.32)
+        weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
+        if distance <= 3 or field_pos >= 85:
+            weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014
+        if down >= 3 and distance >= 6:
+            weight *= 1.0 + (profile.pass_game_usage - 50) * 0.006
+        return max(0.05, weight)
 
     def state_snapshot(self) -> tuple[dict[int, int], dict[int, Counter], dict[int, Counter], dict[int, int]]:
         return (
@@ -1381,30 +1969,65 @@ class MatchEngine:
         designed_qb_run = qb_scramble_score >= 68 and self.rng.random() < clamp(qb_run_chance, 0.0, 0.13)
         runner = qb if designed_qb_run else weighted_choice(
             self.rng,
-            [(player, 1.0 / (idx + 1.4)) for idx, player in enumerate(rb_candidates)],
+            [
+                (
+                    player,
+                    self.rb_carry_weight(
+                        player,
+                        idx,
+                        down=down,
+                        distance=distance,
+                        field_pos=field_pos,
+                    ),
+                )
+                for idx, player in enumerate(rb_candidates)
+            ],
         )
-        concept = self.choose_run_concept(offense, defense, down, distance, field_pos)
+        concept = self.choose_run_concept(offense, defense, down, distance, field_pos, runner)
         self._last_play_concept = concept
         run_block = offense.run_block_score()
         run_def = defense.run_defense_score()
         is_qb_run = runner.player_id == qb.player_id
+        rb_profile = None if is_qb_run else rb_behavior_profile(runner)
         runner_score = weighted_average(runner, RB_RUN_WEIGHTS if not is_qb_run else QB_SCRAMBLE_WEIGHTS)
         tackling = defense.tackling_score()
         trench_advantage = run_block - run_def
         runner_advantage = runner_score - tackling
 
-        stuff_chance = clamp(0.155 - trench_advantage * 0.0022 - runner_advantage * 0.0007, 0.055, 0.285)
-        explosive_chance = clamp(0.030 + (runner.rating("speed") - 70) * 0.0018 + (runner.rating("elusiveness") - tackling) * 0.0012, 0.010, 0.115)
+        stuff_chance = clamp(0.155 - trench_advantage * 0.0022 - runner_advantage * 0.00115, 0.055, 0.285)
+        explosive_chance = clamp(0.030 + (runner.rating("speed") - 70) * 0.0018 + (runner.rating("elusiveness") - tackling) * 0.0015, 0.010, 0.115)
         if is_qb_run:
             stuff_chance = clamp(stuff_chance - 0.025 - (profile.pressure_escape - 70) * 0.00035, 0.035, 0.235)
             explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.155)
+        elif rb_profile:
+            bounce_risk = max(0.0, rb_profile.bounce_tendency - rb_profile.one_cut_decisiveness)
+            stuff_chance += bounce_risk * 0.00085
+            stuff_chance -= (rb_profile.one_cut_decisiveness - 50) * 0.00062
+            explosive_chance += (rb_profile.home_run_hunting - 50) * 0.00075
+            explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00028
+            if concept == "outside_zone":
+                explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00042
+                stuff_chance += max(0.0, rb_profile.bounce_tendency - 76) * 0.00045
+            if concept == "power":
+                stuff_chance -= (rb_profile.contact_appetite - 50) * 0.00048
+            stuff_chance = clamp(stuff_chance, 0.045, 0.305)
+            explosive_chance = clamp(explosive_chance, 0.008, 0.145)
 
         if self.rng.random() < stuff_chance:
             yards = int(round(self.rng.gauss(-1.2, 1.5)))
         else:
-            mean = 4.05 + trench_advantage * 0.045 + runner_advantage * 0.020
+            mean = 3.66 + trench_advantage * 0.045 + runner_advantage * 0.032
             if is_qb_run:
                 mean += 1.05 + (profile.pressure_escape - 70) * 0.025
+            elif rb_profile:
+                mean += (rb_profile.patience - 50) * 0.014
+                mean += (rb_profile.one_cut_decisiveness - 50) * 0.017
+                if concept == "power" or distance <= 2:
+                    mean += (rb_profile.contact_appetite - 50) * 0.024
+                if concept == "outside_zone":
+                    mean += (rb_profile.bounce_tendency - 50) * 0.010
+                if concept == "draw":
+                    mean += (rb_profile.space_creation - 50) * 0.012
             yards = int(round(self.rng.gauss(mean, 3.0)))
             if self.rng.random() < explosive_chance:
                 yards += int(round(self.rng.lognormvariate(2.15, 0.42)))
@@ -1652,7 +2275,12 @@ class MatchEngine:
 
         target = self.select_receiver(offense, concept)
         defender = self.select_coverage_defender(defense, target, concept)
+        receiver_profile = receiver_behavior_profile(target) if target.position in {"WR", "TE"} else None
         air_yards = int(clamp(round(self.rng.gauss(*depth_profile)), -2, 48))
+        if receiver_profile and concept == "deep":
+            air_yards += int(round((receiver_profile.vertical_intent - 50) * 0.035))
+        elif receiver_profile and concept in {"quick", "short"}:
+            air_yards += int(round((receiver_profile.middle_comfort - 50) * 0.012))
         if field_pos + air_yards > 99:
             air_yards = max(1, 100 - field_pos)
 
@@ -1669,22 +2297,65 @@ class MatchEngine:
             qb.rating("processing_speed"),
         ])
         receiver_score = weighted_average(target, RECEIVER_WEIGHTS)
+        defender_profile = secondary_behavior_profile(defender) if defender.position in SECONDARY_POSITIONS else None
         coverage_score = weighted_average(defender, COVERAGE_WEIGHTS)
+        if defender_profile:
+            if concept == "quick":
+                coverage_score += (defender_profile.break_trigger - 50) * 0.018
+                coverage_score += (defender_profile.slot_traffic - 50) * 0.010
+            elif concept in {"short", "intermediate"}:
+                coverage_score += (defender_profile.man_mirror - 50) * 0.014
+                coverage_score += (defender_profile.zone_eye_discipline - 50) * 0.014
+                coverage_score += (defender_profile.break_trigger - 50) * 0.014
+            elif concept == "deep":
+                coverage_score += (defender_profile.deep_range - 50) * 0.020
+                coverage_score += (defender_profile.ball_play_timing - 50) * 0.014
+                coverage_score += (defender_profile.catch_point_compete - 50) * 0.010
+            elif concept == "screen":
+                coverage_score += (defender_profile.run_support_fit - 50) * 0.014
+                coverage_score += (defender_profile.tackle_finish - 50) * 0.008
         separation = receiver_score - coverage_score
         depth_penalty = max(0, air_yards - 5) * 0.014
-        completion_chance = 0.630 + (qb_score - 65) * 0.0036 + separation * 0.0027 - depth_penalty
+        completion_chance = 0.585 + (qb_score - 65) * 0.0036 + separation * 0.0042 - depth_penalty
+        if receiver_profile:
+            completion_chance += (receiver_profile.route_pacing - 50) * 0.00075
+            completion_chance += (receiver_profile.catch_security - 50) * 0.00055
+            if concept == "quick":
+                completion_chance += (receiver_profile.release_urgency - 50) * 0.00080
+            elif concept in {"short", "intermediate"}:
+                completion_chance += (receiver_profile.middle_comfort - 50) * 0.00070
+            elif concept == "deep":
+                completion_chance += (receiver_profile.sideline_awareness - 50) * 0.00070
+                completion_chance += (receiver_profile.contested_alpha - 50) * 0.00045
         if concept == "screen":
             completion_chance += 0.07
         if pressured:
             completion_chance -= 0.120
+            if receiver_profile:
+                completion_chance += (receiver_profile.scramble_drill - 50) * 0.00070
         completion_chance = clamp(completion_chance, 0.205, 0.865)
 
         interception_chance = 0.0145 + max(0, air_yards - 6) * 0.00095
         interception_chance += max(0, coverage_score - qb_score) * 0.00048
+        interception_chance += max(0, -separation) * 0.00022
+        interception_chance -= max(0, separation) * 0.00006
         interception_chance += max(0, 64 - qb.rating("discipline")) * 0.00024
         interception_chance += (profile.deep_aggression - 50) * 0.00010
         interception_chance += (profile.sack_risk - 50) * 0.00006
         interception_chance -= (profile.throwaway_discipline - 50) * 0.00006
+        if receiver_profile:
+            interception_chance += max(0.0, receiver_profile.vertical_intent - 78) * 0.00008
+            interception_chance += max(0.0, receiver_profile.target_gravity - 84) * 0.00005
+            interception_chance -= (receiver_profile.route_pacing - 50) * 0.00007
+            interception_chance -= (receiver_profile.catch_security - 50) * 0.00006
+        if defender_profile:
+            interception_chance += (defender_profile.ball_play_timing - 50) * 0.00010
+            interception_chance += (defender_profile.break_trigger - 50) * 0.00006
+            if concept == "deep":
+                interception_chance += (defender_profile.deep_range - 50) * 0.00006
+                interception_chance += (defender_profile.catch_point_compete - 50) * 0.00004
+            if defender_profile.press_timing >= 86 and air_yards <= 6:
+                interception_chance += 0.0015
         if concept == "screen":
             interception_chance -= 0.0050
         elif concept == "quick":
@@ -1722,7 +2393,15 @@ class MatchEngine:
             return "turnover", 0, 0, 0, desc, defense, new_field, 1, 10, target, defender
 
         if self.rng.random() > completion_chance:
-            if self.rng.random() < 0.35:
+            pbu_chance = 0.35
+            if defender_profile:
+                pbu_chance += (defender_profile.break_trigger - 50) * 0.0010
+                pbu_chance += (defender_profile.ball_play_timing - 50) * 0.0009
+                pbu_chance += max(0.0, -separation) * 0.0008
+                pbu_chance -= max(0.0, separation) * 0.00035
+                if concept == "deep":
+                    pbu_chance += (defender_profile.catch_point_compete - 50) * 0.0007
+            if self.rng.random() < clamp(pbu_chance, 0.24, 0.52):
                 self.player_stats[defender.player_id]["pass_deflections"] += 1
                 desc = f"{qb.name}'s pass for {target.name} is broken up by {defender.name}."
             else:
@@ -1737,9 +2416,18 @@ class MatchEngine:
             "intermediate": 2.0,
             "deep": 1.1,
             "screen": 5.8,
-        }[concept] + (yac_score - tackle_score) * 0.035
+        }[concept] + (yac_score - tackle_score) * 0.035 + separation * 0.016
+        if receiver_profile:
+            yac_mean += (receiver_profile.yac_intent - 50) * 0.018
+            if concept == "screen":
+                yac_mean += (receiver_profile.yac_intent - 50) * 0.012
+            elif concept == "deep":
+                yac_mean += (receiver_profile.sideline_awareness - 50) * 0.004
         yac = max(0, int(round(self.rng.gauss(yac_mean, 3.2))))
-        if self.rng.random() < clamp((yac_score - tackle_score) * 0.0012 + 0.022, 0.006, 0.082):
+        yac_break_chance = (yac_score - tackle_score) * 0.0012 + 0.022
+        if receiver_profile:
+            yac_break_chance += (receiver_profile.yac_intent - 50) * 0.00022
+        if self.rng.random() < clamp(yac_break_chance, 0.006, 0.095):
             yac += int(round(self.rng.lognormvariate(1.85, 0.36)))
         yards = int(clamp(max(0, air_yards) + yac, -5, 90))
         if field_pos + yards >= 100:
@@ -1820,8 +2508,22 @@ class MatchEngine:
                 weight *= 1.15
             if player.position == "TE" and concept in {"short", "intermediate"}:
                 weight *= 1.10
-            if player.position == "RB" and concept == "screen":
-                weight *= 1.75
+            if player.position in {"WR", "TE"}:
+                profile = receiver_behavior_profile(player)
+                weight *= 1.0 + (profile.target_gravity - 50) * 0.012
+                if concept == "quick":
+                    weight *= 1.0 + (profile.release_urgency - 50) * 0.006 + (profile.route_pacing - 50) * 0.005
+                elif concept in {"short", "intermediate"}:
+                    weight *= 1.0 + (profile.middle_comfort - 50) * 0.006 + (profile.route_pacing - 50) * 0.005
+                elif concept == "deep":
+                    weight *= 1.0 + (profile.vertical_intent - 50) * 0.010 + (profile.sideline_awareness - 50) * 0.004
+                elif concept == "screen":
+                    weight *= 1.0 + (profile.yac_intent - 50) * 0.007
+            if player.position == "RB":
+                profile = rb_behavior_profile(player)
+                weight *= 1.0 + (profile.pass_game_usage - 50) * 0.010 + (profile.space_creation - 50) * 0.006
+                if concept == "screen":
+                    weight *= 1.75
             talent_bonus = 1.0 + clamp((weighted_average(player, RECEIVER_WEIGHTS) - 72) * 0.007, -0.06, 0.18)
             weight *= talent_bonus
             weight *= 1.0 / (idx * 0.08 + 1.0)
@@ -1836,7 +2538,32 @@ class MatchEngine:
         else:
             slots = ["MLB", "WLB", "NB", "SS"]
         defenders = defense.unique_starters(slots) or defense.secondary()
-        return weighted_choice(self.rng, [(p, weighted_average(p, COVERAGE_WEIGHTS)) for p in defenders])
+        weights = []
+        for player in defenders:
+            weight = weighted_average(player, COVERAGE_WEIGHTS)
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                weight *= 1.0 + (profile.zone_landmark_depth - 50) * 0.006
+                weight *= 1.0 + (profile.man_match_carry - 50) * 0.004
+                if target.position in {"TE", "RB"}:
+                    weight *= 1.0 + (profile.scrape_range - 50) * 0.004
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                if concept == "deep":
+                    weight *= 1.0 + (profile.deep_range - 50) * 0.008
+                    weight *= 1.0 + (profile.ball_play_timing - 50) * 0.005
+                elif concept in {"quick", "short"}:
+                    weight *= 1.0 + (profile.break_trigger - 50) * 0.006
+                    weight *= 1.0 + (profile.slot_traffic - 50) * 0.004
+                else:
+                    weight *= 1.0 + (profile.man_mirror - 50) * 0.005
+                    weight *= 1.0 + (profile.zone_eye_discipline - 50) * 0.005
+                if target.position == "WR":
+                    weight *= 1.0 + (profile.press_timing - 50) * 0.003
+                elif target.position in {"TE", "RB"}:
+                    weight *= 1.0 + (profile.run_support_fit - 50) * 0.003
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights)
 
     def select_pass_rusher(self, defense: TeamSnapshot) -> PlayerSnapshot:
         rushers = defense.defensive_front() or defense.roster[:5]
@@ -1873,6 +2600,19 @@ class MatchEngine:
         }.get(play_kind, 0.0160)
         chance += (contact - security) * 0.00055
         chance += (defense.tackling_score() - 68) * 0.00008
+        if ball_carrier.position in {"RB", "FB"}:
+            profile = rb_behavior_profile(ball_carrier)
+            chance -= (profile.ball_security_mindset - 50) * 0.00018
+            chance += max(0.0, profile.contact_appetite - 78) * 0.00010
+        if ball_carrier.position in {"WR", "TE"}:
+            profile = receiver_behavior_profile(ball_carrier)
+            chance -= (profile.catch_security - 50) * 0.00015
+            chance += max(0.0, profile.yac_intent - 78) * 0.00008
+        if defender.position in SECONDARY_POSITIONS:
+            profile = secondary_behavior_profile(defender)
+            chance += (profile.tackle_finish - 50) * 0.00008
+            chance += max(0.0, profile.run_support_fit - 82) * 0.00008
+            chance += max(0.0, profile.catch_point_compete - 84) * 0.00005
         if yards <= 2:
             chance += 0.0030
         elif yards >= 12:
@@ -1895,6 +2635,10 @@ class MatchEngine:
         chance = 0.455
         chance += (defender.rating("play_recognition") - ball_carrier.rating("composure")) * 0.0010
         chance += (defender.rating("forced_fumble") - ball_carrier.rating("ball_security")) * 0.0008
+        if defender.position in SECONDARY_POSITIONS:
+            profile = secondary_behavior_profile(defender)
+            chance += (profile.break_trigger - 50) * 0.0006
+            chance += (profile.run_support_fit - 50) * 0.0005
         if play_kind == "sack":
             chance += 0.070
         elif play_kind == "pass" and yards >= 10:
@@ -1954,6 +2698,16 @@ class MatchEngine:
         chance -= (primary.rating("solo_tackle") - 70) * 0.0022
         chance += (primary.rating("assist_tackle") - 70) * 0.0012
         chance -= (primary.rating("open_field_tackle") - 70) * 0.0009
+        if primary.position in LB_POSITIONS:
+            profile = lb_behavior_profile(primary)
+            chance -= (profile.tackle_finish - 50) * 0.0010
+            chance += (profile.rally_support - 50) * 0.0012
+        elif primary.position in SECONDARY_POSITIONS:
+            profile = secondary_behavior_profile(primary)
+            chance -= (profile.tackle_finish - 50) * 0.0009
+            chance += (profile.run_support_fit - 50) * 0.0007
+            if play_kind == "pass":
+                chance += (profile.slot_traffic - 50) * 0.0005
         return clamp(chance, 0.150, 0.585)
 
     def select_assist_tackler(
@@ -1988,6 +2742,9 @@ class MatchEngine:
             weight = weighted_average(player, ASSIST_TACKLE_WEIGHTS)
             if player.position in {"LB", "ILB", "OLB"}:
                 weight *= 1.16
+                profile = lb_behavior_profile(player)
+                weight *= 1.0 + (profile.rally_support - 50) * 0.006
+                weight *= 1.0 + (profile.scrape_range - 50) * 0.003
             if play_kind in {"run", "scramble"} and player.position in {"EDGE", "DE"}:
                 weight *= 0.32
             if play_kind == "run" and yards <= 2 and player.position in {"IDL", "DT", "NT"}:
@@ -1996,8 +2753,14 @@ class MatchEngine:
                 weight *= 1.12
             if play_kind in {"run", "scramble"} and 3 <= yards <= 10 and player.position in {"S", "FS", "SS", "NB"}:
                 weight *= 1.10
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.run_support_fit - 50) * 0.004
+                weight *= 1.0 + (profile.slot_traffic - 50) * 0.003
             if yards >= 10 and player.position in {"CB", "S", "FS", "SS"}:
                 weight *= 1.10
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.deep_range - 50) * 0.004
+                weight *= 1.0 + (profile.break_trigger - 50) * 0.003
             weights.append((player, weight))
         return weighted_choice(self.rng, weights)
 
@@ -2009,7 +2772,22 @@ class MatchEngine:
         else:
             pool = defense.secondary() + defense.linebackers()
         pool = pool or defense.roster[:11]
-        return weighted_choice(self.rng, [(p, weighted_average(p, TACKLE_WEIGHTS)) for p in pool])
+        weights = []
+        for player in pool:
+            weight = weighted_average(player, TACKLE_WEIGHTS)
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.004
+                weight *= 1.0 + (profile.scrape_range - 50) * 0.003
+                weight *= 1.0 + (profile.trigger_quickness - 50) * 0.002
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.004
+                weight *= 1.0 + (profile.run_support_fit - 50) * 0.003
+                if yards >= 8:
+                    weight *= 1.0 + (profile.deep_range - 50) * 0.003
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights)
 
     def select_run_tackler(self, defense: TeamSnapshot, yards: int) -> PlayerSnapshot:
         if yards < 0:
@@ -2032,14 +2810,31 @@ class MatchEngine:
                 weight *= 0.30
             if yards <= 2 and player.position in {"IDL", "DT", "NT"}:
                 weight *= 0.95
+                profile = idl_behavior_profile(player)
+                weight *= 1.0 + (average([profile.gap_control, profile.block_shed_timing]) - 50) * 0.004
             if yards <= 7 and player.position in {"LB", "ILB", "OLB"}:
                 weight *= 1.25
+                profile = lb_behavior_profile(player)
+                weight *= 1.0 + (profile.trigger_quickness - 50) * 0.004
+                weight *= 1.0 + (profile.scrape_range - 50) * 0.004
+                weight *= 1.0 + (profile.gap_fit_discipline - 50) * 0.003
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.003
             if 3 <= yards <= 10 and player.position in {"S", "FS", "SS", "NB"}:
                 weight *= 1.15
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.run_support_fit - 50) * 0.005
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.004
+                weight *= 1.0 + (profile.slot_traffic - 50) * 0.003
             if 3 <= yards <= 7 and player.position in {"IDL", "DT", "NT"}:
                 weight *= 0.82
+                profile = idl_behavior_profile(player)
+                weight *= 1.0 + (profile.double_team_anchor - 50) * 0.002
             if yards >= 8 and player.position in {"CB", "S", "FS", "SS"}:
                 weight *= 1.18
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.deep_range - 50) * 0.004
+                weight *= 1.0 + (profile.break_trigger - 50) * 0.003
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.003
             weights.append((player, weight))
         return weighted_choice(self.rng, weights)
 
@@ -2054,7 +2849,22 @@ class MatchEngine:
         else:
             pool = defense.secondary()
         pool = pool or defense.linebackers() or defense.roster[:11]
-        return weighted_choice(self.rng, [(p, weighted_average(p, TACKLE_WEIGHTS)) for p in pool])
+        weights = []
+        for player in pool:
+            weight = weighted_average(player, TACKLE_WEIGHTS)
+            if player.position in LB_POSITIONS:
+                profile = lb_behavior_profile(player)
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.004
+                weight *= 1.0 + (profile.rally_support - 50) * 0.003
+                weight *= 1.0 + (profile.scrape_range - 50) * 0.002
+            elif player.position in SECONDARY_POSITIONS:
+                profile = secondary_behavior_profile(player)
+                weight *= 1.0 + (profile.tackle_finish - 50) * 0.004
+                weight *= 1.0 + (profile.slot_traffic - 50) * 0.003
+                if yards >= 10:
+                    weight *= 1.0 + (profile.deep_range - 50) * 0.003
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights)
 
     def select_returner(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:
         if play_type == "punt":
@@ -2067,13 +2877,7 @@ class MatchEngine:
             [
                 (
                     player,
-                    average(
-                        [
-                            weighted_average(player, YAC_WEIGHTS),
-                            player.rating("ball_security"),
-                            player.rating("play_recognition"),
-                        ]
-                    ),
+                    special_teams_return_weight(player),
                 )
                 for player in pool
             ],
@@ -2123,7 +2927,14 @@ class MatchEngine:
 
     def extra_point(self, offense: TeamSnapshot) -> str:
         kicker = offense.starter("PK")
-        make = clamp(0.925 + (weighted_average(kicker, KICK_WEIGHTS) - 65) * 0.0022, 0.82, 0.995)
+        operation_score = self.kicking_operation_score(offense, "extra_point")
+        make = clamp(
+            0.925
+            + (weighted_average(kicker, KICK_WEIGHTS) - 65) * 0.0017
+            + (operation_score - 65) * 0.0011,
+            0.82,
+            0.995,
+        )
         self.count_special_teams_snap(offense, "extra_point")
         self.team_stats[offense.team_id]["xp_attempts"] += 1
         self.player_stats[kicker.player_id]["xp_attempts"] += 1
@@ -2138,13 +2949,22 @@ class MatchEngine:
         kicker = offense.starter("PK")
         distance = 100 - field_pos + 17
         kick_score = weighted_average(kicker, KICK_WEIGHTS)
-        make = 0.985 - max(0, distance - 28) * 0.014 + (kick_score - 65) * 0.0033
+        operation_score = self.kicking_operation_score(offense, "field_goal")
+        make = 0.985 - max(0, distance - 28) * 0.014 + (kick_score - 65) * 0.0024 + (operation_score - 65) * 0.0012
         make = clamp(make, 0.18, 0.985)
         self.team_stats[offense.team_id]["fg_attempts"] += 1
         self.player_stats[kicker.player_id]["fg_attempts"] += 1
-        block_chance = clamp(0.010 + (72 - kick_score) * 0.00022 + (defense.discipline_score() - 70) * 0.00008, 0.004, 0.026)
+        block_score = self.special_teams_block_score(defense, "punt_return")
+        block_chance = clamp(
+            0.010
+            + (72 - kick_score) * 0.00014
+            + (68 - operation_score) * 0.00010
+            + (block_score - 70) * 0.00008,
+            0.004,
+            0.026,
+        )
         if self.rng.random() < block_chance:
-            blocker = self.select_tackler(defense, 0)
+            blocker = self.select_special_teams_blocker(defense, "punt_return")
             return_yards = max(0, int(round(self.rng.gauss(8, 9))))
             return_field = 100 - field_pos + return_yards
             self.team_stats[defense.team_id]["blocked_kicks"] += 1
@@ -2170,9 +2990,19 @@ class MatchEngine:
         punter = offense.starter("PT")
         returner = self.select_returner(defense, "punt")
         punt_score = weighted_average(punter, PUNT_WEIGHTS)
-        block_chance = clamp(0.012 + (defense.discipline_score() - 70) * 0.00008 - (punt_score - 65) * 0.00008, 0.004, 0.030)
+        operation_score = self.kicking_operation_score(offense, "punt")
+        block_score = self.special_teams_block_score(defense, "punt_return")
+        punter_profile = specialist_behavior_profile(punter)
+        block_chance = clamp(
+            0.012
+            + (68 - operation_score) * 0.00008
+            + (block_score - 70) * 0.00008
+            - (punt_score - 65) * 0.00005,
+            0.004,
+            0.030,
+        )
         if self.rng.random() < block_chance:
-            blocker = self.select_tackler(defense, 0)
+            blocker = self.select_special_teams_blocker(defense, "punt_return")
             return_yards = max(0, int(round(self.rng.gauss(7, 8))))
             return_field = 100 - field_pos + return_yards
             self.team_stats[offense.team_id]["punts"] += 1
@@ -2189,7 +3019,7 @@ class MatchEngine:
                 return "punt_return_touchdown", offense, 25, f"{blocker.name} blocks the punt and returns it for a touchdown. {try_result}", blocker
             return "blocked_punt", defense, int(clamp(return_field, 1, 99)), f"{blocker.name} blocks the punt.", blocker
 
-        gross = int(clamp(round(self.rng.gauss(43 + (punt_score - 60) * 0.13, 7)), 22, 70))
+        gross = int(clamp(round(self.rng.gauss(43 + (punt_score - 60) * 0.10 + (punter_profile.punt_hang_time - 60) * 0.045, 7)), 22, 70))
         absolute_landing = field_pos + gross
         self.team_stats[offense.team_id]["punts"] += 1
         self.team_stats[offense.team_id]["punt_yards"] += gross
@@ -2197,15 +3027,38 @@ class MatchEngine:
         self.player_stats[punter.player_id]["punt_yards"] += gross
         if absolute_landing >= 100:
             return "punt", defense, 20, f"{punter.name} punts {gross} yards for a touchback.", None
-        fair_catch_chance = clamp(0.12 + max(0, absolute_landing - 70) * 0.010 + (punt_score - 65) * 0.002, 0.08, 0.55)
+        coverage_score = self.special_teams_coverage_score(offense, "punt")
+        fair_catch_chance = clamp(
+            0.12
+            + max(0, absolute_landing - 70) * 0.010
+            + (punt_score - 65) * 0.0012
+            + (punter_profile.punt_placement - 60) * 0.0012
+            + (coverage_score - 68) * 0.0010,
+            0.08,
+            0.55,
+        )
         if self.rng.random() < fair_catch_chance:
             opponent_field = int(clamp(100 - absolute_landing, 1, 99))
             self.team_stats[defense.team_id]["fair_catches"] += 1
             self.player_stats[returner.player_id]["fair_catches"] += 1
             return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} fair catches it.", returner
 
-        return_score = weighted_average(returner, YAC_WEIGHTS)
-        return_yards = max(0, int(round(self.rng.gauss(7 - (punt_score - 60) * 0.025 + (return_score - 65) * 0.045, 6))))
+        return_score = special_teams_return_weight(returner)
+        return_yards = max(
+            0,
+            int(
+                round(
+                    self.rng.gauss(
+                        7
+                        - (punt_score - 60) * 0.016
+                        - (coverage_score - 68) * 0.035
+                        - (punter_profile.punt_hang_time - 60) * 0.018
+                        + (return_score - 65) * 0.045,
+                        6,
+                    )
+                )
+            ),
+        )
         return_field = 100 - absolute_landing + return_yards
         opponent_field = int(clamp(return_field, 1, 99))
         self.team_stats[defense.team_id]["punt_returns"] += 1
@@ -2278,13 +3131,22 @@ class MatchEngine:
         kicker = kicking_team.starter("KO") or kicking_team.starter("PK")
         returner = self.select_returner(receiving_team, "kickoff")
         kick_score = weighted_average(kicker, KICK_WEIGHTS)
+        kicker_profile = specialist_behavior_profile(kicker)
+        kickoff_control = average([kicker_profile.kickoff_control, kick_score])
         start_yardline = 20 if safety_kick else 35
         concept = "safety_kick" if safety_kick else "onside_kick" if onside else reason
         self.team_stats[kicking_team.team_id]["kickoffs"] += 1
         self.player_stats[kicker.player_id]["kickoffs"] += 1
 
         if onside:
-            recovery_chance = clamp(0.115 + (kick_score - 65) * 0.0015 - (receiving_team.discipline_score() - 65) * 0.0012, 0.045, 0.210)
+            recovery_chance = clamp(
+                0.115
+                + (kick_score - 65) * 0.0010
+                + (kicker_profile.kick_operation - 65) * 0.0007
+                - (receiving_team.discipline_score() - 65) * 0.0012,
+                0.045,
+                0.210,
+            )
             recovered = self.rng.random() < recovery_chance
             self.team_stats[kicking_team.team_id]["onside_kicks"] += 1
             if recovered:
@@ -2294,28 +3156,34 @@ class MatchEngine:
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=10, live_tenths=14, description=f"{receiving_team.abbreviation} covers the onside kick.", returner=returner)
             return "normal", receiving_team, 54
 
+        bad_kick_adjust = clamp((68 - kickoff_control) * 0.0005, -0.010, 0.018)
+        out_of_bounds_threshold = clamp(0.035 + bad_kick_adjust, 0.018, 0.055)
+        short_threshold = clamp(out_of_bounds_threshold + 0.040 + bad_kick_adjust, out_of_bounds_threshold + 0.022, 0.100)
+        end_zone_threshold = clamp(short_threshold + 0.180 + (kickoff_control - 65) * 0.0015, short_threshold + 0.105, 0.335)
+        landing_down_threshold = clamp(end_zone_threshold + 0.070 + (kicker_profile.kick_operation - 65) * 0.0009, end_zone_threshold + 0.040, 0.410)
+
         roll = self.rng.random()
-        if roll < 0.035:
+        if roll < out_of_bounds_threshold:
             self.team_stats[kicking_team.team_id]["kickoffs_out_of_bounds"] += 1
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=25, live_tenths=0, description=f"{kicker.name}'s kickoff is out of bounds. {receiving_team.abbreviation} starts at the 40.")
             return "normal", receiving_team, 40
-        if roll < 0.075:
+        if roll < short_threshold:
             self.team_stats[kicking_team.team_id]["kickoffs_short"] += 1
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=18, live_tenths=0, description=f"{kicker.name}'s kickoff lands short of the landing zone. {receiving_team.abbreviation} starts at the 40.")
             return "normal", receiving_team, 40
-        if roll < 0.255:
+        if roll < end_zone_threshold:
             self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=65, live_tenths=0, description=f"{kicker.name}'s kickoff reaches the end zone for a touchback. {receiving_team.abbreviation} starts at the 35.")
             return "normal", receiving_team, 35
-        if roll < 0.325:
+        if roll < landing_down_threshold:
             self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=60, live_tenths=0, description=f"{kicker.name}'s kickoff lands in the landing zone and is downed. {receiving_team.abbreviation} starts at the 20.")
             return "normal", receiving_team, 20
 
-        return_score = weighted_average(returner, YAC_WEIGHTS)
-        coverage_score = average([kicking_team.discipline_score(), kicking_team.tackling_score()])
+        return_score = special_teams_return_weight(returner)
+        coverage_score = average([self.special_teams_coverage_score(kicking_team, "kickoff"), kicking_team.discipline_score()])
         caught_at = int(clamp(round(self.rng.gauss(5, 4)), 0, 20))
-        return_yards = max(0, int(round(self.rng.gauss(24 + (return_score - coverage_score) * 0.075, 8))))
+        return_yards = max(0, int(round(self.rng.gauss(24 + (return_score - coverage_score) * 0.075 - (kickoff_control - 65) * 0.020, 8))))
         return_field = caught_at + return_yards
         self.team_stats[receiving_team.team_id]["kickoff_returns"] += 1
         self.team_stats[receiving_team.team_id]["kickoff_return_yards"] += return_yards
