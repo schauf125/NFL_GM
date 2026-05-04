@@ -792,6 +792,32 @@ def action_sim_audit(args: argparse.Namespace) -> None:
     run_tool_script(args.game_id, "sim_audit.py", script_args)
 
 
+def action_tick_playtest(args: argparse.Namespace) -> None:
+    script_args = [
+        args.away,
+        args.home,
+        "--season",
+        str(args.season),
+        "--down",
+        str(args.down),
+        "--distance",
+        str(args.distance),
+        "--field-pos",
+        str(args.field_pos),
+    ]
+    if args.concept:
+        script_args.extend(["--concept", args.concept])
+    if args.seed is not None:
+        script_args.extend(["--seed", str(args.seed)])
+    if not args.events:
+        script_args.append("--no-events")
+    if not args.routes:
+        script_args.append("--no-routes")
+    if args.json:
+        script_args.extend(["--json", str(args.json)])
+    run_tool_script(args.game_id, "tick_playtest.py", script_args)
+
+
 def action_manual_playtest(args: argparse.Namespace) -> None:
     target_game_id, db_path = save_db(args.game_id)
     script_args = ["--save-id", target_game_id, "--team", args.team]
@@ -1269,6 +1295,21 @@ def build_parser() -> argparse.ArgumentParser:
     sim_audit_parser.add_argument("--csv", type=Path)
     sim_audit_parser.add_argument("--strict", action="store_true")
     sim_audit_parser.set_defaults(func=action_sim_audit)
+
+    tick_playtest_parser = subparsers.add_parser("tick-playtest", help="Dry-run one prototype tick-resolved pass play.")
+    add_save_selector(tick_playtest_parser)
+    tick_playtest_parser.add_argument("away")
+    tick_playtest_parser.add_argument("home")
+    tick_playtest_parser.add_argument("--season", type=int, default=game_flow.DEFAULT_START_YEAR)
+    tick_playtest_parser.add_argument("--down", type=int, default=1)
+    tick_playtest_parser.add_argument("--distance", type=int, default=10)
+    tick_playtest_parser.add_argument("--field-pos", type=int, default=25)
+    tick_playtest_parser.add_argument("--concept", choices=("screen", "quick", "short", "intermediate", "deep"))
+    tick_playtest_parser.add_argument("--seed", type=int)
+    tick_playtest_parser.add_argument("--events", action=argparse.BooleanOptionalAction, default=True)
+    tick_playtest_parser.add_argument("--routes", action=argparse.BooleanOptionalAction, default=True)
+    tick_playtest_parser.add_argument("--json", type=Path)
+    tick_playtest_parser.set_defaults(func=action_tick_playtest)
 
     manual_parser = subparsers.add_parser("manual-playtest", help="Manual play-through tester with a log bundle.")
     add_save_selector(manual_parser)

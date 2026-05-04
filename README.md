@@ -35,6 +35,7 @@ python tools\play.py week 1
 python tools\play.py sim-matchup MIN CHI --seed 125
 python tools\play.py sim-game 1 --seed 127
 python tools\play.py sim-audit --games 100 --season 2026 --seed 3000
+python tools\play.py tick-playtest MIN CHI --concept intermediate --seed 42
 python tools\play.py manual-playtest --team MIN
 python tools\play.py playtest-logs latest
 python tools\play.py playtest-logs bundle --latest
@@ -101,6 +102,7 @@ python tools\league_calendar.py next --limit 18
 python tools\league_schedule.py validate
 python tools\sim_game.py matchup MIN CHI --seed 125
 python tools\sim_audit.py --games 100 --season 2026 --seed 3000
+python tools\tick_playtest.py MIN CHI --concept intermediate --seed 42
 python tools\roster_actions.py cap --team DEN
 python tools\setup_draft_classes.py apply
 python tools\setup_draft_classes.py create-class 2027 --seed 2027-default
@@ -145,7 +147,7 @@ Season completion now lives in `tools\season_rollover.py` and the save-aware `py
 Own-team contract talks live in `tools\contract_negotiations.py` and the save-aware `python tools\play.py contract ...` wrapper. `contract list` shows expiring players before free agency, estimated market asks, suggested years, and keep/walk guidance using projected next-year Top 51 space. `contract extend` adds a future extension that starts the next contract year while preserving the current contract row, then rebuilds cap views and logs the transaction. `contract release` handles projected cap-casualty cuts before free agency. `contract restructure` converts projected salary into prorated bonus to create near-term cap relief while moving cap to future years. `contract expire` is the offseason bridge that moves unextended expired contracts to the free-agent pool, clears depth-chart rows, logs `Contract Expired` transactions, and shifts cap accounting to the next `current_contract_year`.
 
 Future AI GM work is sketched in `docs\ai_gm_local_llm_roadmap.md`, with room for locally hosted LLMs to propose team-specific decisions through validated game actions.
-Match-engine rules coverage is tracked in `docs\sim_engine_rules_coverage.md`. Use it as the checklist for NFL game-flow completeness before deeper ratings or tick-physics tuning.
+Match-engine rules coverage is tracked in `docs\sim_engine_rules_coverage.md`. Use it as the checklist for NFL game-flow completeness before deeper ratings or tick-physics tuning. The first tick-engine prototype is outlined in `docs\tick_engine_design.md` and can be exercised with `tools\tick_playtest.py`.
 The first AI GM tool now lives at `tools\ai_gm.py`. It creates AI GM profile/config/queue/log tables, builds save-scoped team context packets, calls a local Ollama or OpenAI-compatible endpoint, validates strict JSON advisory decisions, and logs the prompt/response/validation result without directly applying roster or contract changes. AI GM profiles include sourced real-life GM identity fields plus editable operating models for job security, owner pressure, coach alignment, negotiation style, scheme fit, depth charts, releases, youth-versus-veteran calls, future building, draft planning, contracts, free agency, trades, and risk appetite.
 Trade support lives at `tools\trade_engine.py`. It seeds multiple draft-pick value charts, assigns each AI GM a chart/deviation profile, validates player and pick ownership, stores proposal/counter/accept/reject lifecycles, and can execute accepted trades through the normal roster, contract, draft-pick, cap, and transaction tables. Trade execution should still be tested in dry-run/smoke mode before it becomes a routine CPU automation.
 
