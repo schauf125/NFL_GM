@@ -90,6 +90,49 @@ DEFENSIVE_SLOT_STARTER_RATE = {
     "SS": 0.94,
 }
 
+OFFENSIVE_SLOT_STARTER_RATE = {
+    "QB": 0.998,
+    "RB": 0.66,
+    "FB": 0.46,
+    "LT": 0.992,
+    "LG": 0.992,
+    "C": 0.995,
+    "RG": 0.992,
+    "RT": 0.992,
+    "TE": 0.74,
+    "LWR": 0.87,
+    "RWR": 0.85,
+    "SWR": 0.74,
+}
+
+ROTATION_FATIGUE_THRESHOLDS = {
+    "QB": 95,
+    "LT": 92,
+    "LG": 92,
+    "C": 94,
+    "RG": 92,
+    "RT": 92,
+    "RB": 24,
+    "FB": 18,
+    "TE": 38,
+    "LWR": 48,
+    "RWR": 46,
+    "SWR": 46,
+    "LEDGE": 30,
+    "REDGE": 30,
+    "LDL": 28,
+    "RDL": 28,
+    "NT": 22,
+    "MLB": 56,
+    "WLB": 52,
+    "SLB": 34,
+    "LCB": 62,
+    "RCB": 62,
+    "NB": 42,
+    "FS": 64,
+    "SS": 62,
+}
+
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
@@ -1529,34 +1572,237 @@ class MatchEngine:
             seen.add(player.player_id)
             self.add_snap(player, snap_key)
 
-    def offensive_snap_players(self, offense: TeamSnapshot, concept: str) -> list[PlayerSnapshot]:
-        slots = ["QB", "RB", "LT", "LG", "C", "RG", "RT", "TE", "LWR", "RWR"]
+    def eligible_slot_candidates(self, team: TeamSnapshot, slot: str, used: set[int] | None = None) -> list[PlayerSnapshot]:
+        used = used or set()
+        raw_candidates = list(team.candidates(slot))
+        active_count = len(
+            [
+                player
+                for player in raw_candidates
+                if player.player_id not in used and player.player_id not in self.injured_player_ids
+            ]
+        )
+        if active_count < 4:
+            fallback_positions = SLOT_POSITION_FALLBACKS.get(slot.upper(), [slot.upper()])
+            seen = {player.player_id for player in raw_candidates}
+            supplemental = sorted(
+                [player for player in team.roster if player.position in fallback_positions and player.player_id not in seen],
+                key=lambda player: team.score_for_slot(player, slot),
+                reverse=True,
+            )
+            raw_candidates.extend(supplemental)
+        return [
+            player
+            for player in raw_candidates
+            if player.player_id not in used and player.player_id not in self.injured_player_ids
+        ]
+
+    def active_starter(self, team: TeamSnapshot, slot: str) -> PlayerSnapshot:
+        candidates = self.eligible_slot_candidates(team, slot)
+        if candidates:
+            return candidates[0]
+        return team.starter(slot)
+
+    def rotation_fatigue_pressure(self, player: PlayerSnapshot, slot: str, snap_key: str) -> float:
+        threshold = ROTATION_FATIGUE_THRESHOLDS.get(slot, 44)
+        stamina_buffer = (player.rating("stamina") - 65.0) * 0.30
+        effective_threshold = threshold + stamina_buffer
+        snaps = float(self.player_stats[player.player_id].get(snap_key, 0))
+        if snaps <= effective_threshold:
+            return 0.0
+        return clamp((snaps - effective_threshold) * 0.0065, 0.0, 0.28)
+
+    def choose_rotated_slot_player(
+        self,
+        team: TeamSnapshot,
+        slot: str,
+        *,
+        used: set[int],
+        snap_key: str,
+        starter_rate: float | None = None,
+        preferred: PlayerSnapshot | None = None,
+    ) -> PlayerSnapshot | None:
+        if (
+            preferred
+            and preferred.player_id not in used
+            and preferred.player_id not in self.injured_player_ids
+            and preferred in team.roster
+        ):
+            return preferred
+        candidates = self.eligible_slot_candidates(team, slot, used)
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return candidates[0]
+
+        base_rate = starter_rate
+        if base_rate is None:
+            base_rate = OFFENSIVE_SLOT_STARTER_RATE.get(slot, DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.84))
+        starter = candidates[0]
+        if slot in {"QB", "LT", "LG", "C", "RG", "RT"}:
+            return starter
+        starter_score = team.score_for_slot(starter, slot)
+        if slot in {"LWR", "RWR", "SWR"}:
+            if starter_score >= 90:
+                base_rate = max(base_rate, 0.95)
+            elif starter_score >= 88:
+                base_rate = max(base_rate, 0.92)
+            elif starter_score >= 82:
+                base_rate = max(base_rate, 0.88 if slot != "SWR" else 0.83)
+        elif slot == "TE" and starter_score >= 82:
+            base_rate = max(base_rate, 0.84)
+        elif slot == "RB" and starter_score >= 84:
+            base_rate = max(base_rate, 0.72)
+        backup_score = team.score_for_slot(candidates[1], slot)
+        quality_gap = starter_score - backup_score
+        stamina_bonus = (starter.rating("stamina") - 65.0) * 0.0017
+        quality_bonus = clamp(quality_gap * 0.006, -0.055, 0.095)
+        fatigue_penalty = self.rotation_fatigue_pressure(starter, slot, snap_key)
+        effective_rate = clamp(base_rate + quality_bonus + stamina_bonus - fatigue_penalty, 0.28, 0.998)
+        if self.rng.random() < effective_rate:
+            return starter
+
+        starter_snaps = float(self.player_stats[starter.player_id].get(snap_key, 0))
+        weights = []
+        for idx, backup in enumerate(candidates[1:5]):
+            score = max(1.0, team.score_for_slot(backup, slot) - 45.0)
+            depth_discount = 1.0 / (idx + 1.35)
+            freshness = 1.0 + clamp((starter_snaps - float(self.player_stats[backup.player_id].get(snap_key, 0))) * 0.014, 0.0, 0.45)
+            stamina = 1.0 + clamp((backup.rating("stamina") - 62.0) * 0.004, -0.08, 0.12)
+            weights.append((backup, score * depth_discount * freshness * stamina))
+        return weighted_choice(self.rng, weights) if weights else starter
+
+    def append_rotated_slot(
+        self,
+        players: list[PlayerSnapshot],
+        team: TeamSnapshot,
+        slot: str,
+        used: set[int],
+        *,
+        snap_key: str,
+        preferred: PlayerSnapshot | None = None,
+        starter_rate: float | None = None,
+    ) -> None:
+        player = self.choose_rotated_slot_player(
+            team,
+            slot,
+            used=used,
+            snap_key=snap_key,
+            starter_rate=starter_rate,
+            preferred=preferred,
+        )
+        if not player:
+            return
+        players.append(player)
+        used.add(player.player_id)
+
+    def offensive_skill_slots(self, offense: TeamSnapshot, concept: str) -> list[str]:
         fullback = offense.starter("FB")
-        if concept in {"inside_zone", "power"} and fullback and fullback.position == "FB":
-            slots.append("FB")
-        else:
-            slots.append("SWR")
-        return offense.unique_starters(slots)
+        has_fullback = fullback and fullback.position == "FB"
+        if concept in {"inside_zone", "power"}:
+            if has_fullback and self.rng.random() < 0.55:
+                return ["TE", "FB", "LWR", "RWR"]
+            if self.rng.random() < 0.32:
+                return ["TE", "TE", "LWR", "RWR"]
+        if concept == "screen" and self.rng.random() < 0.22:
+            return ["LWR", "RWR", "SWR", "SWR"]
+        return ["TE", "LWR", "RWR", "SWR"]
+
+    def offensive_snap_players(
+        self,
+        offense: TeamSnapshot,
+        concept: str,
+        play_type: str = "",
+        *,
+        ball_carrier: PlayerSnapshot | None = None,
+        target: PlayerSnapshot | None = None,
+    ) -> list[PlayerSnapshot]:
+        players: list[PlayerSnapshot] = []
+        used: set[int] = set()
+        self.append_rotated_slot(players, offense, "QB", used, snap_key="offensive_snaps")
+        for slot in ["LT", "LG", "C", "RG", "RT"]:
+            self.append_rotated_slot(players, offense, slot, used, snap_key="offensive_snaps")
+
+        rb_preferred = None
+        if ball_carrier and ball_carrier.position in {"RB", "FB"}:
+            rb_preferred = ball_carrier
+        elif target and target.position == "RB":
+            rb_preferred = target
+        self.append_rotated_slot(players, offense, "RB", used, snap_key="offensive_snaps", preferred=rb_preferred)
+
+        force_skill = None
+        if target and target.position in {"WR", "TE", "FB"}:
+            force_skill = target
+        for slot in self.offensive_skill_slots(offense, concept):
+            preferred = None
+            if force_skill and force_skill.player_id not in used:
+                slot_positions = SLOT_POSITION_FALLBACKS.get(slot, [slot])
+                if force_skill.position in slot_positions:
+                    preferred = force_skill
+            self.append_rotated_slot(players, offense, slot, used, snap_key="offensive_snaps", preferred=preferred)
+
+        feature_receivers = sorted(
+            [
+                player
+                for player in offense.roster
+                if player.position == "WR" and player.player_id not in self.injured_player_ids
+            ],
+            key=lambda player: max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")),
+            reverse=True,
+        )[:2]
+        for receiver in feature_receivers:
+            if receiver.player_id in used:
+                continue
+            receiver_score = max(offense.score_for_slot(receiver, slot) for slot in ("LWR", "RWR", "SWR"))
+            if receiver_score < 84:
+                continue
+            wr_indexes = [
+                (idx, player, max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")))
+                for idx, player in enumerate(players)
+                if player.position == "WR"
+            ]
+            if not wr_indexes:
+                continue
+            replace_idx, replaced, replaced_score = min(wr_indexes, key=lambda item: item[2])
+            if receiver_score - replaced_score < 6:
+                continue
+            players[replace_idx] = receiver
+            used.discard(replaced.player_id)
+            used.add(receiver.player_id)
+
+        if target and target.player_id not in used and target.player_id not in self.injured_player_ids:
+            players.append(target)
+            used.add(target.player_id)
+        fill_slots = ["SWR", "TE", "LWR", "RWR", "FB", "RB"]
+        while len(players) < 11:
+            before = len(players)
+            for slot in fill_slots:
+                self.append_rotated_slot(players, offense, slot, used, snap_key="offensive_snaps")
+                if len(players) >= 11:
+                    break
+            if len(players) == before:
+                break
+        return players[:11]
 
     def rotated_unique_starters(self, team: TeamSnapshot, slots: list[str]) -> list[PlayerSnapshot]:
         selected = []
         used = set()
         for slot in slots:
-            candidates = [player for player in team.candidates(slot) if player.player_id not in used]
-            if not candidates:
+            candidates = self.eligible_slot_candidates(team, slot, used)
+            primary = candidates[0] if candidates else None
+            player = self.choose_rotated_slot_player(
+                team,
+                slot,
+                used=used,
+                snap_key="defensive_snaps",
+                starter_rate=DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.90),
+            )
+            if not player:
                 continue
-            starter_rate = DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.90)
-            if len(candidates) == 1 or self.rng.random() < starter_rate:
-                player = candidates[0]
-            else:
-                backups = candidates[1:4]
-                weights = []
-                for idx, backup in enumerate(backups):
-                    depth_discount = 1.0 / (idx + 1.55)
-                    weights.append((backup, max(1.0, team.score_for_slot(backup, slot) - 48.0) * depth_discount))
-                player = weighted_choice(self.rng, weights) if weights else candidates[0]
             selected.append(player)
             used.add(player.player_id)
+            if primary and primary.player_id != player.player_id:
+                used.add(primary.player_id)
         return selected
 
     def defensive_snap_players(self, defense: TeamSnapshot, play_type: str, concept: str) -> list[PlayerSnapshot]:
@@ -1586,7 +1832,9 @@ class MatchEngine:
         exclude_player_ids = set(exclude_player_ids or set())
         pool = []
         for player in team.roster:
-            if player.player_id in exclude_player_ids or player.position in {"K", "P"}:
+            if player.player_id in exclude_player_ids or player.position in {"K", "P", "QB", "OT", "OG", "C", "OL"}:
+                continue
+            if player.player_id in self.injured_player_ids:
                 continue
             source = str(player.metadata.get("specialist_behavior_source") or "")
             has_stored_st_profile = source.startswith("specialist_behavior_") or source == "draft_selection"
@@ -1605,21 +1853,27 @@ class MatchEngine:
     def special_teams_snap_players(self, team: TeamSnapshot, play_type: str) -> list[PlayerSnapshot]:
         if play_type in {"field_goal", "extra_point"}:
             return team.unique_starters(["PK", "LS", "PT"])
-        if play_type in {"kickoff", "safety_kick"}:
-            players = team.unique_starters(["KO", "LS", "MLB", "WLB", "SLB", "LCB", "RCB", "NB", "FS", "SS", "RB"])
-            players.extend(self.core_special_teamers(team, 3, exclude_player_ids={player.player_id for player in players}))
+        if play_type == "kickoff":
+            players = team.unique_starters(["KO"])
+            players.extend(self.core_special_teamers(team, 10, exclude_player_ids={player.player_id for player in players}))
+            return players
+        if play_type == "safety_kick":
+            players = team.unique_starters(["PT"])
+            players.extend(self.core_special_teamers(team, 10, exclude_player_ids={player.player_id for player in players}))
             return players
         if play_type == "kick_return":
-            players = team.unique_starters(["RB", "FB", "TE", "LWR", "RWR", "SWR", "MLB", "WLB", "LCB", "RCB", "FS"])
-            players.extend(self.core_special_teamers(team, 2, exclude_player_ids={player.player_id for player in players}))
+            returner = self.select_returner(team, "kickoff")
+            players = [returner] if returner else []
+            players.extend(self.core_special_teamers(team, 10, exclude_player_ids={player.player_id for player in players}))
             return players
         if play_type == "punt":
             players = team.unique_starters(["PT", "LS"])
-            players.extend(self.core_special_teamers(team, 5, exclude_player_ids={player.player_id for player in players}))
+            players.extend(self.core_special_teamers(team, 9, exclude_player_ids={player.player_id for player in players}))
             return players
         if play_type == "punt_return":
-            players = team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "NB", "FS", "SS", "MLB", "WLB"])
-            players.extend(self.core_special_teamers(team, 3, exclude_player_ids={player.player_id for player in players}))
+            returner = self.select_returner(team, "punt")
+            players = [returner] if returner else []
+            players.extend(self.core_special_teamers(team, 10, exclude_player_ids={player.player_id for player in players}))
             return players
         return []
 
@@ -2164,10 +2418,10 @@ class MatchEngine:
         distance: int,
         field_pos: int,
     ) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
-        qb = offense.starter("QB")
-        rb_candidates = offense.candidates("RB")[:3]
+        qb = self.active_starter(offense, "QB")
+        rb_candidates = self.eligible_slot_candidates(offense, "RB")[:3]
         if not rb_candidates:
-            rb_candidates = [offense.starter("RB")]
+            rb_candidates = [self.active_starter(offense, "RB")]
         qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
         profile = qb_behavior_profile(qb)
         qb_run_chance = clamp(
@@ -2204,7 +2458,13 @@ class MatchEngine:
         )
         concept = self.choose_run_concept(offense, defense, down, distance, field_pos, runner)
         self._last_play_concept = concept
-        self.set_snap_override(defense, "defensive_snaps", self.defensive_snap_players(defense, "run", concept))
+        self.set_snap_override(
+            offense,
+            "offensive_snaps",
+            self.offensive_snap_players(offense, concept, "run", ball_carrier=runner),
+        )
+        defense_snap_players = self.defensive_snap_players(defense, "run", concept)
+        self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
         run_block = offense.run_block_score()
         run_def = defense.run_defense_score()
         is_qb_run = runner.player_id == qb.player_id
@@ -2257,7 +2517,7 @@ class MatchEngine:
 
         new_field = field_pos + yards
         touchdown = new_field >= 100
-        tackler = None if touchdown else self.select_run_tackler(defense, yards)
+        tackler = None if touchdown else self.select_run_tackler(defense, yards, defense_snap_players)
 
         fumble_kind = "scramble" if is_qb_run else "run"
         if tackler and self.rng.random() < self.fumble_event_chance(runner, tackler, defense, yards, play_kind=fumble_kind):
@@ -2329,6 +2589,7 @@ class MatchEngine:
         field_pos: int,
         *,
         pressured: bool,
+        defense_snap_players: list[PlayerSnapshot] | None = None,
     ) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
         qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
         profile = qb_behavior_profile(qb)
@@ -2360,7 +2621,7 @@ class MatchEngine:
 
         new_field = field_pos + yards
         touchdown = new_field >= 100
-        tackler = None if touchdown else self.select_run_tackler(defense, yards)
+        tackler = None if touchdown else self.select_run_tackler(defense, yards, defense_snap_players)
         self.team_stats[offense.team_id]["plays"] += 1
         self.team_stats[offense.team_id]["rush_attempts"] += 1
         self.team_stats[offense.team_id]["rush_yards"] += yards
@@ -2382,7 +2643,7 @@ class MatchEngine:
         return "normal", yards, 0, 0, desc + ".", offense, int(clamp(new_field, 1, 99)), 1, 10, None, tackler
 
     def pass_play(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
-        qb = offense.starter("QB")
+        qb = self.active_starter(offense, "QB")
         profile = qb_behavior_profile(qb)
         concept = self.choose_pass_concept(offense, defense, down, distance, field_pos)
         self._last_play_concept = concept
@@ -2393,6 +2654,8 @@ class MatchEngine:
             "deep": (21, 7),
             "screen": (0, 2),
         }[concept]
+        offense_snap_players = self.offensive_snap_players(offense, concept, "pass")
+        self.set_snap_override(offense, "offensive_snaps", offense_snap_players)
         defense_snap_players = self.defensive_snap_players(defense, "pass", concept)
         self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
         snap_rushers = self.pass_rushers_from_snap(defense, defense_snap_players)
@@ -2494,10 +2757,17 @@ class MatchEngine:
             scramble_chance = 0.0
         if self.rng.random() < scramble_chance:
             self._last_play_concept = "scramble"
-            return self.qb_scramble_play(offense, defense, qb, field_pos, pressured=pressured)
+            return self.qb_scramble_play(
+                offense,
+                defense,
+                qb,
+                field_pos,
+                pressured=pressured,
+                defense_snap_players=defense_snap_players,
+            )
 
-        target = self.select_receiver(offense, concept)
-        defender = self.select_coverage_defender(defense, target, concept)
+        target = self.select_receiver(offense, concept, offense_snap_players)
+        defender = self.select_coverage_defender(defense, target, concept, defense_snap_players)
         receiver_profile = receiver_behavior_profile(target) if target.position in {"WR", "TE"} else None
         air_yards = int(clamp(round(self.rng.gauss(*depth_profile)), -2, 48))
         if receiver_profile and concept == "deep":
@@ -2709,7 +2979,7 @@ class MatchEngine:
         self.player_stats[target.player_id]["receptions"] += 1
         self.player_stats[target.player_id]["receiving_yards"] += yards
         if not touchdown:
-            tackler = self.select_pass_tackler(defense, yards, defender)
+            tackler = self.select_pass_tackler(defense, yards, defender, defense_snap_players)
             self.credit_tackle(defense, tackler, yards, play_kind="pass")
             desc = f"{qb.name} completes to {target.name} for {yards}, tackled by {tackler.name}."
         else:
@@ -2723,14 +2993,44 @@ class MatchEngine:
 
         return "normal", yards, 0, 0, desc, offense, int(clamp(new_field, 1, 99)), down, distance, target, defender
 
-    def select_receiver(self, offense: TeamSnapshot, concept: str) -> PlayerSnapshot:
+    def unique_player_pool(self, *groups: list[PlayerSnapshot]) -> list[PlayerSnapshot]:
+        players: list[PlayerSnapshot] = []
+        seen: set[int] = set()
+        for group in groups:
+            for player in group:
+                if player.player_id in seen or player.player_id in self.injured_player_ids:
+                    continue
+                seen.add(player.player_id)
+                players.append(player)
+        return players
+
+    def select_receiver(
+        self,
+        offense: TeamSnapshot,
+        concept: str,
+        snap_players: list[PlayerSnapshot] | None = None,
+    ) -> PlayerSnapshot:
+        pool = []
+        if snap_players:
+            pool = [
+                player
+                for player in snap_players
+                if player.position in {"WR", "TE", "RB", "FB"} and player.player_id not in self.injured_player_ids
+            ]
+        if not pool:
+            pool = [player for player in offense.receiving_options() if player.player_id not in self.injured_player_ids]
+        if not pool:
+            pool = offense.receiving_options()
+
         options = []
-        for idx, player in enumerate(offense.receiving_options()):
+        for idx, player in enumerate(pool):
             weight = weighted_average(player, RECEIVER_WEIGHTS)
             if player.position == "WR":
                 weight *= 1.15
             if player.position == "TE" and concept in {"short", "intermediate"}:
                 weight *= 1.10
+            if player.position == "FB":
+                weight *= 0.35
             if player.position in {"WR", "TE"}:
                 profile = receiver_behavior_profile(player)
                 weight *= 1.0 + (profile.target_gravity - 50) * 0.012
@@ -2753,7 +3053,13 @@ class MatchEngine:
             options.append((player, weight))
         return weighted_choice(self.rng, options)
 
-    def select_coverage_defender(self, defense: TeamSnapshot, target: PlayerSnapshot, concept: str) -> PlayerSnapshot:
+    def select_coverage_defender(
+        self,
+        defense: TeamSnapshot,
+        target: PlayerSnapshot,
+        concept: str,
+        snap_defenders: list[PlayerSnapshot] | None = None,
+    ) -> PlayerSnapshot:
         if target.position == "WR":
             slots = ["LCB", "RCB", "NB"] if concept != "deep" else ["LCB", "RCB", "FS", "SS"]
         elif target.position == "TE":
@@ -2761,6 +3067,20 @@ class MatchEngine:
         else:
             slots = ["MLB", "WLB", "NB", "SS"]
         defenders = defense.unique_starters(slots) or defense.secondary()
+        if snap_defenders:
+            snap_pool = [
+                player
+                for player in snap_defenders
+                if player.player_id not in self.injured_player_ids
+                and player.position in (LB_POSITIONS | SECONDARY_POSITIONS)
+            ]
+            if target.position == "WR":
+                snap_match = [player for player in snap_pool if player.position in SECONDARY_POSITIONS]
+            elif target.position in {"TE", "RB", "FB"}:
+                snap_match = snap_pool
+            else:
+                snap_match = snap_pool
+            defenders = snap_match or defenders
         weights = []
         for player in defenders:
             weight = weighted_average(player, COVERAGE_WEIGHTS)
@@ -3012,8 +3332,29 @@ class MatchEngine:
             weights.append((player, weight))
         return weighted_choice(self.rng, weights)
 
-    def select_run_tackler(self, defense: TeamSnapshot, yards: int) -> PlayerSnapshot:
-        if yards < 0:
+    def select_run_tackler(
+        self,
+        defense: TeamSnapshot,
+        yards: int,
+        snap_defenders: list[PlayerSnapshot] | None = None,
+    ) -> PlayerSnapshot:
+        if snap_defenders:
+            snap_pool = [player for player in snap_defenders if player.player_id not in self.injured_player_ids]
+            interior = [player for player in snap_pool if player.position in {"IDL", "DT", "NT"}]
+            edge = [player for player in snap_pool if player.position in {"EDGE", "OLB", "DE"}]
+            linebackers = [player for player in snap_pool if player.position in LB_POSITIONS]
+            secondary = [player for player in snap_pool if player.position in SECONDARY_POSITIONS]
+            if yards < 0:
+                pool = self.unique_player_pool(interior, linebackers, edge)
+            elif yards <= 2:
+                pool = self.unique_player_pool(linebackers, interior, secondary)
+            elif yards <= 7:
+                pool = self.unique_player_pool(linebackers, secondary, interior)
+            elif yards <= 14:
+                pool = self.unique_player_pool(linebackers, secondary)
+            else:
+                pool = self.unique_player_pool(secondary, linebackers)
+        elif yards < 0:
             pool = defense.unique_starters(["LDL", "NT", "RDL", "MLB", "WLB", "SLB", "LEDGE", "REDGE"])
         elif yards <= 2:
             pool = defense.unique_starters(["MLB", "WLB", "SLB", "LDL", "NT", "RDL", "SS"])
@@ -3061,11 +3402,27 @@ class MatchEngine:
             weights.append((player, weight))
         return weighted_choice(self.rng, weights)
 
-    def select_pass_tackler(self, defense: TeamSnapshot, yards: int, coverage_defender: PlayerSnapshot | None) -> PlayerSnapshot:
+    def select_pass_tackler(
+        self,
+        defense: TeamSnapshot,
+        yards: int,
+        coverage_defender: PlayerSnapshot | None,
+        snap_defenders: list[PlayerSnapshot] | None = None,
+    ) -> PlayerSnapshot:
         if coverage_defender and coverage_defender.position not in {"EDGE", "DE", "IDL", "DT", "NT", "OL"}:
             if self.rng.random() < clamp(0.58 - max(0, yards - 8) * 0.012, 0.32, 0.72):
                 return coverage_defender
-        if yards <= 5:
+        if snap_defenders:
+            snap_pool = [player for player in snap_defenders if player.player_id not in self.injured_player_ids]
+            linebackers = [player for player in snap_pool if player.position in LB_POSITIONS]
+            secondary = [player for player in snap_pool if player.position in SECONDARY_POSITIONS]
+            if yards <= 5:
+                pool = self.unique_player_pool(linebackers, secondary)
+            elif yards <= 14:
+                pool = self.unique_player_pool(secondary, linebackers)
+            else:
+                pool = secondary
+        elif yards <= 5:
             pool = defense.linebackers() + defense.secondary()
         elif yards <= 14:
             pool = defense.secondary() + defense.linebackers()
@@ -3090,11 +3447,20 @@ class MatchEngine:
         return weighted_choice(self.rng, weights)
 
     def select_returner(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:
+        positions = {"RB", "WR", "CB", "NB", "FS", "SS", "S"}
         if play_type == "punt":
-            pool = team.unique_starters(["SWR", "LWR", "RWR", "RB", "LCB", "RCB", "NB"])
-        else:
-            pool = team.unique_starters(["RB", "SWR", "LWR", "RWR", "LCB", "RCB", "FS"])
-        pool = pool or team.receiving_options() or team.roster[:5]
+            positions |= {"SWR"}
+        preferred = []
+        fallback = []
+        for player in team.roster:
+            if player.player_id in self.injured_player_ids or player.position not in positions:
+                continue
+            source = str(player.metadata.get("specialist_behavior_source") or "")
+            has_stored_st_profile = source.startswith("specialist_behavior_") or source == "draft_selection"
+            if has_stored_st_profile or player.general_score() <= 82:
+                preferred.append(player)
+            fallback.append(player)
+        pool = preferred or fallback or team.receiving_options() or team.roster[:5]
         return weighted_choice(
             self.rng,
             [
@@ -3120,18 +3486,29 @@ class MatchEngine:
         if not go_for_two:
             return self.extra_point(offense)
 
-        qb = offense.starter("QB")
-        runner = offense.starter("RB")
-        target = self.select_receiver(offense, "short")
+        qb = self.active_starter(offense, "QB")
+        runner = self.active_starter(offense, "RB")
         pass_try = self.rng.random() < 0.58
-        self.count_scrimmage_snap(offense, defense, "pass" if pass_try else "run", "two_point")
+        snap_play_type = "pass" if pass_try else "run"
+        snap_concept = "short" if pass_try else "power"
+        offense_snap_players = self.offensive_snap_players(
+            offense,
+            snap_concept,
+            snap_play_type,
+            ball_carrier=None if pass_try else runner,
+        )
+        defense_snap_players = self.defensive_snap_players(defense, snap_play_type, snap_concept)
+        self.set_snap_override(offense, "offensive_snaps", offense_snap_players)
+        self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
+        target = self.select_receiver(offense, "short", offense_snap_players) if pass_try else None
+        self.count_scrimmage_snap(offense, defense, snap_play_type, snap_concept)
         self.team_stats[offense.team_id]["two_point_attempts"] += 1
         self.player_stats[qb.player_id if pass_try else runner.player_id]["two_point_attempts"] += 1
 
         offense_score = average(
             [
                 weighted_average(qb, QB_PASS_WEIGHTS) if pass_try else weighted_average(runner, RB_RUN_WEIGHTS),
-                weighted_average(target, RECEIVER_WEIGHTS) if pass_try else offense.run_block_score(),
+                weighted_average(target, RECEIVER_WEIGHTS) if pass_try and target else offense.run_block_score(),
                 offense.discipline_score(),
             ]
         )
@@ -3142,8 +3519,10 @@ class MatchEngine:
             self.team_stats[offense.team_id]["two_point_made"] += 1
             if pass_try:
                 self.player_stats[qb.player_id]["two_point_passes"] += 1
-                self.player_stats[target.player_id]["two_point_conversions"] += 1
-                return f"{qb.name} converts the two-point try to {target.name}."
+                if target:
+                    self.player_stats[target.player_id]["two_point_conversions"] += 1
+                    return f"{qb.name} converts the two-point try to {target.name}."
+                return f"{qb.name} converts the two-point try."
             self.player_stats[runner.player_id]["two_point_conversions"] += 1
             return f"{runner.name} runs in the two-point try."
         return "Two-point try failed."
