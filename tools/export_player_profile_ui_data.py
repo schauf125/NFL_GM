@@ -14,6 +14,33 @@ DEFAULT_DB = PROJECT_ROOT / "database" / "nfl_gm.db"
 DEFAULT_OUTPUT = PROJECT_ROOT / "ui" / "player_profile" / "player-profile-data.js"
 CURRENT_SEASON = 2026
 
+SEASON_STAT_KEYS = [
+    "season", "stat_team", "stat_position", "games", "completions", "passing_attempts",
+    "passing_yards", "passing_tds", "passing_interceptions", "sacks_suffered",
+    "sack_yards_lost", "carries", "rushing_yards", "rushing_tds", "rushing_fumbles",
+    "rushing_fumbles_lost", "receptions", "targets", "receiving_yards", "receiving_tds",
+    "receiving_fumbles", "receiving_fumbles_lost", "def_tackles_solo",
+    "def_tackles_with_assist", "def_tackle_assists", "def_tackles_for_loss",
+    "def_fumbles_forced", "def_sacks", "def_qb_hits", "def_interceptions",
+    "def_interception_yards", "def_pass_defended", "def_tds", "def_safeties",
+    "punt_returns", "punt_return_yards", "kickoff_returns", "kickoff_return_yards",
+    "fg_made", "fg_att", "fg_long", "fg_pct", "pat_made", "pat_att", "pat_pct",
+    "fantasy_points", "fantasy_points_ppr", "source",
+]
+
+SUM_CAREER_FIELDS = [
+    "games", "completions", "passing_attempts", "passing_yards", "passing_tds",
+    "passing_interceptions", "sacks_suffered", "sack_yards_lost", "carries",
+    "rushing_yards", "rushing_tds", "rushing_fumbles", "rushing_fumbles_lost",
+    "receptions", "targets", "receiving_yards", "receiving_tds", "receiving_fumbles",
+    "receiving_fumbles_lost", "def_tackles_solo", "def_tackles_with_assist",
+    "def_tackle_assists", "def_tackles_for_loss", "def_fumbles_forced", "def_sacks",
+    "def_qb_hits", "def_interceptions", "def_interception_yards", "def_pass_defended",
+    "def_tds", "def_safeties", "punt_returns", "punt_return_yards",
+    "kickoff_returns", "kickoff_return_yards", "fg_made", "fg_att", "pat_made",
+    "pat_att", "fantasy_points", "fantasy_points_ppr",
+]
+
 POSITION_LABELS = {
     "QB": "Quarterback",
     "RB": "Running Back",
@@ -298,31 +325,289 @@ def career_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict[in
     return {int(row["player_id"]): dict(row) for row in rows}
 
 
-def season_stats_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
-    if not player_ids:
+def pct_value(made: float, attempts: float) -> float | None:
+    if attempts <= 0:
+        return None
+    return round(made * 100.0 / attempts, 1)
+
+
+def number(row: sqlite3.Row | dict[str, Any], key: str) -> float:
+    value = row[key] if isinstance(row, sqlite3.Row) else row.get(key)
+    return float(value or 0)
+
+
+def fantasy_ppr(row: dict[str, Any]) -> float:
+    return round(
+        number(row, "passing_yards") / 25.0
+        + number(row, "passing_tds") * 4.0
+        - number(row, "passing_interceptions") * 2.0
+        + number(row, "rushing_yards") / 10.0
+        + number(row, "rushing_tds") * 6.0
+        + number(row, "receptions")
+        + number(row, "receiving_yards") / 10.0
+        + number(row, "receiving_tds") * 6.0
+        - (number(row, "rushing_fumbles_lost") + number(row, "receiving_fumbles_lost")) * 2.0
+        + number(row, "fg_made") * 3.0
+        + number(row, "pat_made"),
+        1,
+    )
+
+
+def normalized_historical_season_rows(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids or not table_exists(conn, "player_season_stats"):
         return {}
     placeholders = ",".join("?" for _ in player_ids)
     rows = conn.execute(
         f"""
-        SELECT *
-        FROM player_season_stats_view
+        SELECT
+            player_id,
+            season,
+            team AS stat_team,
+            position AS stat_position,
+            games,
+            completions,
+            passing_attempts,
+            passing_yards,
+            passing_tds,
+            passing_interceptions,
+            sacks_suffered,
+            sack_yards_lost,
+            carries,
+            rushing_yards,
+            rushing_tds,
+            rushing_fumbles,
+            rushing_fumbles_lost,
+            receptions,
+            targets,
+            receiving_yards,
+            receiving_tds,
+            receiving_fumbles,
+            receiving_fumbles_lost,
+            def_tackles_solo,
+            def_tackles_with_assist,
+            def_tackle_assists,
+            def_tackles_for_loss,
+            def_fumbles_forced,
+            def_sacks,
+            def_qb_hits,
+            def_interceptions,
+            def_interception_yards,
+            def_pass_defended,
+            def_tds,
+            def_safeties,
+            punt_returns,
+            punt_return_yards,
+            kickoff_returns,
+            kickoff_return_yards,
+            fg_made,
+            fg_att,
+            fg_long,
+            fg_pct,
+            pat_made,
+            pat_att,
+            pat_pct,
+            fantasy_points,
+            fantasy_points_ppr,
+            source
+        FROM player_season_stats
         WHERE player_id IN ({placeholders})
-        ORDER BY player_id, season DESC
         """,
         player_ids,
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
-    stat_keys = [
-        "season", "stat_team", "stat_position", "games", "completions", "passing_attempts",
-        "passing_yards", "passing_tds", "passing_interceptions", "sacks_suffered",
-        "carries", "rushing_yards", "rushing_tds", "receptions", "targets",
-        "receiving_yards", "receiving_tds", "def_tackles_solo", "def_tackles_with_assist",
-        "def_sacks", "def_qb_hits", "def_interceptions", "def_pass_defended",
-        "fg_made", "fg_att", "fg_pct", "pat_made", "pat_att", "fantasy_points_ppr",
-    ]
     for row in rows:
-        grouped.setdefault(int(row["player_id"]), []).append({key: row[key] for key in stat_keys})
+        grouped.setdefault(int(row["player_id"]), []).append({key: row[key] for key in SEASON_STAT_KEYS})
     return grouped
+
+
+def normalized_simulated_season_rows(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    required_tables = ["season_player_stats", "game_player_stats", "game_sim_runs", "season_games", "teams", "players"]
+    if not player_ids or any(not table_exists(conn, table) for table in required_tables):
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    rows = conn.execute(
+        f"""
+        WITH pivot AS (
+            SELECT
+                season,
+                player_id,
+                team_id,
+                SUM(CASE WHEN stat_key = 'pass_completions' THEN stat_value ELSE 0 END) AS completions,
+                SUM(CASE WHEN stat_key = 'pass_attempts' THEN stat_value ELSE 0 END) AS passing_attempts,
+                SUM(CASE WHEN stat_key = 'pass_yards' THEN stat_value ELSE 0 END) AS passing_yards,
+                SUM(CASE WHEN stat_key = 'pass_tds' THEN stat_value ELSE 0 END) AS passing_tds,
+                SUM(CASE WHEN stat_key = 'interceptions_thrown' THEN stat_value ELSE 0 END) AS passing_interceptions,
+                SUM(CASE WHEN stat_key = 'sacks_taken' THEN stat_value ELSE 0 END) AS sacks_suffered,
+                SUM(CASE WHEN stat_key = 'rush_attempts' THEN stat_value ELSE 0 END) AS carries,
+                SUM(CASE WHEN stat_key = 'rush_yards' THEN stat_value ELSE 0 END) AS rushing_yards,
+                SUM(CASE WHEN stat_key = 'rush_tds' THEN stat_value ELSE 0 END) AS rushing_tds,
+                SUM(CASE WHEN stat_key = 'fumbles' THEN stat_value ELSE 0 END) AS fumbles,
+                SUM(CASE WHEN stat_key = 'fumbles_lost' THEN stat_value ELSE 0 END) AS fumbles_lost,
+                SUM(CASE WHEN stat_key = 'receptions' THEN stat_value ELSE 0 END) AS receptions,
+                SUM(CASE WHEN stat_key = 'targets' THEN stat_value ELSE 0 END) AS targets,
+                SUM(CASE WHEN stat_key = 'receiving_yards' THEN stat_value ELSE 0 END) AS receiving_yards,
+                SUM(CASE WHEN stat_key = 'receiving_tds' THEN stat_value ELSE 0 END) AS receiving_tds,
+                SUM(CASE WHEN stat_key = 'solo_tackles' THEN stat_value ELSE 0 END) AS def_tackles_solo,
+                SUM(CASE WHEN stat_key = 'assisted_tackles' THEN stat_value ELSE 0 END) AS def_tackles_with_assist,
+                SUM(CASE WHEN stat_key = 'forced_fumbles' THEN stat_value ELSE 0 END) AS def_fumbles_forced,
+                SUM(CASE WHEN stat_key = 'sacks' THEN stat_value ELSE 0 END) AS def_sacks,
+                SUM(CASE WHEN stat_key = 'interceptions' THEN stat_value ELSE 0 END) AS def_interceptions,
+                SUM(CASE WHEN stat_key = 'interception_return_yards' THEN stat_value ELSE 0 END) AS def_interception_yards,
+                SUM(CASE WHEN stat_key = 'pass_deflections' THEN stat_value ELSE 0 END) AS def_pass_defended,
+                SUM(CASE WHEN stat_key = 'defensive_tds' THEN stat_value ELSE 0 END) AS def_tds,
+                SUM(CASE WHEN stat_key = 'punt_returns' THEN stat_value ELSE 0 END) AS punt_returns,
+                SUM(CASE WHEN stat_key = 'punt_return_yards' THEN stat_value ELSE 0 END) AS punt_return_yards,
+                SUM(CASE WHEN stat_key = 'kickoff_returns' THEN stat_value ELSE 0 END) AS kickoff_returns,
+                SUM(CASE WHEN stat_key = 'kickoff_return_yards' THEN stat_value ELSE 0 END) AS kickoff_return_yards,
+                SUM(CASE WHEN stat_key = 'fg_made' THEN stat_value ELSE 0 END) AS fg_made,
+                SUM(CASE WHEN stat_key = 'fg_attempts' THEN stat_value ELSE 0 END) AS fg_att,
+                MAX(CASE WHEN stat_key = 'long_fg' THEN stat_value ELSE 0 END) AS fg_long,
+                SUM(CASE WHEN stat_key = 'xp_made' THEN stat_value ELSE 0 END) AS pat_made,
+                SUM(CASE WHEN stat_key = 'xp_attempts' THEN stat_value ELSE 0 END) AS pat_att
+            FROM season_player_stats
+            WHERE player_id IN ({placeholders})
+            GROUP BY season, player_id, team_id
+        ),
+        games AS (
+            SELECT
+                r.season,
+                gps.player_id,
+                gps.team_id,
+                COUNT(DISTINCT gps.run_id) AS games
+            FROM game_player_stats gps
+            JOIN game_sim_runs r ON r.run_id = gps.run_id
+            LEFT JOIN season_games sg ON sg.game_id = r.schedule_game_id
+            WHERE gps.player_id IN ({placeholders})
+              AND COALESCE(r.counts_for_stats, 1) = 1
+              AND COALESCE(r.status, 'final') = 'final'
+              AND (sg.game_id IS NULL OR sg.game_type = 'REG')
+            GROUP BY r.season, gps.player_id, gps.team_id
+        )
+        SELECT
+            pivot.*,
+            COALESCE(games.games, 0) AS games,
+            p.position AS stat_position,
+            t.abbreviation AS stat_team
+        FROM pivot
+        JOIN players p ON p.player_id = pivot.player_id
+        JOIN teams t ON t.team_id = pivot.team_id
+        LEFT JOIN games
+          ON games.season = pivot.season
+         AND games.player_id = pivot.player_id
+         AND games.team_id = pivot.team_id
+        """,
+        [*player_ids, *player_ids],
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = {
+            "season": int(row["season"]),
+            "stat_team": row["stat_team"],
+            "stat_position": row["stat_position"],
+            "games": int(row["games"] or 0),
+            "completions": int(row["completions"] or 0),
+            "passing_attempts": int(row["passing_attempts"] or 0),
+            "passing_yards": int(row["passing_yards"] or 0),
+            "passing_tds": int(row["passing_tds"] or 0),
+            "passing_interceptions": int(row["passing_interceptions"] or 0),
+            "sacks_suffered": int(row["sacks_suffered"] or 0),
+            "sack_yards_lost": 0,
+            "carries": int(row["carries"] or 0),
+            "rushing_yards": int(row["rushing_yards"] or 0),
+            "rushing_tds": int(row["rushing_tds"] or 0),
+            "rushing_fumbles": int(row["fumbles"] or 0),
+            "rushing_fumbles_lost": int(row["fumbles_lost"] or 0),
+            "receptions": int(row["receptions"] or 0),
+            "targets": int(row["targets"] or 0),
+            "receiving_yards": int(row["receiving_yards"] or 0),
+            "receiving_tds": int(row["receiving_tds"] or 0),
+            "receiving_fumbles": 0,
+            "receiving_fumbles_lost": 0,
+            "def_tackles_solo": int(row["def_tackles_solo"] or 0),
+            "def_tackles_with_assist": int(row["def_tackles_with_assist"] or 0),
+            "def_tackle_assists": int(row["def_tackles_with_assist"] or 0),
+            "def_tackles_for_loss": 0,
+            "def_fumbles_forced": int(row["def_fumbles_forced"] or 0),
+            "def_sacks": float(row["def_sacks"] or 0),
+            "def_qb_hits": 0,
+            "def_interceptions": int(row["def_interceptions"] or 0),
+            "def_interception_yards": int(row["def_interception_yards"] or 0),
+            "def_pass_defended": int(row["def_pass_defended"] or 0),
+            "def_tds": int(row["def_tds"] or 0),
+            "def_safeties": 0,
+            "punt_returns": int(row["punt_returns"] or 0),
+            "punt_return_yards": int(row["punt_return_yards"] or 0),
+            "kickoff_returns": int(row["kickoff_returns"] or 0),
+            "kickoff_return_yards": int(row["kickoff_return_yards"] or 0),
+            "fg_made": int(row["fg_made"] or 0),
+            "fg_att": int(row["fg_att"] or 0),
+            "fg_long": int(row["fg_long"] or 0),
+            "fg_pct": pct_value(float(row["fg_made"] or 0), float(row["fg_att"] or 0)),
+            "pat_made": int(row["pat_made"] or 0),
+            "pat_att": int(row["pat_att"] or 0),
+            "pat_pct": pct_value(float(row["pat_made"] or 0), float(row["pat_att"] or 0)),
+            "source": "nfl_gm_sim_engine",
+        }
+        item["fantasy_points"] = fantasy_ppr(item)
+        item["fantasy_points_ppr"] = item["fantasy_points"]
+        grouped.setdefault(int(row["player_id"]), []).append(item)
+    return grouped
+
+
+def season_stats_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids:
+        return {}
+    historical = normalized_historical_season_rows(conn, player_ids)
+    simulated = normalized_simulated_season_rows(conn, player_ids)
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for player_id in player_ids:
+        simulated_seasons = {int(row["season"]) for row in simulated.get(player_id, [])}
+        rows = [
+            row for row in historical.get(player_id, [])
+            if int(row["season"]) not in simulated_seasons
+        ]
+        rows.extend(simulated.get(player_id, []))
+        rows.sort(key=lambda row: (-int(row["season"]), str(row.get("stat_team") or "")))
+        if rows:
+            grouped[player_id] = rows
+    return grouped
+
+
+def career_from_season_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    career: dict[str, Any] = {key: 0 for key in SUM_CAREER_FIELDS}
+    seasons = sorted({int(row["season"]) for row in rows if number(row, "games") > 0})
+    teams = sorted({str(row.get("stat_team") or "") for row in rows if row.get("stat_team")})
+    for row in rows:
+        for key in SUM_CAREER_FIELDS:
+            career[key] += number(row, key)
+    career["player_id"] = None
+    career["seasons_played"] = len(seasons)
+    career["first_season"] = seasons[0] if seasons else None
+    career["last_season"] = seasons[-1] if seasons else None
+    career["teams_played_for"] = ",".join(teams)
+    career["career_games"] = int(career.pop("games", 0))
+    career["scrimmage_yards"] = career["rushing_yards"] + career["receiving_yards"]
+    career["offensive_tds"] = career["rushing_tds"] + career["receiving_tds"]
+    career["total_tds"] = career["passing_tds"] + career["rushing_tds"] + career["receiving_tds"] + career["def_tds"]
+    career["fumbles_lost"] = career["rushing_fumbles_lost"] + career["receiving_fumbles_lost"]
+    career["def_tackles_combined"] = career["def_tackles_solo"] + career["def_tackles_with_assist"]
+    career["fg_long"] = max((int(number(row, "fg_long")) for row in rows), default=0)
+    career["fg_pct"] = pct_value(career["fg_made"], career["fg_att"])
+    career["pat_pct"] = pct_value(career["pat_made"], career["pat_att"])
+    for key, value in list(career.items()):
+        if isinstance(value, float) and value.is_integer():
+            career[key] = int(value)
+    return career
+
+
+def career_totals_by_player(season_stats: dict[int, list[dict[str, Any]]], fallback: dict[int, dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    career = dict(fallback)
+    for player_id, rows in season_stats.items():
+        if rows:
+            item = career_from_season_rows(rows)
+            item["player_id"] = player_id
+            career[player_id] = item
+    return career
 
 
 def contracts_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int, dict[str, Any]]:
@@ -422,6 +707,90 @@ def transactions_by_player(conn: sqlite3.Connection, player_ids: list[int], limi
     return grouped
 
 
+def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_history: int = 18) -> dict[int, dict[str, Any]]:
+    medical = {player_id: {"active": [], "history": [], "bodyRisk": []} for player_id in player_ids}
+    if not player_ids:
+        return medical
+    placeholders = ",".join("?" for _ in player_ids)
+    if table_exists(conn, "active_player_injuries"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM active_player_injuries
+            WHERE player_id IN ({placeholders})
+              AND resolved_at IS NULL
+            ORDER BY player_id, return_earliest_date, active_injury_id
+            """,
+            player_ids,
+        ).fetchall()
+        for row in rows:
+            medical.setdefault(int(row["player_id"]), {"active": [], "history": [], "bodyRisk": []})["active"].append({
+                "injury": row["injury_label"],
+                "bodyRegion": row["body_region"],
+                "bodyPart": row["body_part"],
+                "severity": row["severity"],
+                "status": row["status"],
+                "startDate": row["start_date"],
+                "returnEarliestDate": row["return_earliest_date"],
+                "expectedDays": int(row["expected_days"] or 0),
+                "expectedGames": int(row["expected_games"] or 0),
+                "notes": row["notes"] or "",
+            })
+    if table_exists(conn, "player_injury_history"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM player_injury_history
+            WHERE player_id IN ({placeholders})
+            ORDER BY player_id, date(start_date) DESC, injury_history_id DESC
+            """,
+            player_ids,
+        ).fetchall()
+        counts: dict[int, int] = {}
+        for row in rows:
+            player_id = int(row["player_id"])
+            if counts.get(player_id, 0) >= limit_history:
+                continue
+            counts[player_id] = counts.get(player_id, 0) + 1
+            medical.setdefault(player_id, {"active": [], "history": [], "bodyRisk": []})["history"].append({
+                "injury": row["injury_label"],
+                "bodyRegion": row["body_region"],
+                "bodyPart": row["body_part"],
+                "severity": row["severity"],
+                "startDate": row["start_date"],
+                "resolvedDate": row["resolved_date"],
+                "expectedDays": int(row["expected_days"] or 0),
+                "gamesMissed": int(row["games_missed"] or 0),
+                "recurrenceRisk": round(float(row["recurrence_risk"] or 0.0) * 100, 1),
+                "source": row["source"] or "",
+                "notes": row["notes"] or "",
+            })
+    if table_exists(conn, "player_injury_risk_view"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM player_injury_risk_view
+            WHERE player_id IN ({placeholders})
+            ORDER BY player_id, active_status IS NULL, max_recurrence_risk DESC, games_missed DESC
+            """,
+            player_ids,
+        ).fetchall()
+        for row in rows:
+            player_id = int(row["player_id"])
+            medical.setdefault(player_id, {"active": [], "history": [], "bodyRisk": []})["bodyRisk"].append({
+                "bodyRegion": row["body_region"],
+                "bodyPart": row["body_part"],
+                "injuryCount": int(row["injury_count"] or 0),
+                "majorCount": int(row["major_count"] or 0),
+                "gamesMissed": int(row["games_missed"] or 0),
+                "lastInjuryDate": row["last_injury_date"],
+                "recurrenceRisk": round(float(row["max_recurrence_risk"] or 0.0) * 100, 1),
+                "activeStatus": row["active_status"],
+                "activeReturnDate": row["active_return_date"],
+            })
+    return medical
+
+
 def build_summary(player: sqlite3.Row, role: dict[str, Any] | None, ratings: list[dict[str, Any]], career: dict[str, Any] | None) -> str:
     name = f"{player['first_name']} {player['last_name']}".strip()
     position = POSITION_LABELS.get(player["position"], player["position"])
@@ -444,11 +813,12 @@ def export(db_path: Path, output_path: Path, season: int, limit: int | None = No
     ratings = ratings_by_player(conn, season, player_ids)
     roles = roles_by_player(conn, season, player_ids)
     flex = flex_by_player(conn, player_ids)
-    career = career_by_player(conn, player_ids)
     season_stats = season_stats_by_player(conn, player_ids)
+    career = career_totals_by_player(season_stats, career_by_player(conn, player_ids))
     contracts = contracts_by_player(conn, player_ids)
     free_agents = free_agent_profiles(conn)
     transactions = transactions_by_player(conn, player_ids)
+    medical = medical_by_player(conn, player_ids)
 
     players: list[dict[str, Any]] = []
     for row in players_rows:
@@ -497,6 +867,7 @@ def export(db_path: Path, output_path: Path, season: int, limit: int | None = No
             "contract": contracts.get(player_id),
             "freeAgency": free_agents.get(player_id),
             "transactions": transactions.get(player_id, []),
+            "medical": medical.get(player_id, {"active": [], "history": [], "bodyRisk": []}),
             "summary": build_summary(row, primary_role, player_ratings, career_row),
         })
 

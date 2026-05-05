@@ -65,13 +65,30 @@ from engine.specialist_behavior import (
     profile_from_mapping as specialist_profile_from_mapping,
     specialist_behavior_profile,
 )
+from engine import injury_model
 
 
-ENGINE_VERSION = "0.1.6"
+ENGINE_VERSION = "0.1.7"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
 DEFAULT_SEASON = 2026
+
+DEFENSIVE_SLOT_STARTER_RATE = {
+    "LEDGE": 0.78,
+    "REDGE": 0.78,
+    "LDL": 0.70,
+    "RDL": 0.70,
+    "NT": 0.58,
+    "MLB": 0.92,
+    "WLB": 0.88,
+    "SLB": 0.58,
+    "LCB": 0.95,
+    "RCB": 0.95,
+    "NB": 0.76,
+    "FS": 0.94,
+    "SS": 0.94,
+}
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -110,31 +127,31 @@ def sack_credit_weight(player: "PlayerSnapshot") -> float:
             player.rating("strength"),
         ]
     )
-    weight = max(1.0, score - 55.0) ** 2
+    weight = max(1.0, score - 43.0) ** 1.45
     if player.position in {"EDGE", "OLB", "DE"}:
         profile = edge_behavior_profile(player)
         behavior_multiplier = 1.0
-        behavior_multiplier += (profile.finish_skill - 50) * 0.0045
-        behavior_multiplier += (profile.counter_plan - 50) * 0.0025
-        behavior_multiplier += (profile.getoff_timing - 50) * 0.0015
+        behavior_multiplier += (profile.finish_skill - 50) * 0.0030
+        behavior_multiplier += (profile.counter_plan - 50) * 0.0018
+        behavior_multiplier += (profile.getoff_timing - 50) * 0.0012
         if profile.speed_arc >= profile.power_collapse + 10:
-            behavior_multiplier += (profile.speed_arc - 70) * 0.0020
-        weight *= 1.15 * clamp(behavior_multiplier, 0.78, 1.24)
+            behavior_multiplier += (profile.speed_arc - 70) * 0.0012
+        weight *= 1.05 * clamp(behavior_multiplier, 0.86, 1.16)
     if player.position in {"IDL", "DT", "NT"}:
         profile = idl_behavior_profile(player)
         behavior_multiplier = 1.0
-        behavior_multiplier += (profile.finish_skill - 50) * 0.0038
-        behavior_multiplier += (profile.penetration_burst - 50) * 0.0030
-        behavior_multiplier += (profile.rush_counter_plan - 50) * 0.0022
-        behavior_multiplier += (profile.power_collapse - 50) * 0.0014
+        behavior_multiplier += (profile.finish_skill - 50) * 0.0030
+        behavior_multiplier += (profile.penetration_burst - 50) * 0.0024
+        behavior_multiplier += (profile.rush_counter_plan - 50) * 0.0018
+        behavior_multiplier += (profile.power_collapse - 50) * 0.0012
         anchor_bias = average([profile.double_team_anchor, profile.gap_control]) - average(
             [profile.penetration_burst, profile.finish_skill, profile.rush_counter_plan]
         )
         if anchor_bias >= 8:
-            behavior_multiplier *= clamp(1.0 - anchor_bias * 0.024, 0.46, 0.92)
-        weight *= 0.90 * clamp(behavior_multiplier, 0.42, 1.20)
+            behavior_multiplier *= clamp(1.0 - anchor_bias * 0.016, 0.62, 0.94)
+        weight *= 0.98 * clamp(behavior_multiplier, 0.60, 1.15)
         if anchor >= explosive + 10:
-            weight *= 0.45
+            weight *= 0.68
     return max(0.05, weight)
 
 
@@ -631,8 +648,8 @@ class TeamSnapshot:
             scores.append(score)
         return average(scores)
 
-    def pass_rush_score(self) -> float:
-        rushers = self.defensive_front()
+    def pass_rush_score(self, rushers: list[PlayerSnapshot] | None = None) -> float:
+        rushers = rushers or self.defensive_front()
         scores = []
         for player in rushers:
             score = weighted_average(player, PASS_RUSH_WEIGHTS)
@@ -812,6 +829,7 @@ class GameResult:
     drives: list[DriveRecord]
     team_stats: dict[int, Counter]
     player_stats: dict[int, Counter]
+    injury_events: list[injury_model.InjuryEvent] = field(default_factory=list)
     status: str = "final"
 
 
@@ -826,6 +844,7 @@ def ensure_column(con: sqlite3.Connection, table_name: str, column_name: str, de
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
+    injury_model.ensure_schema(con)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS game_sim_runs (
@@ -1024,7 +1043,8 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )
 
 
-def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapshot:
+def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: str | None = None) -> TeamSnapshot:
+    injury_model.ensure_schema(con)
     team_row = con.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
     if not team_row:
         raise ValueError(f"Team id not found: {team_id}")
@@ -1043,6 +1063,10 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapsho
         (team_id,),
     ).fetchall()
     player_ids = [int(row["player_id"]) for row in player_rows]
+    unavailable_ids = injury_model.unavailable_player_ids(con, player_ids, as_of_date)
+    if unavailable_ids:
+        player_rows = [row for row in player_rows if int(row["player_id"]) not in unavailable_ids]
+        player_ids = [int(row["player_id"]) for row in player_rows]
     if not player_ids:
         raise ValueError(f"{team_row['abbreviation']} has no roster players.")
 
@@ -1197,53 +1221,66 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int) -> TeamSnapsho
                 str(row["source"]),
             )
 
+    injury_context = injury_model.injury_context_by_player(con, player_ids, as_of_date)
+    active_injuries = injury_model.active_injuries_by_player(con, player_ids)
+
     players_by_id = {}
     roster = []
     for row in player_rows:
         name = f"{row['first_name']} {row['last_name']}"
-        metadata = {}
-        if int(row["player_id"]) in qb_behavior_by_player:
-            profile, source = qb_behavior_by_player[int(row["player_id"])]
+        player_id = int(row["player_id"])
+        player_context = injury_context.get(player_id, {})
+        metadata = {
+            "age": int(row["age"] or 26),
+            "weight_lbs": int(row["weight_lbs"] or 220),
+            "injury_prone": int(row["injury_prone"] or 50),
+            "status": row["status"] or "Active",
+            "injury_history_risk": float(player_context.get("risk_score") or 0.0),
+            "injury_body_risks": player_context.get("body_risks", {}),
+            "active_injuries": active_injuries.get(player_id, []),
+        }
+        if player_id in qb_behavior_by_player:
+            profile, source = qb_behavior_by_player[player_id]
             metadata["qb_behavior_profile"] = profile
             metadata["qb_behavior_source"] = source
-        if int(row["player_id"]) in rb_behavior_by_player:
-            profile, source = rb_behavior_by_player[int(row["player_id"])]
+        if player_id in rb_behavior_by_player:
+            profile, source = rb_behavior_by_player[player_id]
             metadata["rb_behavior_profile"] = profile
             metadata["rb_behavior_source"] = source
-        if int(row["player_id"]) in receiver_behavior_by_player:
-            profile, source = receiver_behavior_by_player[int(row["player_id"])]
+        if player_id in receiver_behavior_by_player:
+            profile, source = receiver_behavior_by_player[player_id]
             metadata["receiver_behavior_profile"] = profile
             metadata["receiver_behavior_source"] = source
-        if int(row["player_id"]) in ol_behavior_by_player:
-            profile, source = ol_behavior_by_player[int(row["player_id"])]
+        if player_id in ol_behavior_by_player:
+            profile, source = ol_behavior_by_player[player_id]
             metadata["ol_behavior_profile"] = profile
             metadata["ol_behavior_source"] = source
-        if int(row["player_id"]) in edge_behavior_by_player:
-            profile, source = edge_behavior_by_player[int(row["player_id"])]
+        if player_id in edge_behavior_by_player:
+            profile, source = edge_behavior_by_player[player_id]
             metadata["edge_behavior_profile"] = profile
             metadata["edge_behavior_source"] = source
-        if int(row["player_id"]) in idl_behavior_by_player:
-            profile, source = idl_behavior_by_player[int(row["player_id"])]
+        if player_id in idl_behavior_by_player:
+            profile, source = idl_behavior_by_player[player_id]
             metadata["idl_behavior_profile"] = profile
             metadata["idl_behavior_source"] = source
-        if int(row["player_id"]) in lb_behavior_by_player:
-            profile, source = lb_behavior_by_player[int(row["player_id"])]
+        if player_id in lb_behavior_by_player:
+            profile, source = lb_behavior_by_player[player_id]
             metadata["lb_behavior_profile"] = profile
             metadata["lb_behavior_source"] = source
-        if int(row["player_id"]) in secondary_behavior_by_player:
-            profile, source = secondary_behavior_by_player[int(row["player_id"])]
+        if player_id in secondary_behavior_by_player:
+            profile, source = secondary_behavior_by_player[player_id]
             metadata["secondary_behavior_profile"] = profile
             metadata["secondary_behavior_source"] = source
-        if int(row["player_id"]) in specialist_behavior_by_player:
-            profile, source = specialist_behavior_by_player[int(row["player_id"])]
+        if player_id in specialist_behavior_by_player:
+            profile, source = specialist_behavior_by_player[player_id]
             metadata["specialist_behavior_profile"] = profile
             metadata["specialist_behavior_source"] = source
         player = PlayerSnapshot(
-            player_id=int(row["player_id"]),
+            player_id=player_id,
             name=name,
             position=row["position"],
-            ratings=ratings_by_player[int(row["player_id"])],
-            role_scores=role_by_player[int(row["player_id"])],
+            ratings=ratings_by_player[player_id],
+            role_scores=role_by_player[player_id],
             metadata=metadata,
         )
         players_by_id[player.player_id] = player
@@ -1310,6 +1347,9 @@ class MatchEngine:
         self.timeouts = {away.team_id: 3, home.team_id: 3}
         self.two_minute_warnings: set[int] = set()
         self._last_play_concept: str | None = None
+        self._snap_overrides: dict[tuple[int, str], list[PlayerSnapshot]] = {}
+        self.injury_events: list[injury_model.InjuryEvent] = []
+        self.injured_player_ids: set[int] = set()
 
     def opponent(self, team: TeamSnapshot) -> TeamSnapshot:
         return self.home if team.team_id == self.away.team_id else self.away
@@ -1326,6 +1366,154 @@ class MatchEngine:
 
     def add_play_event(self, event: PlayEvent) -> None:
         self.plays.append(event)
+
+    def injury_snap_load(self, player: PlayerSnapshot) -> float:
+        return float(self.player_stats[player.player_id].get("total_snaps", 0))
+
+    def consider_injury(
+        self,
+        player: PlayerSnapshot | None,
+        team: TeamSnapshot,
+        *,
+        opponent_player: PlayerSnapshot | None = None,
+        opponent_team: TeamSnapshot | None = None,
+        play_type: str,
+        mechanism: str,
+        high_impact: bool = False,
+    ) -> None:
+        if player is None or player.player_id in self.injured_player_ids:
+            return
+        event = injury_model.maybe_create_injury_event(
+            self.rng,
+            player,
+            team_id=team.team_id,
+            opponent_player=opponent_player,
+            opponent_team_id=opponent_team.team_id if opponent_team else None,
+            play_number=self.play_number,
+            quarter=self.quarter,
+            clock_tenths=self.clock_tenths,
+            mechanism=mechanism,
+            play_type=play_type,
+            high_impact=high_impact,
+            snap_load=self.injury_snap_load(player),
+        )
+        if not event:
+            return
+        self.injury_events.append(event)
+        self.injured_player_ids.add(player.player_id)
+        self.team_stats[team.team_id]["injuries"] += 1
+        self.player_stats[player.player_id]["injury_events"] += 1
+        self.player_stats[player.player_id]["injury_expected_games"] += event.expected_games
+
+    def select_special_teams_coverage_player(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot | None:
+        players = self.special_teams_snap_players(team, play_type)
+        if not players:
+            return None
+        return weighted_choice(self.rng, [(player, special_teams_coverage_weight(player)) for player in players])
+
+    def record_play_injuries(
+        self,
+        *,
+        offense: TeamSnapshot,
+        defense: TeamSnapshot,
+        play_type: str,
+        concept: str,
+        yards: int,
+        offense_player: PlayerSnapshot | None,
+        target_player: PlayerSnapshot | None,
+        defense_player: PlayerSnapshot | None,
+        touchdown: bool,
+        turnover: bool,
+    ) -> None:
+        if concept in {"kneel", "spike"} or play_type == "penalty":
+            return
+        high_impact = turnover or touchdown or yards >= 18 or yards <= -5
+        if play_type == "run":
+            mechanism = "contact" if defense_player else "non_contact"
+            self.consider_injury(
+                offense_player,
+                offense,
+                opponent_player=defense_player,
+                opponent_team=defense if defense_player else None,
+                play_type=play_type,
+                mechanism=mechanism,
+                high_impact=high_impact,
+            )
+            if defense_player:
+                self.consider_injury(
+                    defense_player,
+                    defense,
+                    opponent_player=offense_player,
+                    opponent_team=offense if offense_player else None,
+                    play_type=play_type,
+                    mechanism="contact",
+                    high_impact=high_impact and yards >= 8,
+                )
+            return
+        if play_type == "pass":
+            if defense_player and yards < 0:
+                self.consider_injury(
+                    offense_player,
+                    offense,
+                    opponent_player=defense_player,
+                    opponent_team=defense,
+                    play_type=play_type,
+                    mechanism="sack",
+                    high_impact=True,
+                )
+                self.consider_injury(
+                    defense_player,
+                    defense,
+                    opponent_player=offense_player,
+                    opponent_team=offense if offense_player else None,
+                    play_type=play_type,
+                    mechanism="contact",
+                    high_impact=False,
+                )
+                return
+            receiver = target_player if target_player and target_player.player_id != (offense_player.player_id if offense_player else None) else None
+            if receiver and yards > 0:
+                self.consider_injury(
+                    receiver,
+                    offense,
+                    opponent_player=defense_player,
+                    opponent_team=defense if defense_player else None,
+                    play_type=play_type,
+                    mechanism="contact" if defense_player else "non_contact",
+                    high_impact=high_impact,
+                )
+                if defense_player:
+                    self.consider_injury(
+                        defense_player,
+                        defense,
+                        opponent_player=receiver,
+                        opponent_team=offense,
+                        play_type=play_type,
+                        mechanism="contact",
+                        high_impact=high_impact and yards >= 12,
+                    )
+            elif receiver:
+                self.consider_injury(
+                    receiver,
+                    offense,
+                    opponent_player=defense_player,
+                    opponent_team=defense if defense_player else None,
+                    play_type=play_type,
+                    mechanism="non_contact",
+                    high_impact=False,
+                )
+            return
+        if play_type == "punt" and defense_player:
+            cover_player = self.select_special_teams_coverage_player(offense, "punt")
+            self.consider_injury(
+                defense_player,
+                defense,
+                opponent_player=cover_player,
+                opponent_team=offense if cover_player else None,
+                play_type=play_type,
+                mechanism="special_teams",
+                high_impact=touchdown or yards >= 18,
+            )
 
     def add_snap(self, player: PlayerSnapshot | None, snap_key: str) -> None:
         if not player:
@@ -1350,6 +1538,27 @@ class MatchEngine:
             slots.append("SWR")
         return offense.unique_starters(slots)
 
+    def rotated_unique_starters(self, team: TeamSnapshot, slots: list[str]) -> list[PlayerSnapshot]:
+        selected = []
+        used = set()
+        for slot in slots:
+            candidates = [player for player in team.candidates(slot) if player.player_id not in used]
+            if not candidates:
+                continue
+            starter_rate = DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.90)
+            if len(candidates) == 1 or self.rng.random() < starter_rate:
+                player = candidates[0]
+            else:
+                backups = candidates[1:4]
+                weights = []
+                for idx, backup in enumerate(backups):
+                    depth_discount = 1.0 / (idx + 1.55)
+                    weights.append((backup, max(1.0, team.score_for_slot(backup, slot) - 48.0) * depth_discount))
+                player = weighted_choice(self.rng, weights) if weights else candidates[0]
+            selected.append(player)
+            used.add(player.player_id)
+        return selected
+
     def defensive_snap_players(self, defense: TeamSnapshot, play_type: str, concept: str) -> list[PlayerSnapshot]:
         if play_type == "pass":
             slots = ["LEDGE", "LDL", "RDL", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"]
@@ -1357,7 +1566,15 @@ class MatchEngine:
             slots = ["LEDGE", "LDL", "NT", "RDL", "REDGE", "MLB", "WLB", "SLB", "LCB", "RCB", "SS"]
         else:
             slots = ["LEDGE", "LDL", "NT", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"]
-        return defense.unique_starters(slots)
+        return self.rotated_unique_starters(defense, slots)
+
+    def pass_rushers_from_snap(self, defense: TeamSnapshot, defenders: list[PlayerSnapshot]) -> list[PlayerSnapshot]:
+        front = defenders[:4] if len(defenders) >= 4 else defenders
+        rushers = [player for player in front if player.position in {"EDGE", "OLB", "DE", "IDL", "DT", "NT"}]
+        return rushers or defense.defensive_front()
+
+    def set_snap_override(self, team: TeamSnapshot, snap_key: str, players: list[PlayerSnapshot]) -> None:
+        self._snap_overrides[(team.team_id, snap_key)] = players
 
     def core_special_teamers(
         self,
@@ -1407,8 +1624,10 @@ class MatchEngine:
         return []
 
     def count_scrimmage_snap(self, offense: TeamSnapshot, defense: TeamSnapshot, play_type: str, concept: str) -> None:
-        self.add_snaps(self.offensive_snap_players(offense, concept), "offensive_snaps")
-        self.add_snaps(self.defensive_snap_players(defense, play_type, concept), "defensive_snaps")
+        offense_players = self._snap_overrides.pop((offense.team_id, "offensive_snaps"), None)
+        defense_players = self._snap_overrides.pop((defense.team_id, "defensive_snaps"), None)
+        self.add_snaps(offense_players or self.offensive_snap_players(offense, concept), "offensive_snaps")
+        self.add_snaps(defense_players or self.defensive_snap_players(defense, play_type, concept), "defensive_snaps")
 
     def count_special_teams_snap(self, team: TeamSnapshot, play_type: str) -> None:
         self.add_snaps(self.special_teams_snap_players(team, play_type), "special_teams_snaps")
@@ -1985,6 +2204,7 @@ class MatchEngine:
         )
         concept = self.choose_run_concept(offense, defense, down, distance, field_pos, runner)
         self._last_play_concept = concept
+        self.set_snap_override(defense, "defensive_snaps", self.defensive_snap_players(defense, "run", concept))
         run_block = offense.run_block_score()
         run_def = defense.run_defense_score()
         is_qb_run = runner.player_id == qb.player_id
@@ -1994,43 +2214,43 @@ class MatchEngine:
         trench_advantage = run_block - run_def
         runner_advantage = runner_score - tackling
 
-        stuff_chance = clamp(0.155 - trench_advantage * 0.0022 - runner_advantage * 0.00115, 0.055, 0.285)
-        explosive_chance = clamp(0.030 + (runner.rating("speed") - 70) * 0.0018 + (runner.rating("elusiveness") - tackling) * 0.0015, 0.010, 0.115)
+        stuff_chance = clamp(0.160 - trench_advantage * 0.0020 - runner_advantage * 0.00100, 0.060, 0.290)
+        explosive_chance = clamp(0.024 + (runner.rating("speed") - 70) * 0.00135 + (runner.rating("elusiveness") - tackling) * 0.00105, 0.008, 0.095)
         if is_qb_run:
             stuff_chance = clamp(stuff_chance - 0.025 - (profile.pressure_escape - 70) * 0.00035, 0.035, 0.235)
-            explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.155)
+            explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.145)
         elif rb_profile:
             bounce_risk = max(0.0, rb_profile.bounce_tendency - rb_profile.one_cut_decisiveness)
             stuff_chance += bounce_risk * 0.00085
             stuff_chance -= (rb_profile.one_cut_decisiveness - 50) * 0.00062
-            explosive_chance += (rb_profile.home_run_hunting - 50) * 0.00075
-            explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00028
+            explosive_chance += (rb_profile.home_run_hunting - 50) * 0.00050
+            explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00018
             if concept == "outside_zone":
-                explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00042
+                explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00028
                 stuff_chance += max(0.0, rb_profile.bounce_tendency - 76) * 0.00045
             if concept == "power":
                 stuff_chance -= (rb_profile.contact_appetite - 50) * 0.00048
             stuff_chance = clamp(stuff_chance, 0.045, 0.305)
-            explosive_chance = clamp(explosive_chance, 0.008, 0.145)
+            explosive_chance = clamp(explosive_chance, 0.006, 0.115)
 
         if self.rng.random() < stuff_chance:
             yards = int(round(self.rng.gauss(-1.2, 1.5)))
         else:
-            mean = 3.66 + trench_advantage * 0.045 + runner_advantage * 0.032
+            mean = 3.48 + trench_advantage * 0.038 + runner_advantage * 0.025
             if is_qb_run:
                 mean += 1.05 + (profile.pressure_escape - 70) * 0.025
             elif rb_profile:
-                mean += (rb_profile.patience - 50) * 0.014
-                mean += (rb_profile.one_cut_decisiveness - 50) * 0.017
+                mean += (rb_profile.patience - 50) * 0.010
+                mean += (rb_profile.one_cut_decisiveness - 50) * 0.012
                 if concept == "power" or distance <= 2:
-                    mean += (rb_profile.contact_appetite - 50) * 0.024
+                    mean += (rb_profile.contact_appetite - 50) * 0.017
                 if concept == "outside_zone":
-                    mean += (rb_profile.bounce_tendency - 50) * 0.010
+                    mean += (rb_profile.bounce_tendency - 50) * 0.007
                 if concept == "draw":
-                    mean += (rb_profile.space_creation - 50) * 0.012
+                    mean += (rb_profile.space_creation - 50) * 0.008
             yards = int(round(self.rng.gauss(mean, 3.0)))
             if self.rng.random() < explosive_chance:
-                yards += int(round(self.rng.lognormvariate(2.15, 0.42)))
+                yards += int(round(self.rng.lognormvariate(1.88, 0.38)))
         yards = int(clamp(yards, -8, 80))
         if field_pos + yards >= 100:
             yards = max(0, 100 - field_pos)
@@ -2173,8 +2393,11 @@ class MatchEngine:
             "deep": (21, 7),
             "screen": (0, 2),
         }[concept]
+        defense_snap_players = self.defensive_snap_players(defense, "pass", concept)
+        self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
+        snap_rushers = self.pass_rushers_from_snap(defense, defense_snap_players)
         pass_block = offense.pass_block_score()
-        pass_rush = defense.pass_rush_score()
+        pass_rush = defense.pass_rush_score(snap_rushers)
         qb_processing = average([qb.rating("processing_speed"), qb.rating("play_recognition"), qb.rating("throw_release")])
         pressure_chance = clamp(0.270 + (pass_rush - pass_block) * 0.0062 - (qb_processing - 65) * 0.0013, 0.080, 0.58)
         pressured = self.rng.random() < pressure_chance
@@ -2196,7 +2419,7 @@ class MatchEngine:
             0.500,
         )
         if pressured and self.rng.random() < sack_chance:
-            rusher = self.select_pass_rusher(defense)
+            rusher = self.select_pass_rusher(defense, snap_rushers)
             loss = int(clamp(round(self.rng.gauss(6.3 + (pass_rush - pass_block) * 0.035, 2.2)), 1, 15))
             self.team_stats[offense.team_id]["plays"] += 1
             self.team_stats[offense.team_id]["sacks_allowed"] += 1
@@ -2565,8 +2788,8 @@ class MatchEngine:
             weights.append((player, weight))
         return weighted_choice(self.rng, weights)
 
-    def select_pass_rusher(self, defense: TeamSnapshot) -> PlayerSnapshot:
-        rushers = defense.defensive_front() or defense.roster[:5]
+    def select_pass_rusher(self, defense: TeamSnapshot, rushers: list[PlayerSnapshot] | None = None) -> PlayerSnapshot:
+        rushers = rushers or defense.defensive_front() or defense.roster[:5]
         return weighted_choice(self.rng, [(p, sack_credit_weight(p)) for p in rushers])
 
     def fumble_event_chance(
@@ -3118,6 +3341,27 @@ class MatchEngine:
                 description=description,
             )
         )
+        if returner and live_tenths > 0:
+            coverage_player = self.select_special_teams_coverage_player(kicking_team, "kickoff")
+            self.consider_injury(
+                returner,
+                receiving_team,
+                opponent_player=coverage_player,
+                opponent_team=kicking_team if coverage_player else None,
+                play_type="kickoff",
+                mechanism="special_teams",
+                high_impact=touchdown or yards >= 35,
+            )
+            if coverage_player:
+                self.consider_injury(
+                    coverage_player,
+                    kicking_team,
+                    opponent_player=returner,
+                    opponent_team=receiving_team,
+                    play_type="kickoff",
+                    mechanism="special_teams",
+                    high_impact=touchdown or yards >= 35,
+                )
 
     def kickoff(
         self,
@@ -3257,6 +3501,18 @@ class MatchEngine:
                 runoff_tenths=runoff_tenths,
                 description=description,
             )
+        )
+        self.record_play_injuries(
+            offense=offense,
+            defense=defense,
+            play_type=play_type,
+            concept=concept,
+            yards=yards,
+            offense_player=offense_player,
+            target_player=target_player,
+            defense_player=defense_player,
+            touchdown=touchdown,
+            turnover=turnover,
         )
 
     def run_drive(self, offense: TeamSnapshot, start_field: int) -> tuple[TeamSnapshot, int, bool]:
@@ -3699,6 +3955,7 @@ class MatchEngine:
             drives=self.drives,
             team_stats=self.team_stats,
             player_stats=self.player_stats,
+            injury_events=self.injury_events,
         )
 
 
@@ -3712,8 +3969,10 @@ def simulate_game(
     schedule_game_id: int | None = None,
     seed: int | None = None,
 ) -> GameResult:
-    away = load_team(con, away_team_id, season)
-    home = load_team(con, home_team_id, season)
+    game_date = injury_model.game_date_for_schedule(con, schedule_game_id, season)
+    injury_model.resolve_available_injuries(con, game_date)
+    away = load_team(con, away_team_id, season, as_of_date=game_date)
+    home = load_team(con, home_team_id, season, as_of_date=game_date)
     return MatchEngine(
         away=away,
         home=home,
@@ -3914,6 +4173,7 @@ def persist_result(
         if row and int(row["played"] or 0):
             raise ValueError(f"Schedule game {result.schedule_game_id} is already played. Use force to overwrite.")
     if update_schedule and result.schedule_game_id is not None and force:
+        injury_model.retract_schedule_game_injuries(con, result.schedule_game_id)
         supersede_existing_schedule_runs(con, schedule_game_id=result.schedule_game_id)
 
     counts_for_stats, counts_for_standings = result_count_flags(con, result, update_schedule)
@@ -4045,6 +4305,8 @@ def persist_result(
             """,
             [(run_id, player_id, team_id, key, float(value)) for key, value in stats.items()],
         )
+
+    injury_model.persist_game_injuries(con, result, run_id)
 
     if update_schedule and result.schedule_game_id is not None:
         con.execute(

@@ -7,13 +7,15 @@ gameplay without simulating games yet:
 - create game alerts
 - toggle basic phase settings
 - validate rosters when limits are active
-- leave explicit future hooks for AI GMs, injuries, and development
+- resolve active injuries as the calendar advances
+- leave explicit future hooks for AI GMs and development
 """
 
 from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -27,6 +29,10 @@ import roster_rules
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 SOURCE = "daily_processor"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from engine import injury_model  # noqa: E402
 
 KEY_REMINDER_EVENTS = {
     "VETERAN_TRAINING_CAMP_REPORTING",
@@ -90,6 +96,7 @@ class DailyResult:
     roster_failures: int = 0
     roster_errors: int = 0
     roster_warnings: int = 0
+    injuries_resolved: int = 0
     run_id: int | None = None
 
 
@@ -129,6 +136,10 @@ class RangeResult:
     def roster_warnings(self) -> int:
         return sum(day.roster_warnings for day in self.daily_results)
 
+    @property
+    def injuries_resolved(self) -> int:
+        return sum(day.injuries_resolved for day in self.daily_results)
+
 
 @dataclass
 class EventRangeResult:
@@ -159,6 +170,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     league_calendar.ensure_schema(con)
     roster_rules.ensure_schema(con)
     roster_rules.seed_rules(con)
+    injury_model.ensure_schema(con)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS game_daily_processing_runs (
@@ -178,9 +190,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             roster_failures INTEGER NOT NULL DEFAULT 0,
             roster_error_count INTEGER NOT NULL DEFAULT 0,
             roster_warning_count INTEGER NOT NULL DEFAULT 0,
+            injuries_resolved INTEGER NOT NULL DEFAULT 0,
             ai_gm_hook_status TEXT NOT NULL DEFAULT 'not_configured',
             development_hook_status TEXT NOT NULL DEFAULT 'not_implemented',
-            injury_hook_status TEXT NOT NULL DEFAULT 'not_implemented',
+            injury_hook_status TEXT NOT NULL DEFAULT 'enabled',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(game_id, processed_date)
         );
@@ -220,6 +233,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             ON game_daily_processing_runs(game_id, processed_date);
         """
     )
+    cols = {row["name"] for row in con.execute("PRAGMA table_info(game_daily_processing_runs)").fetchall()}
+    if "injuries_resolved" not in cols:
+        con.execute("ALTER TABLE game_daily_processing_runs ADD COLUMN injuries_resolved INTEGER NOT NULL DEFAULT 0")
 
 
 def upsert_setting(con: sqlite3.Connection, key: str, value: str) -> None:
@@ -596,6 +612,7 @@ def process_date(
             event_count=0,
             processed_event_count=0,
             alerts_created=0,
+            injuries_resolved=int(existing["injuries_resolved"] or 0) if "injuries_resolved" in existing.keys() else 0,
             run_id=int(existing["processing_run_id"]),
         )
 
@@ -619,6 +636,7 @@ def process_date(
         target_date,
         phase,
     )
+    injuries_resolved = injury_model.resolve_available_injuries(con, target_date)
     alerts = event_alerts + reminder_alerts + roster_alerts
 
     cur = con.execute(
@@ -627,9 +645,9 @@ def process_date(
             game_id, from_date, to_date, processed_date, phase_code, phase_name,
             roster_limits_enforced, roster_rule_phase, event_count,
             processed_event_count, alert_count, teams_checked, roster_failures,
-            roster_error_count, roster_warning_count
+            roster_error_count, roster_warning_count, injuries_resolved, injury_hook_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             game_id,
@@ -647,6 +665,8 @@ def process_date(
             failures,
             roster_errors,
             roster_warnings,
+            injuries_resolved,
+            "enabled",
         ),
     )
     return DailyResult(
@@ -662,6 +682,7 @@ def process_date(
         roster_failures=failures,
         roster_errors=roster_errors,
         roster_warnings=roster_warnings,
+        injuries_resolved=injuries_resolved,
         run_id=int(cur.lastrowid),
     )
 
@@ -791,7 +812,8 @@ def print_range_result(result: RangeResult) -> None:
             f"{result.roster_failures} teams with errors, "
             f"{result.roster_errors} errors, {result.roster_warnings} warnings"
         )
-    print("  Hooks: AI GM not configured, development not implemented, injuries not implemented")
+    print(f"  Injuries resolved: {result.injuries_resolved}")
+    print("  Hooks: AI GM not configured, development not implemented, injuries enabled")
 
 
 def print_event_range_result(result: EventRangeResult) -> None:

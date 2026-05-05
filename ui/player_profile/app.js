@@ -389,7 +389,7 @@
 
     const seasonPanel = panel("Year By Year", "Regular Season");
     if (!player.seasonStats || !player.seasonStats.length) {
-      seasonPanel.append(node("div", "empty-state", "No season stat rows imported yet."));
+      seasonPanel.append(node("div", "empty-state", "No season stat rows yet."));
     } else {
       seasonPanel.append(statTable(player.seasonStats, statsColumns(player)));
     }
@@ -408,6 +408,60 @@
       return [["Games", career.career_games], ["FG Made", career.fg_made], ["FG Att", career.fg_att], ["FG%", pct(career.fg_pct)], ["FG Long", career.fg_long], ["PAT Made", career.pat_made], ["PAT Att", career.pat_att], ["PAT%", pct(career.pat_pct)]];
     }
     return [["Games", career.career_games], ["Solo", career.def_tackles_solo], ["Combined", career.def_tackles_combined], ["TFL", career.def_tackles_for_loss], ["Sacks", career.def_sacks], ["QB Hits", career.def_qb_hits], ["INT", career.def_interceptions], ["PD", career.def_pass_defended]];
+  }
+
+  function renderMedical(player) {
+    const root = document.createDocumentFragment();
+    const medical = player.medical || { active: [], history: [], bodyRisk: [] };
+
+    const activePanel = panel("Current Availability", `${(medical.active || []).length} active`);
+    if (!medical.active || !medical.active.length) {
+      activePanel.append(node("div", "empty-state", "No active injury designation."));
+    } else {
+      activePanel.append(statTable(medical.active, [
+        ["injury", "Injury"],
+        ["bodyPart", "Area"],
+        ["severity", "Severity"],
+        ["status", "Status"],
+        ["startDate", "Start"],
+        ["returnEarliestDate", "Earliest Return"],
+        ["expectedGames", "G"],
+      ]));
+    }
+    root.append(activePanel);
+
+    const riskPanel = panel("Body Area Risk", `${(medical.bodyRisk || []).length} areas`);
+    if (!medical.bodyRisk || !medical.bodyRisk.length) {
+      riskPanel.append(node("div", "empty-state", "No injury history logged."));
+    } else {
+      riskPanel.append(statTable(medical.bodyRisk, [
+        ["bodyPart", "Area"],
+        ["injuryCount", "Inj"],
+        ["majorCount", "Major"],
+        ["gamesMissed", "Games"],
+        ["recurrenceRisk", "Recurrence"],
+        ["lastInjuryDate", "Last"],
+        ["activeStatus", "Active"],
+      ]));
+    }
+    root.append(riskPanel);
+
+    const historyPanel = panel("Injury History", `${(medical.history || []).length} rows`);
+    if (!medical.history || !medical.history.length) {
+      historyPanel.append(node("div", "empty-state", "No prior injury rows found."));
+    } else {
+      historyPanel.append(statTable(medical.history, [
+        ["startDate", "Date"],
+        ["injury", "Injury"],
+        ["bodyPart", "Area"],
+        ["severity", "Severity"],
+        ["gamesMissed", "Games"],
+        ["recurrenceRisk", "Recurrence"],
+        ["source", "Source"],
+      ]));
+    }
+    root.append(historyPanel);
+    refs.view.replaceChildren(root);
   }
 
   function statTable(rows, columns) {
@@ -502,6 +556,8 @@
       renderAttributes(player);
     } else if (state.view === "stats") {
       renderStats(player);
+    } else if (state.view === "medical") {
+      renderMedical(player);
     } else if (state.view === "contract") {
       renderContract(player);
     } else if (state.view === "history") {

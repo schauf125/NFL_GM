@@ -21,6 +21,7 @@ import daily_processor  # noqa: E402
 import league_calendar  # noqa: E402
 import league_schedule  # noqa: E402
 import player_progression  # noqa: E402
+import player_retirement  # noqa: E402
 import postseason  # noqa: E402
 from engine import match_engine  # noqa: E402
 
@@ -364,6 +365,32 @@ def apply_offseason_progression(
     return result
 
 
+def retirement_seed(season: int, explicit_seed: int | None) -> str | int:
+    if explicit_seed is not None:
+        return explicit_seed
+    return f"{season}:{season + 1}:retirement"
+
+
+def apply_offseason_retirements(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    decision_date: str,
+    seed: str | int,
+    force: bool,
+) -> dict[str, object]:
+    result = player_retirement.run_retirements(
+        con,
+        season=season,
+        decision_date=decision_date,
+        seed=seed,
+        apply=True,
+        force=force,
+    )
+    player_retirement.print_summary(result, apply=True, limit=32)
+    return result
+
+
 def action_status(args: argparse.Namespace) -> None:
     con = connect(args.db)
     try:
@@ -398,6 +425,8 @@ def action_complete(args: argparse.Namespace) -> None:
             print(f"  Would rebuild {next_season} schedule from actual {args.season} standings.")
             if not args.no_progression:
                 print(f"  Would run offseason progression/regression for {args.season}->{next_season}.")
+            if not args.no_retirements:
+                print("  Would run offseason retirement decisions.")
             if not args.no_advance_date and active_game_advance_needed(con, target_offseason_date):
                 print(f"  Would advance active game to {target_offseason_date}.")
             con.rollback()
@@ -467,6 +496,20 @@ def action_complete(args: argparse.Namespace) -> None:
                 force=args.force_progression,
             )
 
+        retirement_result = None
+        if args.no_retirements:
+            print("Skipped offseason retirements.")
+        else:
+            print("")
+            print("Running offseason retirements...")
+            retirement_result = apply_offseason_retirements(
+                con,
+                season=args.season,
+                decision_date=target_offseason_date,
+                seed=retirement_seed(args.season, args.retirement_seed),
+                force=args.force_retirements,
+            )
+
         post = postseason_status(con, args.season)
         upsert_completion(
             con,
@@ -490,6 +533,8 @@ def action_complete(args: argparse.Namespace) -> None:
         print(f"Offseason date: {target_offseason_date}")
         if progression_result:
             print(f"Progression run id: {progression_result['run_id']}")
+        if retirement_result:
+            print(f"Retirements: {retirement_result['retired']}")
     finally:
         con.close()
 
@@ -524,6 +569,9 @@ def build_parser() -> argparse.ArgumentParser:
     complete_parser.add_argument("--no-progression", action="store_true", help="Do not run automatic offseason progression/regression.")
     complete_parser.add_argument("--progression-seed", type=int, help="Seed for automatic offseason progression. Defaults to <season><next season>.")
     complete_parser.add_argument("--force-progression", action="store_true", help="Replace an existing progression run for this season transition.")
+    complete_parser.add_argument("--no-retirements", action="store_true", help="Do not run automatic offseason retirements.")
+    complete_parser.add_argument("--retirement-seed", type=int, help="Seed for automatic offseason retirements.")
+    complete_parser.add_argument("--force-retirements", action="store_true", help="Replace an existing retirement run for this season.")
     complete_parser.add_argument(
         "--process-days-on-advance",
         action="store_true",

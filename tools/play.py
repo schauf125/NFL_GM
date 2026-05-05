@@ -1059,6 +1059,12 @@ def action_complete_season(args: argparse.Namespace) -> None:
         script_args.extend(["--progression-seed", str(args.progression_seed)])
     if args.force_progression:
         script_args.append("--force-progression")
+    if args.no_retirements:
+        script_args.append("--no-retirements")
+    if args.retirement_seed is not None:
+        script_args.extend(["--retirement-seed", str(args.retirement_seed)])
+    if args.force_retirements:
+        script_args.append("--force-retirements")
     if args.process_days_on_advance:
         script_args.append("--process-days-on-advance")
     if args.notes:
@@ -1476,6 +1482,9 @@ def build_parser() -> argparse.ArgumentParser:
     complete_parser.add_argument("--no-progression", action="store_true", help="Do not run automatic offseason progression/regression.")
     complete_parser.add_argument("--progression-seed", type=int, help="Seed for automatic offseason progression. Defaults to <season><next season>.")
     complete_parser.add_argument("--force-progression", action="store_true", help="Replace an existing progression run for this season transition.")
+    complete_parser.add_argument("--no-retirements", action="store_true", help="Do not run automatic offseason retirements.")
+    complete_parser.add_argument("--retirement-seed", type=int, help="Seed for automatic offseason retirements.")
+    complete_parser.add_argument("--force-retirements", action="store_true", help="Replace an existing retirement run for this season.")
     complete_parser.add_argument(
         "--process-days-on-advance",
         action="store_true",

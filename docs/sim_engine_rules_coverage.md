@@ -99,7 +99,7 @@ Rule references were checked on 2026-05-04 against NFL Football Operations:
 | Personnel | Defensive starters | Implemented | Uses front/LB/secondary depth slots. |
 | Personnel | Snap counts | Implemented | Offense, defense, special teams, and total snaps are tracked. |
 | Personnel | Substitution packages | Partial | Heavy/nickel personnel are approximated; no stamina or rotational substitution. |
-| Personnel | Injuries | Missing | Durability exists as a rating but no injury events. |
+| Personnel | Injuries | Partial | Engine 0.1.7 records contact, non-contact, sack, and special-teams injury events, persists active injuries/history, and filters unavailable players from future games. Practice injuries, mid-game removals, and detailed medical staff effects are deferred. |
 | Environment | Weather | Missing | No weather/stadium effects on passing/kicking/fumbles. |
 | Environment | Home field | Missing | No crowd/noise/travel effects. |
 | Review | Replay/challenge | Missing | Can be safely deferred. |
