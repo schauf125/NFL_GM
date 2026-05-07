@@ -1,0 +1,83 @@
+{
+  "default": {
+    "label": "Area scout",
+    "accuracy": 0.68,
+    "grade_sigma": 5.0,
+    "rating_sigma": 7.0,
+    "optimism": 0.0,
+    "risk_blindness": 0.0,
+    "variance_note_chance": 0.18
+  },
+  "national_scout": {
+    "label": "National scout",
+    "accuracy": 0.78,
+    "grade_sigma": 3.8,
+    "rating_sigma": 5.5,
+    "optimism": -0.2,
+    "risk_blindness": -0.1,
+    "variance_note_chance": 0.12
+  },
+  "optimistic_area": {
+    "label": "Optimistic area scout",
+    "accuracy": 0.58,
+    "grade_sigma": 6.5,
+    "rating_sigma": 8.5,
+    "optimism": 2.5,
+    "risk_blindness": 0.25,
+    "variance_note_chance": 0.28
+  },
+  "conservative_crosscheck": {
+    "label": "Conservative cross-checker",
+    "accuracy": 0.72,
+    "grade_sigma": 4.2,
+    "rating_sigma": 6.0,
+    "optimism": -2.0,
+    "risk_blindness": -0.2,
+    "variance_note_chance": 0.16
+  },
+  "traits_scout": {
+    "label": "Traits scout",
+    "accuracy": 0.62,
+    "grade_sigma": 5.8,
+    "rating_sigma": 8.0,
+    "optimism": 1.5,
+    "risk_blindness": 0.15,
+    "variance_note_chance": 0.25
+  },
+  "analytics_scout": {
+    "label": "Analytical cross-checker",
+    "accuracy": 0.70,
+    "grade_sigma": 4.8,
+    "rating_sigma": 6.8,
+    "optimism": -0.5,
+    "risk_blindness": -0.15,
+    "variance_note_chance": 0.18
+  },
+  "old_school_scout": {
+    "label": "Old-school traits scout",
+    "accuracy": 0.57,
+    "grade_sigma": 6.2,
+    "rating_sigma": 8.6,
+    "optimism": 1.8,
+    "risk_blindness": 0.22,
+    "variance_note_chance": 0.30
+  },
+  "medical_crosscheck": {
+    "label": "Medical cross-checker",
+    "accuracy": 0.66,
+    "grade_sigma": 5.0,
+    "rating_sigma": 6.4,
+    "optimism": -1.2,
+    "risk_blindness": -0.35,
+    "variance_note_chance": 0.22
+  },
+  "small_school_scout": {
+    "label": "Small-school area scout",
+    "accuracy": 0.55,
+    "grade_sigma": 6.8,
+    "rating_sigma": 9.0,
+    "optimism": 1.0,
+    "risk_blindness": 0.10,
+    "variance_note_chance": 0.34
+  }
+}

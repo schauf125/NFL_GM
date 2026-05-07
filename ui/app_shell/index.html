@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NFL GM</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div id="splash" class="splash">
+      <div class="splash-mark">NFL GM</div>
+      <div class="splash-line"></div>
+      <p>Building front office workspace</p>
+    </div>
+
+    <main id="app" class="app-shell hidden">
+      <aside class="main-menu">
+        <div class="brand">
+          <strong>NFL GM</strong>
+          <span id="seasonText"></span>
+        </div>
+        <nav class="menu-buttons" aria-label="Main menu">
+          <button type="button" data-view="home" class="active">Home</button>
+          <button type="button" data-view="newGame">New Game</button>
+          <button type="button" data-view="loadGame">Load Game</button>
+          <button type="button" data-view="settings">Settings</button>
+        </nav>
+        <div class="quick-links">
+          <a href="../game_center/index.html">Game Center</a>
+          <a href="../front_office/index.html">Front Office</a>
+          <a href="../player_profile/index.html">Player Profiles</a>
+          <a href="../player_card/index.html">Player Cards</a>
+        </div>
+      </aside>
+
+      <section class="screen">
+        <header class="hero">
+          <div>
+            <p id="phaseText" class="eyebrow"></p>
+            <h1 id="screenTitle">League Home</h1>
+            <p id="screenSubhead" class="subhead"></p>
+          </div>
+          <div class="hero-card">
+            <span>Current Date</span>
+            <strong id="dateText"></strong>
+          </div>
+        </header>
+
+        <section id="content" class="content"></section>
+      </section>
+    </main>
+
+    <div id="runnerToast" class="runner-toast" hidden></div>
+
+    <script src="./app-shell-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

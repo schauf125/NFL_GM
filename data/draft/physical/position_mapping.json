@@ -1,0 +1,24 @@
+{
+  "source": "nflverse players.csv height/weight position mapping for NFL GM Sim draft prospects",
+  "default_min_last_season": 2015,
+  "positions": {
+    "QB": {"source_positions": ["QB"], "height_bounds": [69, 81], "weight_bounds": [185, 260]},
+    "RB": {"source_positions": ["RB"], "height_bounds": [66, 76], "weight_bounds": [175, 255]},
+    "FB": {"source_positions": ["FB"], "height_bounds": [69, 77], "weight_bounds": [220, 270]},
+    "WR": {"source_positions": ["WR"], "height_bounds": [66, 80], "weight_bounds": [160, 235]},
+    "TE": {"source_positions": ["TE"], "height_bounds": [72, 81], "weight_bounds": [225, 280]},
+    "OT": {"source_positions": ["OT"], "height_bounds": [74, 82], "weight_bounds": [285, 365]},
+    "OG": {"source_positions": ["G", "OG"], "height_bounds": [73, 80], "weight_bounds": [285, 355]},
+    "C": {"source_positions": ["C", "OC"], "height_bounds": [72, 79], "weight_bounds": [280, 335]},
+    "IDL": {"source_positions": ["DT", "NT", "DL"], "height_bounds": [71, 80], "weight_bounds": [270, 365]},
+    "EDGE": {"source_positions": ["DE", "OLB", "EDGE", "EDG"], "height_bounds": [71, 80], "weight_bounds": [225, 325]},
+    "ILB": {"source_positions": ["ILB", "MLB", "LB"], "height_bounds": [70, 78], "weight_bounds": [215, 275]},
+    "CB": {"source_positions": ["CB"], "height_bounds": [67, 76], "weight_bounds": [170, 220]},
+    "NB": {"source_positions": ["CB", "DB"], "height_bounds": [67, 76], "weight_bounds": [170, 225]},
+    "FS": {"source_positions": ["FS", "SAF", "S", "DB"], "height_bounds": [68, 77], "weight_bounds": [180, 225]},
+    "SS": {"source_positions": ["SS", "SAF", "S", "DB"], "height_bounds": [68, 77], "weight_bounds": [180, 230]},
+    "K": {"source_positions": ["K"], "height_bounds": [67, 77], "weight_bounds": [165, 235]},
+    "P": {"source_positions": ["P"], "height_bounds": [69, 79], "weight_bounds": [180, 250]},
+    "LS": {"source_positions": ["LS"], "height_bounds": [71, 78], "weight_bounds": [220, 265]}
+  }
+}

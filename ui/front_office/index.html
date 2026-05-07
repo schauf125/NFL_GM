@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>NFL GM Front Office</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="team-rail" aria-label="Teams">
+        <div class="brand-block">
+          <strong>NFL GM</strong>
+          <span id="seasonLabel"></span>
+        </div>
+        <div id="teamList" class="team-list"></div>
+      </aside>
+
+      <section class="workspace">
+        <header class="team-hero">
+          <div class="team-title">
+            <img id="teamLogo" class="team-logo" alt="">
+            <div>
+              <p id="teamMeta" class="eyebrow"></p>
+              <h1 id="teamName"></h1>
+              <p id="stadiumText" class="stadium-text"></p>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <a class="ghost-link" href="../app_shell/index.html">Main Menu</a>
+            <a class="ghost-link" href="../game_center/index.html">Game Center</a>
+            <a class="ghost-link" href="../player_profile/index.html">Profiles</a>
+            <a class="ghost-link" href="../player_card/index.html">Player Cards</a>
+          </div>
+        </header>
+
+        <nav class="view-tabs" aria-label="Front office sections">
+          <button type="button" data-view="overview" class="active">Overview</button>
+          <button type="button" data-view="roster">Roster</button>
+          <button type="button" data-view="depth">Depth</button>
+          <button type="button" data-view="cap">Cap</button>
+          <button type="button" data-view="draft">Draft</button>
+          <button type="button" data-view="freeAgents">Free Agency</button>
+          <button type="button" data-view="schedule">Schedule</button>
+          <button type="button" data-view="coaches">Coaches</button>
+          <button type="button" data-view="league">League</button>
+          <button type="button" data-view="transactions">Transactions</button>
+        </nav>
+
+        <section class="content-grid">
+          <div id="mainView" class="main-view"></div>
+          <aside id="playerPanel" class="player-panel"></aside>
+        </section>
+      </section>
+    </main>
+
+    <script src="./front-office-data.js"></script>
+    <script src="./app.js?v=20260507-player-hints"></script>
+  </body>
+</html>

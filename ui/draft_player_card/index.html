@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Draft Prospect Card</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <main class="draft-card-shell">
+      <article class="prospect-card">
+        <section class="portrait-panel">
+          <div class="board-tag">
+            <span id="draftYear"></span>
+            <strong id="draftRank"></strong>
+          </div>
+          <figure class="portrait-frame">
+            <img id="portraitImage" alt="">
+          </figure>
+          <div class="identity-strip">
+            <p id="collegeLine"></p>
+            <h1 id="prospectName"></h1>
+            <p id="positionLine"></p>
+          </div>
+        </section>
+
+        <section class="profile-panel">
+          <header class="profile-header">
+            <div>
+              <p id="classLine" class="class-line"></p>
+              <h2 id="archetypeLine"></h2>
+            </div>
+            <div class="pick-chip">
+              <span>Projected</span>
+              <strong id="pickText"></strong>
+            </div>
+          </header>
+
+          <section class="measure-band" aria-label="Measurements">
+            <div><span>Age</span><strong id="ageText"></strong></div>
+            <div><span>Height</span><strong id="heightText"></strong></div>
+            <div><span>Weight</span><strong id="weightText"></strong></div>
+            <div><span>Arm</span><strong id="armText"></strong></div>
+            <div><span>Hand</span><strong id="handText"></strong></div>
+          </section>
+
+          <section class="metric-board" id="metricBoard" aria-label="Scouting metrics"></section>
+
+          <section class="report-section">
+            <div class="section-title">
+              <span>Scouting Report</span>
+              <strong id="riskText"></strong>
+            </div>
+            <p id="reportText"></p>
+          </section>
+
+          <section class="split-section">
+            <div>
+              <div class="section-title"><span>Strengths</span></div>
+              <ul id="strengthList"></ul>
+            </div>
+            <div>
+              <div class="section-title"><span>Concerns</span></div>
+              <ul id="concernList"></ul>
+            </div>
+          </section>
+
+          <section class="detail-grid">
+            <div>
+              <span>Role</span>
+              <strong id="roleText"></strong>
+            </div>
+            <div>
+              <span>Scout Lens</span>
+              <strong id="lensText"></strong>
+            </div>
+            <div>
+              <span>Combine</span>
+              <strong id="combineText"></strong>
+            </div>
+            <div>
+              <span>Appearance Metadata</span>
+              <strong id="appearanceText"></strong>
+            </div>
+          </section>
+        </section>
+      </article>
+    </main>
+
+    <script src="./draft-prospect-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
