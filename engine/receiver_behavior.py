@@ -258,6 +258,7 @@ RECEIVER_STYLE_OVERRIDES: dict[str, ReceiverBehaviorProfile] = {
     "tee higgins": profile("Big Boundary Complement", 82, 72, 78, 78, 70, 92, 90, 58, 70, 82),
     "terry mclaurin": profile("Vertical Route Captain", 82, 86, 86, 84, 72, 68, 84, 74, 80, 84),
     "tj hockenson": profile("Volume Middle TE", 86, 72, 86, 48, 92, 82, 74, 70, 84, 88),
+    "travis kelce": profile("Late-Career Chain TE", 76, 68, 78, 38, 84, 76, 76, 58, 74, 82),
     "trey mcbride": profile("TE Volume Mismatch", 88, 76, 88, 50, 94, 82, 74, 80, 86, 90),
     "tyreek hill": profile("Speed Gravity Superstar", 96, 94, 88, 98, 72, 58, 82, 94, 82, 78),
     "xavier legette": profile("Power Slot Projection", 62, 70, 68, 70, 66, 78, 72, 80, 68, 68),

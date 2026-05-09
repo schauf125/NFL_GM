@@ -9,7 +9,9 @@ completed regular-season week.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -17,13 +19,42 @@ from pathlib import Path
 import ai_gm
 import daily_processor
 import event_generator
+import free_agency_processor
 import game_flow
 import league_calendar
+import league_news
+import roster_cutdown
 import scouting
+import trade_engine
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
+AI_GM_FULL_SCAN_WEEKS = {1, 4, 8, 12, 16, 18}
+CPU_SCOUTING_WEEKS = {2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 17, 18}
+AI_GM_MAJOR_INJURY_GAMES = 5
+ROSTER_MAINTENANCE_WEEKS = {1, 4, 8, 12, 16, 18}
+PRACTICE_SQUAD_SANITY_WEEKS = {1, 8, 16}
+DEPTH_SANITY_WEEKS = {1, 8, 16, 18}
+CPU_TRADE_MARKET_WEEKS = {4, 8}
+YOUTH_EVALUATION_NEWS_WEEKS = {8, 10, 12, 14, 16, 18}
+YOUTH_EVALUATION_POSITIONS = {
+    "RB",
+    "WR",
+    "TE",
+    "EDGE",
+    "IDL",
+    "DT",
+    "NT",
+    "LB",
+    "ILB",
+    "OLB",
+    "CB",
+    "NB",
+    "FS",
+    "SS",
+    "S",
+}
 
 
 @dataclass(frozen=True)
@@ -142,6 +173,19 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE game_weekly_processing_runs ADD COLUMN ai_gm_operations_queued INTEGER NOT NULL DEFAULT 0")
     if "ai_gm_operations_skipped" not in existing:
         con.execute("ALTER TABLE game_weekly_processing_runs ADD COLUMN ai_gm_operations_skipped INTEGER NOT NULL DEFAULT 0")
+    if "hook_timing_json" not in existing:
+        con.execute("ALTER TABLE game_weekly_processing_runs ADD COLUMN hook_timing_json TEXT")
+
+
+def json_dumps(value: object) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def table_exists(con: sqlite3.Connection, name: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (name,),
+    ).fetchone() is not None
 
 
 def week_window(con: sqlite3.Connection, season: int, week: int) -> WeekWindow:
@@ -203,6 +247,271 @@ def phase_for_week_end(con: sqlite3.Connection, target_date: str) -> sqlite3.Row
     return phase
 
 
+def major_injury_pressure_this_week(
+    con: sqlite3.Connection,
+    *,
+    start_date: str,
+    end_date: str,
+) -> int:
+    try:
+        row = con.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM active_player_injuries
+            WHERE resolved_at IS NULL
+              AND status IN ('Out', 'IR', 'PUP', 'NFI')
+              AND date(start_date) BETWEEN date(?) AND date(?)
+              AND COALESCE(expected_games, 0) >= ?
+            """,
+            (start_date, end_date, AI_GM_MAJOR_INJURY_GAMES),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["count"] or 0) if row else 0
+
+
+def unavailable_injuries_this_week(
+    con: sqlite3.Connection,
+    *,
+    start_date: str,
+    end_date: str,
+) -> int:
+    try:
+        row = con.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM active_player_injuries
+            WHERE resolved_at IS NULL
+              AND status IN ('Out', 'IR', 'PUP', 'NFI')
+              AND date(start_date) BETWEEN date(?) AND date(?)
+            """,
+            (start_date, end_date),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row["count"] or 0) if row else 0
+
+
+def empty_roster_result(reason: str = "cadence_skip") -> dict[str, int | str]:
+    return {
+        "teams": 0,
+        "promoted": 0,
+        "signed": 0,
+        "swapped": 0,
+        "swaps": 0,
+        "released": 0,
+        "moved_to_ps": 0,
+        "skipped": 1,
+        "reason": reason,
+    }
+
+
+def roster_move_count(*results: dict[str, object]) -> int:
+    move_keys = ("promoted", "signed", "swapped", "swaps", "released", "moved_to_ps")
+    total = 0
+    for result in results:
+        for key in move_keys:
+            value = result.get(key, 0)
+            total += int(value or 0)
+    return total
+
+
+def roster_maintenance_plan(
+    con: sqlite3.Connection,
+    *,
+    week: int,
+    window: WeekWindow,
+) -> dict[str, bool | int | str]:
+    new_unavailable = unavailable_injuries_this_week(
+        con,
+        start_date=window.start_date,
+        end_date=window.end_date,
+    )
+    checkpoint = week in ROSTER_MAINTENANCE_WEEKS
+    return {
+        "reason": "checkpoint" if checkpoint else "new_unavailable_injury" if new_unavailable else "cadence_skip",
+        "new_unavailable_injuries": new_unavailable,
+        "practice_squad": week in PRACTICE_SQUAD_SANITY_WEEKS,
+        "injury_replacements": checkpoint or new_unavailable > 0,
+        "position_replacements": checkpoint or new_unavailable > 0,
+        "depth_swaps": week in DEPTH_SANITY_WEEKS,
+        "active_trim": checkpoint or new_unavailable > 0,
+        "validation": checkpoint or new_unavailable > 0,
+    }
+
+
+def should_run_ai_gm_weekly(
+    con: sqlite3.Connection,
+    *,
+    week: int,
+    window: WeekWindow,
+) -> tuple[bool, str, int]:
+    if week in AI_GM_FULL_SCAN_WEEKS:
+        return True, "scheduled_full_scan", 48
+    major_injuries = major_injury_pressure_this_week(
+        con,
+        start_date=window.start_date,
+        end_date=window.end_date,
+    )
+    if major_injuries:
+        return True, f"major_injury_pressure:{major_injuries}", 24
+    return False, "cadence_skip", 0
+
+
+def should_run_cpu_scouting_weekly(week: int) -> bool:
+    return week in CPU_SCOUTING_WEEKS
+
+
+def rebuilding_evaluation_score(*, week: int, wins: int, losses: int, ties: int, point_diff: int) -> float:
+    games = wins + losses + ties
+    if games < 6:
+        return 0.0
+    win_pct = (wins + ties * 0.5) / max(1, games)
+    point_diff_per_game = point_diff / max(1, games)
+    score = 0.0
+    if week >= 8 and (win_pct < 0.35 or point_diff_per_game < -7.0):
+        score = max(score, 0.42)
+    if week >= 11 and (win_pct < 0.45 or point_diff_per_game < -4.0):
+        score = max(score, 0.62)
+    if week >= 14 and win_pct < 0.50:
+        score = max(score, 0.78)
+    if week >= 16 and win_pct < 0.56 and point_diff_per_game < -1.5:
+        score = max(score, 0.92)
+    return min(1.0, max(0.0, score))
+
+
+def create_youth_evaluation_news(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    week: int,
+    news_date: str,
+) -> int:
+    if week not in YOUTH_EVALUATION_NEWS_WEEKS:
+        return 0
+    required_tables = {"game_player_stats", "game_sim_runs", "season_team_records", "players", "teams"}
+    if any(not table_exists(con, table) for table in required_tables):
+        return 0
+    league_news.ensure_schema(con)
+
+    created = 0
+    record_rows = con.execute(
+        """
+        SELECT
+            str.team_id,
+            str.wins,
+            str.losses,
+            str.ties,
+            COALESCE(str.points_for, 0) - COALESCE(str.points_against, 0) AS point_diff,
+            t.abbreviation
+        FROM season_team_records str
+        JOIN teams t ON t.team_id = str.team_id
+        WHERE str.season = ?
+        """,
+        (season,),
+    ).fetchall()
+    evaluation_teams = {
+        int(row["team_id"]): {
+            "score": rebuilding_evaluation_score(
+                week=week,
+                wins=int(row["wins"] or 0),
+                losses=int(row["losses"] or 0),
+                ties=int(row["ties"] or 0),
+                point_diff=int(row["point_diff"] or 0),
+            ),
+            "record": f"{int(row['wins'] or 0)}-{int(row['losses'] or 0)}"
+            + (f"-{int(row['ties'] or 0)}" if int(row["ties"] or 0) else ""),
+            "abbreviation": str(row["abbreviation"]),
+        }
+        for row in record_rows
+    }
+    evaluation_teams = {team_id: data for team_id, data in evaluation_teams.items() if float(data["score"]) > 0}
+    if not evaluation_teams:
+        return 0
+
+    placeholders = ",".join("?" for _ in evaluation_teams)
+    rows = con.execute(
+        f"""
+        SELECT
+            gps.team_id,
+            gps.player_id,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            p.age,
+            p.years_exp,
+            p.is_rookie,
+            SUM(CASE WHEN gps.stat_key = 'offensive_snaps' THEN gps.stat_value ELSE 0 END) AS off_snaps,
+            SUM(CASE WHEN gps.stat_key = 'defensive_snaps' THEN gps.stat_value ELSE 0 END) AS def_snaps,
+            SUM(CASE WHEN gps.stat_key = 'special_teams_snaps' THEN gps.stat_value ELSE 0 END) AS st_snaps,
+            SUM(CASE WHEN gps.stat_key = 'total_snaps' THEN gps.stat_value ELSE 0 END) AS total_snaps
+        FROM game_player_stats gps
+        JOIN game_sim_runs gsr ON gsr.run_id = gps.run_id
+        JOIN players p ON p.player_id = gps.player_id
+        WHERE gsr.season = ?
+          AND gsr.week = ?
+          AND gsr.status = 'final'
+          AND gps.team_id IN ({placeholders})
+          AND p.position IN ({",".join("?" for _ in YOUTH_EVALUATION_POSITIONS)})
+          AND (COALESCE(p.is_rookie, 0) = 1 OR (COALESCE(p.age, 26) <= 23 AND COALESCE(p.years_exp, 0) <= 2))
+        GROUP BY gps.team_id, gps.player_id
+        HAVING (off_snaps + def_snaps) >= 16
+        ORDER BY (off_snaps + def_snaps) DESC, total_snaps DESC
+        """,
+        (season, week, *evaluation_teams.keys(), *sorted(YOUTH_EVALUATION_POSITIONS)),
+    ).fetchall()
+
+    seen_teams: set[int] = set()
+    for row in rows:
+        team_id = int(row["team_id"])
+        if team_id in seen_teams:
+            continue
+        team_data = evaluation_teams.get(team_id)
+        if not team_data:
+            continue
+        primary_snaps = int((row["off_snaps"] or 0) + (row["def_snaps"] or 0))
+        total_snaps = int(row["total_snaps"] or primary_snaps + int(row["st_snaps"] or 0))
+        if primary_snaps < 20 and total_snaps < 38:
+            continue
+        player_id = int(row["player_id"])
+        fingerprint = f"youth-evaluation:{game_id}:{season}:{week}:{team_id}:{player_id}"
+        if con.execute(
+            "SELECT 1 FROM league_news_items WHERE game_id = ? AND fingerprint = ?",
+            (game_id, fingerprint),
+        ).fetchone():
+            seen_teams.add(team_id)
+            continue
+        player_name = str(row["player_name"])
+        position = str(row["position"])
+        team_abbr = str(team_data["abbreviation"])
+        record = str(team_data["record"])
+        title = f"{team_abbr} giving {player_name} a longer look"
+        body = (
+            f"At {record}, {team_abbr} appears to be using more late-season evaluation snaps. "
+            f"{player_name}, a young {position}, played {primary_snaps} offensive/defensive snaps this week as the staff weighs future role decisions."
+        )
+        league_news.add_news_item(
+            con,
+            game_id=game_id,
+            news_date=news_date,
+            category="Roster",
+            priority="normal",
+            source="Team Wire",
+            title=title,
+            body=body,
+            team_id=team_id,
+            player_id=player_id,
+            tags=["development", "depth_chart", "rebuild"],
+            is_major=False,
+            fingerprint=fingerprint,
+        )
+        created += 1
+        seen_teams.add(team_id)
+        if created >= 6:
+            break
+    return created
+
+
 def process_week(
     con: sqlite3.Connection,
     *,
@@ -215,6 +524,11 @@ def process_week(
     ai_gm_enabled: bool = True,
 ) -> WeeklyResult:
     ensure_schema(con)
+    timings: dict[str, float] = {}
+
+    def mark_timing(label: str, started: float) -> None:
+        timings[label] = round(time.perf_counter() - started, 3)
+
     window = week_window(con, season, week)
     if require_complete and not window.complete:
         raise ValueError(
@@ -274,6 +588,7 @@ def process_week(
     if game and date.fromisoformat(window.end_date) < date.fromisoformat(game.current_date):
         from_date = window.end_date
 
+    started = time.perf_counter()
     event_result = daily_processor.process_event_range(
         con,
         game_id=target_game_id,
@@ -282,20 +597,98 @@ def process_week(
         include_start=include_start,
         force=force,
     )
+    mark_timing("daily_events", started)
 
+    started = time.perf_counter()
     if game and advance_date and date.fromisoformat(window.end_date) > date.fromisoformat(game.current_date):
         phase, _crossed_events = game_flow.update_active_game_date(con, game, window.end_date)
     else:
         phase = phase_for_week_end(con, window.end_date)
+    mark_timing("date_advance", started)
 
+    roster_plan = roster_maintenance_plan(con, week=week, window=window)
+
+    started = time.perf_counter()
+    if roster_plan["practice_squad"]:
+        practice_squad_sanity_result = roster_cutdown.sanitize_cpu_practice_squads(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        practice_squad_sanity_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("practice_squad_sanity", started)
+
+    started = time.perf_counter()
+    if roster_plan["injury_replacements"]:
+        injury_replacement_result = roster_cutdown.process_cpu_injury_replacements(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        injury_replacement_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("injury_replacements", started)
+
+    started = time.perf_counter()
+    if roster_plan["position_replacements"]:
+        position_replacement_result = roster_cutdown.process_cpu_position_depth_replacements(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        position_replacement_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("position_replacements", started)
+
+    started = time.perf_counter()
+    if roster_plan["depth_swaps"]:
+        depth_swap_result = roster_cutdown.optimize_cpu_same_position_depth(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        depth_swap_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("depth_swaps", started)
+
+    started = time.perf_counter()
+    if roster_plan["active_trim"]:
+        active_trim_result = roster_cutdown.trim_cpu_active_roster_overages(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        active_trim_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("active_trim", started)
+
+    started = time.perf_counter()
     reminder_alerts = daily_processor.create_upcoming_event_alerts(con, target_game_id, window.end_date)
-    teams_checked, failures, roster_errors, roster_warnings, roster_alerts = daily_processor.validate_rosters_if_needed(
-        con,
-        target_game_id,
-        window.end_date,
-        phase,
+    roster_moves = roster_move_count(
+        practice_squad_sanity_result,
+        injury_replacement_result,
+        position_replacement_result,
+        depth_swap_result,
+        active_trim_result,
     )
+    if roster_plan["validation"] or roster_moves:
+        teams_checked, failures, roster_errors, roster_warnings, roster_alerts = daily_processor.validate_rosters_if_needed(
+            con,
+            target_game_id,
+            window.end_date,
+            phase,
+        )
+    else:
+        teams_checked = failures = roster_errors = roster_warnings = roster_alerts = 0
     alerts = event_result.alerts_created + reminder_alerts + roster_alerts
+    mark_timing("alerts_and_roster_validation", started)
+    started = time.perf_counter()
     scouting.ensure_schema(con)
     news_result = event_generator.generate_weekly_events(
         con,
@@ -306,17 +699,42 @@ def process_week(
         force=force,
         apply=True,
     )
+    mark_timing("league_news", started)
+    started = time.perf_counter()
+    youth_evaluation_news = create_youth_evaluation_news(
+        con,
+        game_id=target_game_id,
+        season=season,
+        week=week,
+        news_date=window.end_date,
+    )
+    mark_timing("youth_evaluation_news", started)
     try:
-        scouting_result = scouting.auto_assign_scouts(
+        started = time.perf_counter()
+        queued_scouting_result = scouting.process_assignments(
             con,
             game_id=target_game_id,
             season=season,
             week=week,
+            slots=scouting.SPECIFIC_SCOUTING_COUNT,
         )
-        scouting_status = "auto_assigned"
-        scouting_action = str(scouting_result.get("action") or "auto_assign")
-        scouting_advanced = len(scouting_result.get("advanced") or [])
-        user_background_discoveries = len(scouting_result.get("background_discoveries") or [])
+        if int(queued_scouting_result.get("processed") or 0) > 0:
+            scouting_result = queued_scouting_result
+            scouting_status = "processed_queue"
+            scouting_action = "specific"
+            scouting_advanced = int(queued_scouting_result.get("processed") or 0)
+            user_background_discoveries = int(queued_scouting_result.get("discovered") or 0)
+        else:
+            scouting_result = scouting.auto_assign_scouts(
+                con,
+                game_id=target_game_id,
+                season=season,
+                week=week,
+            )
+            scouting_status = "auto_assigned"
+            scouting_action = str(scouting_result.get("action") or "auto_assign")
+            scouting_advanced = len(scouting_result.get("advanced") or [])
+            user_background_discoveries = len(scouting_result.get("background_discoveries") or [])
     except Exception as exc:
         scouting_status = "skipped"
         scouting_action = None
@@ -325,24 +743,34 @@ def process_week(
         scouting_skip_reason = str(exc)
     else:
         scouting_skip_reason = None
+    mark_timing("user_scouting", started)
     try:
-        cpu_scouting_result = scouting.run_cpu_weekly_scouting(
-            con,
-            game_id=target_game_id,
-            season=season,
-            week=week,
-        )
-        cpu_scouting_status = str(cpu_scouting_result.get("status") or "processed")
-        cpu_scouting_teams = int(cpu_scouting_result.get("teams") or 0)
-        cpu_scouting_advanced = int(cpu_scouting_result.get("advanced") or 0)
-        cpu_scouting_discoveries = int(cpu_scouting_result.get("discoveries") or 0)
-        cpu_scouting_skip_reason = str(cpu_scouting_result.get("reason") or "")
+        started = time.perf_counter()
+        if should_run_cpu_scouting_weekly(week):
+            cpu_scouting_result = scouting.run_cpu_weekly_scouting(
+                con,
+                game_id=target_game_id,
+                season=season,
+                week=week,
+            )
+            cpu_scouting_status = str(cpu_scouting_result.get("status") or "processed")
+            cpu_scouting_teams = int(cpu_scouting_result.get("teams") or 0)
+            cpu_scouting_advanced = int(cpu_scouting_result.get("advanced") or 0)
+            cpu_scouting_discoveries = int(cpu_scouting_result.get("discoveries") or 0)
+            cpu_scouting_skip_reason = str(cpu_scouting_result.get("reason") or "")
+        else:
+            cpu_scouting_status = "cadence_skip"
+            cpu_scouting_teams = 0
+            cpu_scouting_advanced = 0
+            cpu_scouting_discoveries = 0
+            cpu_scouting_skip_reason = "CPU scouting runs on selected season checkpoints."
     except Exception as exc:
         cpu_scouting_status = "skipped"
         cpu_scouting_teams = 0
         cpu_scouting_advanced = 0
         cpu_scouting_discoveries = 0
         cpu_scouting_skip_reason = str(exc)
+    mark_timing("cpu_scouting", started)
     scouting_note = (
         f" Scouting auto-assigned {scouting_advanced} prospect(s)"
         + (
@@ -351,7 +779,16 @@ def process_week(
             else "."
         )
         if scouting_status == "auto_assigned"
-        else f" Scouting auto-assign skipped: {scouting_skip_reason}."
+        else (
+            f" Scouting processed {scouting_advanced} queued prospect(s)"
+            + (
+                f" and area scouts found {user_background_discoveries} off-board prospect(s)."
+                if user_background_discoveries
+                else "."
+            )
+            if scouting_status == "processed_queue"
+            else f" Scouting auto-assign skipped: {scouting_skip_reason}."
+        )
     )
     scouting_note += (
         f" CPU scouting advanced {cpu_scouting_advanced} reports across {cpu_scouting_teams} team(s)"
@@ -362,42 +799,150 @@ def process_week(
     scouting_note += (
         f" League news rolled {news_result.planned_count} public event(s)."
     )
+    if youth_evaluation_news:
+        scouting_note += f" Youth evaluation generated {youth_evaluation_news} roster note(s)."
+    sanity_moves = (
+        int(practice_squad_sanity_result.get("promoted", 0))
+        + int(practice_squad_sanity_result.get("swapped", 0)) * 2
+        + int(practice_squad_sanity_result.get("released", 0))
+    )
+    scouting_note += (
+        f" CPU practice squad sanity made {sanity_moves} move(s) "
+        f"for {int(practice_squad_sanity_result.get('teams', 0))} team(s)."
+        if sanity_moves
+        else (
+            " CPU practice squad sanity skipped by cadence."
+            if practice_squad_sanity_result.get("skipped")
+            else " CPU practice squad sanity found no bad CPU stashes."
+        )
+    )
+    replacement_moves = int(injury_replacement_result.get("promoted", 0)) + int(injury_replacement_result.get("signed", 0))
+    position_moves = int(position_replacement_result.get("promoted", 0)) + int(position_replacement_result.get("signed", 0))
+    scouting_note += (
+        f" CPU injury replacements made {replacement_moves} move(s) "
+        f"for {int(injury_replacement_result.get('teams', 0))} team(s)."
+        if replacement_moves
+        else (
+            " CPU injury replacements skipped by cadence."
+            if injury_replacement_result.get("skipped")
+            else " CPU injury replacements found no short CPU rosters."
+        )
+    )
+    if position_moves:
+        scouting_note += f" CPU position-depth replacements made {position_moves} move(s)."
+    if int(depth_swap_result.get("swaps", 0)):
+        scouting_note += f" CPU depth sanity swapped {int(depth_swap_result.get('swaps', 0))} same-position stash(es)."
+    trim_moves = int(active_trim_result.get("moved_to_ps", 0)) + int(active_trim_result.get("released", 0))
+    if trim_moves:
+        scouting_note += f" CPU roster sanity trimmed {trim_moves} active overage(s)."
+    fa_signings = 0
+    fa_resolve_note = ""
+    trade_market_note = ""
+    ai_gm_queued = 0
+    ai_gm_skipped = 0
+    ai_gm_status = "not_run"
     if ai_gm_enabled:
+        should_run_ai, ai_reason, ai_limit = should_run_ai_gm_weekly(con, week=week, window=window)
+        if should_run_ai:
+            try:
+                started = time.perf_counter()
+                ai_gm_result = ai_gm.run_daily_autonomy(
+                    con,
+                    game_id=target_game_id,
+                    team_abbr=None,
+                    all_teams=True,
+                    phase="weekly_roster",
+                    limit=ai_limit,
+                    include_low=False,
+                    persist=True,
+                    apply_mode=True,
+                    include_user_team=False,
+                    mode_override=None,
+                    max_players=14,
+                    max_free_agents=10,
+                    current_date=window.end_date,
+                )
+                mark_timing("ai_gm", started)
+                ai_gm_queued = len(ai_gm_result.get("review_items") or [])
+                ai_gm_applied = int(ai_gm_result["counts"].get("applied", 0))
+                ai_gm_skipped = int(ai_gm_result["counts"].get("skipped", 0))
+                ai_gm_status = "applied" if ai_gm_applied else "review_items" if ai_gm_queued else "no_new_ops"
+                scouting_note += (
+                    f" AI GM weekly actions applied {ai_gm_applied}, "
+                    f"review items {ai_gm_queued}, skipped {ai_gm_skipped}"
+                    f" ({ai_reason}, limit {ai_limit})."
+                )
+            except Exception as exc:
+                ai_gm_queued = 0
+                ai_gm_skipped = 0
+                ai_gm_status = "skipped"
+                scouting_note += f" AI GM weekly review generation skipped: {exc}."
+        else:
+            timings["ai_gm"] = 0.0
+            ai_gm_status = "cadence_skip"
+            scouting_note += f" AI GM weekly scan skipped ({ai_reason})."
         try:
-            ai_gm_result = ai_gm.run_daily_autonomy(
+            started = time.perf_counter()
+            fa_period = free_agency_processor.active_period(con, season)
+            fa_signings = free_agency_processor.resolve_pending_offers(
                 con,
-                game_id=target_game_id,
-                team_abbr=None,
-                all_teams=True,
-                phase="weekly_roster",
-                limit=96,
-                include_low=False,
-                persist=True,
-                apply_mode=True,
-                include_user_team=False,
-                mode_override=None,
-                max_players=18,
-                max_free_agents=18,
-                current_date=window.end_date,
+                fa_period,
+                limit=12,
+                write_cap_snapshot=False,
             )
-            ai_gm_queued = len(ai_gm_result.get("review_items") or [])
-            ai_gm_applied = int(ai_gm_result["counts"].get("applied", 0))
-            ai_gm_skipped = int(ai_gm_result["counts"].get("skipped", 0))
-            ai_gm_status = "applied" if ai_gm_applied else "review_items" if ai_gm_queued else "no_new_ops"
-            scouting_note += (
-                f" AI GM weekly actions applied {ai_gm_applied}, "
-                f"review items {ai_gm_queued}, skipped {ai_gm_skipped}."
-            )
-        except Exception as exc:
-            ai_gm_queued = 0
-            ai_gm_skipped = 0
-            ai_gm_status = "skipped"
-            scouting_note += f" AI GM weekly review generation skipped: {exc}."
+            mark_timing("fa_offer_resolution", started)
+            if fa_signings:
+                started = time.perf_counter()
+                post_fa_trim = roster_cutdown.trim_cpu_active_roster_overages(
+                    con,
+                    season=season,
+                    game_id=target_game_id,
+                    include_user_team=False,
+                )
+                mark_timing("post_fa_trim", started)
+                post_fa_trim_moves = (
+                    int(post_fa_trim.get("moved_to_ps", 0))
+                    + int(post_fa_trim.get("released", 0))
+                )
+                fa_resolve_note = f" CPU free agency resolved {fa_signings} pending signing(s)."
+                if post_fa_trim_moves:
+                    fa_resolve_note += f" Trimmed {post_fa_trim_moves} post-signing roster overage(s)."
+        except Exception as fa_exc:
+            fa_resolve_note = f" CPU free agency resolution skipped: {fa_exc}."
+        if week in CPU_TRADE_MARKET_WEEKS:
+            try:
+                started = time.perf_counter()
+                trade_result = trade_engine.ai_gm_process_trade_market(
+                    con,
+                    game_id=target_game_id,
+                    season=season,
+                    limit_teams=6,
+                    max_proposals_per_team=1,
+                    include_user_team_as_target=True,
+                    execute_cpu_cpu=True,
+                    current_date=window.end_date,
+                )
+                mark_timing("trade_market", started)
+                if trade_result.get("skipped"):
+                    trade_market_note = f" CPU trade market skipped: {trade_result.get('skip_reason')}."
+                else:
+                    counts = trade_result.get("counts") or {}
+                    trade_market_note = (
+                        " CPU trade market generated "
+                        f"{int(counts.get('generated', 0))} proposal(s), "
+                        f"{int(counts.get('executed', 0))} CPU trade(s), "
+                        f"{int(counts.get('user_pending', 0))} user offer(s)."
+                    )
+            except Exception as trade_exc:
+                timings["trade_market"] = 0.0
+                trade_market_note = f" CPU trade market skipped: {trade_exc}."
+        else:
+            timings["trade_market"] = 0.0
     else:
-        ai_gm_queued = 0
-        ai_gm_skipped = 0
         ai_gm_status = "disabled"
         scouting_note += " AI GM weekly review generation disabled."
+        timings["trade_market"] = 0.0
+    scouting_note += fa_resolve_note + trade_market_note
 
     cur = con.execute(
         """
@@ -410,9 +955,10 @@ def process_week(
             cpu_scouting_hook_status, cpu_scouting_teams, cpu_scouting_prospects_advanced,
             cpu_scouting_discoveries, ai_gm_hook_status, ai_gm_operations_queued,
             ai_gm_operations_skipped,
+            hook_timing_json,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
         """,
         (
             target_game_id,
@@ -441,6 +987,7 @@ def process_week(
             ai_gm_status,
             ai_gm_queued,
             ai_gm_skipped,
+            json_dumps(timings),
         ),
     )
     return WeeklyResult(
@@ -486,7 +1033,7 @@ def print_weekly_result(result: WeeklyResult) -> None:
             f"{result.roster_errors} errors, {result.roster_warnings} warnings"
         )
     else:
-        print("  Roster checks: skipped; limits are off")
+        print("  Roster checks: skipped or not required this week")
     if result.scouting_status == "auto_assigned":
         print(f"  Scouting: auto-assigned {result.scouting_advanced} prospect(s)")
     elif result.scouting_status != "not_run":

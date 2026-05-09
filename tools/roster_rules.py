@@ -233,6 +233,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             counts_against_practice_squad_limit, description
         )
         VALUES
+            ('Questionable', 'Questionable / Active Roster', 1, 1, 1, 0, 'Player is on the active roster but has questionable game availability.'),
+            ('Doubtful', 'Doubtful / Active Roster', 1, 1, 1, 0, 'Player is on the active roster but is unlikely to play this week.'),
+            ('Out', 'Out / Active Roster', 1, 1, 1, 0, 'Player is unavailable for the week but still occupies an active roster spot.'),
             ('Waived', 'Waived / Pending Claims', 0, 0, 0, 0, 'Player has been waived and is waiting for waiver claims to process.')
         ON CONFLICT(status_code) DO UPDATE SET
             display_name = excluded.display_name,
@@ -1857,6 +1860,21 @@ def player_is_international_pathway(player: sqlite3.Row | dict[str, object]) -> 
         return False
 
 
+def active_contract_aav(con: sqlite3.Connection, player_id: int) -> int:
+    row = con.execute(
+        """
+        SELECT COALESCE(aav, 0) AS aav
+        FROM contracts
+        WHERE player_id = ?
+          AND COALESCE(is_active, 1) = 1
+        ORDER BY contract_id DESC
+        LIMIT 1
+        """,
+        (player_id,),
+    ).fetchone()
+    return int(row["aav"] or 0) if row else 0
+
+
 def practice_squad_bucket(player: sqlite3.Row | dict[str, object]) -> tuple[str, str]:
     years_exp = row_int(player, "years_exp", 0)
     is_rookie = row_int(player, "is_rookie", 0)
@@ -1982,6 +2000,12 @@ def practice_squad_eligibility(
         blockers.append(f"Practice squads are not enabled during {rule_set['phase']}.")
     if player["status"] == "Retired":
         blockers.append("Retired players cannot be assigned.")
+    if active_contract_aav(con, int(player["player_id"])) >= 2_500_000 and row_int(player, "years_exp", 0) >= 3:
+        blockers.append("Veteran contract is too expensive for a realistic practice-squad stash.")
+    if row_int(player, "overall", 0) >= 70:
+        blockers.append("Current rating is too high for a realistic practice-squad stash.")
+    if row_int(player, "age", 0) >= 30 and row_int(player, "overall", 0) >= 65:
+        blockers.append("Established veteran should be kept active or released, not stashed on the practice squad.")
     if player["status"] == "Active":
         reasons.append("Would need to be waived/cut down first and could be claimed before signing to the practice squad.")
     if already_current:

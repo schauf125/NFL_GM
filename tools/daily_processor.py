@@ -46,8 +46,8 @@ KEY_REMINDER_EVENTS = {
 }
 
 AI_GM_EVENT_PHASES = {
-    "SIM_YEAR_START": "offseason_extensions",
-    "POST_SUPER_BOWL_OFFSEASON_START": "offseason_extensions",
+    "SIM_YEAR_START": "free_agency",
+    "POST_SUPER_BOWL_OFFSEASON_START": "free_agency",
     "FRANCHISE_TAG_WINDOW_OPENS": "offseason_extensions",
     "FRANCHISE_TAG_DEADLINE": "offseason_extensions",
     "FIFTH_YEAR_OPTION_DEADLINE": "offseason_extensions",
@@ -181,6 +181,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     return con
+
+
+def table_exists(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
 
 
 def parse_date(value: str) -> date:
@@ -460,6 +468,7 @@ def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sql
     phase = AI_GM_EVENT_PHASES.get(str(event["event_code"]))
     if not phase:
         return None
+    apply_mode = phase in {"free_agency", "weekly_roster", "roster_cutdown"}
     try:
         result = ai_gm.run_daily_autonomy(
             con,
@@ -470,7 +479,7 @@ def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sql
             include_low=False,
             limit=128,
             persist=True,
-            apply_mode=False,
+            apply_mode=apply_mode,
             include_user_team=False,
             mode_override=None,
             max_players=18,
@@ -483,11 +492,80 @@ def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sql
     counts = result.get("counts") or {}
     return (
         f"AI GM review hook ({phase}): "
+        f"{int(counts.get('applied', 0))} applied, "
         f"{review_items} review item(s), "
         f"{int(counts.get('planned', 0))} planned, "
         f"{int(counts.get('enqueued', 0))} queued, "
         f"{int(counts.get('skipped', 0))} skipped."
     )
+
+
+def active_injury_pressure_teams(con: sqlite3.Connection) -> list[sqlite3.Row]:
+    if not table_exists(con, "active_player_injuries"):
+        return []
+    return con.execute(
+        """
+        SELECT
+            t.team_id,
+            t.abbreviation,
+            COUNT(DISTINCT p.player_id) AS injured_players,
+            MAX(COALESCE(api.expected_games, 0)) AS max_expected_games
+        FROM active_player_injuries api
+        JOIN players p ON p.player_id = api.player_id
+        JOIN teams t ON t.team_id = p.team_id
+        WHERE api.resolved_at IS NULL
+          AND api.status IN ('Questionable', 'Doubtful', 'Out', 'IR', 'PUP', 'NFI')
+          AND COALESCE(p.status, 'Active') NOT IN ('Free Agent', 'Retired')
+        GROUP BY t.team_id, t.abbreviation
+        HAVING injured_players >= 1
+        ORDER BY max_expected_games DESC, injured_players DESC, t.abbreviation
+        """
+    ).fetchall()
+
+
+def run_ai_gm_injury_reactions(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    target_date: str,
+    phase: sqlite3.Row,
+) -> tuple[str, int, int, int]:
+    if not int(phase["transactions_open"] or 0):
+        return "transactions_closed", 0, 0, 0
+    teams = active_injury_pressure_teams(con)
+    if not teams:
+        return "no_active_injuries", 0, 0, 0
+
+    applied = 0
+    planned = 0
+    skipped = 0
+    for team in teams:
+        try:
+            result = ai_gm.run_daily_autonomy(
+                con,
+                game_id=game_id,
+                team_abbr=str(team["abbreviation"]),
+                all_teams=False,
+                phase="weekly_roster",
+                include_low=False,
+                limit=8,
+                persist=True,
+                apply_mode=True,
+                include_user_team=False,
+                mode_override=None,
+                max_players=12,
+                max_free_agents=12,
+                current_date=target_date,
+            )
+        except Exception:
+            skipped += 1
+            continue
+        counts = result.get("counts") or {}
+        applied += int(counts.get("applied", 0))
+        planned += int(counts.get("planned", 0))
+        skipped += int(counts.get("skipped", 0))
+    status = "applied" if applied else "planned" if planned else "no_new_ops"
+    return status, applied, planned, skipped
 
 
 def process_calendar_events(con: sqlite3.Connection, game_id: str, target_date: str) -> tuple[int, int]:
@@ -700,6 +778,12 @@ def process_date(
         phase,
     )
     injuries_resolved = injury_model.resolve_available_injuries(con, target_date)
+    ai_gm_status, ai_gm_applied, ai_gm_planned, ai_gm_skipped = run_ai_gm_injury_reactions(
+        con,
+        game_id=game_id,
+        target_date=target_date,
+        phase=phase,
+    )
     alerts = event_alerts + reminder_alerts + roster_alerts
 
     cur = con.execute(
@@ -730,7 +814,10 @@ def process_date(
             roster_errors,
             roster_warnings,
             injuries_resolved,
-            "enabled",
+            (
+                f"injury_reaction_{ai_gm_status}"
+                f": applied={ai_gm_applied}, planned={ai_gm_planned}, skipped={ai_gm_skipped}"
+            ),
             "enabled",
         ),
     )

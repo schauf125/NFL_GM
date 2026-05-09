@@ -3080,7 +3080,6 @@ def queued_operation_exists(
         FROM ai_gm_decision_queue
         WHERE game_id = ?
           AND team_id = ?
-          AND decision_date = ?
           AND decision_type = ?
           AND status IN ('queued', 'running')
           AND context_json LIKE ?
@@ -3090,7 +3089,6 @@ def queued_operation_exists(
         (
             game_id,
             team_id,
-            decision_date,
             decision_type,
             f'%"operation_key": "{operation_key}"%',
         ),
@@ -4575,6 +4573,29 @@ def open_review_item_for_operation(
     ).fetchone()
 
 
+def existing_review_should_block_autonomy(
+    *,
+    existing_review: sqlite3.Row | None,
+    operation_type: str,
+    risk_tier: str,
+    autonomy_mode: str,
+) -> bool:
+    if not existing_review:
+        return False
+    lifecycle = str(existing_review["lifecycle_status"] or "")
+    if lifecycle not in {"pending_review", "approved", "blocked"}:
+        return False
+    # Recurring weekly housekeeping should not create a new item every week while
+    # the previous recommendation is still open. Full CPU control can still
+    # auto-apply fresh deterministic roster/FA plans, but unresolved advisory
+    # queues for these low-action items should be reused instead of duplicated.
+    if operation_type in {"practice_squad_priorities", "trade_block_review", "free_agent_shortlist"}:
+        return True
+    if autonomy_mode == "full_cpu_control" and risk_tier != "high":
+        return False
+    return True
+
+
 def review_item_commands(row: sqlite3.Row | dict[str, Any]) -> list[str]:
     item = dict(row)
     artifact_type = item.get("artifact_type")
@@ -5528,8 +5549,12 @@ def run_daily_autonomy(
             team_id=team_id,
             operation_type=str(operation["operation_type"]),
         ) if persist else None
-        existing_review_blocks = existing_review and not (
-            settings.mode == "full_cpu_control" and risk_tier_for_operation(operation) != "high"
+        risk_tier = risk_tier_for_operation(operation)
+        existing_review_blocks = existing_review_should_block_autonomy(
+            existing_review=existing_review,
+            operation_type=str(operation["operation_type"]),
+            risk_tier=risk_tier,
+            autonomy_mode=settings.mode,
         )
         if existing_review_blocks:
             operation_results.append(
@@ -5540,7 +5565,7 @@ def run_daily_autonomy(
                     "operation_type": operation["operation_type"],
                     "decision_type": operation["decision_type"],
                     "priority": operation["priority"],
-                    "risk_tier": risk_tier_for_operation(operation),
+                    "risk_tier": risk_tier,
                     "autonomy_mode": settings.mode,
                     "summary": operation.get("summary"),
                     "status": "skipped_existing_review",

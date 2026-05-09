@@ -153,6 +153,37 @@ MINIMUM_AAV_RATIO_BY_TIER = {
     "Camp": 0.55,
 }
 
+POST_DRAFT_ASK_DISCOUNT_BY_TIER = {
+    "Premium": 0.84,
+    "Starter": 0.80,
+    "Rotation": 0.76,
+    "Depth": 0.72,
+    "Camp": 0.70,
+}
+
+POST_DRAFT_MINIMUM_RATIO_BY_TIER = {
+    "Premium": 0.62,
+    "Starter": 0.58,
+    "Rotation": 0.52,
+    "Depth": 0.48,
+    "Camp": 0.46,
+}
+
+POSITION_OLD_AGE = {
+    "QB": 36,
+    "RB": 29,
+    "TE": 31,
+    "WR": 30,
+    "CB": 30,
+    "S": 31,
+    "LB": 31,
+    "EDGE": 31,
+    "IDL": 32,
+    "OT": 32,
+    "IOL": 32,
+    "ST": 34,
+}
+
 
 def round_to(value: float, increment: int = 50_000) -> int:
     return int(round(value / increment) * increment)
@@ -420,7 +451,30 @@ def current_setting(con: sqlite3.Connection, key: str) -> str | None:
         "SELECT setting_value FROM game_settings WHERE setting_key = ?",
         (key,),
     ).fetchone()
-    return str(row["setting_value"]) if row else None
+    if row:
+        return str(row["setting_value"])
+    if key in {"current_game_date", "current_league_year", "active_game_id"} and table_exists(con, "active_game_save_view"):
+        column = {
+            "current_game_date": "current_date",
+            "current_league_year": "current_league_year",
+            "active_game_id": "game_id",
+        }[key]
+        active = con.execute(f"SELECT {column} FROM active_game_save_view LIMIT 1").fetchone()
+        if active and active[column] is not None:
+            return str(active[column])
+    return None
+
+
+def current_game_date_value(con: sqlite3.Connection) -> str | None:
+    values: list[str] = []
+    setting = current_setting(con, "current_game_date")
+    if setting:
+        values.append(setting)
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute("SELECT current_date FROM active_game_save_view LIMIT 1").fetchone()
+        if row and row["current_date"]:
+            values.append(str(row["current_date"]))
+    return max(values) if values else None
 
 
 def default_league_year(con: sqlite3.Connection) -> int:
@@ -428,10 +482,12 @@ def default_league_year(con: sqlite3.Connection) -> int:
     if contract_year:
         return int(contract_year)
     sim_year = int(current_setting(con, "current_league_year") or current_setting(con, "current_season") or 2026)
-    current_date = current_setting(con, "current_game_date")
+    current_date = current_game_date_value(con)
     if current_date:
         parsed = parse_date(current_date)
-        if parsed.month <= 5:
+        phase = current_calendar_phase(con)
+        phase_code = str(row_value(phase, "phase_code", "") or "") if phase else ""
+        if parsed.month <= 5 and phase_code not in {"REGULAR_SEASON", "POSTSEASON"}:
             return sim_year + 1
     return sim_year
 
@@ -605,19 +661,78 @@ def market_age_factor(group: str, tier: str, age: int | None) -> float:
     return 1.0
 
 
-def adjusted_market_prices(row: sqlite3.Row, league_year: int) -> tuple[int, int]:
+def normalized_group(row: sqlite3.Row | dict[str, Any]) -> str:
+    group = str(row_value(row, "position_group", row_value(row, "position", "UNK")) or "UNK").upper()
+    if group in {"K", "P", "LS"}:
+        return "ST"
+    return group
+
+
+def normalized_tier(row: sqlite3.Row | dict[str, Any]) -> str:
+    tier = str(row_value(row, "market_tier", "Depth") or "Depth").title()
+    if tier in {"Core", "Franchise"}:
+        return "Premium"
+    return tier
+
+
+def is_post_draft_market_context(con: sqlite3.Connection, league_year: int) -> bool:
+    phase = current_calendar_phase(con)
+    phase_code = str(row_value(phase, "phase_code", "") or "") if phase else ""
+    current_date = current_game_date_value(con)
+    if phase_code in {"OFFSEASON_OPEN", "CAMP_REPORTING", "TRAINING_CAMP", "FINAL_CUTDOWN", "REGULAR_SEASON"}:
+        return True
+    if current_date and current_date >= f"{league_year}-05-01":
+        return True
+    return False
+
+
+def veteran_floor_aav(row: sqlite3.Row | dict[str, Any], *, post_draft: bool) -> int:
+    if not post_draft:
+        return 840_000
+    group = normalized_group(row)
+    tier = normalized_tier(row)
+    age_value = row_value(row, "age")
+    age = int(age_value) if age_value is not None else None
+    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    if age is None or age < POSITION_OLD_AGE.get(group, 31) or score < 64:
+        return 840_000
+    if tier == "Premium":
+        base = 5_000_000
+    elif tier == "Starter":
+        base = 3_200_000
+    elif tier == "Rotation":
+        base = 1_600_000
+    else:
+        base = 1_000_000
+    group_multiplier = {
+        "QB": 1.60,
+        "OT": 1.25,
+        "EDGE": 1.20,
+        "IDL": 1.10,
+        "WR": 1.05,
+        "CB": 1.05,
+        "IOL": 1.00,
+        "TE": 0.95,
+        "S": 0.90,
+        "LB": 0.88,
+        "RB": 0.72,
+        "ST": 0.55,
+    }.get(group, 0.90)
+    score_multiplier = 1.0 + clamp((score - 70) * 0.035, -0.15, 0.55)
+    age_penalty = 1.0 - max(0, age - POSITION_OLD_AGE.get(group, 31)) * 0.035
+    floor = base * group_multiplier * score_multiplier * clamp(age_penalty, 0.70, 1.0)
+    return max(840_000, round_to(floor, 100_000))
+
+
+def adjusted_market_prices(row: sqlite3.Row, league_year: int, *, post_draft: bool = False) -> tuple[int, int]:
     """Return current open-market asking/minimum AAV for an offseason FA.
 
     The seeded profile is the baseline personality/market expectation, but the
     actual offseason market should run hotter than a summer street-FA list.
     """
     player_id = int(row["player_id"])
-    tier = str(row_value(row, "market_tier", "Depth") or "Depth").title()
-    if tier in {"Core", "Franchise"}:
-        tier = "Premium"
-    group = str(row_value(row, "position_group", row_value(row, "position", "UNK")) or "UNK").upper()
-    if group in {"K", "P", "LS"}:
-        group = "ST"
+    tier = normalized_tier(row)
+    group = normalized_group(row)
     age = int(row["age"]) if row["age"] is not None else None
     score = int(row_value(row, "market_score", 60) or 60)
     profile_ask = max(915_000, int(row_value(row, "asking_aav", 1_500_000) or 1_500_000))
@@ -627,7 +742,7 @@ def adjusted_market_prices(row: sqlite3.Row, league_year: int) -> tuple[int, int
     group_multiplier = MARKET_GROUP_MULTIPLIERS.get(group, 1.03)
     score_multiplier = 1.0 + clamp((score - 72) * 0.012, -0.08, 0.18)
     age_factor = market_age_factor(group, tier, age)
-    jitter = clamp(random.Random(f"fa-market:{league_year}:{player_id}").gauss(1.0, 0.035), 0.92, 1.10)
+    jitter = clamp(random.Random(f"fa-market:{league_year}:{player_id}:{'post' if post_draft else 'open'}").gauss(1.0, 0.035), 0.92, 1.10)
 
     floor = MARKET_GROUP_TIER_FLOORS.get(
         (tier, group),
@@ -635,9 +750,18 @@ def adjusted_market_prices(row: sqlite3.Row, league_year: int) -> tuple[int, int
     )
     floor = int(floor * age_factor)
     adjusted_ask = profile_ask * tier_multiplier * group_multiplier * score_multiplier * age_factor * jitter
-    asking = max(profile_ask, floor, round_to(adjusted_ask, 100_000))
-    minimum_ratio = MINIMUM_AAV_RATIO_BY_TIER.get(tier, 0.60)
-    minimum = max(profile_min, round_to(asking * minimum_ratio, 100_000), 840_000)
+    if post_draft:
+        discount = POST_DRAFT_ASK_DISCOUNT_BY_TIER.get(tier, 0.74)
+        discount *= clamp(random.Random(f"fa-street:{league_year}:{player_id}").gauss(1.0, 0.045), 0.90, 1.08)
+        floor = round_to(max(veteran_floor_aav(row, post_draft=True), int(floor * 0.82)), 100_000)
+        asking = round_to(max(floor, adjusted_ask * discount), 100_000)
+        minimum_ratio = POST_DRAFT_MINIMUM_RATIO_BY_TIER.get(tier, 0.50)
+        minimum_floor = max(840_000, veteran_floor_aav(row, post_draft=True), int(profile_min * 0.72))
+        minimum = max(minimum_floor, round_to(asking * minimum_ratio, 100_000))
+    else:
+        asking = max(profile_ask, floor, round_to(adjusted_ask, 100_000))
+        minimum_ratio = MINIMUM_AAV_RATIO_BY_TIER.get(tier, 0.60)
+        minimum = max(profile_min, round_to(asking * minimum_ratio, 100_000), 840_000)
     return int(asking), int(min(minimum, asking))
 
 
@@ -692,9 +816,10 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
         """
     ).fetchall()
 
+    post_draft_market = is_post_draft_market_context(con, league_year)
     inserted = 0
     for row in rows:
-        asking_aav, minimum_aav = adjusted_market_prices(row, league_year)
+        asking_aav, minimum_aav = adjusted_market_prices(row, league_year, post_draft=post_draft_market)
         heat = market_heat_for(
             str(row["market_tier"]),
             asking_aav,
@@ -749,10 +874,209 @@ def current_period(con: sqlite3.Connection, league_year: int) -> sqlite3.Row | N
     ).fetchone()
 
 
+def league_year_start_date(league_year: int) -> date:
+    return parse_date(default_start_date(league_year))
+
+
+def close_elapsed_period_if_needed(con: sqlite3.Connection, league_year: int) -> bool:
+    """Close an old FA period once the next league year's market has opened."""
+    current_date = current_game_date_value(con)
+    if not current_date:
+        return False
+    try:
+        parsed = parse_date(current_date)
+    except ValueError:
+        return False
+    if parsed < league_year_start_date(league_year + 1):
+        return False
+    period = current_period(con, league_year)
+    if not period or period["status"] != "active":
+        return False
+    con.execute(
+        """
+        UPDATE free_agency_periods
+        SET status = 'completed',
+            current_stage = 'closed',
+            "current_date" = ?,
+            current_hour = 12,
+            completed_at = COALESCE(completed_at, datetime('now')),
+            updated_at = datetime('now'),
+            notes = COALESCE(notes || ' ', '') || ?
+        WHERE league_year = ?
+        """,
+        (
+            current_date,
+            "Closed automatically because the next league year has begun.",
+            league_year,
+        ),
+    )
+    con.execute(
+        """
+        UPDATE free_agency_offers
+        SET status = 'expired',
+            decided_date = ?,
+            decided_hour = NULL,
+            notes = COALESCE(notes || ' | ', '') || 'Expired when FA period closed.',
+            updated_at = datetime('now')
+        WHERE league_year = ?
+          AND status = 'pending'
+        """,
+        (current_date, league_year),
+    )
+    log_event(
+        con,
+        league_year=league_year,
+        event_date=current_date,
+        event_hour=None,
+        event_type="period_auto_closed",
+        message="Free agency period closed automatically because the next league year has begun.",
+    )
+    return True
+
+
+def reconcile_market_state(con: sqlite3.Connection, league_year: int, *, stale_offer_days: int = 14) -> dict[str, int]:
+    current_date = current_setting(con, "current_game_date")
+    result = {"rostered_markets": 0, "stale_offers": 0, "closed_period": 0}
+    if close_elapsed_period_if_needed(con, league_year):
+        result["closed_period"] = 1
+
+    cur = con.execute(
+        """
+        UPDATE free_agency_player_markets
+        SET status = 'rostered',
+            signed_team_id = COALESCE(signed_team_id, (SELECT team_id FROM players WHERE players.player_id = free_agency_player_markets.player_id)),
+            decision_notes = COALESCE(decision_notes, 'Removed from market because player is already rostered.'),
+            updated_at = datetime('now')
+        WHERE league_year = ?
+          AND status = 'available'
+          AND EXISTS (
+              SELECT 1
+              FROM players p
+              WHERE p.player_id = free_agency_player_markets.player_id
+                AND p.team_id IS NOT NULL
+                AND COALESCE(p.status, '') <> 'Retired'
+          )
+        """,
+        (league_year,),
+    )
+    result["rostered_markets"] = int(cur.rowcount or 0)
+
+    if current_date:
+        cur = con.execute(
+            """
+            UPDATE free_agency_offers
+            SET status = 'expired',
+                decided_date = ?,
+                decided_hour = NULL,
+                notes = COALESCE(notes || ' | ', '') || 'Expired after sitting pending too long.',
+                updated_at = datetime('now')
+            WHERE league_year = ?
+              AND status = 'pending'
+              AND julianday(?) - julianday(submitted_date) >= ?
+            """,
+            (current_date, league_year, current_date, stale_offer_days),
+        )
+        result["stale_offers"] = int(cur.rowcount or 0)
+    return result
+
+
+def current_calendar_phase(con: sqlite3.Connection) -> sqlite3.Row | None:
+    current_date = current_game_date_value(con)
+    if not current_date or not table_exists(con, "league_phase_windows"):
+        return None
+    return con.execute(
+        """
+        SELECT *
+        FROM league_phase_windows
+        WHERE ? BETWEEN start_date AND end_date
+        ORDER BY league_year DESC, sort_order DESC
+        LIMIT 1
+        """,
+        (current_date,),
+    ).fetchone()
+
+
+def can_auto_open_street_market(con: sqlite3.Connection, league_year: int) -> bool:
+    if league_year != default_league_year(con):
+        return False
+    phase = current_calendar_phase(con)
+    if not phase:
+        return False
+    if int(row_value(phase, "transactions_open", 0) or 0) != 1:
+        return False
+    return str(row_value(phase, "phase_code", "") or "") != "POST_SUPER_BOWL_OFFSEASON"
+
+
+def auto_open_street_market(con: sqlite3.Connection, league_year: int) -> sqlite3.Row | None:
+    if not can_auto_open_street_market(con, league_year):
+        return None
+    current_date = current_game_date_value(con) or date_text(date(league_year, 6, 1))
+    ensure_market(con, league_year)
+    con.execute(
+        """
+        INSERT INTO free_agency_periods (
+            league_year, status, current_stage, "current_date", current_hour,
+            day_count, first_day_start_hour, first_day_end_hour,
+            started_at, updated_at, notes
+        )
+        VALUES (?, 'active', 'daily', ?, 12, 1, 12, 20, datetime('now'), datetime('now'), ?)
+        ON CONFLICT(league_year) DO UPDATE SET
+            status = 'active',
+            current_stage = CASE
+                WHEN free_agency_periods.current_stage IS NULL THEN 'daily'
+                ELSE free_agency_periods.current_stage
+            END,
+            "current_date" = ?,
+            completed_at = NULL,
+            updated_at = datetime('now'),
+            notes = COALESCE(free_agency_periods.notes, excluded.notes)
+        """,
+        (
+            league_year,
+            current_date,
+            "Auto-opened street free agency during the open transaction calendar window.",
+            current_date,
+        ),
+    )
+    log_event(
+        con,
+        league_year=league_year,
+        event_date=current_date,
+        event_hour=None,
+        event_type="period_auto_opened",
+        message="Street free agency auto-opened from the current league calendar window.",
+    )
+    return current_period(con, league_year)
+
+
 def active_period(con: sqlite3.Connection, league_year: int) -> sqlite3.Row:
+    reconcile_market_state(con, league_year)
     row = current_period(con, league_year)
     if not row or row["status"] != "active":
+        row = auto_open_street_market(con, league_year)
+    if not row or row["status"] != "active":
         raise ValueError(f"Free agency is not active for {league_year}. Run start first.")
+    current_game_date = current_game_date_value(con)
+    if current_game_date and can_auto_open_street_market(con, league_year):
+        try:
+            period_date = parse_date(str(row["current_date"]))
+            game_date = parse_date(str(current_game_date))
+        except ValueError:
+            period_date = game_date = None
+        if period_date and game_date and game_date > period_date:
+            con.execute(
+                """
+                UPDATE free_agency_periods
+                SET current_stage = 'daily',
+                    "current_date" = ?,
+                    current_hour = 12,
+                    updated_at = datetime('now')
+                WHERE league_year = ?
+                  AND status = 'active'
+                """,
+                (date_text(game_date), league_year),
+            )
+            row = current_period(con, league_year)
     return row
 
 
@@ -896,14 +1220,15 @@ def cpu_aav_bounds(
 
 
 def no_interest_decay_rate(row: sqlite3.Row, *, opening_phase_ended: bool, days: int) -> float:
-    tier = str(row_value(row, "market_tier", "Depth") or "Depth").title()
-    group = str(row_value(row, "position_group", row_value(row, "position", "UNK")) or "UNK").upper()
-    if group in {"K", "P", "LS"}:
-        group = "ST"
+    tier = normalized_tier(row)
+    group = normalized_group(row)
     age = int(row["age"]) if row["age"] is not None else None
 
     rate = 0.055 if opening_phase_ended else 0.024
     rate += max(0, days - 1) * 0.010
+    stage = str(row_value(row, "period_stage", "") or "")
+    if stage == "daily":
+        rate += 0.012
     if tier == "Premium":
         rate *= 0.80
     elif tier == "Starter":
@@ -927,7 +1252,97 @@ def no_interest_decay_rate(row: sqlite3.Row, *, opening_phase_ended: bool, days:
         elif group in {"EDGE", "IDL", "OT", "IOL"}:
             if age >= 31:
                 rate *= 1.18
-    return clamp(rate, 0.012, 0.150)
+    patience = int(row_value(row, "patience", 8) or 8)
+    rate *= 1.0 + clamp((10 - patience) * 0.025, -0.18, 0.18)
+    player_id = int(row_value(row, "player_id", 0) or 0)
+    league_year = int(row_value(row, "league_year", 0) or 0)
+    jitter = random.Random(f"fa-decay:{league_year}:{player_id}:{days}:{stage}").uniform(0.82, 1.22)
+    return clamp(rate * jitter, 0.010, 0.170)
+
+
+def retirement_probability_for_no_interest(row: sqlite3.Row, *, days: int) -> float:
+    tier = normalized_tier(row)
+    group = normalized_group(row)
+    age_value = row_value(row, "age")
+    if age_value is None:
+        return 0.0
+    age = int(age_value)
+    old_age = POSITION_OLD_AGE.get(group, 31)
+    if age < old_age + 1:
+        return 0.0
+    score = int(row_value(row, "market_score", 60) or 60)
+    total_offers = int(row_value(row, "total_offers", 0) or 0)
+    if total_offers > 0:
+        return 0.0
+    weeks_on_market = max(0.0, (int(row_value(row, "day_count", 1) or 1) + max(0, days - 1)) / 7.0)
+    base = 0.010 + max(0, age - old_age) * 0.010 + weeks_on_market * 0.010
+    if tier == "Premium":
+        base *= 0.45
+    elif tier == "Starter":
+        base *= 0.75
+    elif tier in {"Depth", "Camp"}:
+        base *= 1.45
+    if group == "RB":
+        base *= 1.45
+    elif group in {"QB", "OT", "K", "P", "ST"}:
+        base *= 0.60
+    if score >= 76:
+        base *= 0.55
+    elif score < 63:
+        base *= 1.35
+    patience = int(row_value(row, "patience", 8) or 8)
+    base *= 1.0 + clamp((8 - patience) * 0.045, -0.20, 0.30)
+    return clamp(base, 0.0, 0.18)
+
+
+def retire_no_interest_free_agents(
+    con: sqlite3.Connection,
+    period: sqlite3.Row,
+    rows: list[sqlite3.Row],
+    *,
+    days: int,
+) -> int:
+    retired = 0
+    event_date, event_hour = event_time(period)
+    for row in rows:
+        probability = retirement_probability_for_no_interest(row, days=max(1, days))
+        if probability <= 0:
+            continue
+        player_id = int(row["player_id"])
+        rng = random.Random(f"fa-retire:{period['league_year']}:{player_id}:{period['current_date']}:{row_value(row, 'day_count', 1)}")
+        if rng.random() >= probability:
+            continue
+        con.execute(
+            """
+            UPDATE free_agency_player_markets
+            SET status = 'retired',
+                decision_notes = COALESCE(decision_notes || ' | ', '') || ?,
+                updated_at = datetime('now')
+            WHERE league_year = ?
+              AND player_id = ?
+              AND status = 'available'
+            """,
+            (
+                f"Retired after a quiet post-draft market; retirement probability {probability:.0%}.",
+                int(period["league_year"]),
+                player_id,
+            ),
+        )
+        con.execute(
+            "UPDATE players SET status = 'Retired' WHERE player_id = ? AND team_id IS NULL",
+            (player_id,),
+        )
+        log_event(
+            con,
+            league_year=int(period["league_year"]),
+            event_date=event_date,
+            event_hour=event_hour,
+            event_type="player_retired_market",
+            player_id=player_id,
+            message=f"{row['player_name']} retired after drawing little post-draft interest.",
+        )
+        retired += 1
+    return retired
 
 
 def apply_no_interest_demand_decay(
@@ -936,7 +1351,7 @@ def apply_no_interest_demand_decay(
     *,
     hours: int = 0,
     days: int = 0,
-) -> int:
+) -> tuple[int, int]:
     opening_phase_ended = False
     if period["current_stage"] == "day_one_hourly":
         if hours and int(period["current_hour"]) + hours > int(period["first_day_end_hour"]):
@@ -944,7 +1359,7 @@ def apply_no_interest_demand_decay(
         elif days:
             opening_phase_ended = True
     if not opening_phase_ended and days <= 0:
-        return 0
+        return 0, 0
 
     rows = con.execute(
         """
@@ -956,8 +1371,12 @@ def apply_no_interest_demand_decay(
             m.asking_aav,
             m.minimum_aav,
             m.market_heat,
+            m.patience,
+            ? AS period_stage,
+            ? AS day_count,
             p.position,
             p.age,
+            p.first_name || ' ' || p.last_name AS player_name,
             COALESCE(score.role_score, p.overall, 60) AS market_score,
             COALESCE(profile.minimum_aav, 840000) AS profile_minimum_aav,
             COALESCE(offers.total_offers, 0) AS total_offers,
@@ -986,10 +1405,11 @@ def apply_no_interest_demand_decay(
           AND m.status = 'available'
           AND COALESCE(offers.total_offers, 0) = 0
         """,
-        (period["league_year"],),
+        (period["current_stage"], int(period["day_count"] or 1), period["league_year"]),
     ).fetchall()
 
     changed = 0
+    post_draft_market = is_post_draft_market_context(con, int(period["league_year"]))
     for row in rows:
         old_ask = int(row["asking_aav"] or 0)
         old_min = int(row["minimum_aav"] or 0)
@@ -997,8 +1417,9 @@ def apply_no_interest_demand_decay(
             continue
         rate = no_interest_decay_rate(row, opening_phase_ended=opening_phase_ended, days=max(1, days))
         profile_minimum = max(840_000, int(row["profile_minimum_aav"] or 840_000))
-        new_ask = max(profile_minimum, round_to(old_ask * (1.0 - rate), 100_000))
-        new_minimum = max(profile_minimum, round_to(old_min * (1.0 - rate * 0.85), 100_000))
+        floor = max(veteran_floor_aav(row, post_draft=post_draft_market), int(profile_minimum * (0.72 if post_draft_market else 1.0)))
+        new_ask = max(floor, round_to(old_ask * (1.0 - rate), 100_000))
+        new_minimum = max(floor, round_to(old_min * (1.0 - rate * 0.90), 100_000))
         new_minimum = min(new_minimum, new_ask)
         if new_ask >= old_ask and new_minimum >= old_min:
             continue
@@ -1029,7 +1450,8 @@ def apply_no_interest_demand_decay(
             ),
         )
         changed += 1
-    return changed
+    retired = retire_no_interest_free_agents(con, period, rows, days=max(1, days))
+    return changed, retired
 
 
 def guarantee_for_preference(player: sqlite3.Row, base_guarantee: int, rng: random.Random) -> int:
@@ -2160,6 +2582,7 @@ def advance_period_clock(con: sqlite3.Connection, period: sqlite3.Row, *, days: 
 
 def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: int = 0, days: int = 0) -> dict[str, int]:
     ensure_schema(con)
+    cleanup = reconcile_market_state(con, args.league_year)
     period = active_period(con, args.league_year)
     if days and period["current_stage"] == "day_one_hourly" and not args.force:
         raise ValueError("Day 1 is still in hourly mode. Use advance-hour, or pass --force to jump to daily.")
@@ -2171,7 +2594,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         limit=args.signing_limit,
         write_cap_snapshot=not getattr(args, "no_cap_snapshot", False),
     )
-    demand_drops = apply_no_interest_demand_decay(con, period, days=days, hours=hours)
+    demand_drops, retirements = apply_no_interest_demand_decay(con, period, days=days, hours=hours)
     advance_period_clock(con, period, days=days, hours=hours)
     fresh_period = active_period(con, args.league_year)
     log_event(
@@ -2180,7 +2603,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         event_date=str(fresh_period["current_date"]),
         event_hour=int(fresh_period["current_hour"]) if fresh_period["current_stage"] == "day_one_hourly" else None,
         event_type="market_advanced",
-        message=f"Free agency advanced. CPU offers: {created}. Signings: {signed}. Demand drops: {demand_drops}.",
+        message=f"Free agency advanced. CPU offers: {created}. Signings: {signed}. Demand drops: {demand_drops}. Retirements: {retirements}.",
     )
     if demand_drops:
         log_event(
@@ -2191,7 +2614,13 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
             event_type="market_demands_softened",
             message=f"{demand_drops} unsigned free agent(s) lowered asking prices after receiving no offers.",
         )
-    return {"cpu_offers": created, "signings": signed, "demand_drops": demand_drops}
+    return {
+        "cpu_offers": created,
+        "signings": signed,
+        "demand_drops": demand_drops,
+        "retirements": retirements,
+        **cleanup,
+    }
 
 
 def board_rows(con: sqlite3.Connection, league_year: int, limit: int, position: str | None = None) -> list[sqlite3.Row]:
@@ -2214,6 +2643,7 @@ def board_rows(con: sqlite3.Connection, league_year: int, limit: int, position: 
 
 def export_ui_data(con: sqlite3.Connection, league_year: int) -> dict[str, Any]:
     ensure_schema(con)
+    reconcile_market_state(con, league_year)
     period = current_period(con, league_year)
     offers = con.execute(
         """
@@ -2343,7 +2773,7 @@ def action_advance_hour(args: argparse.Namespace) -> None:
     print(
         f"Advanced one free-agency hour ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result['signings']} signing(s), "
-        f"{result['demand_drops']} demand drop(s)."
+        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
     )
 
 
@@ -2353,7 +2783,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
     print(
         f"Advanced {args.days} free-agency day(s) ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result['signings']} signing(s), "
-        f"{result['demand_drops']} demand drop(s)."
+        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
     )
 
 

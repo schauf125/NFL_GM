@@ -353,6 +353,48 @@ def current_phase(con: sqlite3.Connection) -> str:
     return row["setting_value"] if row else "Preseason"
 
 
+def trade_market_open(con: sqlite3.Connection, *, season: int, current_date: str | None = None) -> tuple[bool, str]:
+    check_date = current_date or today(con)
+    phase = None
+    if table_exists(con, "league_phase_windows"):
+        phase = con.execute(
+            """
+            SELECT *
+            FROM league_phase_windows
+            WHERE date(?) BETWEEN date(start_date) AND date(end_date)
+            ORDER BY league_year
+            LIMIT 1
+            """,
+            (check_date,),
+        ).fetchone()
+    if phase and not int(phase["transactions_open"] or 0):
+        return False, f"transactions closed in {phase['phase_code']}"
+
+    deadline = None
+    if table_exists(con, "league_events"):
+        row = con.execute(
+            """
+            SELECT event_date
+            FROM league_events
+            WHERE league_year = ?
+              AND event_code = 'TRADE_DEADLINE'
+            ORDER BY event_date
+            LIMIT 1
+            """,
+            (season,),
+        ).fetchone()
+        if row:
+            deadline = str(row["event_date"])
+    if deadline is None:
+        deadline = f"{season}-11-15"
+    phase_code = str(phase["phase_code"] if phase else current_phase(con)).upper()
+    if phase_code in {"REGULAR_SEASON", "POSTSEASON"} and deadline and check_date > deadline:
+        return False, f"trade deadline passed on {deadline}"
+    if phase_code == "POSTSEASON":
+        return False, "postseason trade market is closed"
+    return True, "open"
+
+
 def get_team(con: sqlite3.Connection, abbreviation: str) -> sqlite3.Row:
     row = con.execute(
         "SELECT * FROM teams WHERE abbreviation = ?",
@@ -400,6 +442,47 @@ def resolve_game_id(con: sqlite3.Connection, explicit_game_id: str | None = None
         if row and row["game_id"]:
             return str(row["game_id"])
     return "master"
+
+
+def user_team_id_for_game(con: sqlite3.Connection, game_id: str | None) -> int | None:
+    if not game_id or not table_exists(con, "game_saves"):
+        return None
+    row = con.execute(
+        "SELECT user_team_id FROM game_saves WHERE game_id = ?",
+        (game_id,),
+    ).fetchone()
+    if row and row["user_team_id"] is not None:
+        return int(row["user_team_id"])
+    return None
+
+
+def active_trade_exists_for_player(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    player_id: int,
+    other_team_id: int | None = None,
+) -> bool:
+    params: list[Any] = [game_id, player_id]
+    team_filter = ""
+    if other_team_id is not None:
+        team_filter = "AND (tp.proposing_team_id = ? OR tp.receiving_team_id = ?)"
+        params.extend([other_team_id, other_team_id])
+    row = con.execute(
+        f"""
+        SELECT 1
+        FROM trade_proposals tp
+        JOIN trade_proposal_assets tpa ON tpa.proposal_id = tp.proposal_id
+        WHERE tp.game_id = ?
+          AND tp.status IN ('proposed', 'countered', 'accepted')
+          AND tpa.asset_type = 'PlayerContract'
+          AND tpa.player_id = ?
+          {team_filter}
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return row is not None
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1037,7 @@ def create_proposal(
     deadline_date: str | None = None,
     counter_to_id: int | None = None,
     proposer_note: str | None = None,
+    proposal_date: str | None = None,
 ) -> int:
     """Create a trade proposal and return the proposal_id."""
     if not proposing_assets or not receiving_assets:
@@ -984,7 +1068,7 @@ def create_proposal(
             game_id,
             proposing_team_id,
             receiving_team_id,
-            today(con),
+            proposal_date or today(con),
             prop_chart,
             recv_chart,
             prop_value,
@@ -1317,6 +1401,8 @@ def ai_gm_generate_trade_proposals(
     team_id: int,
     season: int,
     max_proposals: int = 3,
+    exclude_target_team_ids: set[int] | None = None,
+    proposal_date: str | None = None,
 ) -> list[int]:
     """Generate proactive trade proposals for an AI GM.
 
@@ -1347,6 +1433,9 @@ def ai_gm_generate_trade_proposals(
         FROM players p
         LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
         WHERE p.team_id = ?
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND p.position NOT IN ('K', 'P', 'LS')
+          AND p.overall >= 60
           AND p.overall < 78
           AND (p.age >= 29 OR p.overall < 70)
         ORDER BY p.age DESC, c.aav DESC
@@ -1372,24 +1461,29 @@ def ai_gm_generate_trade_proposals(
             break
 
         candidate_id = int(candidate["player_id"])
+        if active_trade_exists_for_player(con, game_id=game_id, player_id=candidate_id):
+            continue
         candidate_value = player_trade_value(con, candidate_id, season, chart)
         if candidate_value <= 0:
             continue
 
         # Find teams that might want this player (thin at his position)
+        excluded = set(exclude_target_team_ids or set())
+        excluded.add(team_id)
+        placeholders = ",".join("?" for _ in excluded)
         target_teams = con.execute(
-            """
+            f"""
             SELECT t.team_id, t.abbreviation,
                    COUNT(p2.player_id) AS pos_count,
                    AVG(p2.overall) AS pos_avg
             FROM teams t
             LEFT JOIN players p2 ON p2.team_id = t.team_id AND p2.position = ?
-            WHERE t.team_id != ?
+            WHERE t.team_id NOT IN ({placeholders})
             GROUP BY t.team_id
             ORDER BY pos_count ASC, pos_avg ASC
             LIMIT 5
             """,
-            (candidate["position"], team_id),
+            (candidate["position"], *sorted(excluded)),
         ).fetchall()
 
         for target in target_teams:
@@ -1397,6 +1491,13 @@ def ai_gm_generate_trade_proposals(
                 break
 
             target_id = int(target["team_id"])
+            if active_trade_exists_for_player(
+                con,
+                game_id=game_id,
+                player_id=candidate_id,
+                other_team_id=target_id,
+            ):
+                continue
             target_chart = gm_chart(con, target_id)
 
             # What can the target offer? Look for picks in the right value range
@@ -1441,11 +1542,159 @@ def ai_gm_generate_trade_proposals(
                         proposing_assets=proposing_assets,
                         receiving_assets=receiving_assets,
                         proposer_note=f"AI GM offers {candidate['name']} ({candidate['position']}, OVR {candidate['overall']}) for draft pick.",
+                        proposal_date=proposal_date,
                     )
                     proposals_created.append(pid)
                     break
 
     return proposals_created
+
+
+def ai_gm_process_trade_market(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    team_abbr: str | None = None,
+    limit_teams: int = 8,
+    max_proposals_per_team: int = 1,
+    include_user_team_as_target: bool = True,
+    execute_cpu_cpu: bool = True,
+    ignore_trade_window: bool = False,
+    current_date: str | None = None,
+) -> dict[str, Any]:
+    """Run a deterministic AI trade-market pass.
+
+    CPU teams may propose to other CPU teams or, when enabled, to the user team.
+    CPU receiving teams evaluate immediately. Accepted CPU-to-CPU deals can be
+    executed automatically; offers involving the user are left pending.
+    """
+    ensure_schema(con)
+    seed_charts(con)
+    assign_charts_to_gms(con)
+
+    window_open, window_reason = trade_market_open(con, season=season, current_date=current_date)
+    if not window_open and not ignore_trade_window:
+        return {
+            "game_id": game_id,
+            "season": season,
+            "teams_scanned": 0,
+            "generated": [],
+            "responses": [],
+            "executed": [],
+            "user_pending": [],
+            "errors": [],
+            "skipped": True,
+            "skip_reason": window_reason,
+            "counts": {
+                "generated": 0,
+                "responded": 0,
+                "accepted": 0,
+                "countered": 0,
+                "rejected": 0,
+                "executed": 0,
+                "user_pending": 0,
+                "errors": 0,
+            },
+        }
+
+    user_team_id = user_team_id_for_game(con, game_id)
+    if team_abbr:
+        teams = [get_team(con, team_abbr)]
+    else:
+        teams = con.execute(
+            """
+            SELECT t.*
+            FROM teams t
+            LEFT JOIN ai_gm_profiles p ON p.team_id = t.team_id
+            WHERE (? IS NULL OR t.team_id != ?)
+            ORDER BY
+                CASE
+                    WHEN lower(COALESCE(p.trade_aggression, '')) LIKE '%aggressive%' THEN 0
+                    WHEN lower(COALESCE(p.trade_aggression, '')) LIKE '%opportunistic%' THEN 1
+                    ELSE 2
+                END,
+                t.abbreviation
+            LIMIT ?
+            """,
+            (user_team_id, user_team_id, max(1, int(limit_teams))),
+        ).fetchall()
+
+    excluded_targets: set[int] = set()
+    if user_team_id is not None and not include_user_team_as_target:
+        excluded_targets.add(user_team_id)
+
+    generated: list[int] = []
+    responses: list[dict[str, Any]] = []
+    executed: list[int] = []
+    user_pending: list[int] = []
+    errors: list[str] = []
+
+    for team in teams:
+        team_id = int(team["team_id"])
+        if user_team_id is not None and team_id == user_team_id:
+            continue
+        try:
+            proposal_ids = ai_gm_generate_trade_proposals(
+                con,
+                game_id=game_id,
+                team_id=team_id,
+                season=season,
+                max_proposals=max(1, int(max_proposals_per_team)),
+                exclude_target_team_ids=excluded_targets,
+                proposal_date=current_date,
+            )
+        except Exception as exc:
+            errors.append(f"{team['abbreviation']}: {exc}")
+            continue
+
+        generated.extend(proposal_ids)
+        for proposal_id in proposal_ids:
+            proposal = con.execute(
+                "SELECT * FROM trade_proposals WHERE proposal_id = ?",
+                (proposal_id,),
+            ).fetchone()
+            if not proposal:
+                continue
+            receiving_team_id = int(proposal["receiving_team_id"])
+            involves_user = user_team_id is not None and (
+                int(proposal["proposing_team_id"]) == user_team_id
+                or receiving_team_id == user_team_id
+            )
+            if involves_user:
+                user_pending.append(proposal_id)
+                continue
+            try:
+                response = ai_gm_respond(con, proposal_id=proposal_id, game_id=game_id)
+                responses.append({"proposal_id": proposal_id, **response})
+                if response.get("action") == "accept" and execute_cpu_cpu:
+                    execute_trade(con, proposal_id)
+                    executed.append(proposal_id)
+            except Exception as exc:
+                errors.append(f"proposal {proposal_id}: {exc}")
+
+    return {
+        "game_id": game_id,
+        "season": season,
+        "teams_scanned": len(teams),
+        "generated": generated,
+        "responses": responses,
+        "executed": executed,
+        "user_pending": user_pending,
+        "errors": errors,
+        "skipped": False,
+        "skip_reason": None,
+        "counts": {
+            "generated": len(generated),
+            "responded": len(responses),
+            "accepted": sum(1 for item in responses if item.get("action") == "accept"),
+            "countered": sum(1 for item in responses if item.get("action") == "counter_suggestion"),
+            "rejected": sum(1 for item in responses if item.get("action") == "reject"),
+            "executed": len(executed),
+            "user_pending": len(user_pending),
+            "errors": len(errors),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1794,6 +2043,8 @@ def action_show_chart(con: sqlite3.Connection, args: argparse.Namespace) -> None
 def action_propose(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     """Create a trade proposal from CLI args."""
     ensure_schema(con)
+    seed_charts(con)
+    assign_charts_to_gms(con)
     game_id = resolve_game_id(con, args.game_id)
     proposing_team = get_team(con, args.proposing_team)
     receiving_team = get_team(con, args.receiving_team)
@@ -1971,6 +2222,8 @@ def _print_asset(a: sqlite3.Row) -> None:
 
 def action_respond(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     ensure_schema(con)
+    seed_charts(con)
+    assign_charts_to_gms(con)
     proposal = con.execute(
         "SELECT * FROM trade_proposals WHERE proposal_id = ?",
         (args.proposal_id,),
@@ -2040,6 +2293,8 @@ def action_cancel(con: sqlite3.Connection, args: argparse.Namespace) -> None:
 def action_ai_propose(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     """Have an AI GM generate proactive trade proposals."""
     ensure_schema(con)
+    seed_charts(con)
+    assign_charts_to_gms(con)
     game_id = resolve_game_id(con, args.game_id)
     team = get_team(con, args.team)
     season = current_season(con)
@@ -2059,6 +2314,55 @@ def action_ai_propose(con: sqlite3.Connection, args: argparse.Namespace) -> None
             ).fetchone()
             if p:
                 print(f"  #{pid}: {p['proposing_team']} -> {p['receiving_team']}")
+
+
+def action_ai_market(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    """Run the league AI trade market pass."""
+    game_id = resolve_game_id(con, args.game_id)
+    season = args.season or current_season(con)
+    result = ai_gm_process_trade_market(
+        con,
+        game_id=game_id,
+        season=season,
+        team_abbr=args.team,
+        limit_teams=args.limit_teams,
+        max_proposals_per_team=args.max_proposals_per_team,
+        include_user_team_as_target=not args.no_user_offers,
+        execute_cpu_cpu=not args.no_execute_cpu_cpu,
+        ignore_trade_window=args.ignore_window,
+        current_date=args.current_date,
+    )
+    if args.apply:
+        con.commit()
+        mode = "APPLY"
+    else:
+        con.rollback()
+        mode = "DRY RUN"
+    counts = result["counts"]
+    print(f"AI trade market: {mode}")
+    print(f"  Game: {result['game_id']} | season {result['season']}")
+    if result.get("skipped"):
+        print(f"  Skipped: {result.get('skip_reason')}")
+        if not args.apply:
+            print("Dry run only. Add --ignore-window to test generation outside the trade window.")
+        return
+    print(f"  Teams scanned: {result['teams_scanned']}")
+    print(
+        "  Proposals: "
+        f"{counts['generated']} generated, {counts['user_pending']} user-facing, "
+        f"{counts['accepted']} accepted, {counts['countered']} countered, "
+        f"{counts['rejected']} rejected, {counts['executed']} executed"
+    )
+    if result["generated"]:
+        print("  Generated IDs: " + ", ".join(str(pid) for pid in result["generated"][:20]))
+    if result["user_pending"]:
+        print("  User review offers: " + ", ".join(str(pid) for pid in result["user_pending"][:20]))
+    if result["errors"]:
+        print("  Errors:")
+        for err in result["errors"][:10]:
+            print(f"    - {err}")
+    if not args.apply:
+        print("Dry run only. Add --apply to persist proposals/responses/executions.")
 
 
 def action_valuate(con: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -2165,6 +2469,18 @@ def build_parser() -> argparse.ArgumentParser:
     ai_propose_parser.add_argument("--team", required=True)
     ai_propose_parser.add_argument("--max-proposals", type=int, default=3)
 
+    ai_market_parser = subparsers.add_parser("ai-market", help="Run CPU trade-market proposals, responses, and CPU-to-CPU execution.")
+    ai_market_parser.add_argument("--game-id")
+    ai_market_parser.add_argument("--season", type=int)
+    ai_market_parser.add_argument("--team", help="Optional single CPU team to scan.")
+    ai_market_parser.add_argument("--limit-teams", type=int, default=8)
+    ai_market_parser.add_argument("--max-proposals-per-team", type=int, default=1)
+    ai_market_parser.add_argument("--no-user-offers", action="store_true", help="Prevent CPU teams from proposing trades to the user team.")
+    ai_market_parser.add_argument("--no-execute-cpu-cpu", action="store_true", help="Leave accepted CPU-to-CPU trades unexecuted.")
+    ai_market_parser.add_argument("--ignore-window", action="store_true", help="Dry-test/generate even when the calendar trade window is closed.")
+    ai_market_parser.add_argument("--current-date", help="Override the date used for trade-window checks.")
+    ai_market_parser.add_argument("--apply", action="store_true", help="Persist generated trade activity.")
+
     neg_log_parser = subparsers.add_parser("neg-log", help="Show negotiation log for a proposal.")
     neg_log_parser.add_argument("--proposal-id", type=int, required=True)
 
@@ -2198,6 +2514,8 @@ def main() -> int:
             action_cancel(con, args)
         elif args.command == "ai-propose":
             action_ai_propose(con, args)
+        elif args.command == "ai-market":
+            action_ai_market(con, args)
         elif args.command == "neg-log":
             action_negotiation_log(con, args)
     finally:

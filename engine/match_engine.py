@@ -92,7 +92,7 @@ DEFENSIVE_SLOT_STARTER_RATE = {
 
 OFFENSIVE_SLOT_STARTER_RATE = {
     "QB": 0.998,
-    "RB": 0.66,
+    "RB": 0.72,
     "FB": 0.46,
     "LT": 0.992,
     "LG": 0.992,
@@ -105,6 +105,28 @@ OFFENSIVE_SLOT_STARTER_RATE = {
     "SWR": 0.74,
 }
 
+DEVELOPMENTAL_ROTATION_SLOTS = {
+    "RB",
+    "FB",
+    "TE",
+    "LWR",
+    "RWR",
+    "SWR",
+    "LEDGE",
+    "REDGE",
+    "LDL",
+    "RDL",
+    "NT",
+    "SLB",
+    "WLB",
+    "MLB",
+    "LCB",
+    "RCB",
+    "NB",
+    "FS",
+    "SS",
+}
+
 ROTATION_FATIGUE_THRESHOLDS = {
     "QB": 95,
     "LT": 92,
@@ -112,7 +134,7 @@ ROTATION_FATIGUE_THRESHOLDS = {
     "C": 94,
     "RG": 92,
     "RT": 92,
-    "RB": 24,
+    "RB": 30,
     "FB": 18,
     "TE": 38,
     "LWR": 48,
@@ -484,9 +506,9 @@ SLOT_POSITION_FALLBACKS = {
     "SLB": ["ILB", "LB", "OLB", "EDGE"],
     "LCB": ["CB"],
     "RCB": ["CB"],
-    "NB": ["CB", "SS", "FS"],
-    "FS": ["FS", "SS", "S"],
-    "SS": ["SS", "FS", "S"],
+    "NB": ["NB", "CB", "SS", "FS", "S"],
+    "FS": ["FS", "SS", "S", "CB"],
+    "SS": ["SS", "FS", "S", "CB"],
     "PK": ["K"],
     "K": ["K"],
     "KO": ["K"],
@@ -541,6 +563,10 @@ class TeamSnapshot:
     division: str
     roster: list[PlayerSnapshot]
     depth: dict[str, list[PlayerSnapshot]]
+    wins: int = 0
+    losses: int = 0
+    ties: int = 0
+    point_diff: int = 0
 
     @property
     def display_name(self) -> str:
@@ -561,6 +587,18 @@ class TeamSnapshot:
         if self.roster:
             return max(self.roster, key=lambda p: p.general_score())
         raise ValueError(f"{self.abbreviation} has no roster players available for {slot}.")
+
+    def games_played(self) -> int:
+        return int(self.wins + self.losses + self.ties)
+
+    def win_pct(self) -> float:
+        games = self.games_played()
+        if games <= 0:
+            return 0.5
+        return (self.wins + self.ties * 0.5) / games
+
+    def point_diff_per_game(self) -> float:
+        return self.point_diff / max(1, self.games_played())
 
     def unique_starters(self, slots: list[str]) -> list[PlayerSnapshot]:
         selected = []
@@ -1330,6 +1368,57 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
 
     injury_context = injury_model.injury_context_by_player(con, player_ids, as_of_date)
     active_injuries = injury_model.active_injuries_by_player(con, player_ids)
+    draft_context: dict[int, dict[str, object]] = {}
+    has_draft_context = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'draft_prospects'"
+    ).fetchone() and con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'draft_picks'"
+    ).fetchone()
+    if has_draft_context:
+        for row in con.execute(
+            f"""
+            SELECT
+                dp.player_id,
+                dpk.draft_year,
+                dpk.round AS draft_round,
+                dpk.pick_number,
+                dpk.pick_in_round,
+                dp.true_rank,
+                dp.projected_round
+            FROM draft_prospects dp
+            LEFT JOIN draft_picks dpk ON dpk.pick_id = dp.selected_pick_id
+            WHERE dp.player_id IN ({placeholders})
+            """,
+            player_ids,
+        ).fetchall():
+            draft_context[int(row["player_id"])] = {
+                "draft_year": int(row["draft_year"]) if row["draft_year"] is not None else None,
+                "draft_round": int(row["draft_round"]) if row["draft_round"] is not None else None,
+                "draft_pick_number": int(row["pick_number"]) if row["pick_number"] is not None else None,
+                "draft_pick_in_round": int(row["pick_in_round"]) if row["pick_in_round"] is not None else None,
+                "true_rank": int(row["true_rank"]) if row["true_rank"] is not None else None,
+                "projected_round": int(row["projected_round"]) if row["projected_round"] is not None else None,
+            }
+    season_stats: dict[int, dict[str, float]] = defaultdict(dict)
+    for row in con.execute(
+        f"""
+        SELECT player_id, stat_key, SUM(stat_value) AS stat_value
+        FROM season_player_stats
+        WHERE season = ?
+          AND player_id IN ({placeholders})
+        GROUP BY player_id, stat_key
+        """,
+        (season, *player_ids),
+    ).fetchall():
+        season_stats[int(row["player_id"])][str(row["stat_key"])] = float(row["stat_value"] or 0)
+    record_row = con.execute(
+        """
+        SELECT wins, losses, ties, points_for, points_against
+        FROM season_team_records
+        WHERE season = ? AND team_id = ?
+        """,
+        (season, team_id),
+    ).fetchone()
 
     players_by_id = {}
     roster = []
@@ -1339,13 +1428,20 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         player_context = injury_context.get(player_id, {})
         metadata = {
             "age": int(row["age"] or 26),
+            "years_exp": int(row["years_exp"] or 0),
+            "is_rookie": int(row["is_rookie"] or 0),
+            "potential": int(row["potential"] or row["overall"] or 50),
+            "overall": int(row["overall"] or 50),
+            "dev_trait": row["dev_trait"] or "Normal",
             "weight_lbs": int(row["weight_lbs"] or 220),
             "injury_prone": int(row["injury_prone"] or 50),
             "status": row["status"] or "Active",
             "injury_history_risk": float(player_context.get("risk_score") or 0.0),
             "injury_body_risks": player_context.get("body_risks", {}),
             "active_injuries": active_injuries.get(player_id, []),
+            "season_stats": season_stats.get(player_id, {}),
         }
+        metadata.update(draft_context.get(player_id, {}))
         if player_id in qb_behavior_by_player:
             profile, source = qb_behavior_by_player[player_id]
             metadata["qb_behavior_profile"] = profile
@@ -1417,6 +1513,10 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         division=team_row["division"],
         roster=roster,
         depth=dict(depth),
+        wins=int(record_row["wins"] or 0) if record_row else 0,
+        losses=int(record_row["losses"] or 0) if record_row else 0,
+        ties=int(record_row["ties"] or 0) if record_row else 0,
+        point_diff=int((record_row["points_for"] or 0) - (record_row["points_against"] or 0)) if record_row else 0,
     )
 
 
@@ -1664,6 +1764,8 @@ class MatchEngine:
     def active_starter(self, team: TeamSnapshot, slot: str) -> PlayerSnapshot:
         candidates = self.eligible_slot_candidates(team, slot)
         if candidates:
+            if slot.upper() == "QB":
+                return self.resolve_qb_starter(team, candidates)
             return candidates[0]
         return team.starter(slot)
 
@@ -1675,6 +1777,120 @@ class MatchEngine:
         if snaps <= effective_threshold:
             return 0.0
         return clamp((snaps - effective_threshold) * 0.0065, 0.0, 0.28)
+
+    def qb_stat_value(self, player: PlayerSnapshot, key: str) -> float:
+        stats = player.metadata.get("season_stats")
+        if not isinstance(stats, dict):
+            return 0.0
+        return float(stats.get(key, 0.0) or 0.0)
+
+    def qb_struggle_score(self, player: PlayerSnapshot) -> float:
+        attempts = self.qb_stat_value(player, "pass_attempts")
+        if attempts < 90:
+            return 0.0
+        completions = self.qb_stat_value(player, "pass_completions")
+        yards = self.qb_stat_value(player, "pass_yards")
+        tds = self.qb_stat_value(player, "pass_tds")
+        interceptions = self.qb_stat_value(player, "interceptions_thrown")
+        sacks = self.qb_stat_value(player, "sacks_taken")
+        completion_rate = completions / max(1.0, attempts)
+        yards_per_attempt = yards / max(1.0, attempts)
+        td_rate = tds / max(1.0, attempts)
+        int_rate = interceptions / max(1.0, attempts)
+        sack_rate = sacks / max(1.0, attempts + sacks)
+        struggle = 0.0
+        struggle += clamp((0.610 - completion_rate) / 0.090, 0.0, 1.0) * 0.22
+        struggle += clamp((6.35 - yards_per_attempt) / 1.50, 0.0, 1.0) * 0.20
+        struggle += clamp((0.035 - td_rate) / 0.025, 0.0, 1.0) * 0.16
+        struggle += clamp((int_rate - 0.026) / 0.030, 0.0, 1.0) * 0.24
+        struggle += clamp((sack_rate - 0.082) / 0.070, 0.0, 1.0) * 0.18
+        if attempts >= 180:
+            struggle += 0.07
+        return clamp(struggle, 0.0, 1.0)
+
+    def qb_development_investment(self, player: PlayerSnapshot) -> float:
+        age = int(player.metadata.get("age") or 26)
+        is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
+        years_exp = int(player.metadata.get("years_exp") or 0)
+        if not is_rookie and not (age <= 24 and years_exp <= 2):
+            return 0.0
+        overall = float(player.metadata.get("overall") or player.general_score())
+        potential = float(player.metadata.get("potential") or overall)
+        draft_round = player.metadata.get("draft_round")
+        draft_pick = player.metadata.get("draft_pick_number")
+        dev_trait = str(player.metadata.get("dev_trait") or "Normal")
+        investment = 0.18 if is_rookie else 0.08
+        if draft_round == 1:
+            investment += 0.42
+            if isinstance(draft_pick, int) and draft_pick <= 16:
+                investment += 0.12
+        elif draft_round == 2:
+            investment += 0.24
+        elif draft_round == 3:
+            investment += 0.12
+        investment += clamp((potential - overall) / 18.0, 0.0, 0.24)
+        investment += clamp((potential - 78.0) / 22.0, 0.0, 0.16)
+        if dev_trait in {"Star", "Impact"}:
+            investment += 0.08
+        elif dev_trait in {"Superstar", "Elite", "X-Factor"}:
+            investment += 0.14
+        return clamp(investment, 0.0, 1.0)
+
+    def resolve_qb_starter(self, team: TeamSnapshot, candidates: list[PlayerSnapshot]) -> PlayerSnapshot:
+        starter = candidates[0]
+        if len(candidates) == 1:
+            return starter
+        starter_score = team.score_for_slot(starter, "QB")
+        starter_struggle = self.qb_struggle_score(starter)
+        week = int(self.week or team.games_played() + 1 or 1)
+        win_pct = team.win_pct()
+        point_diff_per_game = team.point_diff / max(1, team.games_played())
+        losing_context = win_pct < 0.45 or point_diff_per_game < -3.5
+        contention_protection = win_pct >= 0.60 and point_diff_per_game >= 1.0 and starter_struggle < 0.42
+
+        best_candidate = starter
+        best_case = 0.0
+        for candidate in candidates[1:4]:
+            if candidate.player_id in self.injured_player_ids:
+                continue
+            investment = self.qb_development_investment(candidate)
+            if investment <= 0:
+                continue
+            candidate_score = team.score_for_slot(candidate, "QB")
+            quality_gap = starter_score - candidate_score
+            overall = float(candidate.metadata.get("overall") or candidate_score)
+            potential = float(candidate.metadata.get("potential") or overall)
+            draft_round = candidate.metadata.get("draft_round")
+            high_investment = draft_round == 1 or investment >= 0.54
+            raw = quality_gap > 6.0 or overall < 68
+            readiness = clamp((candidate_score - 62.0) / 18.0, 0.0, 1.0)
+            case = investment * 0.38 + readiness * 0.22 + starter_struggle * 0.30
+            if losing_context:
+                case += 0.16
+            if week >= 7 and high_investment:
+                case += 0.13
+            if week >= 10 and (losing_context or starter_struggle >= 0.38):
+                case += 0.14
+            if week >= 13 and win_pct < 0.50:
+                case += 0.14
+            if potential >= 84:
+                case += 0.05
+            case -= max(0.0, quality_gap - 2.0) * (0.030 if raw else 0.018)
+            if contention_protection:
+                case -= 0.24
+            if high_investment and quality_gap <= 2.0 and overall >= 70:
+                case += 0.18
+            threshold = 0.68
+            if week <= 4 and not (quality_gap <= 1.0 and overall >= 71):
+                threshold += 0.18
+            if raw and week < 8:
+                threshold += 0.16
+            if quality_gap > 10.0:
+                threshold += 0.22
+            if case >= threshold and case > best_case:
+                best_candidate = candidate
+                best_case = case
+        return best_candidate
 
     def choose_rotated_slot_player(
         self,
@@ -1703,9 +1919,12 @@ class MatchEngine:
         if base_rate is None:
             base_rate = OFFENSIVE_SLOT_STARTER_RATE.get(slot, DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.84))
         starter = candidates[0]
+        if slot == "QB":
+            return self.resolve_qb_starter(team, candidates)
         if slot in {"QB", "LT", "LG", "C", "RG", "RT"}:
             return starter
         starter_score = team.score_for_slot(starter, slot)
+        evaluation_mode = self.youth_evaluation_mode_score(team)
         if slot in {"LWR", "RWR", "SWR"}:
             if starter_score >= 90:
                 base_rate = max(base_rate, 0.95)
@@ -1715,14 +1934,43 @@ class MatchEngine:
                 base_rate = max(base_rate, 0.88 if slot != "SWR" else 0.83)
         elif slot == "TE" and starter_score >= 82:
             base_rate = max(base_rate, 0.84)
-        elif slot == "RB" and starter_score >= 84:
-            base_rate = max(base_rate, 0.72)
+        elif slot == "RB":
+            if starter_score >= 86:
+                base_rate = max(base_rate, 0.82)
+            elif starter_score >= 82:
+                base_rate = max(base_rate, 0.78)
+            elif starter_score >= 78:
+                base_rate = max(base_rate, 0.74)
+            else:
+                base_rate = max(base_rate, 0.70)
         backup_score = team.score_for_slot(candidates[1], slot)
         quality_gap = starter_score - backup_score
+        if slot == "RB":
+            backup_overall = float(candidates[1].metadata.get("overall") or candidates[1].general_score())
+            if quality_gap >= 9.0:
+                base_rate = max(base_rate, 0.82)
+            elif quality_gap >= 6.0:
+                base_rate = max(base_rate, 0.78)
+            if backup_overall < 70 and quality_gap >= 4.0:
+                base_rate = max(base_rate, 0.80)
+        developmental_pressure = self.developmental_rotation_pressure(
+            team,
+            slot,
+            starter_score=starter_score,
+            candidates=candidates[1:5],
+            evaluation_mode=evaluation_mode,
+        )
         stamina_bonus = (starter.rating("stamina") - 65.0) * 0.0017
         quality_bonus = clamp(quality_gap * 0.006, -0.055, 0.095)
         fatigue_penalty = self.rotation_fatigue_pressure(starter, slot, snap_key)
-        effective_rate = clamp(base_rate + quality_bonus + stamina_bonus - fatigue_penalty, 0.28, 0.998)
+        evaluation_floor = 0.18 + evaluation_mode * 0.11 if evaluation_mode > 0 else 0.24
+        if slot == "RB":
+            evaluation_floor = 0.46 if evaluation_mode > 0 else 0.54
+        effective_rate = clamp(
+            base_rate + quality_bonus + stamina_bonus - fatigue_penalty - developmental_pressure,
+            evaluation_floor,
+            0.998,
+        )
         if self.rng.random() < effective_rate:
             return starter
 
@@ -1733,8 +1981,118 @@ class MatchEngine:
             depth_discount = 1.0 / (idx + 1.35)
             freshness = 1.0 + clamp((starter_snaps - float(self.player_stats[backup.player_id].get(snap_key, 0))) * 0.014, 0.0, 0.45)
             stamina = 1.0 + clamp((backup.rating("stamina") - 62.0) * 0.004, -0.08, 0.12)
-            weights.append((backup, score * depth_discount * freshness * stamina))
+            development = self.developmental_rotation_weight(
+                slot,
+                starter_score=starter_score,
+                player_score=team.score_for_slot(backup, slot),
+                player=backup,
+                evaluation_mode=evaluation_mode,
+            )
+            weights.append((backup, score * depth_discount * freshness * stamina * development))
         return weighted_choice(self.rng, weights) if weights else starter
+
+    def youth_evaluation_mode_score(self, team: TeamSnapshot) -> float:
+        games = team.games_played()
+        if games < 6:
+            return 0.0
+        week = int(self.week or games + 1 or 1)
+        win_pct = team.win_pct()
+        point_diff = team.point_diff_per_game()
+        score = 0.0
+        if week >= 8 and (win_pct < 0.35 or point_diff < -7.0):
+            score = max(score, 0.42)
+        if week >= 11 and (win_pct < 0.45 or point_diff < -4.0):
+            score = max(score, 0.62)
+        if week >= 14 and win_pct < 0.50:
+            score = max(score, 0.78)
+        if week >= 16 and win_pct < 0.56 and point_diff < -1.5:
+            score = max(score, 0.92)
+        return clamp(score, 0.0, 1.0)
+
+    def developmental_rotation_pressure(
+        self,
+        team: TeamSnapshot,
+        slot: str,
+        *,
+        starter_score: float,
+        candidates: list[PlayerSnapshot],
+        evaluation_mode: float = 0.0,
+    ) -> float:
+        if slot not in DEVELOPMENTAL_ROTATION_SLOTS:
+            return 0.0
+        best = 0.0
+        for player in candidates:
+            score = team.score_for_slot(player, slot)
+            best = max(
+                best,
+                self.developmental_rotation_weight(
+                    slot,
+                    starter_score=starter_score,
+                    player_score=score,
+                    player=player,
+                    evaluation_mode=evaluation_mode,
+                )
+                - 1.0,
+            )
+        if best <= 0:
+            return 0.0
+        pressure = best * (0.045 + evaluation_mode * 0.120)
+        if slot == "RB":
+            pressure *= 0.42
+        if starter_score >= 88 and evaluation_mode < 0.85:
+            pressure *= 0.35
+        elif starter_score >= 84 and evaluation_mode < 0.55:
+            pressure *= 0.62
+        return clamp(pressure, 0.0, 0.12 if slot == "RB" else 0.32)
+
+    def developmental_rotation_weight(
+        self,
+        slot: str,
+        *,
+        starter_score: float,
+        player_score: float,
+        player: PlayerSnapshot,
+        evaluation_mode: float = 0.0,
+    ) -> float:
+        if slot not in DEVELOPMENTAL_ROTATION_SLOTS:
+            return 1.0
+        age = int(player.metadata.get("age") or 26)
+        is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
+        years_exp = int(player.metadata.get("years_exp") or 0)
+        if not is_rookie and not (age <= 23 and years_exp <= 2):
+            return 1.0
+        quality_gap = starter_score - player_score
+        max_gap = 13.0 + evaluation_mode * 5.0
+        if slot == "RB":
+            max_gap = 8.0 + evaluation_mode * 2.5
+        if quality_gap > max_gap:
+            return 1.0
+        overall = float(player.metadata.get("overall") or player.general_score())
+        potential = float(player.metadata.get("potential") or overall)
+        if slot == "RB" and overall < 68 and potential < 76:
+            return 1.0
+        potential_gap = max(0.0, potential - overall)
+        dev_trait = str(player.metadata.get("dev_trait") or "Normal")
+        upside = clamp(potential_gap / 12.0, 0.0, 1.0)
+        closeness = clamp((max_gap - max(0.0, quality_gap)) / max_gap, 0.0, 1.0)
+        trait_bonus = 0.0
+        if dev_trait in {"Star", "Impact"}:
+            trait_bonus = 0.10
+        elif dev_trait in {"Superstar", "Elite", "X-Factor"}:
+            trait_bonus = 0.18
+        slot_bonus = 0.08 if slot in {"TE", "SWR", "NB", "LEDGE", "REDGE", "LDL", "RDL", "NT"} else 0.03
+        if slot == "RB":
+            slot_bonus = 0.02
+        rookie_bonus = 0.12 if is_rookie else 0.04
+        evaluation_bonus = evaluation_mode * (0.18 + closeness * 0.18 + upside * 0.14)
+        if slot == "RB":
+            rookie_bonus *= 0.60
+            evaluation_bonus *= 0.55
+        return clamp(
+            1.0 + rookie_bonus + slot_bonus + upside * 0.34 + closeness * 0.28 + trait_bonus + evaluation_bonus,
+            1.0,
+            1.55 if slot == "RB" else 2.20,
+        )
 
     def append_rotated_slot(
         self,
@@ -1942,7 +2300,14 @@ class MatchEngine:
         load_factor = clamp(1.20 - current_st_snaps * 0.022, 0.54, 1.20)
         source = str(player.metadata.get("specialist_behavior_source") or "")
         profile_factor = 1.10 if source.startswith("specialist_behavior_") or source == "draft_selection" else 1.0
-        return max(0.05, base * prior * depth_factor * roster_value_factor * load_factor * profile_factor)
+        age = int(player.metadata.get("age") or 26)
+        is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
+        potential = float(player.metadata.get("potential") or player.general_score())
+        overall = float(player.metadata.get("overall") or player.general_score())
+        development_factor = 1.0
+        if is_rookie or age <= 23:
+            development_factor += 0.08 + clamp((potential - overall) / 20.0, 0.0, 0.12)
+        return max(0.05, base * prior * depth_factor * roster_value_factor * load_factor * profile_factor * development_factor)
 
     def core_special_teamers(
         self,
@@ -2168,7 +2533,7 @@ class MatchEngine:
         elif late and score_diff > 0:
             pass_rate -= min(0.18, score_diff * 0.010)
 
-        qb = offense.starter("QB")
+        qb = self.active_starter(offense, "QB")
         pass_identity = weighted_average(qb, QB_PASS_WEIGHTS)
         rb = offense.starter("RB")
         run_identity = weighted_average(rb, RB_RUN_WEIGHTS)
@@ -2204,7 +2569,7 @@ class MatchEngine:
             return "field_goal"
 
         routine_field_goal_range = field_pos >= 66 and fg_distance <= 54
-        long_field_goal_range = field_pos >= 57 and fg_distance <= 60
+        long_field_goal_range = field_pos >= 54 and fg_distance <= 63
         extreme_field_goal_range = field_pos >= 49 and fg_distance <= 68
         if routine_field_goal_range and not (late_trailing and distance <= 4 and field_pos >= 55):
             return "field_goal"
@@ -2222,20 +2587,23 @@ class MatchEngine:
             return "field_goal"
         if long_field_goal_range:
             long_try_prob = (
-                0.11
+                0.12
                 + (kick_score - 70) * 0.009
                 + (operation_score - 70) * 0.003
-                - max(0, fg_distance - 55) * 0.055
+                - max(0, fg_distance - 55) * 0.045
             )
             if late_half:
-                long_try_prob += 0.14
+                long_try_prob += 0.18
             if late_trailing:
                 long_try_prob += 0.16
+            if fg_distance >= 61:
+                long_try_prob += 0.05 if self.clock_tenths <= 45 * TENTHS_PER_SECOND else 0.0
+                long_try_prob -= (fg_distance - 60) * 0.040
             if distance >= 8:
                 long_try_prob += 0.06
             if distance <= 2:
                 long_try_prob -= 0.06
-            if self.rng.random() < clamp(long_try_prob, 0.02, 0.44):
+            if self.rng.random() < clamp(long_try_prob, 0.02, 0.50 if late_half else 0.36):
                 return "field_goal"
         if extreme_field_goal_range and late_half:
             urgency = 0.0
@@ -2249,17 +2617,19 @@ class MatchEngine:
                 urgency = 0.07
             end_half_try = self.quarter == 2 and self.clock_tenths <= 12 * TENTHS_PER_SECOND
             must_score = late_trailing and score_diff >= -3
+            last_snap = self.clock_tenths <= 6 * TENTHS_PER_SECOND
             desperation_prob = (
                 0.008
                 + urgency
                 + (0.10 if end_half_try else 0.0)
+                + (0.08 if last_snap and kick_score >= 80 else 0.0)
                 + (0.12 if must_score else 0.0)
-                + (kick_score - 78) * 0.007
+                + (kick_score - 78) * 0.008
                 + (operation_score - 72) * 0.002
-                - max(0, fg_distance - 60) * 0.055
+                - max(0, fg_distance - 60) * 0.050
             )
             if fg_distance >= 65:
-                desperation_prob -= (fg_distance - 64) * 0.045
+                desperation_prob -= (fg_distance - 64) * 0.035
             if distance <= 2 and not (self.clock_tenths <= 12 * TENTHS_PER_SECOND or late_trailing):
                 desperation_prob -= 0.10
             if self.rng.random() < clamp(desperation_prob, 0.0, 0.42):
@@ -2275,7 +2645,7 @@ class MatchEngine:
         return self.clock_tenths <= remaining_kneel_clock
 
     def kneel_play(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[int, str, PlayerSnapshot]:
-        qb = offense.starter("QB")
+        qb = self.active_starter(offense, "QB")
         yards = -1 if field_pos > 1 else 0
         self.team_stats[offense.team_id]["plays"] += 1
         self.team_stats[offense.team_id]["rush_attempts"] += 1
@@ -2293,7 +2663,7 @@ class MatchEngine:
         return self.clock_tenths <= 38 * TENTHS_PER_SECOND and field_pos >= 45
 
     def spike_play(self, offense: TeamSnapshot) -> tuple[str, PlayerSnapshot]:
-        qb = offense.starter("QB")
+        qb = self.active_starter(offense, "QB")
         self.team_stats[offense.team_id]["plays"] += 1
         self.team_stats[offense.team_id]["pass_attempts"] += 1
         self.player_stats[qb.player_id]["pass_attempts"] += 1
@@ -2373,8 +2743,14 @@ class MatchEngine:
     ) -> float:
         profile = rb_behavior_profile(player)
         talent = weighted_average(player, RB_RUN_WEIGHTS)
-        weight = 1.0 / (idx + 1.4)
-        weight *= 1.0 + clamp((talent - 70) * 0.012, -0.20, 0.32)
+        overall = float(player.metadata.get("overall") or player.general_score())
+        weight = 1.0 / (idx + 1.65)
+        weight *= 1.0 + clamp((talent - 70) * 0.015, -0.30, 0.36)
+        weight *= 1.0 + clamp((overall - 72) * 0.018, -0.34, 0.26)
+        if idx >= 1 and overall < 72:
+            weight *= 0.84
+        if idx >= 2:
+            weight *= 0.72
         weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
         if distance <= 3 or field_pos >= 85:
             weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014
@@ -2633,6 +3009,19 @@ class MatchEngine:
         rb_candidates = self.eligible_slot_candidates(offense, "RB")[:3]
         if not rb_candidates:
             rb_candidates = [self.active_starter(offense, "RB")]
+        if len(rb_candidates) > 2:
+            starter_score = offense.score_for_slot(rb_candidates[0], "RB")
+            kept = rb_candidates[:2]
+            for extra in rb_candidates[2:]:
+                extra_score = offense.score_for_slot(extra, "RB")
+                extra_overall = float(extra.metadata.get("overall") or extra.general_score())
+                extra_potential = float(extra.metadata.get("potential") or extra_overall)
+                is_rookie = bool(int(extra.metadata.get("is_rookie") or 0))
+                if extra_score >= starter_score - 4.0:
+                    kept.append(extra)
+                elif is_rookie and extra_overall >= 70 and extra_potential >= 78 and extra_score >= starter_score - 8.0:
+                    kept.append(extra)
+            rb_candidates = kept
         qb_scramble_score = weighted_average(qb, QB_SCRAMBLE_WEIGHTS)
         profile = qb_behavior_profile(qb)
         qb_run_chance = clamp(
@@ -2681,9 +3070,12 @@ class MatchEngine:
         is_qb_run = runner.player_id == qb.player_id
         rb_profile = None if is_qb_run else rb_behavior_profile(runner)
         runner_score = weighted_average(runner, RB_RUN_WEIGHTS if not is_qb_run else QB_SCRAMBLE_WEIGHTS)
+        runner_overall = float(runner.metadata.get("overall") or runner.general_score())
         tackling = defense.tackling_score()
         trench_advantage = run_block - run_def
         runner_advantage = runner_score - tackling
+        replacement_penalty = max(0.0, 72.0 - runner_overall)
+        low_run_trait_penalty = max(0.0, 70.0 - runner_score)
 
         stuff_chance = clamp(0.160 - trench_advantage * 0.0020 - runner_advantage * 0.00100, 0.060, 0.290)
         explosive_chance = clamp(0.024 + (runner.rating("speed") - 70) * 0.00135 + (runner.rating("elusiveness") - tackling) * 0.00105, 0.008, 0.095)
@@ -2691,26 +3083,36 @@ class MatchEngine:
             stuff_chance = clamp(stuff_chance - 0.025 - (profile.pressure_escape - 70) * 0.00035, 0.035, 0.235)
             explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.145)
         elif rb_profile:
+            stuff_chance += replacement_penalty * 0.0026 + low_run_trait_penalty * 0.0015
             bounce_risk = max(0.0, rb_profile.bounce_tendency - rb_profile.one_cut_decisiveness)
             stuff_chance += bounce_risk * 0.00085
             stuff_chance -= (rb_profile.one_cut_decisiveness - 50) * 0.00062
             explosive_chance += (rb_profile.home_run_hunting - 50) * 0.00050
             explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00018
+            explosive_chance -= replacement_penalty * 0.0012 + low_run_trait_penalty * 0.0008
             if concept == "outside_zone":
                 explosive_chance += (rb_profile.bounce_tendency - 50) * 0.00028
                 stuff_chance += max(0.0, rb_profile.bounce_tendency - 76) * 0.00045
             if concept == "power":
                 stuff_chance -= (rb_profile.contact_appetite - 50) * 0.00048
             stuff_chance = clamp(stuff_chance, 0.045, 0.305)
-            explosive_chance = clamp(explosive_chance, 0.006, 0.115)
+            explosive_cap = 0.115
+            if runner_overall < 65:
+                explosive_cap = 0.040
+            elif runner_overall < 70:
+                explosive_cap = 0.058
+            elif runner_overall < 75:
+                explosive_cap = 0.078
+            explosive_chance = clamp(explosive_chance, 0.004, explosive_cap)
 
         if self.rng.random() < stuff_chance:
             yards = int(round(self.rng.gauss(-1.2, 1.5)))
         else:
-            mean = 3.48 + trench_advantage * 0.038 + runner_advantage * 0.025
+            mean = 3.42 + trench_advantage * 0.036 + runner_advantage * 0.023
             if is_qb_run:
                 mean += 1.05 + (profile.pressure_escape - 70) * 0.025
             elif rb_profile:
+                mean -= replacement_penalty * 0.040 + low_run_trait_penalty * 0.020
                 mean += (rb_profile.patience - 50) * 0.010
                 mean += (rb_profile.one_cut_decisiveness - 50) * 0.012
                 if concept == "power" or distance <= 2:
@@ -3244,7 +3646,7 @@ class MatchEngine:
                 weight *= 0.35
             if player.position in {"WR", "TE"}:
                 profile = receiver_behavior_profile(player)
-                weight *= 1.0 + (profile.target_gravity - 50) * 0.012
+                weight *= 1.0 + (profile.target_gravity - 50) * 0.010
                 if concept == "quick":
                     weight *= 1.0 + (profile.release_urgency - 50) * 0.006 + (profile.route_pacing - 50) * 0.005
                 elif concept in {"short", "intermediate"}:
@@ -3258,9 +3660,9 @@ class MatchEngine:
                 weight *= 1.0 + (profile.pass_game_usage - 50) * 0.010 + (profile.space_creation - 50) * 0.006
                 if concept == "screen":
                     weight *= 1.75
-            talent_bonus = 1.0 + clamp((weighted_average(player, RECEIVER_WEIGHTS) - 72) * 0.007, -0.06, 0.18)
+            talent_bonus = 1.0 + clamp((weighted_average(player, RECEIVER_WEIGHTS) - 72) * 0.006, -0.06, 0.14)
             weight *= talent_bonus
-            weight *= 1.0 / (idx * 0.08 + 1.0)
+            weight *= 1.0 / (idx * 0.10 + 1.0)
             options.append((player, weight))
         return weighted_choice(self.rng, options)
 
@@ -4311,7 +4713,7 @@ class MatchEngine:
                 runoff, timeout_desc = self.maybe_use_timeout(offense, defense, play_type="pass", runoff_tenths=runoff, stops_clock=stops_clock)
                 desc += timeout_desc
                 consumed, actual_runoff = self.consume_clock(live, runoff)
-                offense_player = offense.starter("QB")
+                offense_player = self.active_starter(offense, "QB")
                 target_player = target
                 defense_player = defender
             else:

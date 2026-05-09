@@ -8,6 +8,8 @@
     lastResult: null,
     selectedDraftProspectId: null,
     draftBoardSort: { key: "rank", direction: "asc" },
+    draftBoardPositionFilter: "all",
+    scoutingBoardSort: { key: "rank", direction: "asc" },
     selectedDepthSlot: null,
     selectedCalendarItem: null,
     selectedAiGmReviewId: null,
@@ -28,6 +30,11 @@
     scoutingLoading: false,
     freeAgencyLiveKey: null,
     freeAgencyLoading: false,
+    freeAgencyPositionFilter: "all",
+    freeAgencyTierFilter: "all",
+    rosterPositionFilter: "all",
+    rosterStatusFilter: "all",
+    rosterSort: { key: "role", direction: "desc" },
     contractsLiveKey: null,
     contractsLoading: false,
     depthChartLiveKey: null,
@@ -36,6 +43,7 @@
     aiGmLoading: false,
     liveErrors: {},
     lastLiveRefreshAt: null,
+    lastRenderedView: null,
   };
 
   const liveApi = {
@@ -135,6 +143,7 @@
     "scouting_setup",
     "scouting_auto",
     "scouting_one",
+    "scouting_unassign",
     "scouting_random_two",
     "scouting_discover_four",
     "scouting_senior_bowl_setup",
@@ -335,12 +344,100 @@
     return Math.max(0, Math.min(100, Math.round((Number(part || 0) / Number(total)) * 100)));
   }
 
+  const FOOTBALL_POSITION_ORDER = [
+    "QB",
+    "RB",
+    "FB",
+    "WR",
+    "TE",
+    "OT",
+    "OG",
+    "C",
+    "EDGE",
+    "IDL",
+    "DT",
+    "DE",
+    "ILB",
+    "OLB",
+    "LB",
+    "CB",
+    "NB",
+    "FS",
+    "SS",
+    "S",
+    "K",
+    "P",
+    "LS",
+  ];
+
+  function footballPositionSort(left, right) {
+    const l = String(left || "");
+    const r = String(right || "");
+    const leftIndex = FOOTBALL_POSITION_ORDER.indexOf(l);
+    const rightIndex = FOOTBALL_POSITION_ORDER.indexOf(r);
+    const leftRank = leftIndex >= 0 ? leftIndex : FOOTBALL_POSITION_ORDER.length;
+    const rightRank = rightIndex >= 0 ? rightIndex : FOOTBALL_POSITION_ORDER.length;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return l.localeCompare(r);
+  }
+
+  function scrollableSnapshot() {
+    const selectors = [".table-wrap", ".draft-pick-queue", ".top30-list", ".activity-list", ".message-list"];
+    const snapshot = [];
+    selectors.forEach((selector) => {
+      document.querySelectorAll(selector).forEach((element, index) => {
+        snapshot.push({
+          selector,
+          index,
+          top: element.scrollTop,
+          left: element.scrollLeft,
+        });
+      });
+    });
+    return snapshot;
+  }
+
+  function restoreScrollableSnapshot(snapshot) {
+    (snapshot || []).forEach((item) => {
+      const element = document.querySelectorAll(item.selector)[item.index];
+      if (!element) return;
+      element.scrollTop = item.top;
+      element.scrollLeft = item.left;
+    });
+  }
+
+  function currentSeasonSectionLabel() {
+    const phase = String(data.currentPhase || "").toLowerCase();
+    const scoutingPeriod = data.scouting?.period?.label;
+    if (phase.includes("regular")) {
+      if (scoutingPeriod && /^Week \d+/i.test(String(scoutingPeriod))) return String(scoutingPeriod).replace(" Scouting", "");
+      if (data.season?.nextWeek) return `Week ${data.season.nextWeek}`;
+      return "Regular Season";
+    }
+    if (phase.includes("postseason") || phase.includes("playoff")) return "Postseason";
+    if (data.draft?.state?.status === "in_progress" || data.draft?.currentPick) return "Draft";
+    const fa = data.freeAgency || {};
+    const faStage = String(fa.period?.current_stage || fa.status || "").toLowerCase();
+    if (faStage && !faStage.includes("not_started") && !faStage.includes("not started")) return "Free Agency";
+    if (phase.includes("draft")) return "Draft";
+    if (phase.includes("free")) return "Free Agency";
+    if (phase.includes("offseason")) return "Offseason";
+    return data.currentPhase || "";
+  }
+
+  function currentDateDisplay() {
+    const date = shortDate(data.currentDate);
+    const section = currentSeasonSectionLabel();
+    return section ? `${date} | ${section}` : date;
+  }
+
   function setHeader(title, subhead) {
+    document.body.dataset.view = state.view;
     refs.seasonLabel.textContent = String(data.currentSeason || "");
     refs.phaseText.textContent = data.currentPhase || "";
     refs.title.textContent = title;
     refs.subhead.textContent = subhead;
-    refs.dateText.textContent = shortDate(data.currentDate);
+    refs.dateText.textContent = currentDateDisplay();
     refs.saveText.textContent = data.activeSave?.display_name || data.registry?.activeGameId || "Master DB";
     refs.buttons.forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
     updateLiveStatus();
@@ -389,7 +486,7 @@
     if (location.protocol.startsWith("http") && !state.runnerAvailable) {
       refs.liveStatus.hidden = false;
       refs.liveStatus.classList.add("offline");
-      refs.liveStatus.textContent = "UI runner unavailable; showing bundled export";
+      refs.liveStatus.textContent = "Live actions unavailable; showing latest saved data";
       return;
     }
     refs.liveStatus.hidden = true;
@@ -836,7 +933,7 @@
 
   async function loadLiveFreeAgency() {
     if (!location.protocol.startsWith("http") || state.freeAgencyLoading) return false;
-    const leagueYear = data.draft?.year || data.currentSeason || "";
+    const leagueYear = data.freeAgency?.leagueYear || data.currentSeason || "";
     const payload = await apiGet("free agency", "/api/free-agency", {
       params: { league_year: leagueYear },
       loadingKey: "freeAgencyLoading",
@@ -992,13 +1089,13 @@
     if (state.view === "inbox") return [loadLiveInbox];
     if (state.view === "leagueNews") return [loadLiveLeagueNews];
     if (state.view === "scouting") return [loadLiveScouting, loadLiveInbox];
+    if (state.view === "roster") return [loadLiveDepthChart, loadLiveContracts];
     if (state.view === "depth") return [loadLiveDepthChart];
     if (state.view === "contracts") return [loadLiveContracts];
     if (state.view === "freeAgency") return [loadLiveFreeAgency];
     if (state.view === "draft") return [loadLiveDraft, loadLiveScouting];
     if (state.view === "aiGm") return [loadLiveAiGm, loadLiveInbox, loadLiveLeagueNews];
     if (state.view === "calendar") return [loadLiveCalendar, loadLiveLeagueNews];
-    if (state.view === "commands") return [];
     return [loadLiveSeason, loadLiveCalendar, loadLiveInbox];
   }
 
@@ -1035,7 +1132,7 @@
     if (!confirmBeforeAction(action, params || {})) return;
     state.runnerBusy = true;
     state.busyAction = action;
-    showToast(`Running ${actionLabel(action)}...`);
+    showToast(`${actionLabel(action)} in progress...`);
     render();
     const stopDraftProgressPolling = startDraftProgressPolling(action);
     try {
@@ -1054,10 +1151,10 @@
       } else if (isDraftAction(action) || action.startsWith("ai_gm_")) {
         await refreshLiveAfterAction(action);
       }
-      showToast(payload.summary?.message || (payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} returned an issue`));
+      showToast(payload.summary?.message || (payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} needs attention`));
     } catch (error) {
       state.lastResult = { error: String(error) };
-      showToast("Runner request failed");
+      showToast("Action could not be completed");
     } finally {
       if (stopDraftProgressPolling) stopDraftProgressPolling();
       state.runnerBusy = false;
@@ -1155,9 +1252,10 @@
       scouting_assign: "Scouting Assignment",
       scouting_process_week: "Scouting Week",
       scouting_auto: "Auto Assign Scouts",
-      scouting_one: "Scout Player",
-      scouting_random_two: "Scout 3 Random Players",
-      scouting_discover_four: "Discover 4 Non-Public Players",
+      scouting_one: "Select Scout Player",
+      scouting_unassign: "Unselect Scout Player",
+      scouting_random_two: "Scout 8 Random Players",
+      scouting_discover_four: "Scout 4 + 8 Discoveries",
       scouting_senior_bowl_setup: "Senior Bowl Setup",
       scouting_senior_bowl_process: "Senior Bowl",
       scouting_top30_visit: "Top 30 Visit",
@@ -1177,21 +1275,15 @@
     const action = state.busyAction || "command";
     const label = actionLabel(action);
     const extra = action === "sim_season"
-      ? "\n\nFull-season sims can take a few minutes because the runner saves every game, rebuilds season stats, and runs weekly hooks. Output appears when the backend command returns."
-      : "\n\nOutput appears when the backend command returns.";
+      ? "\n\nFull-season sims can take a few minutes. The league is playing every remaining game and updating standings, stats, scouting, roster checks, and front-office activity."
+      : "\n\nThe page will refresh the affected screens when this finishes.";
     return `${label} is running...${extra}`;
   }
 
   function commandBox(label, command, action, params, options = {}) {
-    const box = node("div", "command-box");
+    const box = node("div", "command-box action-command");
     const top = node("div", "command-bar");
     const children = [node("span", "tag", label)];
-    if (command && !options.hideCommand) {
-      const copy = node("button", "copy-button", options.copyLabel || "Copy");
-      copy.type = "button";
-      copy.addEventListener("click", () => navigator.clipboard?.writeText(command));
-      children.push(copy);
-    }
     if (action && runnerMode()) {
       const run = node("button", "run-button", state.runnerBusy ? "Running" : (options.runLabel || "Run"));
       run.type = "button";
@@ -1200,11 +1292,10 @@
       run.addEventListener("click", () => runAction(action, params));
       children.push(run);
     } else if (action) {
-      children.push(node("span", "muted", "Start the UI runner for one-click actions"));
+      children.push(node("span", "muted", "Live actions are unavailable"));
     }
     append(top, children);
     const content = [top];
-    if (!options.hideCommand) content.push(node("code", null, command || ""));
     if (options.detail) content.push(node("span", "muted", options.detail));
     append(box, content);
     return box;
@@ -1250,15 +1341,15 @@
     }
     return commandBox(label, command, action, params, {
       ...availability,
-      hideCommand: runnerMode(),
-      detail: availability.disabledReason || "Live draft action. The board refreshes after it completes.",
+      hideCommand: true,
+      detail: availability.disabledReason || "The draft room refreshes after the action completes.",
     });
   }
 
   function liveCommandBox(label, command, action, params = {}, detail = "") {
     return commandBox(label, command, action, params, {
-      hideCommand: runnerMode(),
-      detail: detail || "Live action. Affected panels refresh after it completes.",
+      hideCommand: true,
+      detail: detail || "Affected panels refresh after it completes.",
     });
   }
 
@@ -1267,13 +1358,13 @@
     const button = node("button", classes, state.runnerBusy && state.busyAction === action ? "Running" : label);
     button.type = "button";
     button.disabled = state.runnerBusy || Boolean(availability.disabledReason) || !runnerMode();
-    button.title = availability.disabledReason || (runnerMode() ? actionLabel(action) : "Start the UI runner for one-click actions");
+    button.title = availability.disabledReason || (runnerMode() ? actionLabel(action) : "Live actions are unavailable");
     button.addEventListener("click", () => runAction(action, params || {}));
     return button;
   }
 
   function controlDisabledReasons(entries) {
-    if (!runnerMode()) return ["UI runner unavailable. Start tools\\ui_runner.py for one-click actions."];
+    if (!runnerMode()) return ["Live actions are unavailable."];
     const reasons = entries
       .map((entry) => entry?.availability?.disabledReason)
       .filter(Boolean);
@@ -1369,18 +1460,6 @@
       detail ? node("span", null, detail) : null,
     ]);
     const controls = node("div", "action-controls");
-    const liveBackedAction = action && (
-      isDraftAction(action)
-      || action.startsWith("free_agency_")
-      || action === "advance_next_event"
-      || action === "advance_next_league_year"
-    );
-    if (command && !(runnerMode() && liveBackedAction && !options.showCommand)) {
-      const copy = node("button", "copy-button", "Copy Command");
-      copy.type = "button";
-      copy.addEventListener("click", () => navigator.clipboard?.writeText(command));
-      controls.append(copy);
-    }
     if (action && runnerMode()) {
       const run = node("button", "primary-run-button", state.runnerBusy ? "Running" : (options.runLabel || "Run"));
       run.type = "button";
@@ -1389,7 +1468,7 @@
       run.addEventListener("click", () => runAction(action, params));
       controls.append(run);
     } else if (action) {
-      controls.append(node("span", "muted", "Start the UI runner for one-click actions"));
+      controls.append(node("span", "muted", "Live actions unavailable"));
     }
     append(card, [text, controls]);
     return card;
@@ -1399,7 +1478,7 @@
     const button = node("button", `run-button compact ${tone || ""}`.trim(), state.runnerBusy ? "Running" : label);
     button.type = "button";
     button.disabled = state.runnerBusy || !runnerMode();
-    if (!runnerMode()) button.title = "Start the UI runner for one-click actions";
+    if (!runnerMode()) button.title = "Live actions are unavailable";
     button.addEventListener("click", () => runAction(action, params));
     return button;
   }
@@ -1425,7 +1504,7 @@
       const reject = node("button", "run-button compact danger", state.runnerBusy ? "Running" : "Reject");
       reject.type = "button";
       reject.disabled = state.runnerBusy || !runnerMode();
-      if (!runnerMode()) reject.title = "Start the UI runner for one-click actions";
+      if (!runnerMode()) reject.title = "Live actions are unavailable";
       reject.addEventListener("click", (event) => {
         event.stopPropagation();
         const note = window.prompt("Review note", "Rejected in Game Center");
@@ -1590,6 +1669,7 @@
     return {
       day_one_hourly: "Day 1 Hourly Market",
       daily: "Daily Free Agency",
+      street_market: "Street Free Agency",
     }[stage] || roleLabel(stage || "Not started");
   }
 
@@ -1729,7 +1809,7 @@
     ]);
     const secondary = node("div", "control-secondary fa-control-secondary");
     append(secondary, [
-      node("span", "muted", "Manual player offers stay on the free-agent board rows. Copyable commands live in Commands."),
+      node("span", "muted", "Manual player offers stay on the free-agent board rows."),
     ]);
     append(body, [
       hero,
@@ -2044,25 +2124,45 @@
 
   function runnerOutputPanel() {
     if (state.runnerBusy) {
-      const p = panel("Runner Output", actionLabel(state.busyAction));
-      panelBody(p).append(node("pre", "runner-output", busyMessage()));
+      const p = panel("Action Status", actionLabel(state.busyAction));
+      const body = node("div", "action-status-card running");
+      append(body, [
+        node("span", "spinner"),
+        append(node("div"), [
+          node("strong", null, `${actionLabel(state.busyAction)} in progress`),
+          node("p", "muted", busyMessage()),
+        ]),
+      ]);
+      panelBody(p).append(body);
       return p;
     }
     if (!state.lastResult) return null;
-    const p = panel("Runner Output", state.lastResult.summary?.title || state.lastResult.action || "Latest");
     const result = state.lastResult;
+    const ok = result.returncode === 0 && !result.error;
+    const p = panel("Action Status", result.summary?.title || actionLabel(result.action) || "Latest");
+    const status = node("div", `action-status-card ${ok ? "good" : "bad"}`);
     const summary = result.summary;
-    const body = [
-      summary?.message ? `${summary.title || actionLabel(result.action)}: ${summary.message}` : "",
-      summary?.affectedPanels?.length ? `refreshed: ${summary.affectedPanels.join(", ")}` : "",
-      summary?.durationSeconds !== undefined ? `duration: ${summary.durationSeconds}s` : "",
-      result.command ? `> ${result.command}` : "",
-      result.returncode !== undefined ? `return code: ${result.returncode}` : "",
-      result.error ? `error: ${result.error}` : "",
-      result.stdout ? `\nstdout:\n${result.stdout}` : "",
-      result.stderr ? `\nstderr:\n${result.stderr}` : "",
-    ].filter(Boolean).join("\n");
-    panelBody(p).append(node("pre", "runner-output", body || "No output."));
+    const title = summary?.title || actionLabel(result.action) || "Recent Action";
+    const message = summary?.message || (ok ? "Completed successfully." : "The action could not be completed.");
+    append(status, [
+      node("span", "status-dot"),
+      append(node("div"), [
+        node("strong", null, title),
+        node("p", "muted", message),
+      ]),
+    ]);
+    panelBody(p).append(status);
+    const facts = node("div", "result-facts");
+    append(facts, [
+      summary?.affectedPanels?.length ? metric("Updated", summary.affectedPanels.join(", "), "Refreshed screens") : null,
+      summary?.durationSeconds !== undefined ? metric("Time", `${summary.durationSeconds}s`, "Action duration") : null,
+      !ok ? metric("Status", "Needs Attention", "Check the screen and try again", "bad") : null,
+    ]);
+    if (facts.children.length) panelBody(p).append(facts);
+    if (!ok) {
+      const cleanError = summary?.message || result.error || "Something went wrong.";
+      panelBody(p).append(node("div", "friendly-error", cleanError));
+    }
     return p;
   }
 
@@ -2071,7 +2171,7 @@
     const banner = node("div", "runner-busy-banner");
     const text = append(node("div"), [
       node("strong", null, `${actionLabel(state.busyAction)} is running`),
-      node("span", null, "Keep this page open. Results will appear in Runner Output when the command finishes."),
+      node("span", null, "Keep this page open. The affected panels will refresh when the action finishes."),
     ]);
     append(banner, [node("span", "spinner"), text]);
     return banner;
@@ -2473,7 +2573,10 @@
       loadLiveFreeAgency().then(render);
     }
     const period = fa.period;
-    const status = panel("Market Status", `${period ? period.current_stage : "Not Started"}${data.freeAgencyGeneratedAt ? ` | refreshed ${shortDateTime(data.freeAgencyGeneratedAt.replace("T", " "))}` : ""}`);
+    const userTeam = data.activeSave?.user_team || data.contractNegotiations?.team || "User";
+    const currentCap = data.contractNegotiations?.currentCap || data.contractNegotiations?.cap || {};
+    const capSpace = Number(currentCap.cap_space || 0);
+    const status = panel("Market Status", `${period ? freeAgencyStageLabel(period.current_stage) : "Not Started"}${data.freeAgencyGeneratedAt ? ` | refreshed ${shortDateTime(data.freeAgencyGeneratedAt.replace("T", " "))}` : ""}`);
     if (state.freeAgencyLoading) {
       panelBody(status).append(node("div", "empty-state", "Refreshing live free agency..."));
     }
@@ -2482,6 +2585,7 @@
       metric("Available", String(fa.counts.available || 0), "Market pool"),
       metric("Signed", String(fa.counts.signed || 0), "Processor signings"),
       metric("Pending Offers", String(fa.counts.pendingOffers || 0), "Awaiting decisions", fa.counts.pendingOffers ? "warn" : ""),
+      metric(`${userTeam} Cap`, money(capSpace), `Current ${currentCap.season || data.currentSeason || ""}`.trim(), capSpace < 0 ? "bad" : ""),
       metric("Clock", period ? `${shortDate(period.current_date)} ${period.current_stage === "day_one_hourly" ? `${period.current_hour}:00` : ""}` : shortDate(fa.startDate), period ? "FA state" : "Scheduled start"),
     ]);
     panelBody(status).append(metrics);
@@ -2506,21 +2610,51 @@
     append(grid, [controlsPanel, eventPanel]);
     root.append(grid);
 
-    const boardRows = (fa.board || []).filter((player) => !player.market_status || player.market_status === "available");
-    const boardPanel = panel("Top Market", `${boardRows.length || 0} available`);
-    panelBody(boardPanel).append(table(["Player", "Pos", "Tier", "Ask", "Pref", "Leading Bid", "Offers", "Action"], boardRows.slice(0, 30).map((player) => [
-      smallPlayerCell(player.player_id, player.player_name, `${player.age || "-"} | ${player.college || ""}`, {
-        team: player.previous_team || player.team,
-        position: player.position,
-      }),
-      player.position,
-      player.market_tier,
-      money(player.asking_aav),
-      freeAgencyPreferenceCell(player),
-      leadingBidCell(player),
-      String(player.pending_offers || 0),
-      freeAgencyOfferButton(player),
-    ])));
+    const availableRows = (fa.board || []).filter((player) => !player.market_status || player.market_status === "available");
+    const positions = [...new Set(availableRows.map((player) => player.position).filter(Boolean))]
+      .sort(footballPositionSort);
+    const activePosition = positions.includes(state.freeAgencyPositionFilter) ? state.freeAgencyPositionFilter : "all";
+    state.freeAgencyPositionFilter = activePosition;
+    const positionRows = activePosition === "all"
+      ? availableRows
+      : availableRows.filter((player) => player.position === activePosition);
+    const tiers = freeAgencyTierOptions(availableRows);
+    const activeTier = tiers.some((tier) => tier.value === state.freeAgencyTierFilter) ? state.freeAgencyTierFilter : "all";
+    state.freeAgencyTierFilter = activeTier;
+    const boardRows = activeTier === "all"
+      ? positionRows
+      : positionRows.filter((player) => freeAgencyTierValue(player.market_tier) === activeTier);
+    const boardPanel = panel("Top Market", marketPanelKicker(activePosition, activeTier, boardRows.length, availableRows.length));
+    const filterRow = node("div", "fa-board-toolbar");
+    const filterLabel = node("label", "fa-position-filter");
+    filterLabel.append(node("span", null, "Position"));
+    const select = node("select");
+    select.append(node("option", null, "All positions"));
+    select.firstChild.value = "all";
+    positions.forEach((position) => {
+      const option = node("option", null, position);
+      option.value = position;
+      select.append(option);
+    });
+    select.value = activePosition;
+    select.addEventListener("change", () => {
+      state.freeAgencyPositionFilter = select.value;
+      render();
+    });
+    filterLabel.append(select);
+    const tierTabs = node("div", "fa-tier-tabs");
+    tiers.forEach((tier) => {
+      const tab = node("button", `fa-tier-tab ${tier.value === activeTier ? "active" : ""}`.trim(), `${tier.label} ${tier.count}`);
+      tab.type = "button";
+      tab.addEventListener("click", () => {
+        state.freeAgencyTierFilter = tier.value;
+        render();
+      });
+      tierTabs.append(tab);
+    });
+    filterRow.append(filterLabel, tierTabs);
+    panelBody(boardPanel).append(filterRow);
+    panelBody(boardPanel).append(freeAgencyMarketGrid(boardRows.slice(0, 36), capSpace));
     root.append(boardPanel);
     const output = runnerOutputPanel();
     if (output) root.append(output);
@@ -2540,6 +2674,96 @@
     return wrap;
   }
 
+  function freeAgencyTierValue(value) {
+    const text = String(value || "").toLowerCase();
+    if (text.includes("premium") || text.includes("elite")) return "premium";
+    if (text.includes("starter")) return "starter";
+    if (text.includes("rotation")) return "rotation";
+    if (text.includes("depth")) return "depth";
+    return "other";
+  }
+
+  function freeAgencyTierOptions(players) {
+    const counts = { all: players.length, premium: 0, starter: 0, rotation: 0, depth: 0, other: 0 };
+    players.forEach((player) => {
+      counts[freeAgencyTierValue(player.market_tier)] += 1;
+    });
+    return [
+      { value: "all", label: "All", count: counts.all },
+      { value: "premium", label: "Premium", count: counts.premium },
+      { value: "starter", label: "Starters", count: counts.starter },
+      { value: "rotation", label: "Rotation", count: counts.rotation },
+      { value: "depth", label: "Depth", count: counts.depth },
+    ].filter((tier) => tier.value === "all" || tier.count > 0);
+  }
+
+  function marketPanelKicker(position, tier, shown, total) {
+    const bits = [];
+    if (tier !== "all") bits.push(tier[0].toUpperCase() + tier.slice(1));
+    if (position !== "all") bits.push(position);
+    bits.push(`${shown}/${total} shown`);
+    return bits.join(" | ");
+  }
+
+  function freeAgencyMarketGrid(players, capSpace) {
+    if (!players.length) return node("div", "empty-state", "No free agents match these filters.");
+    const grid = node("div", "fa-market-grid");
+    players.forEach((player) => grid.append(freeAgencyMarketCard(player, capSpace)));
+    return grid;
+  }
+
+  function freeAgencyMarketCard(player, capSpace) {
+    const card = node("article", "fa-market-card");
+    const ask = Number(player.asking_aav || player.offer_floor_aav || 0);
+    const capAfter = Number(capSpace || 0) - ask;
+    const top = node("div", "fa-market-card-top");
+    append(top, [
+      append(node("div", "fa-player-main"), [
+        smallPlayerCell(player.player_id, player.player_name, `${player.age || "-"} | ${player.previous_team || player.team || "FA"}`, {
+          team: player.previous_team || player.team,
+          position: player.position,
+        }),
+        append(node("div", "fa-card-tags"), [
+          tag(player.position || "-"),
+          tag(player.market_tier || "Market"),
+          freeAgencyPreferenceTag(player),
+        ]),
+      ]),
+      append(node("div", "fa-ask-box"), [
+        node("span", null, "Ask"),
+        node("strong", null, money(ask)),
+        node("small", capAfter < 0 ? `${money(Math.abs(capAfter))} over cap` : `${money(capAfter)} after`),
+      ]),
+    ]);
+    const middle = node("div", "fa-card-intel");
+    append(middle, [
+      freeAgencyIntelItem("Leader", leadingBidText(player)),
+      freeAgencyIntelItem("Offers", String(player.pending_offers || 0)),
+      freeAgencyIntelItem("Years", `${player.contract_year_preference || player.preferred_years || 1}`),
+      freeAgencyIntelItem("Role", `${player.role_priority || 10}/20`),
+    ]);
+    append(card, [top, middle, freeAgencyOfferButton(player)]);
+    return card;
+  }
+
+  function freeAgencyIntelItem(label, value) {
+    return append(node("div", "fa-intel-item"), [
+      node("span", null, label),
+      node("strong", null, value || "-"),
+    ]);
+  }
+
+  function leadingBidText(player) {
+    if (!player.best_aav) return "No bid";
+    return `${player.best_offer_team || "-"} ${money(player.best_aav)}`;
+  }
+
+  function freeAgencyPreferenceTag(player) {
+    const archetype = String(player.preference_archetype || "balanced").replaceAll("_", " ");
+    const tone = archetype.includes("money") ? "warn" : archetype.includes("ring") ? "good" : "";
+    return tag(archetype, tone);
+  }
+
   function freeAgencyPreferenceCell(player) {
     const wrap = node("span", "fa-preference-cell");
     const archetype = String(player.preference_archetype || "balanced").replaceAll("_", " ");
@@ -2551,7 +2775,7 @@
   function freeAgencyOfferButton(player) {
     const wrap = node("span", "fa-offer-controls");
     const defaultYears = Number(player.contract_year_preference || player.preferred_years || 1);
-    const defaultAav = Number(player.asking_aav || player.minimum_aav || 0);
+    const defaultAav = Number(player.offer_floor_aav || Math.max(Number(player.asking_aav || 0), Number(player.minimum_aav || 0)));
     const guaranteePct = Number(player.guarantee_pct || 0);
 
     const yearsInput = node("input", "offer-input offer-years");
@@ -2573,26 +2797,17 @@
       const years = Math.max(1, Math.min(5, Number(yearsInput.value || defaultYears || 1)));
       const aav = Math.max(0, Number(aavInput.value || defaultAav || 0));
       const bonus = roundTo(aav * years * 0.08, 50_000);
-      const command = (data.commands?.freeAgencyOffer || "")
-        .replace("<id>", player.player_id)
-        .replace("<years>", years)
-        .replace("<aav>", aav);
       return {
         years,
         aav,
         bonus,
-        command: `${command} --bonus ${bonus} --guarantee-pct ${guaranteePct}`,
       };
     };
 
-    const copy = node("button", "copy-button", "Copy");
-    copy.type = "button";
-    copy.addEventListener("click", () => navigator.clipboard?.writeText(currentOffer().command));
     wrap.append(node("span", "offer-label", "Yrs"));
     wrap.append(yearsInput);
     wrap.append(node("span", "offer-label", "AAV"));
     wrap.append(aavInput);
-    wrap.append(copy);
     if (runnerMode()) {
       const run = node("button", "run-button", state.runnerBusy ? "Running" : "Offer");
       run.type = "button";
@@ -2608,6 +2823,12 @@
           cpu_response_offers: 2,
         });
       });
+      wrap.append(run);
+    } else {
+      const run = node("button", "run-button", "Offer");
+      run.type = "button";
+      run.disabled = true;
+      run.title = "Live actions are unavailable.";
       wrap.append(run);
     }
     return wrap;
@@ -2659,7 +2880,6 @@
 
     const expiringPanel = panel("Expiring Players", `${(talks.expiring || []).length} shown`);
     const expiringBody = panelBody(expiringPanel);
-    expiringBody.append(commandBox("List Expiring", commands.contractList || ""));
     expiringBody.append(table(["Player", "Pos", "Age", "Role", "Current", "Ask", "Years", "Priority", "Action"], (talks.expiring || []).map((player) => [
       playerLink(player.player_id, player.player_name, undefined, { team: talks.team, position: player.position }),
       player.position,
@@ -2710,12 +2930,6 @@
 
   function contractExtendButton(player) {
     const wrap = node("span", "action-cell");
-    const base = (data.commands?.contractExtend || "").replace("<id>", player.player_id);
-    const command = `${base} --years ${player.suggested_years || 1} --aav ${player.asking_aav || 0}`;
-    const copy = node("button", "copy-button", "Copy");
-    copy.type = "button";
-    copy.addEventListener("click", () => navigator.clipboard?.writeText(command));
-    wrap.append(copy);
     if (runnerMode()) {
       const run = node("button", "run-button", state.runnerBusy ? "Running" : "Extend");
       run.type = "button";
@@ -2726,17 +2940,18 @@
         aav: player.asking_aav || 0,
       }));
       wrap.append(run);
+    } else {
+      const run = node("button", "run-button", "Extend");
+      run.type = "button";
+      run.disabled = true;
+      run.title = "Live actions are unavailable.";
+      wrap.append(run);
     }
     return wrap;
   }
 
   function contractReleaseButton(player) {
     const wrap = node("span", "action-cell");
-    const base = (data.commands?.contractRelease || "").replace("<id>", player.player_id);
-    const copy = node("button", "copy-button", "Copy");
-    copy.type = "button";
-    copy.addEventListener("click", () => navigator.clipboard?.writeText(base));
-    wrap.append(copy);
     if (runnerMode()) {
       const run = node("button", "run-button danger", state.runnerBusy ? "Running" : "Release");
       run.type = "button";
@@ -2745,18 +2960,18 @@
         player_id: player.player_id,
       }));
       wrap.append(run);
+    } else {
+      const run = node("button", "run-button danger", "Release");
+      run.type = "button";
+      run.disabled = true;
+      run.title = "Live actions are unavailable.";
+      wrap.append(run);
     }
     return wrap;
   }
 
   function contractRestructureButton(player) {
     const wrap = node("span", "action-cell");
-    const base = (data.commands?.contractRestructure || "").replace("<id>", player.player_id);
-    const command = `${base} --amount ${player.suggested_convert || 0}`;
-    const copy = node("button", "copy-button", "Copy");
-    copy.type = "button";
-    copy.addEventListener("click", () => navigator.clipboard?.writeText(command));
-    wrap.append(copy);
     if (runnerMode()) {
       const run = node("button", "run-button", state.runnerBusy ? "Running" : "Restructure");
       run.type = "button";
@@ -2765,6 +2980,12 @@
         player_id: player.player_id,
         amount: player.suggested_convert || 0,
       }));
+      wrap.append(run);
+    } else {
+      const run = node("button", "run-button", "Restructure");
+      run.type = "button";
+      run.disabled = true;
+      run.title = "Live actions are unavailable.";
       wrap.append(run);
     }
     return wrap;
@@ -2800,82 +3021,355 @@
     return slots[0];
   }
 
-  function renderDepthChart() {
+  function depthRoleName(rank) {
+    const value = Number(rank || 0);
+    if (value <= 1) return "Starter";
+    if (value === 2) return "Primary backup";
+    if (value === 3) return "Rotation";
+    return "Depth";
+  }
+
+  function depthRoleTone(rank) {
+    const value = Number(rank || 0);
+    if (value <= 1) return "good";
+    if (value === 2) return "warn";
+    return "";
+  }
+
+  function depthEligiblePlayers(depth, selected, limit) {
+    return [...(depth.roster || [])]
+      .sort((a, b) => {
+        const fit = Number(playerFitsSlot(b, selected.slot)) - Number(playerFitsSlot(a, selected.slot));
+        if (fit) return fit;
+        return Number(b.role?.score || 0) - Number(a.role?.score || 0);
+      })
+      .slice(0, limit || 24);
+  }
+
+  function depthPlayerCard(depth, selected, player) {
+    const card = node("article", "depth-player-card");
+    const roleScore = player.role?.score ? oneDecimal(player.role.score) : "-";
+    const header = node("div", "depth-player-card-top");
+    append(header, [
+      tag(`#${player.depth_rank}`, depthRoleTone(player.depth_rank)),
+      smallPlayerCell(player.player_id, player.player_name, `${player.position} | Age ${player.age || "-"}`, {
+        team: depth.team,
+        position: player.position,
+      }),
+      tag(depthRoleName(player.depth_rank), depthRoleTone(player.depth_rank)),
+    ]);
+    const detail = node("div", "depth-player-card-detail");
+    append(detail, [
+      node("span", null, `Role fit ${roleScore}`),
+      node("span", null, player.role?.key ? roleLabel(player.role.key) : "No role read"),
+    ]);
+    const controls = node("div", "depth-player-card-controls");
+    append(controls, [
+      depthMoveButtons(selected.slot, player),
+      depthReplacementControl(selected.slot, player.depth_rank, depth.roster || [], player.player_id),
+    ]);
+    append(card, [header, detail, controls]);
+    return card;
+  }
+
+  function depthSlotButton(depth, selected, slot) {
+    const button = node("button", `slot-card ${slot.slot === selected?.slot ? "active" : ""}`.trim());
+    button.type = "button";
+    const starter = (slot.players || [])[0];
+    append(button, [
+      node("strong", null, slot.slot),
+      node("span", null, starter ? starter.player_name : "Empty"),
+      node("small", null, `${(slot.players || []).length} deep${starter?.position ? ` | ${starter.position}` : ""}`),
+    ]);
+    button.addEventListener("click", () => {
+      state.selectedDepthSlot = slot.slot;
+      render();
+    });
+    return button;
+  }
+
+  function depthRoomSummary(depth, selected) {
+    const summary = node("div", "depth-room-summary");
+    const selectedPlayers = selected?.players || [];
+    const starter = selectedPlayers[0];
+    const eligible = selected ? depthEligiblePlayers(depth, selected, 6) : [];
+    append(summary, [
+      metric("Slot", selected?.slot || "-", selected ? `${selectedPlayers.length} assigned` : "Choose a position"),
+      metric("Starter", starter?.player_name || "-", starter ? `${starter.position} | Age ${starter.age || "-"}` : "No player assigned"),
+      metric("Best Fit", eligible[0]?.player_name || "-", eligible[0] ? `${eligible[0].position} | ${eligible[0].role?.score ? oneDecimal(eligible[0].role.score) : "-"} role fit` : "No roster read"),
+      metric("Roster", String((depth.roster || []).length), "Active players"),
+    ]);
+    return summary;
+  }
+
+  function rosterDepthMap(depth) {
+    const map = new Map();
+    (depth.units || []).forEach((unit) => {
+      (unit.slots || []).forEach((slot) => {
+        (slot.players || []).forEach((player) => {
+          const id = String(player.player_id);
+          const existing = map.get(id) || [];
+          existing.push({
+            unit: unit.unit,
+            slot: slot.slot,
+            rank: Number(player.depth_rank || 0),
+            role: depthRoleName(player.depth_rank),
+          });
+          map.set(id, existing);
+        });
+      });
+    });
+    return map;
+  }
+
+  function rosterContractMap() {
+    const talks = data.contractNegotiations || {};
+    const map = new Map();
+    const merge = (player, type) => {
+      if (!player?.player_id) return;
+      const id = String(player.player_id);
+      map.set(id, { ...(map.get(id) || {}), ...player, type });
+    };
+    (talks.expiring || []).forEach((player) => merge(player, "Expiring"));
+    (talks.capCasualties || []).forEach((player) => merge(player, "Cap Watch"));
+    (talks.restructureCandidates || []).forEach((player) => merge(player, "Restructure"));
+    return map;
+  }
+
+  function rosterRows(depth) {
+    const depthMap = rosterDepthMap(depth);
+    const contractMap = rosterContractMap();
+    return (depth.roster || []).map((player) => {
+      const assignments = depthMap.get(String(player.player_id)) || [];
+      const primary = assignments
+        .filter((item) => item.rank > 0)
+        .sort((a, b) => a.rank - b.rank)[0];
+      const contract = contractMap.get(String(player.player_id)) || {};
+      return {
+        ...player,
+        assignments,
+        primaryAssignment: primary,
+        roleScore: Number(player.role?.score || 0),
+        contract,
+      };
+    });
+  }
+
+  function rosterSortValue(player, key) {
+    if (key === "name") return String(player.player_name || "");
+    if (key === "pos") return FOOTBALL_POSITION_ORDER.indexOf(player.position) >= 0 ? FOOTBALL_POSITION_ORDER.indexOf(player.position) : 99;
+    if (key === "age") return Number(player.age || 0);
+    if (key === "status") return String(player.status || "");
+    if (key === "depth") return Number(player.primaryAssignment?.rank || 99);
+    return Number(player.roleScore || 0);
+  }
+
+  function sortedRosterRows(rows) {
+    const { key, direction } = state.rosterSort || { key: "role", direction: "desc" };
+    const dir = direction === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = rosterSortValue(a, key);
+      const bv = rosterSortValue(b, key);
+      if (typeof av === "string" || typeof bv === "string") return String(av).localeCompare(String(bv)) * dir;
+      if (av !== bv) return (av - bv) * dir;
+      return footballPositionSort(a.position, b.position) || String(a.player_name || "").localeCompare(String(b.player_name || ""));
+    });
+  }
+
+  function rosterSortButton(label, key) {
+    const active = state.rosterSort?.key === key;
+    const direction = active ? state.rosterSort.direction : "desc";
+    const button = node("button", `table-sort-button ${active ? "active" : ""}`.trim(), `${label}${active ? (direction === "asc" ? " ↑" : " ↓") : ""}`);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      state.rosterSort = {
+        key,
+        direction: active && direction === "desc" ? "asc" : "desc",
+      };
+      render();
+    });
+    return button;
+  }
+
+  function rosterPositionFilter(rows) {
+    const positions = [...new Set(rows.map((player) => player.position).filter(Boolean))].sort(footballPositionSort);
+    const active = positions.includes(state.rosterPositionFilter) ? state.rosterPositionFilter : "all";
+    state.rosterPositionFilter = active;
+    const wrap = node("label", "roster-filter");
+    append(wrap, [node("span", null, "Position")]);
+    const select = node("select");
+    select.append(node("option", null, "All positions"));
+    select.firstChild.value = "all";
+    positions.forEach((position) => {
+      const option = node("option", null, position);
+      option.value = position;
+      option.selected = position === active;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.rosterPositionFilter = select.value;
+      render();
+    });
+    wrap.append(select);
+    return wrap;
+  }
+
+  function rosterStatusFilter(rows) {
+    const statuses = [...new Set(rows.map((player) => player.status || "Active"))].sort();
+    const active = statuses.includes(state.rosterStatusFilter) ? state.rosterStatusFilter : "all";
+    state.rosterStatusFilter = active;
+    const wrap = node("label", "roster-filter");
+    append(wrap, [node("span", null, "Status")]);
+    const select = node("select");
+    select.append(node("option", null, "All statuses"));
+    select.firstChild.value = "all";
+    statuses.forEach((status) => {
+      const option = node("option", null, status);
+      option.value = status;
+      option.selected = status === active;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.rosterStatusFilter = select.value;
+      render();
+    });
+    wrap.append(select);
+    return wrap;
+  }
+
+  function rosterCard(depth, player) {
+    const card = node("article", "roster-card");
+    const roleScore = player.roleScore ? oneDecimal(player.roleScore) : "-";
+    const assignment = player.primaryAssignment;
+    const contract = player.contract || {};
+    const top = node("div", "roster-card-top");
+    append(top, [
+      smallPlayerCell(player.player_id, player.player_name, `${player.position} | Age ${player.age || "-"}`, {
+        team: depth.team,
+        position: player.position,
+      }),
+      tag(player.is_rookie ? "Rookie" : (assignment?.role || "Reserve"), player.is_rookie ? "warn" : depthRoleTone(assignment?.rank)),
+    ]);
+    const facts = node("div", "roster-card-facts");
+    append(facts, [
+      metric("Role Fit", roleScore, player.role?.key ? roleLabel(player.role.key) : "No role read"),
+      metric("Depth", assignment ? `${assignment.slot} #${assignment.rank}` : "Unassigned", assignment?.unit || "Not on chart", assignment?.rank === 1 ? "good" : ""),
+      metric("Status", player.status || "Active", player.is_rookie ? "Rookie" : "Veteran"),
+      metric("Contract", contract.type || "Rostered", contract.end_year ? `Through ${contract.end_year}` : (contract.market_tier || "No alert")),
+    ]);
+    const assignments = node("div", "roster-assignment-strip");
+    (player.assignments || []).slice(0, 5).forEach((item) => {
+      assignments.append(tag(`${item.slot} #${item.rank}`, depthRoleTone(item.rank)));
+    });
+    if (!assignments.children.length) assignments.append(tag("No depth role", ""));
+    append(card, [top, facts, assignments]);
+    return card;
+  }
+
+  function renderRosterHub() {
     const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
-    setHeader("Depth Chart", `Adjust ${team}'s playable depth chart. These changes write to the active save.`);
+    setHeader("Roster Hub", `Scan ${team}'s roster, roles, contracts, and depth-chart status from one screen.`);
     const root = document.createDocumentFragment();
     const depth = data.depthChart || { rows: [], roster: [], units: [] };
-    const selected = selectedDepthSlot(depth);
-    const commands = data.commands || {};
     if (runnerMode() && state.depthChartLiveKey !== depthChartLiveKey() && !state.depthChartLoading) {
       loadLiveDepthChart().then(render);
     }
-
-    const summary = panel("Depth Snapshot", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
+    const rows = rosterRows(depth);
+    const starters = rows.filter((player) => player.primaryAssignment?.rank === 1).length;
+    const rookies = rows.filter((player) => player.is_rookie).length;
+    const contractAlerts = rows.filter((player) => player.contract?.type).length;
+    const summary = panel("Roster Desk", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
     if (state.depthChartLoading) {
-      panelBody(summary).append(node("div", "empty-state", "Refreshing live depth chart..."));
+      panelBody(summary).append(node("div", "empty-state", "Refreshing live roster..."));
     }
-    const metrics = node("section", "metric-grid");
+    const metrics = node("section", "metric-grid roster-metrics");
     append(metrics, [
-      metric("Roster", String((depth.roster || []).length), "Available players"),
-      metric("Depth Rows", String((depth.rows || []).length), "Assigned slots"),
-      metric("Selected Slot", selected?.slot || "-", selected ? `${selected.players?.length || 0} players` : "Choose a slot"),
-      metric("Team", depth.team || team, "Active save"),
+      metric("Players", String(rows.length), "Active roster pool"),
+      metric("Starters", String(starters), "Current depth chart #1s"),
+      metric("Rookies", String(rookies), "Development watch"),
+      metric("Contract Alerts", String(contractAlerts), "Expiring, cap, or restructure watch", contractAlerts ? "warn" : ""),
     ]);
     panelBody(summary).append(metrics);
     root.append(summary);
 
+    const board = panel("Roster Board", "Filter and sort");
+    const body = panelBody(board);
+    const toolbar = node("div", "roster-toolbar");
+    const depthLink = node("button", "run-button compact", "Open Depth Chart");
+    depthLink.type = "button";
+    depthLink.addEventListener("click", () => {
+      state.view = "depth";
+      render();
+    });
+    append(toolbar, [
+      rosterPositionFilter(rows),
+      rosterStatusFilter(rows),
+      depthLink,
+    ]);
+    body.append(toolbar);
+    const activeRows = rows
+      .filter((player) => state.rosterPositionFilter === "all" || player.position === state.rosterPositionFilter)
+      .filter((player) => state.rosterStatusFilter === "all" || (player.status || "Active") === state.rosterStatusFilter);
+    const sortBar = node("div", "roster-sort-bar");
+    append(sortBar, [
+      rosterSortButton("Role", "role"),
+      rosterSortButton("Depth", "depth"),
+      rosterSortButton("Position", "pos"),
+      rosterSortButton("Age", "age"),
+      rosterSortButton("Name", "name"),
+      rosterSortButton("Status", "status"),
+    ]);
+    body.append(sortBar);
+    const grid = node("div", "roster-card-grid");
+    sortedRosterRows(activeRows).forEach((player) => grid.append(rosterCard(depth, player)));
+    body.append(grid.children.length ? grid : node("div", "empty-state", "No players match the current filters."));
+    root.append(board);
+    finishRender(root);
+  }
+
+  function renderDepthChart() {
+    const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
+    setHeader("Depth Chart", `Set roles and position rooms for ${team}. Changes write to the active save.`);
+    const root = document.createDocumentFragment();
+    const depth = data.depthChart || { rows: [], roster: [], units: [] };
+    const selected = selectedDepthSlot(depth);
+    if (runnerMode() && state.depthChartLiveKey !== depthChartLiveKey() && !state.depthChartLoading) {
+      loadLiveDepthChart().then(render);
+    }
+
+    const summary = panel("Coach Room", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
+    if (state.depthChartLoading) {
+      panelBody(summary).append(node("div", "empty-state", "Refreshing live depth chart..."));
+    }
+    panelBody(summary).append(depthRoomSummary(depth, selected));
+    root.append(summary);
+
     const layout = node("div", "depth-editor-layout");
-    const slotsPanel = panel("Slots", "Click a slot to edit");
+    const slotsPanel = panel("Position Rooms", "Choose a room");
     const slotBody = panelBody(slotsPanel);
     (depth.units || []).forEach((unit) => {
       const unitTitle = node("h3", "subsection-title", unit.unit);
       slotBody.append(unitTitle);
       const slotGrid = node("div", "slot-grid");
       (unit.slots || []).forEach((slot) => {
-        const button = node("button", `slot-card ${slot.slot === selected?.slot ? "active" : ""}`.trim());
-        button.type = "button";
-        const starter = (slot.players || [])[0];
-        append(button, [
-          node("strong", null, slot.slot),
-          node("span", null, starter ? starter.player_name : "Empty"),
-          node("small", null, `${(slot.players || []).length} deep`),
-        ]);
-        button.addEventListener("click", () => {
-          state.selectedDepthSlot = slot.slot;
-          render();
-        });
-        slotGrid.append(button);
+        slotGrid.append(depthSlotButton(depth, selected, slot));
       });
       slotBody.append(slotGrid);
     });
 
-    const editorPanel = panel(selected ? `${selected.slot} Slot` : "Slot Editor", "Move or replace");
+    const editorPanel = panel(selected ? `${selected.slot} Room` : "Depth Board", "Adjust roles");
     const editorBody = panelBody(editorPanel);
     if (!selected) {
       editorBody.append(node("div", "empty-state", "No depth chart slots are available."));
     } else {
-      editorBody.append(commandBox("Show Depth Chart", commands.depthChartShow || ""));
-      const rows = (selected.players || []).map((player) => [
-        `#${player.depth_rank}`,
-        smallPlayerCell(player.player_id, player.player_name, `${player.position} | Age ${player.age || "-"}`, {
-          team: depth.team,
-          position: player.position,
-        }),
-        player.role?.score ? `${oneDecimal(player.role.score)} ${roleLabel(player.role.key)}` : "-",
-        depthMoveButtons(selected.slot, player),
-        depthReplacementControl(selected.slot, player.depth_rank, depth.roster || [], player.player_id),
-      ]);
-      editorBody.append(table(["Rank", "Player", "Role Fit", "Move", "Replace With"], rows));
+      const assigned = node("div", "depth-player-stack");
+      (selected.players || []).forEach((player) => {
+        assigned.append(depthPlayerCard(depth, selected, player));
+      });
+      editorBody.append(sectionBlock("Assigned Roles", assigned));
 
       const rosterPanel = node("div", "depth-roster-strip");
-      const eligible = [...(depth.roster || [])]
-        .sort((a, b) => {
-          const fit = Number(playerFitsSlot(b, selected.slot)) - Number(playerFitsSlot(a, selected.slot));
-          if (fit) return fit;
-          return Number(b.role?.score || 0) - Number(a.role?.score || 0);
-        })
-        .slice(0, 18);
+      const eligible = depthEligiblePlayers(depth, selected, 24);
       eligible.forEach((player) => {
         const item = node("div", `depth-roster-chip ${playerFitsSlot(player, selected.slot) ? "fit" : ""}`.trim());
         append(item, [
@@ -2883,7 +3377,7 @@
             team: depth.team,
             position: player.position,
           }),
-          node("span", null, `${player.position} | ${player.role?.score ? oneDecimal(player.role.score) : "-"}`),
+          node("span", null, `${player.position} | ${player.role?.score ? oneDecimal(player.role.score) : "-"} role fit${playerFitsSlot(player, selected.slot) ? " | natural fit" : ""}`),
         ]);
         rosterPanel.append(item);
       });
@@ -2891,9 +3385,6 @@
     }
     append(layout, [slotsPanel, editorPanel]);
     root.append(layout);
-
-    const output = runnerOutputPanel();
-    if (output) root.append(output);
     finishRender(root);
   }
 
@@ -2946,7 +3437,7 @@
   }
 
   function renderDraft() {
-    setHeader("Draft Room", "Pause the clock, inspect the board, make your pick, or skip CPU picks until your team is on the clock.");
+    setHeader("Draft Room", "Run the war room, track the board, make your pick, or let CPU teams move until your turn arrives.");
     const root = document.createDocumentFragment();
     const draft = data.draft || { pickTotals: {}, board: [], pickQueue: [], events: [] };
     if (runnerMode() && state.draftLiveKey !== draftLiveKey() && !state.draftLoading) {
@@ -2955,7 +3446,14 @@
     const stateRow = draft.state;
     const board = draft.board || [];
     const sortedBoard = sortedDraftBoard(board);
-    const selected = selectedDraftProspect(sortedBoard);
+    const draftPositions = [...new Set(board.map((player) => player.position).filter(Boolean))]
+      .sort(footballPositionSort);
+    const activeDraftPosition = draftPositions.includes(state.draftBoardPositionFilter) ? state.draftBoardPositionFilter : "all";
+    state.draftBoardPositionFilter = activeDraftPosition;
+    const visibleDraftBoard = activeDraftPosition === "all"
+      ? sortedBoard
+      : sortedBoard.filter((player) => player.position === activeDraftPosition);
+    const selected = selectedDraftProspect(visibleDraftBoard);
     const status = panel("Room Status", `Draft ${draft.year || ""}${data.draftGeneratedAt ? ` | refreshed ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : ""}`);
     if (state.draftLoading) {
       panelBody(status).append(node("div", "empty-state", "Refreshing live draft room..."));
@@ -2965,15 +3463,16 @@
     }
     const metrics = node("section", "metric-grid compact-metrics");
     append(metrics, [
-      metric("Room", stateRow ? stateRow.status : "Not Started", stateRow ? stateRow.clock_status : "Run start command"),
+      metric("Room", stateRow ? stateRow.status : "Not Started", stateRow ? stateRow.clock_status : "Open the draft room"),
       metric("Current Pick", stateRow?.current_pick_number ? `#${stateRow.current_pick_number}` : "-", stateRow?.current_team || "No team on clock"),
       metric("Picks Used", `${draft.pickTotals.used || 0}/${draft.pickTotals.total || 0}`, `${draft.pickTotals.remaining || 0} remaining`),
       metric("Draft Order", draft.orderFinalized === false ? "Not Final" : "Final", draft.orderFinalized === false ? `${draft.orderSlotCount || 0}/32 slots` : "Postseason order"),
-      metric("Clock", stateRow ? `${stateRow.seconds_remaining || 0}s` : "-", "Stored state only"),
-      metric("Live State", state.draftLoading ? "Refreshing" : "Ready", data.draftGeneratedAt ? `Updated ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : "Live API"),
+      metric("Clock", stateRow ? `${stateRow.seconds_remaining || 0}s` : "-", "Draft clock"),
+      metric("Board", state.draftLoading ? "Refreshing" : "Ready", data.draftGeneratedAt ? `Updated ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : "Latest board"),
     ]);
     panelBody(status).append(metrics);
     root.append(status);
+    root.append(draftWarRoomPanel(draft, visibleDraftBoard, selected));
 
     const commands = data.commands || {};
     root.append(nextStepPanel(
@@ -3006,14 +3505,70 @@
     root.append(draftUserSelectionsPanel(draft.userSelections || [], draft));
 
     const draftLayout = node("div", "draft-layout");
-    const boardPanel = panel("Draft Board", `${board.length || 0} shown`);
-    panelBody(boardPanel).append(draftBoardTable(sortedBoard.slice(0, 100), selected));
+    const boardPanel = panel(
+      "Draft Board",
+      activeDraftPosition === "all"
+        ? `${visibleDraftBoard.length || 0} shown`
+        : `${visibleDraftBoard.length || 0} ${activeDraftPosition}`
+    );
+    panelBody(boardPanel).append(draftBoardToolbar(board, visibleDraftBoard, draftPositions, activeDraftPosition));
+    panelBody(boardPanel).append(draftBoardTable(visibleDraftBoard, selected));
     append(draftLayout, [boardPanel, prospectCard(selected)]);
     root.append(draftLayout);
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
     window.requestAnimationFrame(() => centerCurrentDraftQueuePick());
+  }
+
+  function draftWarRoomPanel(draft, visibleBoard, selected) {
+    const draftState = draft?.state || null;
+    const userTeam = draftState?.user_team || data.activeSave?.user_team || "MIN";
+    const currentTeam = draftState?.current_team || "-";
+    const onClock = isUserOnClock();
+    const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
+    const boardTop = visibleBoard.slice(0, 8);
+    const highConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) >= 3).length;
+    const mediumConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) === 2).length;
+    const selectedName = selected?.player_name || `${selected?.first_name || ""} ${selected?.last_name || ""}`.trim() || "No prospect selected";
+    const panelEl = panel("War Room", onClock ? `${userTeam} on the clock` : draftState ? `${currentTeam} on the clock` : "Pre-Draft");
+    const body = panelBody(panelEl);
+    const top = node("div", "war-room-hero");
+    append(top, [
+      teamLogo((draft.pickQueue || [])[0]?.teamLogo, currentTeam, "war-room-logo"),
+      append(node("div", "war-room-copy"), [
+        node("span", "tag", draftState ? `Pick ${currentPick}` : `Draft ${draft?.year || ""}`),
+        node("strong", null, draftState ? (onClock ? "Your board is live" : `${currentTeam} is deciding`) : "Set the board before the clock starts"),
+        node("small", null, draftState
+          ? `${draft.pickTotals?.remaining || 0} picks remaining. Selected board target: ${selectedName}.`
+          : dateReached(draft?.draftDate) ? "Start the room when you are ready to pick through the class." : `Draft date ${shortDate(draft?.draftDate)}.`),
+      ]),
+      tag(onClock ? "Make A Pick" : draftState ? "CPU Clock" : "Setup", onClock ? "good" : draftState ? "warn" : ""),
+    ]);
+    const intel = node("div", "war-room-intel");
+    append(intel, [
+      metric("Visible Board", String(visibleBoard.length || 0), "Current filter"),
+      metric("High Confidence", String(highConfidence), `${mediumConfidence} medium`),
+      metric("Current Target", selected?.position || "-", selectedName),
+      metric("Your Picks", String((draft.userSelections || []).length), "Selections made"),
+    ]);
+    const targetStrip = node("div", "war-room-target-strip");
+    boardTop.forEach((player, index) => {
+      const chip = node("button", `war-room-target ${String(player.prospect_id) === String(selected?.prospect_id) ? "active" : ""}`.trim());
+      chip.type = "button";
+      chip.addEventListener("click", () => {
+        state.selectedDraftProspectId = player.prospect_id;
+        render();
+      });
+      append(chip, [
+        node("span", null, `#${player.public_board_rank || player.scouting_rank || index + 1}`),
+        node("strong", null, player.player_name || `${player.first_name || ""} ${player.last_name || ""}`.trim() || "Prospect"),
+        node("small", null, `${player.position || "-"} | ${player.scout_confidence || player.scouting_confidence || "Low"}`),
+      ]);
+      targetStrip.append(chip);
+    });
+    append(body, [top, intel, targetStrip.children.length ? targetStrip : null]);
+    return panelEl;
   }
 
   function centerCurrentDraftQueuePick() {
@@ -3170,6 +3725,45 @@
 
   function sortedDraftBoard(players) {
     const sort = state.draftBoardSort || { key: "rank", direction: "asc" };
+    return sortedProspectBoard(players, sort);
+  }
+
+  function sortedScoutingBoard(players) {
+    const sort = state.scoutingBoardSort || { key: "rank", direction: "asc" };
+    return sortedProspectBoard(players, sort);
+  }
+
+  function draftBoardToolbar(allPlayers, visiblePlayers, positions, activePosition) {
+    const filterRow = node("div", "draft-board-toolbar");
+    const filterLabel = node("label", "draft-position-filter");
+    filterLabel.append(node("span", null, "Position"));
+    const select = node("select");
+    const allOption = node("option", null, "All positions");
+    allOption.value = "all";
+    select.append(allOption);
+    positions.forEach((position) => {
+      const option = node("option", null, position);
+      option.value = position;
+      select.append(option);
+    });
+    select.value = activePosition;
+    select.addEventListener("change", () => {
+      state.draftBoardPositionFilter = select.value;
+      render();
+    });
+    filterLabel.append(select);
+    filterRow.append(filterLabel);
+    filterRow.append(node(
+      "span",
+      "quiet",
+      activePosition === "all"
+        ? `${allPlayers.length} prospects`
+        : `${visiblePlayers.length} ${activePosition} prospects`
+    ));
+    return filterRow;
+  }
+
+  function sortedProspectBoard(players, sort) {
     const direction = sort.direction === "desc" ? -1 : 1;
     return [...players].sort((a, b) => {
       const left = draftSortValue(a, sort.key);
@@ -3195,12 +3789,14 @@
       class: player.college_class || "",
       school: player.college || "",
       projection: projectedOverall,
+      role: roleLabel(player.primary_role || player.archetype),
       forty: firstNumber(player.forty_yard_dash),
       ten: firstNumber(player.ten_yard_split),
       vertical: firstNumber(player.vertical_jump_in),
       broad: firstNumber(player.broad_jump_in),
       athletic: firstNumber(player.athletic_score),
       grade: firstNumber(player.scout_grade),
+      potential: firstNumber(player.scout_ceiling),
       confidence: confidenceSortValue(player.scout_confidence || player.scouting_confidence),
       risk: riskSortValue(player.scout_risk),
       seniorBowl: seniorBowlSortValue(seniorBowlLabel(player)),
@@ -3271,8 +3867,9 @@
       ["vertical", "Vert"],
       ["broad", "Broad"],
       ["athletic", "Ath"],
-      ["grade", "Grade"],
-      ["confidence", "Conf"],
+      ["grade", "Rating"],
+      ["potential", "Potential"],
+      ["confidence", "Confidence"],
       ["risk", "Risk"],
       ["seniorBowl", "SB"],
       [null, "Pick"],
@@ -3303,7 +3900,8 @@
         inchesText(player.vertical_jump_in),
         inchesToFeetText(player.broad_jump_in),
         whole(player.athletic_score),
-        gradeCell(player),
+        valueOrDash(player.scout_grade),
+        valueOrDash(player.scout_ceiling),
         draftConfidenceCell(player),
         riskCell(player.scout_risk),
         seniorBowlTag(player),
@@ -3411,6 +4009,10 @@
     return Boolean(senior.processed) || dateReached(senior.eventDate);
   }
 
+  function combineStatusAvailable() {
+    return Boolean(data.scouting?.workoutVisibility?.combineAvailable);
+  }
+
   function seniorBowlTag(player) {
     const label = seniorBowlLabel(player);
     const tone = label === "Accepted" ? "good" : label === "Skipped" ? "warn" : "";
@@ -3457,18 +4059,23 @@
       ["Secondary", roleLabel(player.secondary_role)],
     ]));
 
-    body.append(sectionBlock("Combine", detailGrid([
-      ["Status", valueOrDash(player.combine_status)],
-      ["Athletic", valueOrDash(player.athletic_score)],
-      ["40", decimalOrDash(player.forty_yard_dash, 2)],
-      ["10", decimalOrDash(player.ten_yard_split, 2)],
-      ["Bench", valueOrDash(player.bench_press_reps)],
-      ["Vert", inchesText(player.vertical_jump_in)],
-      ["Broad", inchesToFeetText(player.broad_jump_in)],
-      ["3 Cone", decimalOrDash(player.three_cone_sec, 2)],
-      ["Shuttle", decimalOrDash(player.twenty_yard_shuttle_sec, 2)],
-      ["Medical", Number(player.combine_injured || 0) ? "Flag" : "Clear"],
-    ], "compact")));
+    if (combineStatusAvailable()) {
+      body.append(sectionBlock("Combine", detailGrid([
+        ["Status", valueOrDash(player.combine_status)],
+        ["Athletic", valueOrDash(player.athletic_score)],
+        ["40", decimalOrDash(player.forty_yard_dash, 2)],
+        ["10", decimalOrDash(player.ten_yard_split, 2)],
+        ["Bench", valueOrDash(player.bench_press_reps)],
+        ["Vert", inchesText(player.vertical_jump_in)],
+        ["Broad", inchesToFeetText(player.broad_jump_in)],
+        ["3 Cone", decimalOrDash(player.three_cone_sec, 2)],
+        ["Shuttle", decimalOrDash(player.twenty_yard_shuttle_sec, 2)],
+        ["Medical", Number(player.combine_injured || 0) ? "Flag" : "Clear"],
+      ], "compact")));
+    } else {
+      const workoutDate = data.scouting?.workoutVisibility?.combineDate || data.scouting?.workoutVisibility?.combineEndDate;
+      body.append(sectionBlock("Combine", node("div", "empty-state", workoutDate ? `Combine data unlocks after ${shortDate(workoutDate)}.` : "Combine data is not available yet.")));
+    }
 
     body.append(sectionBlock(
       "Scouted Attributes",
@@ -3551,16 +4158,12 @@
 
   function draftPickButton(player) {
     const wrap = node("span", "action-cell");
-    const command = (data.commands?.draftPick || "").replace("<id>", player.prospect_id);
     if (!runnerMode()) {
-      const copy = node("button", "copy-button", "Copy");
-      copy.type = "button";
-      copy.textContent = "Copy";
-      copy.addEventListener("click", (event) => {
-        event.stopPropagation();
-        navigator.clipboard?.writeText(command);
-      });
-      wrap.append(copy);
+      const unavailable = node("button", "run-button", "Pick");
+      unavailable.type = "button";
+      unavailable.disabled = true;
+      unavailable.title = "Live actions are unavailable.";
+      wrap.append(unavailable);
     } else {
       const userOnClock = isUserOnClock();
       const run = node("button", "run-button", state.runnerBusy ? "Running" : userOnClock ? "Pick" : "Wait");
@@ -3822,26 +4425,31 @@
 
     const used = scouting.actionsUsed || {};
     const choiceUsed = Boolean(scouting.weeklyChoiceUsed);
+    const actionStarted = Boolean(scouting.weeklyActionStarted);
+    const nonSpecificActionUsed = Boolean(scouting.nonSpecificActionUsed);
+    const specificUses = Number(scouting.actionUses?.specific || 0);
+    const specificLimit = Number(scouting.actionLimits?.specific || scouting.weeklyWindow?.specificCount || 2);
     const weeklyOpen = Boolean(scouting.weeklyWindow?.open);
     const closedReason = scouting.weeklyWindow?.reason || "Weekly scouting is currently closed.";
     const autoCount = Number(scouting.weeklyWindow?.autoAssignCount || 3);
     const randomCount = Number(scouting.weeklyWindow?.randomCount || 3);
+    const discoverRandomCount = Number(scouting.weeklyWindow?.discoverRandomCount || 2);
     const discoverCount = Number(scouting.weeklyWindow?.discoverCount || 4);
     body.append(scoutingWindowBanner(scouting, { weeklyOpen, closedReason, choiceUsed, autoCount }));
     const controls = node("div", "scouting-choice-grid");
     append(controls, [
-      scoutingActionButton(`Auto Assign ${autoCount}`, "scouting_auto", used.auto_assign, weeklyOpen ? `Staff advances ${autoCount} priority prospects one confidence tier.` : closedReason, !weeklyOpen || (choiceUsed && !used.auto_assign)),
-      scoutingActionButton(`Scout ${randomCount} Random`, "scouting_random_two", used.random_two, weeklyOpen ? `${randomCount} fresh cross-checks from the visible board.` : closedReason, !weeklyOpen || (choiceUsed && !used.random_two)),
+      scoutingActionButton(`Auto Assign ${autoCount}`, "scouting_auto", used.auto_assign, weeklyOpen ? `Staff advances ${autoCount} priority prospects one confidence tier.` : closedReason, !weeklyOpen || (actionStarted && !used.auto_assign)),
+      scoutingActionButton(`Scout ${randomCount} Random`, "scouting_random_two", used.random_two, weeklyOpen ? `${randomCount} fresh cross-checks from the visible board.` : closedReason, !weeklyOpen || (actionStarted && !used.random_two)),
       scoutingActionButton(
-        `Discover ${discoverCount} Non-Public`,
+        `Scout ${discoverRandomCount} + ${discoverCount} Discoveries`,
         "scouting_discover_four",
         used.discover_four,
-        !weeklyOpen ? closedReason : Number(scouting.counts?.hiddenRemaining || 0) <= 0 ? "No hidden prospects remain." : `Reveal ${discoverCount} off-board prospects at low confidence.`,
-        !weeklyOpen || (choiceUsed && !used.discover_four) || Number(scouting.counts?.hiddenRemaining || 0) <= 0,
+        !weeklyOpen ? closedReason : Number(scouting.counts?.hiddenRemaining || 0) <= 0 ? "No hidden prospects remain." : `Scout ${discoverRandomCount} random visible prospects and discover ${discoverCount} random off-board prospects at low confidence.`,
+        !weeklyOpen || (actionStarted && !used.discover_four) || Number(scouting.counts?.hiddenRemaining || 0) <= 0,
       ),
       append(node("div", "scouting-specific-card"), [
-        node("strong", null, "Scout Specific Player"),
-        node("small", null, !weeklyOpen ? closedReason : used.specific ? "Used this week." : choiceUsed ? "Weekly scouting choice already used." : "Use Scout Player on a prospect row."),
+        node("strong", null, `Scout ${specificLimit} Specific Players`),
+        node("small", null, !weeklyOpen ? closedReason : nonSpecificActionUsed ? "Weekly scouting choice already used." : `${Math.min(specificUses, specificLimit)}/${specificLimit} used. QB deep dives consume the full week.`),
       ]),
     ]);
 
@@ -3852,7 +4460,7 @@
     body.append(controlDeck);
     body.append(renderScoutingAudit(scouting.audit));
 
-    const visibleBoard = (scouting.board || []).slice(0, limit);
+    const visibleBoard = sortedScoutingBoard(scouting.board || []).slice(0, limit);
     const selected = selectedDraftProspect(visibleBoard);
     const layout = node("div", "scouting-layout");
     const boardPanel = panel("Visible Board", `${visibleBoard.length} shown`);
@@ -4041,6 +4649,9 @@
   }
 
   function actionCountText(scouting) {
+    const specificUses = Number(scouting.actionUses?.specific || 0);
+    const specificLimit = Number(scouting.actionLimits?.specific || scouting.weeklyWindow?.specificCount || 2);
+    if (specificUses > 0) return `${Math.min(specificUses, specificLimit)}/${specificLimit}`;
     return scouting.weeklyChoiceUsed ? "1/1" : "0/1";
   }
 
@@ -4063,16 +4674,38 @@
     const tableEl = node("table", "data-table scouting-board-table");
     const thead = node("thead");
     const headerRow = node("tr");
-    const headers = ["Rank", "Player", "Pos", "Ht/Wt", "Age", "Class", "School", "Proj", "Role", "Grade", "Scouted", "40", "Vert", "Ath", "Risk"];
-    if (showSeniorBowl) headers.push("SB");
-    headers.push("Latest", "Actions");
-    headers.forEach((header) => {
-      headerRow.append(node("th", null, header));
+    const showCombine = combineStatusAvailable();
+    const headers = [
+      ["rank", "Rank"],
+      ["player", "Player"],
+      ["position", "Pos"],
+      ["size", "Ht/Wt"],
+      ["age", "Age"],
+      ["class", "Class"],
+      ["school", "School"],
+      ["projection", "Proj"],
+      ["role", "Role"],
+      ["grade", "Rating"],
+      ["potential", "Potential"],
+      ["confidence", "Confidence"],
+    ];
+    if (showCombine) headers.push(["forty", "40"], ["vertical", "Vert"], ["athletic", "Ath"]);
+    headers.push(["risk", "Risk"]);
+    if (showSeniorBowl) headers.push(["seniorBowl", "SB"]);
+    headers.push([null, "Latest"], [null, "Actions"]);
+    headers.forEach(([key, label]) => {
+      const th = node("th");
+      th.append(key ? scoutingSortHeader(key, label) : node("span", null, label));
+      headerRow.append(th);
     });
     thead.append(headerRow);
     const tbody = node("tbody");
     prospects.forEach((prospect) => {
-      const tr = node("tr", String(prospect.prospect_id) === String(selected?.prospect_id) ? "selected-row" : "");
+      const rowClass = [
+        String(prospect.prospect_id) === String(selected?.prospect_id) ? "selected-row" : "",
+        prospect.queued ? "queued-scouting-row" : "",
+      ].filter(Boolean).join(" ");
+      const tr = node("tr", rowClass);
       tr.addEventListener("click", () => {
         state.selectedDraftProspectId = prospect.prospect_id;
         render();
@@ -4087,13 +4720,18 @@
         collegeCell(prospect),
         prospect.projected_round ? `R${prospect.projected_round}.${prospect.projected_pick || "-"}` : "-",
         roleLabel(prospect.primary_role || prospect.archetype),
-        gradeCell(prospect),
+        valueOrDash(prospect.scout_grade),
+        valueOrDash(prospect.scout_ceiling),
         scoutingConfidenceCell(prospect),
-        decimalOrDash(prospect.forty_yard_dash, 2),
-        inchesText(prospect.vertical_jump_in),
-        whole(prospect.athletic_score),
-        riskCell(prospect.scout_risk),
       ];
+      if (showCombine) {
+        cells.push(
+          decimalOrDash(prospect.forty_yard_dash, 2),
+          inchesText(prospect.vertical_jump_in),
+          whole(prospect.athletic_score),
+        );
+      }
+      cells.push(riskCell(prospect.scout_risk));
       if (showSeniorBowl) cells.push(seniorBowlTag(prospect));
       cells.push(
         scoutingLatestCell(prospect),
@@ -4110,6 +4748,28 @@
     append(tableEl, [thead, tbody]);
     wrap.append(tableEl);
     return wrap;
+  }
+
+  function scoutingSortHeader(key, label) {
+    const active = state.scoutingBoardSort?.key === key;
+    const direction = active ? state.scoutingBoardSort.direction : "asc";
+    const button = node("button", `table-sort-button ${active ? "active" : ""}`.trim());
+    button.type = "button";
+    button.title = `Sort scouting board by ${label}`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const current = state.scoutingBoardSort || {};
+      state.scoutingBoardSort = {
+        key,
+        direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
+      };
+      render();
+    });
+    append(button, [
+      node("span", null, label),
+      node("small", "sort-indicator", active ? (direction === "asc" ? "^" : "v") : "-"),
+    ]);
+    return button;
   }
 
   function scoutingProspectNameButton(prospect) {
@@ -4153,9 +4813,10 @@
     const grade = Number(prospect.scout_grade || 0);
     const ceiling = Number(prospect.scout_ceiling || 0);
     const variance = Number(prospect.scouting_variance || 0);
-    const athletic = Number(prospect.athletic_score || 0);
+    const workoutsAvailable = combineStatusAvailable();
+    const athletic = workoutsAvailable ? Number(prospect.athletic_score || 0) : 0;
     const risk = String(prospect.scout_risk || "").toLowerCase();
-    const status = String(prospect.combine_status || "");
+    const status = workoutsAvailable ? String(prospect.combine_status || "") : "";
     const isHidden = String(prospect.public_board_status || "") === "off_public_board"
       || String(prospect.visibility_status || "") === "discovered";
 
@@ -4169,9 +4830,11 @@
     }
     if (String(prospect.college_tier || "").toLowerCase().includes("international")) {
       return choose([
-        `${name}'s international path has scouts leaning harder on workouts and role projection than the board rank.`,
+        workoutsAvailable
+          ? `${name}'s international path has scouts leaning harder on verified athletic testing and role projection than the board rank.`
+          : `${name}'s international path has scouts leaning harder on tape context and role projection than the board rank.`,
         `Cross-checkers like the tools, but ${name}'s translation to an NFL ${role} role needs live exposure.`,
-        `${name} is generating quiet curiosity because the athletic profile is easier to like than the competition jump.`,
+        `${name} is generating quiet curiosity because the trait profile is easier to like than the competition jump.`,
       ], seed);
     }
     if (variance >= 75 || ceiling - grade >= 15) {
@@ -4185,20 +4848,20 @@
     if (status.toLowerCase().includes("injured") || Number(prospect.combine_injured || 0)) {
       return choose([
         `${name}'s medical file is driving the next check; the staff wants cleaner availability before moving him up.`,
-        `Latest note on ${name}: injury context matters more than the raw workout line right now.`,
+        `Latest note on ${name}: injury context matters more than the raw grade right now.`,
         `${name} still has fans in the room, but medical confidence is the swing factor.`,
       ], seed);
     }
     if (status.toLowerCase().includes("not invited")) {
       return choose([
-        `${name} missed the main workout circuit, so the staff is leaning on tape and any pro-day signal.`,
+        `${name} missed the main event circuit, so the staff is leaning on tape and any later pro-day signal.`,
         `No combine invite for ${name}; scouts want one more verified athletic data point before trusting the grade.`,
         `${name}'s file is mostly tape-driven right now, with workout confirmation still pending.`,
       ], seed);
     }
     if (athletic >= 82) {
       return choose([
-        `${name}'s workout numbers are starting to support the ${role} projection.`,
+        `${name}'s verified testing is starting to support the ${role} projection.`,
         `Athletic testing helped ${name}; the question is whether ${trait} shows up consistently on tape.`,
         `${name} has measurable juice, and scouts are checking whether the game speed matches the stopwatch.`,
         `Workout buzz is positive on ${name}, especially for teams that value ${trait}.`,
@@ -4263,23 +4926,31 @@
 
   function scoutingProspectActionButtons(prospect, options = {}) {
     const used = Boolean(data.scouting?.actionsUsed?.specific);
+    const specificUses = Number(data.scouting?.actionUses?.specific || 0);
+    const specificLimit = Number(data.scouting?.actionLimits?.specific || data.scouting?.weeklyWindow?.specificCount || 2);
+    const nonSpecificActionUsed = Boolean(data.scouting?.nonSpecificActionUsed);
     const weeklyChoiceUsed = Boolean(data.scouting?.weeklyChoiceUsed);
     const weeklyOpen = Boolean(data.scouting?.weeklyWindow?.open);
     const top30 = data.scouting?.top30 || {};
     const actions = node("div", "prospect-actions compact-prospect-actions");
-    const scoutButton = node("button", "copy-button mini-button", used ? "Used" : "Scout");
+    const queued = Boolean(prospect.queued);
+    const scoutButton = node("button", `copy-button mini-button ${queued ? "queued-button" : ""}`.trim(), queued ? "Selected" : used ? "Used" : "Scout");
     scoutButton.type = "button";
-    scoutButton.disabled = state.runnerBusy || !runnerMode() || !weeklyOpen || weeklyChoiceUsed || prospect.scouting_confidence === "Very High";
+    scoutButton.disabled = state.runnerBusy || !runnerMode() || !weeklyOpen || nonSpecificActionUsed || (!queued && specificUses >= specificLimit) || prospect.scouting_confidence === "Very High";
     scoutButton.title = !weeklyOpen
       ? data.scouting?.weeklyWindow?.reason || "Weekly scouting is locked right now."
-      : weeklyChoiceUsed
-      ? "This week's scouting choice has already been used."
+      : nonSpecificActionUsed
+      ? "This week's scouting choice has already been used on another scouting package."
+      : queued
+      ? "Selected for weekly scouting. Click to unselect before simming the week."
+      : specificUses >= specificLimit || weeklyChoiceUsed
+      ? "All specific-player scouting slots have already been used this week."
       : prospect.scouting_confidence === "Very High"
       ? "This player is already at very high confidence."
-      : "Scout this player.";
+      : `Scout this player. ${specificUses}/${specificLimit} specific scouts used this week.`;
     scoutButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      runAction("scouting_one", { prospect_id: prospect.prospect_id });
+      runAction(queued ? "scouting_unassign" : "scouting_one", { prospect_id: prospect.prospect_id });
     });
     const visitButton = node("button", "copy-button mini-button", prospect.top30_visit_id ? "Visited" : "Top 30");
     visitButton.type = "button";
@@ -4336,7 +5007,7 @@
       metric("Blocked", String(reviewStatusCounts.blocked || 0), "Needs follow-up", reviewStatusCounts.blocked ? "bad" : ""),
       metric("Model", config.model || "llama3.1:8b", config.endpoint || "Ollama default"),
       metric("Recent Logs", String(ai.counts?.logs || 0), "Advisory decisions"),
-      metric("Live State", state.aiGmLoading ? "Refreshing" : "Ready", data.aiGmGeneratedAt ? `Updated ${shortDateTime(data.aiGmGeneratedAt.replace("T", " "))}` : "Live API"),
+      metric("League Office", state.aiGmLoading ? "Refreshing" : "Ready", data.aiGmGeneratedAt ? `Updated ${shortDateTime(data.aiGmGeneratedAt.replace("T", " "))}` : "Latest data"),
     ]);
     panelBody(summary).append(metrics);
     panelBody(summary).append(node("div", "quiet cap-context", "The LLM can produce structured recommendations, but it is still advisory-only. It logs validated actions and does not directly mutate rosters, contracts, cap, or draft tables."));
@@ -5227,26 +5898,11 @@
   }
 
   function renderCommands() {
-    setHeader("Commands", "Copyable commands for the current exported state.");
+    setHeader("System", "Player-facing tools are now handled from their season screens.");
     const root = document.createDocumentFragment();
-    const commands = data.commands || {};
-    const groups = [
-      ["Save and Calendar", ["newJune1Save", "newGame", "status", "preflight", "advanceNextEvent", "advanceNextLeagueYear", "validateRosters", "autoCutdown", "exportGameCenter", "exportFrontOffice"]],
-      ["Season", ["simNextWeek", "simSeason", "postseason", "completeSeason", "boxScore"]],
-      ["Contracts", ["contractList", "contractExtend", "contractRelease", "contractRestructure"]],
-      ["Depth Chart", ["depthChartShow", "depthChartSet", "depthChartMove"]],
-      ["News, Inbox, and Scouting", ["leagueNewsList", "leagueNewsSeed", "eventGenerateWeek", "inboxMarkRead", "scoutingSetup", "scoutingAuto", "scoutingOne", "scoutingRandomTwo", "scoutingDiscoverFour", "scoutingSeniorBowlSetup", "scoutingSeniorBowlProcess", "scoutingTop30Visit", "scoutingTop30Auto"]],
-      ["Free Agency", ["freeAgencyStart", "freeAgencyCpuSeed", "freeAgencyHour", "freeAgencyDay", "freeAgencyOffer"]],
-      ["Draft", ["draftGenerate", "draftValidate", "advanceToDraft", "draftStart", "draftSkipOne", "draftSkipToUser", "draftFinish", "advanceNextLeagueYear", "draftPick"]],
-      ["AI GMs", ["aiGmSetup", "aiGmProfiles", "aiGmEvaluate", "aiGmOps", "aiGmOpsAll", "aiGmOpsEnqueue", "aiGmOpsEnqueueAll", "aiGmQueue", "aiGmProcessQueue", "aiGmProcessQueueAll", "aiGmAutonomyShow", "aiGmAutonomyAdvisory", "aiGmAutonomyLowRisk", "aiGmDailyRun", "aiGmDailyRunPersist", "aiGmDailyRunAllPersist", "aiGmDailyRunApply", "aiGmReviewInbox", "aiGmReviewInboxAll", "aiGmReviewShow", "aiGmReviewApprove", "aiGmReviewReject", "aiGmReviewApply", "aiGmReviewApplyCommit", "aiGmReviewApplyAllApproved", "aiGmReviewApplyAllApprovedCommit", "aiGmDevSeedReview", "aiGmDevClearReviews", "aiGmCutdownPlan", "aiGmCutdownPlanPersist", "aiGmCutdownPlans", "aiGmContractPlan", "aiGmContractPlanPersist", "aiGmContractPlans", "aiGmDryRunContractApply", "aiGmApplyContractPlan", "aiGmFreeAgentPlan", "aiGmFreeAgentPlanPersist", "aiGmFreeAgentPlans", "aiGmDryRunFreeAgentApply", "aiGmApplyFreeAgentPlan", "aiGmDraftPlan", "aiGmDraftPlanPersist", "aiGmDraftPlans", "aiGmDraftPlanAll", "aiGmOffseasonPreFaDryRun", "aiGmOffseasonPreFaApply", "aiGmOffseasonFaWave1DryRun", "aiGmOffseasonFaWave1Apply", "aiGmDryRunCutdownApply", "aiGmApplyCutdownPlan", "aiGmEnableOllama", "aiGmShowConfig", "aiGmContext", "aiGmRunDraft", "aiGmRunDepth", "aiGmRunFreeAgency", "aiGmLogs"]],
-    ];
-    groups.forEach(([title, keys]) => {
-      const p = panel(title, "Command Set");
-      keys.forEach((key) => p.querySelector(".panel-body").append(commandBox(key, commands[key] || "", actionForCommandKey(key))));
-      root.append(p);
-    });
-    const output = runnerOutputPanel();
-    if (output) root.append(output);
+    const p = panel("System Tools", "Moved");
+    panelBody(p).append(node("div", "empty-state", "Direct technical commands have been removed from the game UI. Use the season, roster, draft, free-agency, and AI GM screens for actions."));
+    root.append(p);
     finishRender(root);
   }
 
@@ -5382,19 +6038,38 @@
   }
 
   function render() {
+    const previousView = state.lastRenderedView;
+    const shouldRestoreScroll = previousView === state.view;
+    const scrollElement = document.scrollingElement || document.documentElement;
+    const scrollTop = scrollElement ? scrollElement.scrollTop : window.scrollY;
+    const scrollLeft = scrollElement ? scrollElement.scrollLeft : window.scrollX;
+    const nestedScroll = shouldRestoreScroll ? scrollableSnapshot() : [];
     if (state.view === "season") renderSeason();
     else if (state.view === "stats") renderStats();
     else if (state.view === "inbox") renderInbox();
     else if (state.view === "leagueNews") renderLeagueNews();
     else if (state.view === "scouting") renderScouting();
+    else if (state.view === "roster") renderRosterHub();
     else if (state.view === "depth") renderDepthChart();
     else if (state.view === "contracts") renderContracts();
     else if (state.view === "freeAgency") renderFreeAgency();
     else if (state.view === "draft") renderDraft();
     else if (state.view === "aiGm") renderAiGm();
     else if (state.view === "calendar") renderCalendar();
-    else if (state.view === "commands") renderCommands();
     else renderOverview();
+    state.lastRenderedView = state.view;
+    if (shouldRestoreScroll) {
+      requestAnimationFrame(() => {
+        const target = document.scrollingElement || document.documentElement;
+        if (target) {
+          target.scrollTop = scrollTop;
+          target.scrollLeft = scrollLeft;
+        } else {
+          window.scrollTo(scrollLeft, scrollTop);
+        }
+        restoreScrollableSnapshot(nestedScroll);
+      });
+    }
   }
 
   refs.buttons.forEach((button) => {

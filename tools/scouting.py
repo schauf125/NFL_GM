@@ -40,10 +40,10 @@ CONFIDENCE_TARGET_LEVELS = {
 }
 
 SIMPLE_ACTION_LABELS = {
-    "auto_assign": "Auto Assign Scouts",
-    "specific": "Scout Specific Player",
-    "random_two": "Scout 3 Random Players",
-    "discover_four": "Discover 4 Non-Public Players",
+    "auto_assign": "Auto Assign 6 Scouts",
+    "specific": "Scout 4 Specific Players",
+    "random_two": "Scout 8 Random Players",
+    "discover_four": "Scout 4 Random + 8 Random Discoveries",
 }
 
 FOCUS_LABELS = {
@@ -95,23 +95,35 @@ CPU_POSITION_TARGETS = {
 
 WEEKLY_SCOUTING_START_WEEK = 2
 WEEKLY_SCOUTING_END_WEEK = 18
-AUTO_ASSIGN_COUNT = 3
-RANDOM_CROSSCHECK_COUNT = 3
-DISCOVER_NON_PUBLIC_COUNT = 4
+AUTO_ASSIGN_COUNT = 6
+SPECIFIC_SCOUTING_COUNT = 4
+RANDOM_CROSSCHECK_COUNT = 8
+DISCOVER_RANDOM_CROSSCHECK_COUNT = 4
+DISCOVER_NON_PUBLIC_COUNT = 8
+USER_AUTO_DUE_DILIGENCE_MIN = 3
+USER_AUTO_NEED_MIN = 2
+USER_AUTO_NON_NEED_REPEAT_PENALTY = 18.0
 CPU_WEEKLY_SCOUTING_COUNT = 5
 CPU_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
 USER_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
-HIDDEN_DISCOVERY_DUPLICATE_DECAY = 0.62
-HIDDEN_DISCOVERY_DUPLICATE_FLOOR = 0.04
+HIDDEN_DISCOVERY_SHARED_TEAM_CAP = 10
 FIRST_ROUND_SCOUTING_NEED_BONUS = 36.0
 LATER_ROUND_SCOUTING_NEED_BONUS = 10.0
 CPU_FIRST_ROUND_DUE_DILIGENCE_BONUS = 22.0
+CPU_QB_SCOUTING_NEED_FLOOR = 72.0
+CPU_QB_SCOUTING_STRONG_NEED = 78.0
+CPU_QB_DUE_DILIGENCE_BONUS = 34.0
 CPU_SCOUTING_BUCKETS = {
     "early": (1, 48),
     "day2": (33, 112),
     "day3": (97, 240),
 }
 PREMIUM_POSITION_SCOUTING_BONUS = 4.0
+
+
+def specific_scouting_cost(position: str | None) -> int:
+    """A weekly QB deep dive consumes the whole specific-player scouting package."""
+    return SPECIFIC_SCOUTING_COUNT if str(position or "").upper() == "QB" else 1
 PREMIUM_POSITION_GROUPS = {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
 LOW_COST_POSITION_GROUPS = {"K", "P", "LS"}
 
@@ -129,12 +141,7 @@ def row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
 
 
 def hidden_discovery_weight(row: sqlite3.Row) -> float:
-    """Weight off-board discovery without letting one buzz name crowd out the pool."""
-    discovered_elsewhere = int(row_value(row, "discovered_elsewhere_count", 0) or 0)
-    duplicate_multiplier = max(
-        HIDDEN_DISCOVERY_DUPLICATE_FLOOR,
-        HIDDEN_DISCOVERY_DUPLICATE_DECAY ** discovered_elsewhere,
-    )
+    """Weight off-board discovery from prospect traits, not who else found him."""
     tier_multiplier = {
         "Small": 1.18,
         "Regular": 1.00,
@@ -149,8 +156,7 @@ def hidden_discovery_weight(row: sqlite3.Row) -> float:
     ceiling_multiplier = 1.0 + max(0.0, scout_ceiling - 68.0) / 90.0
     return max(
         0.01,
-        duplicate_multiplier
-        * tier_multiplier
+        tier_multiplier
         * variance_multiplier
         * grade_multiplier
         * ceiling_multiplier,
@@ -166,9 +172,16 @@ def choose_hidden_discovery_candidates(
     pool = list(candidates)
     selected: list[sqlite3.Row] = []
     for _ in range(min(max(0, count), len(pool))):
-        weights = [hidden_discovery_weight(row) for row in pool]
-        index = rng.choices(range(len(pool)), weights=weights, k=1)[0]
-        selected.append(pool.pop(index))
+        eligible_pool = [
+            row
+            for row in pool
+            if int(row_value(row, "discovered_elsewhere_count", 0) or 0) < HIDDEN_DISCOVERY_SHARED_TEAM_CAP
+        ]
+        weighted_pool = eligible_pool or pool
+        weights = [hidden_discovery_weight(row) for row in weighted_pool]
+        selected_row = weighted_pool[rng.choices(range(len(weighted_pool)), weights=weights, k=1)[0]]
+        selected.append(selected_row)
+        pool.remove(selected_row)
     return selected
 
 
@@ -408,6 +421,18 @@ def user_team_abbr(con: sqlite3.Connection) -> str:
     return setting(con, "user_team", "MIN") or "MIN"
 
 
+def user_team_id(con: sqlite3.Connection) -> int:
+    row = active_game(con)
+    if row and "user_team_id" in row.keys() and row["user_team_id"] is not None:
+        return int(row["user_team_id"])
+    abbr = user_team_abbr(con)
+    if table_exists(con, "teams"):
+        team = con.execute("SELECT team_id FROM teams WHERE abbreviation = ? LIMIT 1", (abbr,)).fetchone()
+        if team:
+            return int(team["team_id"])
+    return 0
+
+
 def current_date(con: sqlite3.Connection) -> str:
     row = active_game(con)
     if row and row["current_date"]:
@@ -483,9 +508,15 @@ def current_scouting_period(con: sqlite3.Connection) -> ScoutingPeriod:
     if not rows:
         return ScoutingPeriod(season=season, week=0, label="Preseason Board Build", date=game_date)
     today = date.fromisoformat(game_date)
-    for row in rows:
+    for index, row in enumerate(rows):
         first = date.fromisoformat(str(row["first_date"]))
         last = date.fromisoformat(str(row["last_date"]))
+        if today >= last and index + 1 < len(rows):
+            next_week = int(rows[index + 1]["week"])
+            next_first = date.fromisoformat(str(rows[index + 1]["first_date"]))
+            if today < next_first:
+                return ScoutingPeriod(season=season, week=next_week, label=f"Week {next_week} Scouting", date=game_date)
+            continue
         if today <= last:
             week = int(row["week"])
             if today < first:
@@ -514,7 +545,9 @@ def weekly_scouting_window_status(con: sqlite3.Connection, period: ScoutingPerio
         "endWeek": WEEKLY_SCOUTING_END_WEEK,
         "label": f"Weeks {WEEKLY_SCOUTING_START_WEEK}-{WEEKLY_SCOUTING_END_WEEK}",
         "autoAssignCount": AUTO_ASSIGN_COUNT,
+        "specificCount": SPECIFIC_SCOUTING_COUNT,
         "randomCount": RANDOM_CROSSCHECK_COUNT,
+        "discoverRandomCount": DISCOVER_RANDOM_CROSSCHECK_COUNT,
         "discoverCount": DISCOVER_NON_PUBLIC_COUNT,
         "ruleSummary": (
             f"Weekly scouting runs during regular season Weeks {WEEKLY_SCOUTING_START_WEEK}-"
@@ -593,6 +626,83 @@ def top30_visit_window(con: sqlite3.Connection, draft_year: int) -> tuple[str, s
     if not end:
         end = date(draft_year, 4, 20).isoformat()
     return start, end
+
+
+def workout_visibility(con: sqlite3.Connection, draft_year: int, target_date: str | None = None) -> dict[str, Any]:
+    today = target_date or current_date(con)
+    combine_start, combine_end = calendar_event_dates(
+        con,
+        draft_year=draft_year,
+        event_code="SCOUTING_COMBINE",
+    )
+    draft_start, _draft_end = calendar_event_dates(
+        con,
+        draft_year=draft_year,
+        event_code="NFL_DRAFT",
+    )
+    combine_gate = combine_end or combine_start or date(draft_year, 3, 1).isoformat()
+    pro_day_gate = combine_gate
+    if combine_gate:
+        pro_day_gate = (date.fromisoformat(combine_gate) + timedelta(days=14)).isoformat()
+    if draft_start:
+        pro_day_gate = min(pro_day_gate, (date.fromisoformat(draft_start) - timedelta(days=1)).isoformat())
+    return {
+        "currentDate": today,
+        "combineDate": combine_start,
+        "combineEndDate": combine_end or combine_start,
+        "proDayDate": pro_day_gate,
+        "combineAvailable": bool(today >= combine_gate),
+        "proDayAvailable": bool(today >= pro_day_gate),
+    }
+
+
+COMBINE_UI_FIELDS = {
+    "combine_status",
+    "combine_grade",
+    "athletic_score",
+    "drills_completed",
+    "forty_yard_dash",
+    "ten_yard_split",
+    "bench_press_reps",
+    "vertical_jump_in",
+    "broad_jump_in",
+    "three_cone_sec",
+    "twenty_yard_shuttle_sec",
+    "sixty_yard_shuttle_sec",
+    "combine_injured",
+    "combine_top_skip",
+}
+
+PRO_DAY_UI_FIELDS = {
+    "pro_day_status",
+    "pro_day_grade",
+    "pro_day_athletic_score",
+    "pro_day_forty_yard_dash",
+    "pro_day_vertical_jump_in",
+    "pro_day_broad_jump_in",
+    "pro_day_improved_from_combine",
+    "pro_day_medical_recheck",
+}
+
+
+def mask_unavailable_workouts(payload: dict[str, Any]) -> dict[str, Any]:
+    visibility = payload.get("workoutVisibility") or {}
+    combine_available = bool(visibility.get("combineAvailable"))
+    pro_day_available = bool(visibility.get("proDayAvailable"))
+    for prospect in payload.get("board") or []:
+        if not combine_available:
+            for field in COMBINE_UI_FIELDS:
+                if field in prospect:
+                    prospect[field] = None
+            prospect["combine_status"] = "Pending"
+            prospect["workout_pending"] = True
+        if not pro_day_available:
+            for field in PRO_DAY_UI_FIELDS:
+                if field in prospect:
+                    prospect[field] = None
+            prospect["pro_day_status"] = "Pending"
+            prospect["pro_day_pending"] = True
+    return payload
 
 
 def top30_window_status(con: sqlite3.Connection, draft_year: int) -> dict[str, Any]:
@@ -762,9 +872,13 @@ def normalize_confidence(label: str | None) -> str:
 
 
 def next_confidence(label: str | None) -> str:
+    return advance_confidence(label, 1)
+
+
+def advance_confidence(label: str | None, steps: int = 1) -> str:
     current = normalize_confidence(label)
     index = CONFIDENCE_ORDER.index(current)
-    return CONFIDENCE_ORDER[min(index + 1, len(CONFIDENCE_ORDER) - 1)]
+    return CONFIDENCE_ORDER[min(index + max(0, int(steps)), len(CONFIDENCE_ORDER) - 1)]
 
 
 def add_inbox_message(
@@ -969,6 +1083,70 @@ def assign_prospect(
         if not visible:
             raise ValueError("That prospect has not been discovered yet.")
     period = assignment_period(con, season, week)
+    window = weekly_scouting_window_status(con, period)
+    if not window["open"]:
+        raise ValueError(str(window["reason"] or "Weekly scouting is not open."))
+    non_specific_action = con.execute(
+        """
+        SELECT action_key
+        FROM scouting_weekly_actions
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND season = ?
+          AND week = ?
+          AND action_key <> 'specific'
+        LIMIT 1
+        """,
+        (target_game_id, target_year, period.season, period.week),
+    ).fetchone()
+    if non_specific_action:
+        label = SIMPLE_ACTION_LABELS.get(str(non_specific_action["action_key"]), str(non_specific_action["action_key"]))
+        raise ValueError(f"The weekly scouting choice has already been used for {period.label}: {label}.")
+    existing_assignment = con.execute(
+        """
+        SELECT 1
+        FROM scouting_assignments
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND season = ?
+          AND week = ?
+          AND prospect_id = ?
+          AND status = 'pending'
+        """,
+        (target_game_id, target_year, period.season, period.week, prospect_id),
+    ).fetchone()
+    pending_row = con.execute(
+        """
+        SELECT
+            COUNT(*) AS pending_count,
+            COALESCE(SUM(CASE WHEN UPPER(COALESCE(dp.position, '')) = 'QB' THEN ? ELSE 1 END), 0) AS pending_cost
+        FROM scouting_assignments
+        JOIN draft_prospects dp
+          ON dp.prospect_id = scouting_assignments.prospect_id
+        WHERE scouting_assignments.game_id = ?
+          AND scouting_assignments.draft_year = ?
+          AND scouting_assignments.season = ?
+          AND scouting_assignments.week = ?
+          AND scouting_assignments.status = 'pending'
+        """,
+        (SPECIFIC_SCOUTING_COUNT, target_game_id, target_year, period.season, period.week),
+    ).fetchone()
+    processed_specific_uses = con.execute(
+        """
+        SELECT COALESCE(SUM(uses), 0) AS c
+        FROM scouting_weekly_actions
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND season = ?
+          AND week = ?
+          AND action_key = 'specific'
+        """,
+        (target_game_id, target_year, period.season, period.week),
+    ).fetchone()["c"]
+    pending_cost = int(pending_row["pending_cost"] or 0)
+    new_cost = specific_scouting_cost(prospect["position"])
+    if not existing_assignment and pending_cost + int(processed_specific_uses or 0) + new_cost > SPECIFIC_SCOUTING_COUNT:
+        raise ValueError(f"You already selected {SPECIFIC_SCOUTING_COUNT} specific players for {period.label}. Unselect one to change your mind.")
     normalized_focus = focus if focus in FOCUS_LABELS else "film"
     con.execute(
         """
@@ -999,6 +1177,54 @@ def assign_prospect(
         related_id=prospect_id,
     )
     return prospect
+
+
+def unassign_prospect(
+    con: sqlite3.Connection,
+    *,
+    prospect_id: int,
+    game_id: str | None = None,
+    draft_year: int | None = None,
+    season: int | None = None,
+    week: int | None = None,
+) -> dict[str, Any]:
+    ensure_schema(con)
+    target_game_id = active_game_id(con, game_id)
+    class_row = draft_class_row(con, draft_year)
+    if not class_row:
+        raise ValueError("No draft class found for scouting.")
+    target_year = int(class_row["draft_year"])
+    period = assignment_period(con, season, week)
+    prospect = con.execute(
+        """
+        SELECT *
+        FROM draft_prospects
+        WHERE prospect_id = ?
+          AND draft_class_id = ?
+        """,
+        (prospect_id, int(class_row["draft_class_id"])),
+    ).fetchone()
+    if not prospect:
+        raise ValueError(f"Prospect {prospect_id} is not in the active draft class.")
+    deleted = con.execute(
+        """
+        DELETE FROM scouting_assignments
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND season = ?
+          AND week = ?
+          AND prospect_id = ?
+          AND status = 'pending'
+        """,
+        (target_game_id, target_year, period.season, period.week, prospect_id),
+    ).rowcount
+    return {
+        "removed": int(deleted or 0),
+        "name": prospect_name(prospect),
+        "position": prospect["position"],
+        "college": prospect["college"],
+        "period": period.label,
+    }
 
 
 def trait_display(con: sqlite3.Connection, trait_key: str) -> str:
@@ -1046,19 +1272,44 @@ def require_weekly_action_available(
         raise ValueError(str(window["reason"] or "Weekly scouting is not open."))
     existing = con.execute(
         """
-        SELECT action_key
+        SELECT action_key, uses
         FROM scouting_weekly_actions
         WHERE game_id = ?
           AND draft_year = ?
           AND season = ?
           AND week = ?
-        LIMIT 1
         """,
         (game_id, draft_year, period.season, period.week),
-    ).fetchone()
-    if existing:
-        label = SIMPLE_ACTION_LABELS.get(str(existing["action_key"]), str(existing["action_key"]))
-        raise ValueError(f"The weekly scouting choice has already been used for {period.label}: {label}. Advance to the next week to scout again.")
+    ).fetchall()
+    uses_by_action = {str(row["action_key"]): int(row["uses"] or 0) for row in existing}
+    if action_key == "specific":
+        if not existing:
+            return
+        non_specific = [key for key in uses_by_action if key != "specific"]
+        if non_specific:
+            label = SIMPLE_ACTION_LABELS.get(non_specific[0], non_specific[0])
+            raise ValueError(f"The weekly scouting choice has already been used for {period.label}: {label}. Advance to the next week to scout again.")
+        if uses_by_action.get("specific", 0) >= SPECIFIC_SCOUTING_COUNT:
+            raise ValueError(f"The weekly specific-player scouts have already been used for {period.label}. Advance to the next week to scout again.")
+        return
+    pending_specific = con.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM scouting_assignments
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND season = ?
+          AND week = ?
+          AND status = 'pending'
+        """,
+        (game_id, draft_year, period.season, period.week),
+    ).fetchone()["c"]
+    if int(pending_specific or 0) > 0:
+        raise ValueError(f"You already selected specific players for {period.label}. Unselect them to choose another scouting package.")
+    if not existing:
+        return
+    label = SIMPLE_ACTION_LABELS.get(next(iter(uses_by_action)), next(iter(uses_by_action)))
+    raise ValueError(f"The weekly scouting choice has already been used for {period.label}: {label}. Advance to the next week to scout again.")
 
 
 def record_weekly_action(
@@ -1069,6 +1320,7 @@ def record_weekly_action(
     period: ScoutingPeriod,
     action_key: str,
     description: str,
+    uses: int = 1,
 ) -> None:
     ensure_schema(con)
     con.execute(
@@ -1076,9 +1328,13 @@ def record_weekly_action(
         INSERT INTO scouting_weekly_actions (
             game_id, draft_year, season, week, action_key, uses, description
         )
-        VALUES (?, ?, ?, ?, ?, 1, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_id, draft_year, season, week, action_key) DO UPDATE SET
+            uses = uses + excluded.uses,
+            description = excluded.description,
+            created_at = datetime('now')
         """,
-        (game_id, draft_year, period.season, period.week, action_key, description),
+        (game_id, draft_year, period.season, period.week, action_key, max(1, int(uses)), description),
     )
 
 
@@ -1118,6 +1374,126 @@ def visible_scouting_candidates(
         """,
         (game_id, draft_year, draft_class_id),
     ).fetchall()
+
+
+def board_rank(row: sqlite3.Row, default: int = 9999) -> int:
+    return int(row_value(row, "public_board_rank", row_value(row, "scouting_rank", default)) or default)
+
+
+def prospect_position_group(prospect: sqlite3.Row) -> str:
+    return team_eval.position_group(str(row_value(prospect, "position", "") or ""))
+
+
+def user_team_need_scores(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    evaluation_date: str,
+) -> dict[str, float]:
+    return cpu_team_need_scores(
+        con,
+        team_abbr=user_team_abbr(con),
+        season=season,
+        game_id=game_id,
+        evaluation_date=evaluation_date,
+    )
+
+
+def user_auto_scouting_score(
+    prospect: sqlite3.Row,
+    *,
+    need_scores: dict[str, float],
+    pick_profile: dict[str, Any],
+) -> float:
+    rank = board_rank(prospect, 260)
+    confidence = normalize_confidence(row_value(prospect, "scouting_confidence", "Low"))
+    need = need_scores.get(prospect_position_group(prospect), 0.0)
+    grade = float(row_value(prospect, "scout_grade", row_value(prospect, "true_grade", 55)) or 55)
+    ceiling = float(row_value(prospect, "scout_ceiling", row_value(prospect, "ceiling_grade", grade)) or grade)
+    variance = float(row_value(prospect, "scouting_variance", 0) or 0)
+
+    score = 0.0
+    score += max(0.0, 120.0 - min(rank, 180)) * 0.33
+    score += (need / 100.0) * (34.0 if rank <= 64 else 22.0 if rank <= 128 else 12.0)
+    score += max(0.0, ceiling - grade) * 0.28
+    score += variance * 0.08
+
+    if pick_profile.get("has_first_round_pick") and rank <= 48:
+        score += 22.0
+    elif rank <= 96:
+        score += 10.0
+
+    if confidence == "Low":
+        score += 4.0 if rank <= 96 else 9.0
+    elif confidence == "Medium":
+        score += 24.0 if rank <= 64 else 14.0
+    elif confidence == "High":
+        score += 18.0 if rank <= 64 else 7.0
+    else:
+        score -= 100.0
+
+    if need < 34.0 and confidence in {"Medium", "High"}:
+        score -= USER_AUTO_NON_NEED_REPEAT_PENALTY
+    if need < 20.0 and rank > 96:
+        score -= 12.0
+
+    if row_value(prospect, "public_board_status", "") == "off_public_board":
+        score += 4.0
+    return score
+
+
+def select_user_auto_assign_candidates(
+    candidates: list[sqlite3.Row],
+    *,
+    need_scores: dict[str, float],
+    pick_profile: dict[str, Any],
+    count: int,
+) -> list[sqlite3.Row]:
+    selected: list[sqlite3.Row] = []
+    selected_ids: set[int] = set()
+
+    def add_from(pool: list[sqlite3.Row], limit: int) -> None:
+        for prospect in sorted(
+            pool,
+            key=lambda row: (
+                -user_auto_scouting_score(row, need_scores=need_scores, pick_profile=pick_profile),
+                board_rank(row),
+            ),
+        ):
+            if len(selected) >= count or limit <= 0:
+                return
+            prospect_id = int(prospect["prospect_id"])
+            if prospect_id in selected_ids:
+                continue
+            selected.append(prospect)
+            selected_ids.add(prospect_id)
+            limit -= 1
+
+    due_diligence = [
+        row
+        for row in candidates
+        if board_rank(row) <= 64
+        and normalize_confidence(row_value(row, "scouting_confidence", "Low")) in {"Medium", "High"}
+        and (
+            need_scores.get(prospect_position_group(row), 0.0) >= 34.0
+            or user_auto_scouting_score(row, need_scores=need_scores, pick_profile=pick_profile) >= 42.0
+        )
+    ]
+    add_from(due_diligence, min(count, USER_AUTO_DUE_DILIGENCE_MIN))
+
+    need_pool = [
+        row
+        for row in candidates
+        if board_rank(row) <= 180
+        and need_scores.get(prospect_position_group(row), 0.0) >= 48.0
+    ]
+    add_from(need_pool, min(count - len(selected), USER_AUTO_NEED_MIN))
+
+    depth_pool = [row for row in candidates if 65 <= board_rank(row) <= 220]
+    add_from(depth_pool, max(0, count - len(selected)))
+    add_from(candidates, max(0, count - len(selected)))
+    return selected[:count]
 
 
 def simple_scouting_report(prospect: sqlite3.Row, old_confidence: str, new_confidence: str, reason: str) -> str:
@@ -1274,7 +1650,20 @@ def auto_assign_scouts(
         draft_year=target_year,
         draft_class_id=int(class_row["draft_class_id"]),
     )
-    selected = candidates[: max(1, count)]
+    team_id = user_team_id(con)
+    pick_profile = cpu_draft_pick_profile(con, team_id, target_year) if team_id else {}
+    need_scores = user_team_need_scores(
+        con,
+        game_id=target_game_id,
+        season=period.season,
+        evaluation_date=period.date,
+    )
+    selected = select_user_auto_assign_candidates(
+        candidates,
+        need_scores=need_scores,
+        pick_profile=pick_profile,
+        count=max(1, count),
+    )
     if not selected:
         raise ValueError("No visible prospects need more scouting right now.")
     results = [
@@ -1469,6 +1858,25 @@ def discover_non_public_players(
     ).fetchall()
     if not candidates:
         raise ValueError("No undiscovered off-public-board prospects remain.")
+    random_candidates = visible_scouting_candidates(
+        con,
+        game_id=target_game_id,
+        draft_year=target_year,
+        draft_class_id=int(class_row["draft_class_id"]),
+    )
+    random_selected = rng.sample(random_candidates, k=min(DISCOVER_RANDOM_CROSSCHECK_COUNT, len(random_candidates)))
+    random_results = [
+        advance_prospect_one_tier(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            period=period,
+            prospect=prospect,
+            reason="A regional scout paired the hidden-board search with a quick visible-board cross-check and advanced",
+            source="Regional Scout",
+        )
+        for prospect in random_selected
+    ]
     selected = choose_hidden_discovery_candidates(candidates, count=count, rng=rng)
     results = []
     for prospect in selected:
@@ -1536,7 +1944,7 @@ def discover_non_public_players(
         draft_year=target_year,
         period=period,
         action_key="discover_four",
-        description=f"Discovered {len(results)} off-public-board prospects.",
+        description=f"Scouted {len(random_results)} random prospects and discovered {len(results)} off-public-board prospects.",
     )
     background = discover_user_extra_hidden_prospect(
         con,
@@ -1546,7 +1954,14 @@ def discover_non_public_players(
         period=period,
         rng=random.Random(f"{target_game_id}:{target_year}:{period.season}:{period.week}:user-background-discovery"),
     )
-    return {"action": "discover_four", "period": period.label, "advanced": results, "background_discoveries": background}
+    return {
+        "action": "discover_four",
+        "period": period.label,
+        "advanced": random_results + results,
+        "random_advanced": random_results,
+        "discovered": results,
+        "background_discoveries": background,
+    }
 
 
 def cpu_team_rows(con: sqlite3.Connection, *, exclude_user: bool = True) -> list[sqlite3.Row]:
@@ -1579,6 +1994,47 @@ def cpu_position_need_bonus(con: sqlite3.Connection, team_id: int, position: str
     if count < target:
         return 8
     return 0
+
+
+def cpu_qb_scouting_need_score(con: sqlite3.Connection, team_id: int) -> float:
+    """QB scouting should anticipate both bad rooms and looming succession needs."""
+    rows = con.execute(
+        """
+        SELECT player_id, age, overall, potential, years_exp, status
+        FROM players
+        WHERE team_id = ?
+          AND position = 'QB'
+          AND status IN ('Active', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+        ORDER BY overall DESC, potential DESC
+        """,
+        (team_id,),
+    ).fetchall()
+    if not rows:
+        return 100.0
+    starter = rows[0]
+    top_overall = float(starter["overall"] or 0)
+    top_potential = float(starter["potential"] or top_overall)
+    age = int(starter["age"] or 0)
+    score = 0.0
+    if top_overall < 66:
+        score = max(score, 96.0)
+    elif top_overall < 70:
+        score = max(score, 88.0)
+    elif top_overall < 74:
+        score = max(score, 72.0)
+    elif top_overall < 78 and top_potential < 82:
+        score = max(score, 54.0)
+    if age >= 36:
+        score = max(score, 86.0)
+    elif age >= 34:
+        score = max(score, 72.0)
+    elif age >= 32 and top_overall < 82:
+        score = max(score, 58.0)
+    if len(rows) < 2:
+        score = max(score, 48.0)
+    elif max(float(row["potential"] or row["overall"] or 0) for row in rows[1:]) < 70 and age >= 30:
+        score = max(score, 52.0)
+    return score
 
 
 def cpu_draft_pick_profile(con: sqlite3.Connection, team_id: int, draft_year: int) -> dict[str, Any]:
@@ -1638,6 +2094,8 @@ def cpu_team_need_scores(
         return {}
 
     scores: dict[str, float] = {}
+    team_row = con.execute("SELECT team_id FROM teams WHERE abbreviation = ? LIMIT 1", (team_abbr,)).fetchone()
+    team_id = int(team_row["team_id"]) if team_row else 0
     for index, need in enumerate(evaluation.get("roster_needs") or []):
         group = str(need.get("position_group") or "").upper()
         if not group:
@@ -1659,6 +2117,10 @@ def cpu_team_need_scores(
         if group in PREMIUM_POSITION_GROUPS:
             pressure += 2.0
         scores[group] = scores.get(group, 0.0) + pressure
+    if team_id:
+        qb_score = cpu_qb_scouting_need_score(con, team_id)
+        if qb_score >= CPU_QB_SCOUTING_NEED_FLOOR:
+            scores["QB"] = max(scores.get("QB", 0.0), qb_score)
     return scores
 
 
@@ -1696,6 +2158,29 @@ def cpu_first_round_due_diligence_bonus(
     confidence_multiplier = {"Low": 1.0, "Medium": 0.72, "High": 0.08, "Very High": 0.0}.get(confidence, 0.55)
     rank_multiplier = max(0.30, (CPU_SCOUTING_BUCKETS["early"][1] + 1 - rank) / CPU_SCOUTING_BUCKETS["early"][1])
     return CPU_FIRST_ROUND_DUE_DILIGENCE_BONUS * (need_score / 100.0) * confidence_multiplier * rank_multiplier
+
+
+def cpu_qb_scouting_priority_bonus(
+    prospect: sqlite3.Row,
+    *,
+    need_scores: dict[str, float],
+    pick_profile: dict[str, Any],
+) -> float:
+    if str(prospect["position"] or "").upper() != "QB":
+        return 0.0
+    need_score = need_scores.get("QB", 0.0)
+    if need_score < CPU_QB_SCOUTING_NEED_FLOOR:
+        return 0.0
+    rank = int(prospect["public_board_rank"] or prospect["scouting_rank"] or 9999)
+    earliest = int(pick_profile.get("earliest_round") or 7)
+    if rank > 96 and need_score < CPU_QB_SCOUTING_STRONG_NEED:
+        return 0.0
+    confidence = normalize_confidence(prospect["cpu_scouting_confidence"])
+    confidence_multiplier = {"Low": 1.0, "Medium": 0.78, "High": 0.28, "Very High": 0.0}.get(confidence, 0.7)
+    rank_window = 96 if earliest <= 2 else 160
+    rank_multiplier = max(0.25, (rank_window + 1 - min(rank, rank_window)) / rank_window)
+    pick_multiplier = 1.15 if pick_profile.get("has_first_round_pick") else 0.85 if earliest <= 3 else 0.55
+    return CPU_QB_DUE_DILIGENCE_BONUS * (need_score / 100.0) * confidence_multiplier * rank_multiplier * pick_multiplier
 
 
 def cpu_visible_scouting_candidates(
@@ -1818,12 +2303,17 @@ def cpu_scouting_candidate_score(
         need_scores=need_scores,
         pick_profile=pick_profile,
     )
+    qb_priority_bonus = cpu_qb_scouting_priority_bonus(
+        prospect,
+        need_scores=need_scores,
+        pick_profile=pick_profile,
+    )
     position_bonus = cpu_position_need_bonus(con, team_id, str(prospect["position"]))
     upside_bonus = max(0.0, ceiling - grade) / 3.0
     variance_bonus = float(prospect["scouting_variance"] or 0.0) / 6.0
     rank_bonus = max(0.0, 12.0 - (rank / 28.0))
     jitter = rng.random() * 1.5
-    score = confidence_bonus + need_bonus + due_diligence_bonus + position_bonus + ((grade - 55.0) / 2.0) + upside_bonus + variance_bonus + rank_bonus + jitter
+    score = confidence_bonus + need_bonus + due_diligence_bonus + qb_priority_bonus + position_bonus + ((grade - 55.0) / 2.0) + upside_bonus + variance_bonus + rank_bonus + jitter
     return (-score, rank, int(prospect["prospect_id"]))
 
 
@@ -1841,6 +2331,39 @@ def select_cpu_weekly_scouting_prospects(
 ) -> list[sqlite3.Row]:
     selected: list[sqlite3.Row] = []
     selected_ids: set[int] = set()
+    qb_need = need_scores.get("QB", 0.0)
+    if qb_need >= CPU_QB_SCOUTING_NEED_FLOOR and count > 0:
+        qb_limit = 96 if pick_profile.get("has_first_round_pick") or qb_need >= CPU_QB_SCOUTING_STRONG_NEED else 160
+        qb_candidates = [
+            row
+            for row in cpu_visible_scouting_candidates(
+                con,
+                game_id=game_id,
+                draft_year=draft_year,
+                draft_class_id=draft_class_id,
+                team_id=team_id,
+                limit=40,
+                board_rank_min=1,
+                board_rank_max=qb_limit,
+            )
+            if str(row["position"] or "").upper() == "QB"
+        ]
+        qb_candidates.sort(
+            key=lambda row: cpu_scouting_candidate_score(
+                row,
+                con=con,
+                team_id=team_id,
+                need_scores=need_scores,
+                pick_profile=pick_profile,
+                game_id=game_id,
+                draft_year=draft_year,
+                rng=rng,
+            )
+        )
+        qb_slots = 2 if qb_need >= CPU_QB_SCOUTING_STRONG_NEED and count >= 4 else 1
+        for prospect in qb_candidates[:qb_slots]:
+            selected.append(prospect)
+            selected_ids.add(int(prospect["prospect_id"]))
     plan = cpu_weekly_scouting_bucket_plan(pick_profile=pick_profile, count=count, rng=rng)
     for bucket in plan:
         board_min, board_max = CPU_SCOUTING_BUCKETS[bucket]
@@ -2253,6 +2776,7 @@ def process_assignments(
         (target_game_id, target_year, period.season, period.week, max(0, slots)),
     ).fetchall()
     processed = 0
+    processed_uses = 0
     for assignment in pending:
         focus = str(assignment["focus"] or "film")
         base_gain = {
@@ -2363,6 +2887,18 @@ def process_assignments(
             related_id=int(assignment["prospect_id"]),
         )
         processed += 1
+        processed_uses += specific_scouting_cost(assignment["position"])
+
+    if processed:
+        record_weekly_action(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            period=period,
+            action_key="specific",
+            description=f"Processed {processed} queued specific scouting assignment(s).",
+            uses=processed_uses,
+        )
 
     discovered = discover_hidden_prospects(
         con,
@@ -2782,7 +3318,11 @@ def execute_top30_visit(
 
     prospect = con.execute(
         """
-        SELECT dp.*, spp.visibility_status
+        SELECT
+            dp.*,
+            spp.visibility_status,
+            spp.scouting_level AS user_scouting_level,
+            spp.scouting_confidence AS user_scouting_confidence
         FROM draft_prospects dp
         JOIN scouting_prospect_progress spp
           ON spp.prospect_id = dp.prospect_id
@@ -2814,6 +3354,13 @@ def execute_top30_visit(
     traits = trait_payload(con, prospect_id) if result_type in {"personality", "full"} else []
     hidden_info = hidden_info_payload(prospect) if result_type == "full" else None
     notes = top30_visit_note(prospect, result_type=result_type, traits=traits, hidden_info=hidden_info)
+    old_confidence = normalize_confidence(prospect["user_scouting_confidence"])
+    old_level = int(prospect["user_scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence])
+    visit_confidence = advance_confidence(old_confidence, 2)
+    visit_level = max(old_level, CONFIDENCE_TARGET_LEVELS[visit_confidence])
+    if result_type == "full":
+        visit_confidence = "Very High"
+        visit_level = max(visit_level, 95)
     con.execute(
         """
         INSERT INTO scouting_top30_visits (
@@ -2838,45 +3385,50 @@ def execute_top30_visit(
         ),
     )
 
-    if result_type in {"personality", "full"}:
-        con.execute(
-            """
-            UPDATE scouting_prospect_progress
-            SET personality_known = 1,
-                last_report = ?,
-                last_scouted_season = ?,
-                last_scouted_week = ?,
-                last_scouted_date = ?,
-                updated_at = datetime('now')
-            WHERE game_id = ?
-              AND draft_year = ?
-              AND prospect_id = ?
-            """,
-            (notes, current_season(con), current_scouting_period(con).week, effective_visit_date, target_game_id, target_year, prospect_id),
-        )
-    if result_type == "full":
-        con.execute(
-            """
-            UPDATE scouting_prospect_progress
-            SET scouting_level = MAX(scouting_level, 95),
-                scouting_confidence = 'Very High',
-                last_report = ?,
-                updated_at = datetime('now')
-            WHERE game_id = ?
-              AND draft_year = ?
-              AND prospect_id = ?
-            """,
-            (notes, target_game_id, target_year, prospect_id),
-        )
-        con.execute(
-            """
-            UPDATE draft_prospects
-            SET scout_confidence = 'Very High',
-                updated_at = datetime('now')
-            WHERE prospect_id = ?
-            """,
-            (prospect_id,),
-        )
+    con.execute(
+        """
+        UPDATE scouting_prospect_progress
+        SET scouting_level = MAX(scouting_level, ?),
+            scouting_confidence = CASE
+                WHEN ? >= scouting_level THEN ?
+                ELSE scouting_confidence
+            END,
+            personality_known = CASE
+                WHEN ? THEN 1
+                ELSE personality_known
+            END,
+            last_report = ?,
+            last_scouted_season = ?,
+            last_scouted_week = ?,
+            last_scouted_date = ?,
+            updated_at = datetime('now')
+        WHERE game_id = ?
+          AND draft_year = ?
+          AND prospect_id = ?
+        """,
+        (
+            visit_level,
+            visit_level,
+            visit_confidence,
+            1 if result_type in {"personality", "full"} else 0,
+            notes,
+            current_season(con),
+            current_scouting_period(con).week,
+            effective_visit_date,
+            target_game_id,
+            target_year,
+            prospect_id,
+        ),
+    )
+    con.execute(
+        """
+        UPDATE draft_prospects
+        SET scout_confidence = ?,
+            updated_at = datetime('now')
+        WHERE prospect_id = ?
+        """,
+        (visit_confidence, prospect_id),
+    )
 
     add_inbox_message(
         con,
@@ -3018,6 +3570,14 @@ def auto_assign_top30_visits(
         }
 
     rng = random.Random(seed or f"{target_game_id}:{target_year}:{team_abbr}:auto-top30:{used}")
+    team_id = user_team_id(con)
+    pick_profile = cpu_draft_pick_profile(con, team_id, target_year) if team_id else {}
+    need_scores = user_team_need_scores(
+        con,
+        game_id=target_game_id,
+        season=current_season(con),
+        evaluation_date=effective_visit_date,
+    )
     pool = list(candidates)
     selected: list[sqlite3.Row] = []
     while pool and len(selected) < remaining:
@@ -3029,7 +3589,23 @@ def auto_assign_top30_visits(
             confidence = normalize_confidence(prospect["scouting_confidence"])
             confidence_bonus = {"Low": 12.0, "Medium": 8.0, "High": 3.0, "Very High": 0.5}.get(confidence, 6.0)
             rank_bonus = max(0.5, 40.0 / max(1, rank))
-            weight = max(0.1, confidence_bonus + rank_bonus + (grade - 55.0) / 8.0 + variance / 10.0 - index * 0.01)
+            strategic_score = user_auto_scouting_score(
+                prospect,
+                need_scores=need_scores,
+                pick_profile=pick_profile,
+            )
+            need_score = need_scores.get(prospect_position_group(prospect), 0.0)
+            if need_score < 20.0 and rank > 96:
+                confidence_bonus *= 0.45
+            weight = max(
+                0.1,
+                confidence_bonus
+                + rank_bonus
+                + strategic_score / 8.0
+                + (grade - 55.0) / 10.0
+                + variance / 14.0
+                - index * 0.01,
+            )
             weighted.append(weight)
         choice = rng.choices(pool, weights=weighted, k=1)[0]
         selected.append(choice)
@@ -3179,6 +3755,11 @@ def cpu_top30_weight(
         need_scores=need_scores or {},
         pick_profile=pick_profile or {},
     ) / 4.0
+    qb_priority_bonus = cpu_qb_scouting_priority_bonus(
+        prospect,
+        need_scores=need_scores or {},
+        pick_profile=pick_profile or {},
+    ) / 3.0
     hidden_bonus = 3.5 if str(prospect["public_board_status"] or "") == "off_public_board" else 0.0
     upside_bonus = max(0.0, ceiling - grade) / 12.0
     return max(
@@ -3188,6 +3769,7 @@ def cpu_top30_weight(
         + need_bonus
         + strategic_need_bonus
         + due_diligence_bonus
+        + qb_priority_bonus
         + hidden_bonus
         + (grade - 55.0) / 8.0
         + upside_bonus
@@ -3248,12 +3830,14 @@ def execute_cpu_top30_visit(
 
     old_confidence = normalize_confidence(prospect["cpu_scouting_confidence"])
     old_level = int(prospect["cpu_scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence])
+    visit_confidence = advance_confidence(old_confidence, 2)
+    visit_level = max(old_level, CONFIDENCE_TARGET_LEVELS[visit_confidence])
     if result_type == "full":
-        new_level = max(old_level, 95)
+        new_level = max(visit_level, 95)
         new_confidence = "Very High"
     else:
-        new_level = old_level
-        new_confidence = old_confidence
+        new_level = visit_level
+        new_confidence = visit_confidence
     visibility = "discovered" if str(prospect["public_board_status"] or "") == "off_public_board" else "known"
     if str(prospect["cpu_visibility_status"] or "") not in {"", "hidden"}:
         visibility = str(prospect["cpu_visibility_status"])
@@ -3387,6 +3971,30 @@ def auto_assign_cpu_top30_visits(
         rng = random.Random(seed or f"{target_game_id}:{target_year}:{team_abbr}:cpu-top30:{used}")
         pool = list(candidates)
         selected: list[sqlite3.Row] = []
+        qb_need = need_scores.get("QB", 0.0)
+        if qb_need >= CPU_QB_SCOUTING_NEED_FLOOR:
+            qb_target_count = min(4 if qb_need >= CPU_QB_SCOUTING_STRONG_NEED else 2, remaining)
+            qb_pool = [
+                prospect
+                for prospect in pool
+                if str(prospect["position"] or "").upper() == "QB"
+                and int(prospect["public_board_rank"] or prospect["scouting_rank"] or 9999) <= (96 if pick_profile.get("has_first_round_pick") else 160)
+            ]
+            qb_pool.sort(
+                key=lambda prospect: -cpu_top30_weight(
+                    con,
+                    team_id,
+                    prospect,
+                    game_id=target_game_id,
+                    draft_year=target_year,
+                    need_scores=need_scores,
+                    pick_profile=pick_profile,
+                )
+            )
+            for prospect in qb_pool[:qb_target_count]:
+                selected.append(prospect)
+                if prospect in pool:
+                    pool.remove(prospect)
         while pool and len(selected) < remaining:
             weights = [
                 cpu_top30_weight(
@@ -3846,8 +4454,23 @@ def process_senior_bowl(
     }
 
 
-def normalize_board_row(row: sqlite3.Row) -> dict[str, Any]:
+def normalize_board_row(
+    row: sqlite3.Row,
+    *,
+    game_id: str | None = None,
+    draft_year: int | None = None,
+    team_id: int | None = None,
+) -> dict[str, Any]:
     data = dict(row)
+    raw_scout_grade = data.get("scout_grade")
+    raw_scout_ceiling = data.get("scout_ceiling")
+    if game_id and draft_year and team_id is not None:
+        data["public_scout_grade"] = raw_scout_grade
+        data["public_scout_ceiling"] = raw_scout_ceiling
+        data["scout_grade"] = int(round(scouting_perception.perceived_grade(data, game_id=game_id, draft_year=draft_year, team_id=team_id)))
+        data["scout_ceiling"] = int(round(scouting_perception.perceived_ceiling(data, game_id=game_id, draft_year=draft_year, team_id=team_id)))
+    data.pop("true_grade", None)
+    data.pop("ceiling_grade", None)
     data["top30_revealed_traits"] = decode_json(data.pop("top30_revealed_traits_json", None), [])
     data["top30_revealed_hidden_info"] = decode_json(data.pop("top30_revealed_hidden_info_json", None), None)
     return data
@@ -4280,15 +4903,18 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
     class_row = draft_class_row(con)
     period = current_scouting_period(con)
     weekly_window = weekly_scouting_window_status(con, period)
+    draft_year_value = int(class_row["draft_year"]) if class_row else None
+    workout_payload = workout_visibility(con, draft_year_value) if draft_year_value else {}
     if not table_exists(con, "user_inbox_messages") or not table_exists(con, "scouting_prospect_progress"):
         return {
             "gameId": game_id,
             "available": False,
             "needsSetup": True,
             "inbox": [],
-            "draftYear": int(class_row["draft_year"]) if class_row else None,
+            "draftYear": draft_year_value,
             "period": period.__dict__,
             "weeklyWindow": weekly_window,
+            "workoutVisibility": workout_payload,
             "board": [],
             "counts": {"visible": 0, "pending": 0, "discovered": 0, "unread": 0},
             "actionsUsed": {key: False for key in SIMPLE_ACTION_LABELS},
@@ -4308,6 +4934,7 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             "draftYear": None,
             "period": period.__dict__,
             "weeklyWindow": weekly_window,
+            "workoutVisibility": workout_payload,
             "board": [],
             "counts": {"visible": 0, "pending": 0, "unread": unread_count(con, game_id)},
             "actionsUsed": {key: False for key in SIMPLE_ACTION_LABELS},
@@ -4318,6 +4945,7 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             "audit": empty_audit_payload(),
         }
     draft_year = int(class_row["draft_year"])
+    workout_payload = workout_visibility(con, draft_year)
     top30_payload = build_top30_payload(con, game_id=game_id, draft_year=draft_year, class_row=class_row)
     senior_bowl_payload = build_senior_bowl_payload(con, game_id=game_id, draft_year=draft_year, class_row=class_row)
     progress_count = con.execute(
@@ -4338,6 +4966,7 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             "draftYear": draft_year,
             "period": period.__dict__,
             "weeklyWindow": weekly_window,
+            "workoutVisibility": workout_payload,
             "board": [],
             "counts": {"visible": 0, "pending": 0, "discovered": 0, "unread": unread_count(con, game_id)},
             "actionsUsed": {key: False for key in SIMPLE_ACTION_LABELS},
@@ -4379,6 +5008,8 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             dp.scout_confidence,
             dp.scout_grade,
             dp.scout_ceiling,
+            dp.true_grade,
+            dp.ceiling_grade,
             dp.scout_risk,
             dp.scout_lens,
             dp.scouting_variance,
@@ -4435,18 +5066,24 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
         """,
         (period.season, period.week, game_id, draft_year, user_team_abbr(con), int(class_row["draft_class_id"]), limit),
     ).fetchall()
-    pending = con.execute(
+    pending_row = con.execute(
         """
-        SELECT COUNT(*) AS c
+        SELECT
+            COUNT(*) AS pending_count,
+            COALESCE(SUM(CASE WHEN UPPER(COALESCE(dp.position, '')) = 'QB' THEN ? ELSE 1 END), 0) AS pending_cost
         FROM scouting_assignments
-        WHERE game_id = ?
-          AND draft_year = ?
-          AND season = ?
-          AND week = ?
-          AND status = 'pending'
+        JOIN draft_prospects dp
+          ON dp.prospect_id = scouting_assignments.prospect_id
+        WHERE scouting_assignments.game_id = ?
+          AND scouting_assignments.draft_year = ?
+          AND scouting_assignments.season = ?
+          AND scouting_assignments.week = ?
+          AND scouting_assignments.status = 'pending'
         """,
-        (game_id, draft_year, period.season, period.week),
-    ).fetchone()["c"]
+        (SPECIFIC_SCOUTING_COUNT, game_id, draft_year, period.season, period.week),
+    ).fetchone()
+    pending = int(pending_row["pending_count"] or 0)
+    pending_specific_cost = int(pending_row["pending_cost"] or 0)
     discovered = con.execute(
         """
         SELECT COUNT(*) AS c
@@ -4474,7 +5111,7 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
     ).fetchone()["c"]
     used_rows = con.execute(
         """
-        SELECT action_key
+        SELECT action_key, uses
         FROM scouting_weekly_actions
         WHERE game_id = ?
           AND draft_year = ?
@@ -4483,14 +5120,22 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
         """,
         (game_id, draft_year, period.season, period.week),
     ).fetchall()
-    used = {str(row["action_key"]) for row in used_rows}
+    action_uses = {str(row["action_key"]): int(row["uses"] or 0) for row in used_rows}
+    pending_specific_uses = pending_specific_cost
+    if pending_specific_uses:
+        action_uses["specific"] = action_uses.get("specific", 0) + pending_specific_uses
+    used = set(action_uses)
+    non_specific_action_used = any(key != "specific" for key in used)
+    specific_uses = action_uses.get("specific", 0)
+    weekly_choice_used = non_specific_action_used or specific_uses >= SPECIFIC_SCOUTING_COUNT
     used_action = next(iter(used), None)
-    return {
+    return mask_unavailable_workouts({
         "gameId": game_id,
         "available": True,
         "draftYear": draft_year,
         "period": period.__dict__,
         "weeklyWindow": weekly_window,
+        "workoutVisibility": workout_payload,
         "inbox": inbox,
         "counts": {
             "visible": len(board),
@@ -4499,15 +5144,34 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             "hiddenRemaining": int(hidden_remaining or 0),
             "unread": unread_count(con, game_id),
         },
-        "actionsUsed": {key: key in used for key in SIMPLE_ACTION_LABELS},
-        "weeklyChoiceUsed": bool(used),
+        "actionsUsed": {
+            key: (
+                specific_uses >= SPECIFIC_SCOUTING_COUNT
+                if key == "specific"
+                else key in used
+            )
+            for key in SIMPLE_ACTION_LABELS
+        },
+        "actionUses": action_uses,
+        "actionLimits": {
+            "specific": SPECIFIC_SCOUTING_COUNT,
+            "random_two": 1,
+            "discover_four": 1,
+            "auto_assign": 1,
+        },
+        "weeklyActionStarted": bool(used),
+        "nonSpecificActionUsed": non_specific_action_used,
+        "weeklyChoiceUsed": weekly_choice_used,
         "usedAction": used_action,
         "actionLabels": SIMPLE_ACTION_LABELS,
         "top30": top30_payload,
         "seniorBowl": senior_bowl_payload,
         "audit": build_audit_payload(con, game_id=game_id, draft_year=draft_year, limit=8, team_limit=12, prospects_per_team=2),
-        "board": [normalize_board_row(row) for row in board],
-    }
+        "board": [
+            normalize_board_row(row, game_id=game_id, draft_year=draft_year, team_id=user_team_id(con))
+            for row in board
+        ],
+    })
 
 
 def unread_count(con: sqlite3.Connection, game_id: str) -> int:
@@ -4624,6 +5288,23 @@ def action_assign(args: argparse.Namespace) -> None:
     print(f"Queued scouting: {prospect_name(prospect)} ({prospect['position']}, {prospect['college']})")
 
 
+def action_unassign(args: argparse.Namespace) -> None:
+    with connect(args.db) as con:
+        result = unassign_prospect(
+            con,
+            prospect_id=args.prospect_id,
+            game_id=args.game_id,
+            draft_year=args.draft_year,
+            season=args.season,
+            week=args.week,
+        )
+        con.commit()
+    if result["removed"]:
+        print(f"Removed queued scouting: {result['name']} ({result['position']}, {result['college']})")
+    else:
+        print(f"No pending scouting assignment found for {result['name']}.")
+
+
 def action_process_week(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
         result = process_assignments(
@@ -4670,14 +5351,14 @@ def action_auto(args: argparse.Namespace) -> None:
 
 def action_scout_one(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
-        result = scout_specific_player(
+        prospect = assign_prospect(
             con,
             prospect_id=args.prospect_id,
             game_id=args.game_id,
             draft_year=args.draft_year,
         )
         con.commit()
-    print(describe_simple_result(result))
+    print(f"Queued scouting: {prospect_name(prospect)} ({prospect['position']}, {prospect['college']})")
 
 
 def action_random(args: argparse.Namespace) -> None:
@@ -4891,6 +5572,14 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("--focus", choices=sorted(FOCUS_LABELS), default="film")
     assign.set_defaults(func=action_assign)
 
+    unassign = subparsers.add_parser("unassign", help="Remove one pending scouting assignment.")
+    unassign.add_argument("--game-id")
+    unassign.add_argument("--draft-year", type=int)
+    unassign.add_argument("--season", type=int)
+    unassign.add_argument("--week", type=int)
+    unassign.add_argument("--prospect-id", type=int, required=True)
+    unassign.set_defaults(func=action_unassign)
+
     process = subparsers.add_parser("process-week", help="Process queued scouting assignments.")
     process.add_argument("--game-id")
     process.add_argument("--draft-year", type=int)
@@ -4906,7 +5595,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto.add_argument("--count", type=int, default=AUTO_ASSIGN_COUNT)
     auto.set_defaults(func=action_auto)
 
-    scout_one = subparsers.add_parser("scout-one", help="Use this week's one-player scouting action.")
+    scout_one = subparsers.add_parser("scout-one", help="Queue one prospect for this week's specific-player scouting action.")
     scout_one.add_argument("--game-id")
     scout_one.add_argument("--draft-year", type=int)
     scout_one.add_argument("--prospect-id", type=int, required=True)

@@ -228,7 +228,12 @@ def roster_counts(con: sqlite3.Connection, team_id: int) -> dict[str, Any]:
     row = con.execute(
         """
         SELECT
-            SUM(CASE WHEN COALESCE(status, 'Active') = 'Active' THEN 1 ELSE 0 END) AS active_roster_count,
+            SUM(
+                CASE
+                    WHEN COALESCE(status, 'Active') IN ('Active', 'Questionable', 'Doubtful', 'Out') THEN 1
+                    ELSE 0
+                END
+            ) AS active_roster_count,
             SUM(CASE WHEN COALESCE(status, '') = 'Practice Squad' THEN 1 ELSE 0 END) AS practice_squad_count,
             COUNT(*) AS total_controlled_count
         FROM players
@@ -296,7 +301,7 @@ def active_injury_map(con: sqlite3.Connection) -> dict[int, dict[str, Any]]:
             MAX(expected_games) AS max_expected_games,
             GROUP_CONCAT(injury_label, ', ') AS active_injury_labels
         FROM active_player_injuries
-        WHERE status IN ('active', 'out', 'doubtful')
+        WHERE status IN ('Questionable', 'Doubtful', 'Out', 'IR', 'PUP', 'NFI')
         GROUP BY player_id
         """
     ).fetchall()

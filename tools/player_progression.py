@@ -948,11 +948,10 @@ def usage_score(player: sqlite3.Row, stats: dict[str, float], depth_rank: int | 
     status = str(player["status"] or "Active")
     if status == "Practice Squad":
         return -2.8
-    if status == "Free Agent" or player["team_id"] is None:
-        return -1.6
+    free_agent_context = status == "Free Agent" or player["team_id"] is None
 
     depth_component = 0.0
-    if depth_rank is not None:
+    if depth_rank is not None and not free_agent_context:
         if depth_rank == 1:
             depth_component = 2.2
         elif depth_rank == 2:
@@ -966,12 +965,14 @@ def usage_score(player: sqlite3.Row, stats: dict[str, float], depth_rank: int | 
     defensive_snaps = stat_value(stats, "defensive_snaps")
     special_snaps = stat_value(stats, "special_teams_snaps")
     total_snaps = offensive_snaps + defensive_snaps + special_snaps
+    if free_agent_context and total_snaps <= 0 and not has_meaningful_stats(stats):
+        return -1.6
     primary_snaps, full_time = primary_snap_context(position, stats)
     snap_penalty = low_primary_snap_penalty(
         player,
         primary_snaps=primary_snaps,
         full_time=full_time,
-        depth_rank=depth_rank,
+        depth_rank=None if free_agent_context else depth_rank,
     )
     if total_snaps > 0:
         snap_component = clamp(primary_snaps / full_time * 4.2 - 1.1, -1.5, 3.4)
@@ -982,7 +983,10 @@ def usage_score(player: sqlite3.Row, stats: dict[str, float], depth_rank: int | 
                 st_component *= 0.80
             if int(player["overall"] or 50) >= 76:
                 st_component *= 0.42
-        return clamp(snap_component * 0.74 + depth_component * 0.21 + snap_penalty + st_component, -3.4, 4.0)
+        score = snap_component * 0.74 + depth_component * 0.21 + snap_penalty + st_component
+        if free_agent_context:
+            score -= 0.35
+        return clamp(score, -3.4, 4.0)
 
     if position == "QB":
         stat_component = clamp(stat_value(stats, "pass_attempts") / 560.0 * 4.0 - 1.0, -1.2, 3.2)
@@ -1004,7 +1008,33 @@ def usage_score(player: sqlite3.Row, stats: dict[str, float], depth_rank: int | 
             + stat_value(stats, "pass_deflections") / 12.0
         )
         stat_component = clamp(impact * 2.4 - 0.8, -1.2, 3.2)
-    return clamp((stat_component + depth_component) / 2.0 + snap_penalty, -3.4, 4.0)
+    score = (stat_component + depth_component) / 2.0 + snap_penalty
+    if free_agent_context:
+        score -= 0.35
+    return clamp(score, -3.4, 4.0)
+
+
+def top_end_progression_gravity(
+    base_delta: float,
+    *,
+    old_overall: int,
+    potential_gap: int,
+    band: str,
+) -> float:
+    if base_delta <= 0:
+        return base_delta
+    multiplier = 1.0
+    if old_overall >= 94:
+        multiplier *= 0.55
+    elif old_overall >= 90:
+        multiplier *= 0.68
+    elif old_overall >= 84 and potential_gap <= 8:
+        multiplier *= 0.82
+    if old_overall >= 88 and potential_gap <= 3:
+        multiplier *= 0.78
+    if old_overall >= 90 and band in {"veteran", "late_veteran"}:
+        multiplier *= 0.75
+    return base_delta * multiplier
 
 
 def performance_score(position: str, stats: dict[str, float]) -> float:
@@ -1848,7 +1878,9 @@ def build_contexts(
         elif str(player["status"]) == "Free Agent":
             practice_squad_score = -0.7
 
-        potential_gap = int(player["potential"] or player["overall"]) - int(player["overall"] or 50)
+        old_overall = int(player["overall"] or 50)
+        old_potential = int(player["potential"] or player["overall"] or 50)
+        potential_gap = old_potential - old_overall
         dev_trait = str(player["dev_trait"] or "Normal")
         dev_score = development_score(mods, profile)
         trait_growth_score = personality_development_score(traits, band)
@@ -1972,11 +2004,18 @@ def build_contexts(
             base *= 0.45
         elif potential_gap <= 4 and base > 0:
             base *= 0.72
+        base = top_end_progression_gravity(
+            base,
+            old_overall=old_overall,
+            potential_gap=potential_gap,
+            band=band,
+        )
         base = clamp(base, -6.5, 6.5)
 
         potential_delta = potential_change(
             rng,
             band=band,
+            old_overall=old_overall,
             base_delta=base,
             potential_gap=potential_gap,
             mods=mods,
@@ -2024,8 +2063,8 @@ def build_contexts(
                 age=age,
                 years_exp=years_exp,
                 status=str(player["status"]),
-                old_overall=int(player["overall"] or 50),
-                old_potential=int(player["potential"] or player["overall"] or 50),
+                old_overall=old_overall,
+                old_potential=old_potential,
                 age_band=band,
                 development_score=dev_score,
                 usage_score=player_usage_score,
@@ -2056,6 +2095,7 @@ def potential_change(
     rng: random.Random,
     *,
     band: str,
+    old_overall: int,
     base_delta: float,
     potential_gap: int,
     mods: dict[str, int],
@@ -2093,6 +2133,13 @@ def potential_change(
     raw += ceiling_gravity * 0.42
     raw += circumstance_score * (0.22 if band in {"rookie", "young"} else 0.12)
     raw += potential_miss
+    if raw > 0:
+        if old_overall >= 94:
+            raw *= 0.35
+        elif old_overall >= 90:
+            raw *= 0.52
+        elif old_overall >= 84 and potential_gap <= 8:
+            raw *= 0.72
     if potential_gap >= 14 and raw < 0 and band in {"rookie", "young"}:
         raw *= 0.65
     if raw < 0 and band in {"rookie", "young"}:

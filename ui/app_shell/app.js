@@ -127,7 +127,7 @@
     state.busyAction = action;
     state.lastResult = null;
     startElapsedTimer();
-    showToast(`Running ${actionLabel(action)}...`);
+    showToast(`${actionLabel(action)} in progress...`);
     render();
     try {
       const response = await fetch("/api/run", {
@@ -139,7 +139,7 @@
       if (payload.app_shell_state) data = payload.app_shell_state;
       state.lastResult = payload;
       state.runnerAvailable = true;
-      showToast(payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} returned an issue`);
+      showToast(payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} needs attention`);
       const target = actionLaunchTarget(action, payload);
       if (target) {
         showToast("Opening Game Center...");
@@ -149,7 +149,7 @@
       }
     } catch (error) {
       state.lastResult = { error: String(error) };
-      showToast("Runner request failed");
+      showToast("Action could not be completed");
     } finally {
       state.runnerBusy = false;
       state.busyAction = null;
@@ -167,7 +167,7 @@
   }
 
   function busyMessage() {
-    return `${actionLabel(state.busyAction)} is running...\n\nElapsed: ${state.elapsedSeconds}s\n\nCreating a fresh save copies the master database, applies player variance, seeds hidden personalities, seeds development modifiers, builds scheme fits, and prepares the draft class. The full output appears here when the command returns.`;
+    return `${actionLabel(state.busyAction)} is running...\n\nElapsed: ${state.elapsedSeconds}s\n\nThe league is preparing a playable save with roster variance, personalities, development traits, scheme fits, and draft class setup. This page will move forward when it is ready.`;
   }
 
   function shortDate(value) {
@@ -190,30 +190,40 @@
   }
 
   function runnerOutputPanel() {
-    const p = panel("Runner Output", state.runnerBusy ? "Running" : "Last Action");
+    const p = panel("Action Status", state.runnerBusy ? "Running" : "Last Action");
     if (state.runnerBusy) {
-      p.append(node("pre", "runner-output", busyMessage()));
-      p.querySelector("pre").id = "runnerOutput";
+      const status = node("div", "action-status-card running");
+      const message = node("p", "muted", busyMessage());
+      message.id = "runnerOutput";
+      append(status, [
+        node("span", "spinner"),
+        append(node("div"), [
+          node("strong", null, `${actionLabel(state.busyAction)} in progress`),
+          message,
+        ]),
+      ]);
+      p.append(status);
       return p;
     }
     if (!state.lastResult) {
-      p.append(node("div", "empty-state", runnerMode() ? "No local action has been run yet." : "Start the UI runner for clickable local actions."));
+      p.append(node("div", "empty-state", runnerMode() ? "No action has been run yet." : "Live actions are unavailable."));
       return p;
     }
+    const ok = state.lastResult.returncode === 0 && !state.lastResult.error;
+    const status = node("div", `action-status-card ${ok ? "good" : "bad"}`);
+    append(status, [
+      node("span", "status-dot"),
+      append(node("div"), [
+        node("strong", null, actionLabel(state.lastResult.action)),
+        node("p", "muted", ok ? "Completed successfully." : (state.lastResult.error || "The action could not be completed.")),
+      ]),
+    ]);
     const summary = node("div", "runner-summary");
     append(summary, [
-      metric("Action", actionLabel(state.lastResult.action), state.lastResult.returncode === 0 ? "Completed" : "Issue"),
-      metric("Elapsed", `${state.lastResult.duration_seconds ?? "-"}s`, "Backend command time"),
-      metric("Return Code", String(state.lastResult.returncode ?? "-"), state.lastResult.error ? "Request failed" : "Process result"),
+      metric("Action", actionLabel(state.lastResult.action), ok ? "Completed" : "Needs attention"),
+      metric("Elapsed", `${state.lastResult.duration_seconds ?? "-"}s`, "Action time"),
     ]);
-    const output = node("pre", "runner-output");
-    output.textContent = [
-      state.lastResult.command ? `Command:\n${state.lastResult.command}` : "",
-      state.lastResult.stdout ? `STDOUT:\n${state.lastResult.stdout}` : "",
-      state.lastResult.stderr ? `STDERR:\n${state.lastResult.stderr}` : "",
-      state.lastResult.error ? `ERROR:\n${state.lastResult.error}` : "",
-    ].filter(Boolean).join("\n\n") || "No output.";
-    append(p, [summary, output]);
+    append(p, [status, summary]);
     return p;
   }
 
@@ -253,7 +263,7 @@
     const startCopy = node("div", "start-copy");
     append(startCopy, [
       node("strong", null, "Create a fresh June 1 save"),
-      node("p", "muted", "This runs the real setup path so you can feel how long save creation takes: database copy, variance, personalities, development modifiers, scheme fits, and draft prep."),
+      node("p", "muted", "Build a playable league file with roster variance, hidden personalities, development modifiers, scheme fits, and draft prep already seeded."),
     ]);
     const startControls = node("div", "command-actions");
     const newButton = node("button", "primary-button", runnerMode() ? "Start Game" : "Open UI Runner");
@@ -290,7 +300,7 @@
     const actionsPanel = panel("Continue", "Workspace");
     const actions = node("div", "list-stack");
     [
-      ["Game Center", "../game_center/index.html", "Season, free agency, draft, calendar, and command cockpit."],
+      ["Game Center", "../game_center/index.html", "Season, free agency, draft, calendar, and league control."],
       ["Front Office", "../front_office/index.html", "Team dashboard, roster, cap, draft, free agency."],
       ["Player Profiles", "../player_profile/index.html", "FM-style player pages with attributes and career data."],
       ["Player Cards", "../player_card/index.html", "Compact player card view."],
@@ -328,28 +338,6 @@
     refs.content.replaceChildren(root);
   }
 
-  function commandText() {
-    const args = [
-      "python tools\\play.py new",
-      `--game-id ${state.gameId || "<game_id>"}`,
-      `--name "${state.saveName || "New Save"}"`,
-      `--user-team ${state.selectedTeam || "MIN"}`,
-    ];
-    if (state.seed) {
-      args.push(`--seed ${state.seed}`);
-    }
-    if (!state.variance) {
-      args.push("--no-variance");
-    }
-    if (!state.personalityVariance) {
-      args.push("--no-personality-variance");
-    }
-    if (!state.developmentModifiers) {
-      args.push("--no-development-modifiers");
-    }
-    return args.join(" ");
-  }
-
   function newGameParams() {
     return {
       game_id: state.gameId,
@@ -371,30 +359,25 @@
     const root = document.createDocumentFragment();
     const formGrid = node("div", "form-grid");
 
-    const formPanel = panel("Save Setup", "Command Builder");
+    const formPanel = panel("Save Setup", "New League");
     const stack = node("div", "form-stack");
-    const gameId = inputLabel("Game ID", "text", state.gameId, (value) => { state.gameId = value; renderCommand(); });
-    const saveName = inputLabel("Save Name", "text", state.saveName, (value) => { state.saveName = value; renderCommand(); });
-    const seed = inputLabel("Seed", "number", state.seed, (value) => { state.seed = value; renderCommand(); });
-    const variance = checkboxLabel("Rating Variance", state.variance, (checked) => { state.variance = checked; renderCommand(); });
-    const personality = checkboxLabel("Personality Variance", state.personalityVariance, (checked) => { state.personalityVariance = checked; renderCommand(); });
-    const development = checkboxLabel("Development Modifiers", state.developmentModifiers, (checked) => { state.developmentModifiers = checked; renderCommand(); });
+    const gameId = inputLabel("Game ID", "text", state.gameId, (value) => { state.gameId = value; });
+    const saveName = inputLabel("Save Name", "text", state.saveName, (value) => { state.saveName = value; });
+    const seed = inputLabel("Seed", "number", state.seed, (value) => { state.seed = value; });
+    const variance = checkboxLabel("Rating Variance", state.variance, (checked) => { state.variance = checked; });
+    const personality = checkboxLabel("Personality Variance", state.personalityVariance, (checked) => { state.personalityVariance = checked; });
+    const development = checkboxLabel("Development Modifiers", state.developmentModifiers, (checked) => { state.developmentModifiers = checked; });
     append(stack, [gameId, saveName, seed, variance, personality, development]);
     formPanel.append(stack);
-    const command = node("div", "command-box");
-    const code = node("code");
-    code.id = "commandText";
-    const note = node("div", "command-note", runnerMode() ? "This button runs through the local UI runner and reports exact setup time." : "Start tools\\ui_runner.py for one-click game creation. This command also works from PowerShell.");
+    const command = node("div", "command-box setup-actions");
+    const note = node("div", "command-note", runnerMode() ? "Start the save when your setup looks right." : "Live actions are unavailable.");
     const actions = node("div", "command-actions");
-    const copy = node("button", "copy-button", "Copy Command");
-    copy.type = "button";
-    copy.addEventListener("click", () => navigator.clipboard?.writeText(commandText()));
     const start = node("button", "primary-button", state.runnerBusy ? "Running" : "Start Game");
     start.type = "button";
     start.disabled = state.runnerBusy || !runnerMode();
     start.addEventListener("click", () => runAction("new_june1_save", newGameParams()));
-    append(actions, [copy, start]);
-    append(command, [code, note, actions]);
+    append(actions, [start]);
+    append(command, [note, actions]);
     formPanel.append(command);
 
     const teamsPanel = panel("Team Select", team ? team.name : "");
@@ -425,7 +408,6 @@
     root.append(formGrid);
     root.append(runnerOutputPanel());
     refs.content.replaceChildren(root);
-    renderCommand();
   }
 
   function inputLabel(label, type, value, onInput) {
@@ -448,13 +430,6 @@
     return wrapper;
   }
 
-  function renderCommand() {
-    const code = document.getElementById("commandText");
-    if (code) {
-      code.textContent = commandText();
-    }
-  }
-
   function renderLoadGame() {
     updateHeader("Load Game", "Registered saves from the local save registry. Empty here means this copy does not have saves yet.");
     const root = document.createDocumentFragment();
@@ -466,7 +441,6 @@
     } else {
       saves.forEach((save) => {
         const row = node("div", "save-row");
-        const command = `python tools\\play.py load ${save.gameId}`;
         const load = node("button", "copy-button", save.active ? "Active" : "Load");
         load.type = "button";
         load.disabled = state.runnerBusy || save.active || !runnerMode();
@@ -474,7 +448,6 @@
         const left = append(node("div"), [
           node("strong", null, save.name),
           node("div", "muted", `${save.userTeam || "-"} | ${save.currentDate || "-"} | ${save.phase || "-"}`),
-          node("div", "muted", command),
         ]);
         append(row, [left, load]);
         list.append(row);
@@ -502,7 +475,7 @@
     const uiPanel = panel("UI Status", "Prototype");
     const metrics = node("section", "metric-grid");
     append(metrics, [
-      metric("Mode", runnerMode() ? "Local Runner" : "Static", runnerMode() ? "Backend actions available" : "Open through tools\\ui_runner.py"),
+      metric("Mode", runnerMode() ? "Live" : "Static", runnerMode() ? "Actions available" : "Showing saved export"),
       metric("Runner", runnerMode() ? "Online" : "Offline", "One-click local actions"),
       metric("Data Source", data.database ? "Active DB" : "Master DB", data.database || "Exported JS payloads"),
       metric("Theme", "Front Office Dark", "Shared with profiles"),

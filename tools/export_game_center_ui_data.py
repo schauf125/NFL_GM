@@ -96,7 +96,7 @@ PUBLIC_NEED_MIN_COUNTS = {
 }
 
 PUBLIC_PREMIUM_GROUPS = {"QB", "OT", "EDGE", "CB", "WR", "IDL"}
-DRAFT_BOARD_LIMIT = 96
+DRAFT_BOARD_LIMIT = 512
 DRAFT_BOARD_DETAIL_LIMIT = 24
 DRAFT_LIGHT_ROW_DROP_FIELDS = {
     "arm_length_in",
@@ -113,6 +113,34 @@ DRAFT_LIGHT_ROW_DROP_FIELDS = {
     "twenty_yard_shuttle_sec",
     "sixty_yard_shuttle_sec",
     "combine_top_skip",
+    "pro_day_status",
+    "pro_day_grade",
+    "pro_day_athletic_score",
+    "pro_day_forty_yard_dash",
+    "pro_day_vertical_jump_in",
+    "pro_day_broad_jump_in",
+    "pro_day_improved_from_combine",
+    "pro_day_medical_recheck",
+}
+
+DRAFT_COMBINE_UI_FIELDS = {
+    "combine_status",
+    "combine_grade",
+    "athletic_score",
+    "drills_completed",
+    "forty_yard_dash",
+    "ten_yard_split",
+    "bench_press_reps",
+    "vertical_jump_in",
+    "broad_jump_in",
+    "three_cone_sec",
+    "twenty_yard_shuttle_sec",
+    "sixty_yard_shuttle_sec",
+    "combine_injured",
+    "combine_top_skip",
+}
+
+DRAFT_PRO_DAY_UI_FIELDS = {
     "pro_day_status",
     "pro_day_grade",
     "pro_day_athletic_score",
@@ -1035,6 +1063,31 @@ def slim_draft_board_rows(board: list[dict[str, Any]], detail_limit: int = DRAFT
         prospect["scout_concerns"] = []
 
 
+def mask_draft_workouts_for_calendar(
+    conn: sqlite3.Connection,
+    board: list[dict[str, Any]],
+    draft_year_value: int,
+    current_date_value: str | None,
+) -> dict[str, Any]:
+    if not hasattr(scouting, "workout_visibility"):
+        return {}
+    visibility = scouting.workout_visibility(conn, draft_year_value, current_date_value)
+    if visibility.get("combineAvailable") and visibility.get("proDayAvailable"):
+        return visibility
+    for prospect in board:
+        if not visibility.get("combineAvailable"):
+            for field in DRAFT_COMBINE_UI_FIELDS:
+                if field in prospect:
+                    prospect[field] = None
+            prospect["combine_status"] = "Pending"
+        if not visibility.get("proDayAvailable"):
+            for field in DRAFT_PRO_DAY_UI_FIELDS:
+                if field in prospect:
+                    prospect[field] = None
+            prospect["pro_day_status"] = "Pending"
+    return visibility
+
+
 def team_logo_map(conn: sqlite3.Connection) -> dict[str, str]:
     if not table_exists(conn, "team_graphics_assets"):
         return {}
@@ -1457,7 +1510,13 @@ def draft_user_selections(
     return selections
 
 
-def draft_summary(conn: sqlite3.Connection, year: int, *, user_team_id: int | None = None) -> dict[str, Any]:
+def draft_summary(
+    conn: sqlite3.Connection,
+    year: int,
+    *,
+    user_team_id: int | None = None,
+    current_date_value: str | None = None,
+) -> dict[str, Any]:
     state = None
     queue: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
@@ -1466,6 +1525,7 @@ def draft_summary(conn: sqlite3.Connection, year: int, *, user_team_id: int | No
     selections: list[dict[str, Any]] = []
     order_slot_count = 0
     order_finalized = False
+    workout_visibility: dict[str, Any] = {}
     logos = team_logo_map(conn)
     if table_exists(conn, "draft_order_slots"):
         row = conn.execute(
@@ -1642,6 +1702,7 @@ def draft_summary(conn: sqlite3.Connection, year: int, *, user_team_id: int | No
             prospect["scout_attributes"] = prospect_attributes.get("attributes", [])
             prospect["scout_strengths"] = prospect_attributes.get("strengths", [])
             prospect["scout_concerns"] = prospect_attributes.get("concerns", [])
+        workout_visibility = mask_draft_workouts_for_calendar(conn, board, year, current_date_value)
         slim_draft_board_rows(board)
     if table_exists(conn, "draft_classes"):
         classes = rows_as_dicts(
@@ -1678,6 +1739,7 @@ def draft_summary(conn: sqlite3.Connection, year: int, *, user_team_id: int | No
         "board": board,
         "classes": classes,
         "pickTotals": pick_totals,
+        "workoutVisibility": workout_visibility,
     }
 
 
@@ -1700,7 +1762,6 @@ def enrich_scouting_payload_with_draft_board(scouting_payload: dict[str, Any], d
         "archetype",
         "primary_role",
         "secondary_role",
-        "scout_confidence",
         "scouting_variance",
         "scouting_strengths",
         "scouting_concerns",
@@ -1740,6 +1801,8 @@ def enrich_scouting_payload_with_draft_board(scouting_payload: dict[str, Any], d
         prospect["scout_attributes"] = draft_row.get("scout_attributes", prospect.get("scout_attributes", []))
         prospect["scout_strengths"] = draft_row.get("scout_strengths", prospect.get("scout_strengths", []))
         prospect["scout_concerns"] = draft_row.get("scout_concerns", prospect.get("scout_concerns", []))
+    if hasattr(scouting, "mask_unavailable_workouts"):
+        scouting.mask_unavailable_workouts(scouting_payload)
     return scouting_payload
 
 
@@ -1757,11 +1820,46 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                 (league_year,),
             ).fetchone()
         )
+    if not period and table_exists(conn, "league_phase_windows"):
+        game_settings = settings(conn)
+        current_date = game_settings.get("current_game_date")
+        if not current_date:
+            active = active_save(conn) or {}
+            current_date = active.get("current_date")
+        if current_date:
+            phase = conn.execute(
+                """
+                SELECT *
+                FROM league_phase_windows
+                WHERE ? BETWEEN start_date AND end_date
+                ORDER BY league_year DESC, sort_order DESC
+                LIMIT 1
+                """,
+                (current_date,),
+            ).fetchone()
+            if phase and int(phase["transactions_open"] or 0):
+                period = {
+                    "league_year": league_year,
+                    "status": "active",
+                    "current_stage": "street_market",
+                    "current_date": current_date,
+                    "current_hour": None,
+                    "day_count": None,
+                    "first_day_start_hour": None,
+                    "first_day_end_hour": None,
+                    "started_at": None,
+                    "updated_at": None,
+                    "completed_at": None,
+                    "notes": "Street free agency is open during the current transaction window.",
+                    "virtual": True,
+                }
     if table_exists(conn, "free_agency_board_view"):
         board = rows_as_dicts(
             conn.execute(
                 """
-                SELECT *
+                SELECT
+                    *,
+                    MAX(COALESCE(asking_aav, 0), COALESCE(minimum_aav, 0)) AS offer_floor_aav
                 FROM free_agency_board_view
                 WHERE league_year = ?
                 ORDER BY
@@ -1785,6 +1883,7 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                     market_tier,
                     asking_aav,
                     minimum_aav,
+                    MAX(COALESCE(asking_aav, 0), COALESCE(minimum_aav, 0)) AS offer_floor_aav,
                     NULL AS market_status,
                     NULL AS pending_offers,
                     NULL AS best_aav,
@@ -1797,6 +1896,10 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                 """
             ).fetchall()
         )
+    for player in board:
+        asking = int(player.get("asking_aav") or 0)
+        minimum = int(player.get("minimum_aav") or 0)
+        player["offer_floor_aav"] = max(asking, minimum)
     if table_exists(conn, "free_agency_offers_view"):
         offers = rows_as_dicts(
             conn.execute(
@@ -1942,6 +2045,26 @@ def free_agency_start_date(conn: sqlite3.Connection, league_year: int) -> str:
         if row and row["event_start_date"]:
             return str(row["event_start_date"])
     return f"{league_year}-03-10"
+
+
+def free_agency_league_year(
+    conn: sqlite3.Connection,
+    *,
+    current_season: int,
+    current_date: str | None,
+    draft_year_value: int,
+    game_settings: dict[str, str] | None = None,
+) -> int:
+    settings_payload = game_settings or settings(conn)
+    contract_year = int(
+        settings_payload.get("current_contract_year")
+        or settings_payload.get("current_league_year")
+        or current_season
+    )
+    fa_start = free_agency_start_date(conn, draft_year_value)
+    if current_date and current_date >= fa_start:
+        return draft_year_value
+    return contract_year
 
 
 def contract_negotiation_summary(
@@ -2762,10 +2885,12 @@ def command_set(
     draft_year_value: int,
     user_team: str | None,
     free_agency_date: str | None = None,
+    free_agency_year: int | None = None,
 ) -> dict[str, str]:
     team = user_team or "MIN"
     next_week = "<week>"
-    fa_start = free_agency_date or f"{draft_year_value}-03-10"
+    fa_year = int(free_agency_year or draft_year_value)
+    fa_start = free_agency_date or f"{fa_year}-03-10"
     return {
         "newGame": f'python tools\\play.py new --game-id my_save --name "My Save" --user-team {team} --start-year {season}',
         "newJune1Save": f'python tools\\play.py new --game-id {team.lower()}_{season}_june1 --name "{team} June 1 Start" --user-team {team} --start-year {season}',
@@ -2786,11 +2911,11 @@ def command_set(
         "contractExtend": f"python tools\\play.py contract extend --season {season} --team {team} --player-id <id> --apply",
         "contractRelease": f"python tools\\play.py contract release --season {season} --team {team} --player-id <id> --apply",
         "contractRestructure": f"python tools\\play.py contract restructure --season {season} --team {team} --player-id <id> --apply",
-        "freeAgencyStart": f"python tools\\play.py free-agency start --league-year {draft_year_value} --start-date {fa_start} --no-cap-snapshot --apply",
-        "freeAgencyCpuSeed": f"python tools\\play.py free-agency cpu-seed --league-year {draft_year_value} --no-cap-snapshot --apply",
-        "freeAgencyHour": f"python tools\\play.py free-agency advance-hour --league-year {draft_year_value} --no-cap-snapshot --apply",
-        "freeAgencyDay": f"python tools\\play.py free-agency advance-day --league-year {draft_year_value} --no-cap-snapshot --apply",
-        "freeAgencyOffer": f"python tools\\play.py free-agency offer --league-year {draft_year_value} --team {team} --player <id> --years <years> --aav <aav> --apply",
+        "freeAgencyStart": f"python tools\\play.py free-agency start --league-year {fa_year} --start-date {fa_start} --no-cap-snapshot --apply",
+        "freeAgencyCpuSeed": f"python tools\\play.py free-agency cpu-seed --league-year {fa_year} --no-cap-snapshot --apply",
+        "freeAgencyHour": f"python tools\\play.py free-agency advance-hour --league-year {fa_year} --no-cap-snapshot --apply",
+        "freeAgencyDay": f"python tools\\play.py free-agency advance-day --league-year {fa_year} --no-cap-snapshot --apply",
+        "freeAgencyOffer": f"python tools\\play.py free-agency offer --league-year {fa_year} --team {team} --player <id> --years <years> --aav <aav> --apply",
         "draftGenerate": f"python tools\\play.py draft --year {draft_year_value} --count 330 --seed {draft_year_value} --apply",
         "draftValidate": f"python tools\\play.py validate-draft db --draft-year {draft_year_value}",
         "advanceToDraft": f"python tools\\play.py advance-to-draft --draft-year {draft_year_value} --user-team {team}",
@@ -2915,8 +3040,20 @@ def build_payload(db_path: Path) -> dict[str, Any]:
         user_team_id = (active or {}).get("user_team_id")
         game_id = (active or {}).get("game_id") or (active or {}).get("save_id")
         draft_year_value = draft_year(conn, current_season)
-        fa_start = free_agency_start_date(conn, draft_year_value)
-        draft_payload = draft_summary(conn, draft_year_value, user_team_id=user_team_id)
+        fa_league_year = free_agency_league_year(
+            conn,
+            current_season=current_season,
+            current_date=current_date,
+            draft_year_value=draft_year_value,
+            game_settings=game_settings,
+        )
+        fa_start = free_agency_start_date(conn, fa_league_year)
+        draft_payload = draft_summary(
+            conn,
+            draft_year_value,
+            user_team_id=user_team_id,
+            current_date_value=current_date,
+        )
         scouting_payload = enrich_scouting_payload_with_draft_board(
             scouting.build_ui_payload(conn, limit=80),
             draft_payload,
@@ -2950,9 +3087,15 @@ def build_payload(db_path: Path) -> dict[str, Any]:
                 "selections": draft_user_selections(conn, current_season, user_team_id),
             },
             "scouting": scouting_payload,
-            "freeAgency": free_agency_summary(conn, draft_year_value),
+            "freeAgency": free_agency_summary(conn, fa_league_year),
             "aiGm": ai_gm_summary(conn, user_team or "MIN", game_id, current_season),
-            "commands": command_set(current_season, draft_year_value, user_team, fa_start),
+            "commands": command_set(
+                current_season,
+                draft_year_value,
+                user_team,
+                fa_start,
+                free_agency_year=fa_league_year,
+            ),
         }
     finally:
         conn.close()

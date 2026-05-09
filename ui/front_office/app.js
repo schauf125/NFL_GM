@@ -234,7 +234,7 @@
     root.append(desk);
 
     const split = node("div", "split-grid");
-    const topPanel = panel("Core Players", "Role Read");
+    const topPanel = panel("Core Players", "Role Fit");
     const topList = node("div", "list-stack");
     topPlayers(team, 6).forEach((player) => {
       const row = node("div", "list-row");
@@ -341,7 +341,7 @@
     const table = node("table", "roster-table");
     const thead = node("thead");
     const headRow = node("tr");
-    ["Player", "Pos", "Age", "Exp", "Cap Hit", "Read"].forEach((label) => headRow.append(node("th", null, label)));
+    ["Player", "Pos", "Age", "Exp", "Cap Hit", "Fit"].forEach((label) => headRow.append(node("th", null, label)));
     thead.append(headRow);
     const tbody = node("tbody");
     append(table, [thead, tbody]);
@@ -370,7 +370,7 @@
   }
 
   function renderDepth(team) {
-    const root = panel("Depth Chart", "Projected");
+    const root = panel("Depth Chart", "Projected Role Fit");
     const grid = node("div", "depth-grid");
     depthPositions(team).forEach((position) => {
       const card = node("section", "depth-card");
@@ -708,7 +708,7 @@
     const role = node("div", "panel-role");
     append(role, [
       append(node("div", "list-row"), [
-        append(node("div"), [node("strong", null, "Role Read"), node("div", "subtle", player.role.label)]),
+        append(node("div"), [node("strong", null, "Role Fit"), node("div", "subtle", player.role.label)]),
         node("span", "grade", player.role.grade),
       ]),
       roleBar(player.role.value, 100),

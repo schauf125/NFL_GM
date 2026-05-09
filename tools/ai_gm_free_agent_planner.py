@@ -1089,18 +1089,18 @@ def validate_saved_plan_for_apply(
             errors.append(f"{item.get('player_name')} no longer exists in the player table.")
             continue
         if market.get("team_id") is not None or market.get("player_status") != "Free Agent":
-            errors.append(f"{item.get('player_name')} is no longer a free agent.")
+            skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "no longer a free agent"})
             continue
         market_status = market.get("market_status")
         if market_status and market_status != "available":
-            errors.append(f"{item.get('player_name')} is not available in the free-agent market ({market_status}).")
+            skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": f"not available in market ({market_status})"})
             continue
         market_minimum = as_int(market.get("minimum_aav"))
         if market_minimum and aav < market_minimum:
             errors.append(f"{item.get('player_name')} planned AAV {money(aav)} is below current market minimum {money(market_minimum)}.")
             continue
         if duplicate_pending_offer(con, league_year=league_year, team_id=team_id, player_id=player_id):
-            errors.append(f"{item.get('player_name')} already has a pending offer from this team.")
+            skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "already has pending offer from this team"})
             continue
         best_aav = as_int(market.get("best_aav"))
         max_aav = as_int(offer.get("max_aav"), aav)

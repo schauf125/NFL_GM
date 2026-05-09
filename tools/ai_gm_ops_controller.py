@@ -36,6 +36,7 @@ OPS_PHASES = {
 }
 
 SPECIALIST_GROUPS = {"K", "P", "LS"}
+ACTIVE_ROSTER_STATUSES = {"Active", "Questionable", "Doubtful", "Out"}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -159,7 +160,7 @@ def active_position_counts(con: sqlite3.Connection, team_id: int) -> dict[str, i
         SELECT position, COUNT(*) AS count
         FROM players
         WHERE team_id = ?
-          AND status = 'Active'
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
         GROUP BY position
         """,
         (team_id,),
@@ -187,6 +188,8 @@ def resolved_ops_phase(game_state: dict[str, Any], requested_phase: str) -> str:
     if requested_phase != "auto":
         return requested_phase
     phase_code = str(game_state.get("phase_code") or "").upper()
+    if phase_code in {"OFFSEASON_OPEN", "POST_SUPER_BOWL_OFFSEASON"}:
+        return "free_agency"
     if phase_code in {"FINAL_CUTDOWN", "TRAINING_CAMP", "CAMP_REPORTING"}:
         return "roster_cutdown"
     if phase_code in {"REGULAR_SEASON", "POSTSEASON"}:
@@ -348,10 +351,11 @@ def build_team_operations(
     include_extensions = ops_phase in {"all", "offseason_extensions"}
     include_free_agency = ops_phase in {"all", "free_agency"}
     include_draft = ops_phase in {"all", "draft_prep"}
-    include_trade = ops_phase in {"all", "trade_market", "offseason_extensions", "free_agency"}
+    include_trade = ops_phase in {"all", "trade_market", "offseason_extensions"}
 
     over_active = active_count > limits["active_roster_limit"]
     ps_short = ps_count < limits["practice_squad_limit"]
+    meaningful_ps_short = ps_count <= max(0, limits["practice_squad_limit"] - 2)
     if include_roster_cutdown and (over_active or ps_short or specialists_missing or active_count >= 60):
         drivers = []
         if over_active:
@@ -394,22 +398,18 @@ def build_team_operations(
     if include_weekly and injury_flags:
         severity = str(injury_flags[0].get("severity") or "medium")
         priority = 8 if severity == "high" else 6
-        add(
-            operation_type="depth_chart_review",
-            decision_type="depth_chart_review",
-            priority=priority,
-            summary=f"{team['abbreviation']} has active injury pressure that should trigger depth-chart review.",
-            drivers=[injury_flags[0].get("summary", "active injuries")],
-            payload={"risk_flag": injury_flags[0]},
-        )
-        add(
-            operation_type="free_agent_shortlist",
-            decision_type="free_agent_shortlist",
-            priority=max(5, priority - 1),
-            summary=f"{team['abbreviation']} should scan free agents for injury cover.",
-            drivers=["active injuries", "weekly roster maintenance"],
-            payload={"risk_flag": injury_flags[0], "top_needs": high_needs[:4]},
-        )
+        # Deterministic roster/depth repair already runs before AI weekly ops.
+        # Avoid queuing dozens of advisory-only depth-chart reviews during full
+        # season sims; reserve weekly AI work for actionable market cover.
+        if severity == "high":
+            add(
+                operation_type="free_agent_shortlist",
+                decision_type="free_agent_shortlist",
+                priority=max(5, priority - 1),
+                summary=f"{team['abbreviation']} should scan free agents for injury cover.",
+                drivers=["major injury pressure", "weekly roster maintenance"],
+                payload={"risk_flag": injury_flags[0], "top_needs": high_needs[:4]},
+            )
 
     if (include_weekly or include_free_agency) and high_needs:
         cap_band = str(metrics.get("cap_band"))
@@ -428,7 +428,39 @@ def build_team_operations(
             payload={"needs": high_needs[:5], "cap_band": cap_band},
         )
 
-    if (include_weekly or include_roster_cutdown) and ps_short and active_count <= limits["active_roster_limit"]:
+    fa_depth_needs = [
+        need
+        for need in top_needs
+        if need.get("priority") in {"medium", "depth"}
+    ]
+    if include_free_agency and not high_needs and fa_depth_needs:
+        cap_band = str(metrics.get("cap_band"))
+        if cap_band not in {"over_cap", "critical"}:
+            add(
+                operation_type="free_agent_shortlist",
+                decision_type="free_agent_shortlist",
+                priority=5,
+                summary=(
+                    f"{team['abbreviation']} should scan value free agents for "
+                    f"{', '.join(need['position_group'] for need in fa_depth_needs[:3])}."
+                ),
+                drivers=[f"{need['position_group']} {need['priority']}" for need in fa_depth_needs[:4]],
+                payload={"needs": fa_depth_needs[:5], "cap_band": cap_band, "market_role": "value/depth"},
+            )
+
+    if include_free_agency and not high_needs and not fa_depth_needs:
+        cap_band = str(metrics.get("cap_band"))
+        if cap_band not in {"over_cap", "critical"}:
+            add(
+                operation_type="free_agent_shortlist",
+                decision_type="free_agent_shortlist",
+                priority=5,
+                summary=f"{team['abbreviation']} should check the value free-agent board for low-risk upgrades.",
+                drivers=["open roster-building window", f"cap {cap_band or 'normal'}"],
+                payload={"needs": top_needs[:5], "cap_band": cap_band, "market_role": "best-value depth"},
+            )
+
+    if (include_weekly or include_roster_cutdown) and meaningful_ps_short and active_count <= limits["active_roster_limit"]:
         add(
             operation_type="practice_squad_priorities",
             decision_type="practice_squad_priorities",

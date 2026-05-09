@@ -26,6 +26,7 @@ import export_front_office_ui_data
 import export_game_center_ui_data
 import export_player_card_ui_data
 import export_player_profile_ui_data
+import free_agency_processor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +77,12 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "contract_restructure",
     "depth_chart_set",
     "depth_chart_move",
+    "free_agency_start",
+    "free_agency_cpu_seed",
+    "free_agency_advance_hour",
+    "free_agency_advance_day",
+    "free_agency_resolve",
+    "free_agency_offer",
 }
 SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_extend",
@@ -157,7 +164,14 @@ def game_context(db_path: Path) -> dict[str, Any]:
         )
         user_team = (active or {}).get("user_team")
         draft_year = export_game_center_ui_data.draft_year(con, current_season)
-        fa_start = export_game_center_ui_data.free_agency_start_date(con, draft_year)
+        fa_year = export_game_center_ui_data.free_agency_league_year(
+            con,
+            current_season=current_season,
+            current_date=current_date,
+            draft_year_value=draft_year,
+            game_settings=game_settings,
+        )
+        fa_start = export_game_center_ui_data.free_agency_start_date(con, fa_year)
         return {
             "settings": game_settings,
             "activeSave": active,
@@ -166,6 +180,7 @@ def game_context(db_path: Path) -> dict[str, Any]:
             "currentPhase": phase,
             "userTeam": user_team,
             "draftYear": draft_year,
+            "freeAgencyYear": fa_year,
             "freeAgencyStart": fa_start,
         }
 
@@ -184,6 +199,7 @@ def contract_state_patch(db_path: Path) -> dict[str, Any]:
             int(context["draftYear"]),
             context.get("userTeam"),
             str(context["freeAgencyStart"]),
+            free_agency_year=int(context["freeAgencyYear"]),
         )
     return {
         "currentDate": context["currentDate"],
@@ -231,7 +247,12 @@ def draft_state_patch(db_path: Path) -> dict[str, Any]:
         con.row_factory = sqlite3.Row
         active = export_game_center_ui_data.active_save(con) or {}
         user_team_id = active.get("user_team_id")
-        draft = export_game_center_ui_data.draft_summary(con, draft_year, user_team_id=user_team_id)
+        draft = export_game_center_ui_data.draft_summary(
+            con,
+            draft_year,
+            user_team_id=user_team_id,
+            current_date_value=str(context["currentDate"]),
+        )
         rookie_class = {
             "year": int(context["currentSeason"]),
             "selections": export_game_center_ui_data.draft_user_selections(
@@ -294,6 +315,19 @@ def lightweight_action_state() -> dict[str, Any]:
         or settings.get("current_season")
         or 2026
     )
+    current_date = (
+        active.get("current_date")
+        or settings.get("current_game_date")
+        or f"{current_season}-06-01"
+    )
+    draft_year = export_game_center_ui_data.draft_year(con, current_season)
+    free_agency_year = export_game_center_ui_data.free_agency_league_year(
+        con,
+        current_season=current_season,
+        current_date=str(current_date),
+        draft_year_value=draft_year,
+        game_settings=settings,
+    )
     user_team = (
         active.get("user_team")
         or settings.get("user_team")
@@ -303,9 +337,11 @@ def lightweight_action_state() -> dict[str, Any]:
     return {
         "database": str(db_path),
         "currentSeason": current_season,
+        "currentDate": str(current_date),
         "settings": settings,
         "activeSave": {**active, "user_team": user_team},
-        "draft": {"year": int(settings.get("current_draft_year") or current_season + 1)},
+        "draft": {"year": draft_year},
+        "freeAgency": {"leagueYear": free_agency_year},
     }
 
 
@@ -368,6 +404,29 @@ def write_contract_exports() -> tuple[dict[str, Any], dict[str, Any]]:
     return patch, app_shell_payload
 
 
+def free_agency_state_patch(db_path: Path) -> dict[str, Any]:
+    context = game_context(db_path)
+    target_year = int(context["freeAgencyYear"])
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        free_agency = export_game_center_ui_data.free_agency_summary(conn, target_year)
+        contracts = export_game_center_ui_data.contract_negotiation_summary(
+            conn,
+            int(context["currentSeason"]),
+            context.get("userTeam"),
+        )
+    return {
+        "currentDate": context["currentDate"],
+        "currentSeason": context["currentSeason"],
+        "currentPhase": context["currentPhase"],
+        "settings": context["settings"],
+        "activeSave": context["activeSave"],
+        "freeAgency": free_agency,
+        "freeAgencyGeneratedAt": datetime.now().isoformat(timespec="seconds"),
+        "contractNegotiations": contracts,
+    }
+
+
 def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[str, Any]]:
     db_path = active_db_path()
     if action in DRAFT_RUN_ACTIONS:
@@ -375,6 +434,9 @@ def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[
         return patch, app_shell_payload_for_active_db()
     if action in {"depth_chart_set", "depth_chart_move"}:
         patch = depth_chart_state_patch(db_path)
+        return patch, app_shell_payload_for_active_db()
+    if action in FREE_AGENCY_RUN_ACTIONS:
+        patch = free_agency_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     return write_contract_exports()
 
@@ -635,7 +697,12 @@ def draft_payload_for_active_db(year: int | None = None) -> dict[str, Any]:
         conn.row_factory = sqlite3.Row
         active = export_game_center_ui_data.active_save(conn) or {}
         user_team_id = active.get("user_team_id")
-        draft = export_game_center_ui_data.draft_summary(conn, target_year, user_team_id=user_team_id)
+        draft = export_game_center_ui_data.draft_summary(
+            conn,
+            target_year,
+            user_team_id=user_team_id,
+            current_date_value=str(context["currentDate"]),
+        )
         rookie_class = {
             "year": current_season,
             "selections": export_game_center_ui_data.draft_user_selections(conn, current_season, user_team_id),
@@ -656,7 +723,12 @@ def scouting_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
         active = export_game_center_ui_data.active_save(conn) or {}
         user_team_id = active.get("user_team_id")
         draft_year = export_game_center_ui_data.draft_year(conn, int(context["currentSeason"]))
-        draft = export_game_center_ui_data.draft_summary(conn, draft_year, user_team_id=user_team_id)
+        draft = export_game_center_ui_data.draft_summary(
+            conn,
+            draft_year,
+            user_team_id=user_team_id,
+            current_date_value=str(context["currentDate"]),
+        )
         scouting_payload = export_game_center_ui_data.enrich_scouting_payload_with_draft_board(
             export_game_center_ui_data.scouting.build_ui_payload(conn, limit=limit),
             draft,
@@ -670,9 +742,15 @@ def scouting_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
 def free_agency_payload_for_active_db(league_year: int | None = None) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
-    target_year = int(league_year or context["draftYear"])
+    target_year = int(league_year or context["freeAgencyYear"])
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        try:
+            free_agency_processor.ensure_schema(conn)
+            free_agency_processor.active_period(conn, target_year)
+            conn.commit()
+        except Exception:
+            conn.rollback()
         free_agency = export_game_center_ui_data.free_agency_summary(conn, target_year)
     return {
         "leagueYear": target_year,
@@ -756,6 +834,7 @@ def refresh_static_data_asset(path: str) -> None:
 def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -> list[str]:
     season = int(state.get("currentSeason") or 2026)
     draft_year = int(state.get("draft", {}).get("year") or season + 1)
+    free_agency_year = int((state.get("freeAgency") or {}).get("leagueYear") or season)
     user_team = (
         (state.get("activeSave") or {}).get("user_team")
         or params.get("user_team")
@@ -919,13 +998,13 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         start_date = (
             params.get("start_date")
             or (state.get("freeAgency") or {}).get("startDate")
-            or f"{draft_year}-03-10"
+            or f"{free_agency_year}-03-10"
         )
         return play(
             "free-agency",
             "start",
             "--league-year",
-            str(draft_year),
+            str(free_agency_year),
             "--start-date",
             str(start_date),
             "--no-cap-snapshot",
@@ -936,7 +1015,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "free-agency",
             "advance-hour",
             "--league-year",
-            str(draft_year),
+            str(free_agency_year),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -946,7 +1025,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "free-agency",
             "advance-day",
             "--league-year",
-            str(draft_year),
+            str(free_agency_year),
             "--days",
             str(days),
             "--no-cap-snapshot",
@@ -964,7 +1043,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "free-agency",
             "offer",
             "--league-year",
-            str(draft_year),
+            str(free_agency_year),
             "--team",
             str(user_team),
             "--player",
@@ -987,7 +1066,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "free-agency",
             "cpu-seed",
             "--league-year",
-            str(draft_year),
+            str(free_agency_year),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1447,7 +1526,12 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         prospect_id = params.get("prospect_id")
         if not prospect_id:
             raise ValueError("scouting_one requires prospect_id.")
-        return play("scouting", "scout-one", "--prospect-id", str(int(prospect_id)))
+        return play("scouting", "assign", "--prospect-id", str(int(prospect_id)))
+    if action == "scouting_unassign":
+        prospect_id = params.get("prospect_id")
+        if not prospect_id:
+            raise ValueError("scouting_unassign requires prospect_id.")
+        return play("scouting", "unassign", "--prospect-id", str(int(prospect_id)))
     if action == "scouting_random_two":
         return play("scouting", "random")
     if action == "scouting_discover_four":

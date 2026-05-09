@@ -70,7 +70,7 @@ def ensure_regular_season_specialists(game_id: str | None, season: int) -> None:
                     SELECT COUNT(*) AS count
                     FROM players
                     WHERE team_id = ?
-                      AND status = 'Active'
+                      AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
                       AND position = ?
                     """,
                     (team["team_id"], position),
@@ -115,7 +115,7 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
                 SELECT team_id, COUNT(*) AS active_count
                 FROM players
                 WHERE team_id IS NOT NULL
-                  AND status = 'Active'
+                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
                 GROUP BY team_id
                 HAVING active_count > 53
             )
@@ -141,6 +141,24 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
         "16",
         "--apply",
         "--no-backup",
+    ]
+    subprocess.run(command, check=True)
+    sync_save(target_game_id)
+
+
+def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str = "MIN") -> None:
+    target_game_id, db_path = save_db(game_id)
+    command = [
+        sys.executable,
+        str(TOOLS_DIR / "cpu_depth_chart.py"),
+        "--db",
+        str(db_path),
+        "rebuild",
+        "--season",
+        str(season),
+        "--user-team",
+        user_team,
+        "--apply",
     ]
     subprocess.run(command, check=True)
     sync_save(target_game_id)
@@ -866,6 +884,12 @@ def action_depth_chart(args: argparse.Namespace) -> None:
     run_tool_script(args.game_id, "depth_chart.py", args.depth_chart_args)
 
 
+def action_cpu_depth_chart(args: argparse.Namespace) -> None:
+    if not args.cpu_depth_chart_args:
+        raise ValueError("Provide a CPU depth-chart command, for example: cpu-depth-chart audit")
+    run_tool_script(args.game_id, "cpu_depth_chart.py", args.cpu_depth_chart_args)
+
+
 def action_roster_cutdown(args: argparse.Namespace) -> None:
     target_game_id, db_path = save_db(args.game_id)
     script_args = ["run", "--game-id", target_game_id]
@@ -1050,6 +1074,7 @@ def action_sim_week(args: argparse.Namespace) -> None:
     if args.apply:
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
+        ensure_cpu_depth_charts(args.game_id, args.season)
     script_args = ["week", str(args.week), "--season", str(args.season)]
     if args.seed is not None:
         script_args.extend(["--seed", str(args.seed)])
@@ -1070,6 +1095,7 @@ def action_sim_season(args: argparse.Namespace) -> None:
     if args.apply:
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
+        ensure_cpu_depth_charts(args.game_id, args.season)
     script_args = ["season", "--season", str(args.season)]
     if args.start_week is not None:
         script_args.extend(["--start-week", str(args.start_week)])
@@ -1417,6 +1443,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_save_selector(depth_chart_parser)
     depth_chart_parser.add_argument("depth_chart_args", nargs=argparse.REMAINDER)
     depth_chart_parser.set_defaults(func=action_depth_chart)
+
+    cpu_depth_chart_parser = subparsers.add_parser("cpu-depth-chart", help="Audit or rebuild CPU depth charts.")
+    add_save_selector(cpu_depth_chart_parser)
+    cpu_depth_chart_parser.add_argument("cpu_depth_chart_args", nargs=argparse.REMAINDER)
+    cpu_depth_chart_parser.set_defaults(func=action_cpu_depth_chart)
 
     cutdown_parser = subparsers.add_parser("roster-cutdown", help="Auto-trim rosters to a regular-season 53 and practice squad.")
     add_save_selector(cutdown_parser)
