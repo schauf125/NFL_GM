@@ -1,17 +1,25 @@
 ﻿(function () {
   let data = window.GAME_CENTER_DATA || {};
   const state = {
-    view: "overview",
+    view: "calendar",
     runnerAvailable: location.protocol.startsWith("http"),
     runnerBusy: false,
     busyAction: null,
     lastResult: null,
     selectedDraftProspectId: null,
+    draftProspectPopoverOpen: false,
     draftBoardSort: { key: "rank", direction: "asc" },
     draftBoardPositionFilter: "all",
     scoutingBoardSort: { key: "rank", direction: "asc" },
+    scoutingPositionFilter: "all",
+    scoutingConfidenceFilter: "all",
     selectedDepthSlot: null,
+    depthOffensePersonnel: "11",
+    depthDefensePackage: "nickel",
     selectedCalendarItem: null,
+    calendarBoxScores: {},
+    calendarBoxScoreLoadingId: null,
+    boxScoreModal: null,
     selectedAiGmReviewId: null,
     newsFilter: "all",
     statsLiveSeason: null,
@@ -33,7 +41,9 @@
     freeAgencyPositionFilter: "all",
     freeAgencyTierFilter: "all",
     rosterPositionFilter: "all",
+    rosterGroupFilter: "all",
     rosterStatusFilter: "all",
+    selectedRosterPlayerId: null,
     rosterSort: { key: "role", direction: "desc" },
     contractsLiveKey: null,
     contractsLoading: false,
@@ -62,6 +72,7 @@
     liveStatus: document.getElementById("liveStatus"),
     content: document.getElementById("content"),
     toast: document.getElementById("runnerToast"),
+    railToggle: document.getElementById("railToggle"),
     buttons: Array.from(document.querySelectorAll(".nav button")),
   };
 
@@ -227,6 +238,70 @@
     return el;
   }
 
+  function navShortLabel(label) {
+    const clean = String(label || "").trim();
+    const exact = {
+      "Season Hub": "Hub",
+      "League Table": "Tbl",
+      "Stats": "Sta",
+      "Inbox": "In",
+      "League News": "News",
+      "Scouting": "Sct",
+      "Roster Hub": "Ros",
+      "Depth Chart": "Dep",
+      "Contract Talks": "Con",
+      "Free Agency": "FA",
+      "Draft Room": "Drf",
+      "AI GMs": "AI",
+      "Calendar": "Cal",
+    };
+    if (exact[clean]) return exact[clean];
+    return clean.split(/\s+/).map((part) => part[0]).join("").slice(0, 3).toUpperCase();
+  }
+
+  function quickLinkShortLabel(label) {
+    const clean = String(label || "").trim();
+    const exact = {
+      "Main Menu": "Menu",
+      "Front Office": "FO",
+      "Player Profiles": "Ply",
+      "Player Cards": "Card",
+    };
+    return exact[clean] || navShortLabel(clean);
+  }
+
+  function setRailCollapsed(collapsed) {
+    document.body.classList.toggle("rail-collapsed", collapsed);
+    if (refs.railToggle) {
+      refs.railToggle.setAttribute("aria-pressed", collapsed ? "true" : "false");
+      refs.railToggle.setAttribute("aria-label", collapsed ? "Expand navigation" : "Collapse navigation");
+      const text = refs.railToggle.querySelector(".rail-toggle-text");
+      if (text) text.textContent = collapsed ? "Expand" : "Collapse";
+    }
+  }
+
+  function setupRailToggle() {
+    document.querySelectorAll(".nav button").forEach((button) => {
+      const label = button.textContent || "";
+      button.dataset.fullLabel = label;
+      button.dataset.shortLabel = navShortLabel(label);
+      button.title = label;
+    });
+    document.querySelectorAll(".links a").forEach((link) => {
+      const label = link.textContent || "";
+      link.dataset.fullLabel = label;
+      link.dataset.shortLabel = quickLinkShortLabel(label);
+      link.title = label;
+    });
+    const stored = localStorage.getItem("nflGmRailCollapsed");
+    setRailCollapsed(stored === "1");
+    refs.railToggle?.addEventListener("click", () => {
+      const collapsed = !document.body.classList.contains("rail-collapsed");
+      localStorage.setItem("nflGmRailCollapsed", collapsed ? "1" : "0");
+      setRailCollapsed(collapsed);
+    });
+  }
+
   function append(parent, children) {
     children.forEach((child) => {
       if (child !== null && child !== undefined) parent.append(child);
@@ -369,6 +444,144 @@
     "P",
     "LS",
   ];
+  const ROSTER_GROUPS = [
+    { value: "all", label: "All", positions: [] },
+    { value: "QB", label: "QB", positions: ["QB"] },
+    { value: "RB", label: "RB", positions: ["RB", "FB"] },
+    { value: "WR", label: "WR", positions: ["WR"] },
+    { value: "TE", label: "TE", positions: ["TE"] },
+    { value: "OL", label: "OL", positions: ["OT", "OG", "C"] },
+    { value: "DL", label: "DL", positions: ["IDL", "DT", "DE"] },
+    { value: "EDGE", label: "EDGE", positions: ["EDGE"] },
+    { value: "LB", label: "LB", positions: ["LB", "ILB", "OLB", "MLB"] },
+    { value: "CB", label: "CB", positions: ["CB"] },
+    { value: "S", label: "S", positions: ["S", "FS", "SS"] },
+    { value: "ST", label: "ST", positions: ["K", "PK", "P", "LS"] },
+  ];
+
+  const DEPTH_UNIT_ORDER = ["Offense", "Defense", "Special Teams"];
+  const DEPTH_SLOT_ORDER = [
+    "QB",
+    "RB",
+    "FB",
+    "LWR",
+    "RWR",
+    "SWR",
+    "TE",
+    "LT",
+    "LG",
+    "C",
+    "RG",
+    "RT",
+    "LEDGE",
+    "LDL",
+    "NT",
+    "RDL",
+    "REDGE",
+    "WLB",
+    "MLB",
+    "SLB",
+    "LCB",
+    "RCB",
+    "NB",
+    "FS",
+    "SS",
+    "PK",
+    "KO",
+    "P",
+    "LS",
+    "KR",
+    "PR",
+  ];
+  const OFFENSE_FORMATION_SLOTS = [
+    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
+    { slot: "SWR", label: "Slot", row: 5, col: "3 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "4" },
+    { slot: "LG", label: "LG", row: 3, col: "5" },
+    { slot: "C", label: "C", row: 3, col: "6" },
+    { slot: "RG", label: "RG", row: 3, col: "7" },
+    { slot: "RT", label: "RT", row: 3, col: "8" },
+    { slot: "TE", label: "TE", row: 3, col: "9 / span 2" },
+    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
+    { slot: "RB", label: "HB", row: 6, col: "8 / span 2" },
+  ];
+  const OFFENSE_12_FORMATION_SLOTS = [
+    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "4" },
+    { slot: "LG", label: "LG", row: 3, col: "5" },
+    { slot: "C", label: "C", row: 3, col: "6" },
+    { slot: "RG", label: "RG", row: 3, col: "7" },
+    { slot: "RT", label: "RT", row: 3, col: "8" },
+    { slot: "TE", label: "Y", row: 3, col: "9 / span 2", rank: 1 },
+    { slot: "TE", label: "F", row: 5, col: "9 / span 2", rank: 2 },
+    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
+    { slot: "RB", label: "HB", row: 6, col: "8 / span 2" },
+  ];
+  const OFFENSE_21_FORMATION_SLOTS = [
+    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "4" },
+    { slot: "LG", label: "LG", row: 3, col: "5" },
+    { slot: "C", label: "C", row: 3, col: "6" },
+    { slot: "RG", label: "RG", row: 3, col: "7" },
+    { slot: "RT", label: "RT", row: 3, col: "8" },
+    { slot: "TE", label: "TE", row: 3, col: "9 / span 2" },
+    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
+    { slot: "FB", label: "FB", row: 6, col: "6 / span 2" },
+    { slot: "RB", label: "HB", row: 7, col: "6 / span 2" },
+  ];
+  const DEFENSE_FORMATION_SLOTS = [
+    { slot: "LEDGE", label: "LEO", row: 1, col: "2 / span 2" },
+    { slot: "LDL", label: "DT", row: 1, col: "4 / span 2" },
+    { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
+    { slot: "RDL", label: "DT", row: 1, col: "8 / span 2" },
+    { slot: "REDGE", label: "REO", row: 1, col: "10 / span 2" },
+    { slot: "WLB", label: "WLB", row: 4, col: "4 / span 2" },
+    { slot: "MLB", label: "MLB", row: 4, col: "7 / span 2" },
+    { slot: "SLB", label: "SLB", row: 4, col: "9 / span 2", optional: true },
+    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "NB", label: "Nickel", row: 5, col: "3 / span 2" },
+    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+  ];
+  const BASE_DEFENSE_FORMATION_SLOTS = [
+    { slot: "LEDGE", label: "LEO", row: 1, col: "2 / span 2" },
+    { slot: "LDL", label: "DT", row: 1, col: "4 / span 2" },
+    { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
+    { slot: "RDL", label: "DT", row: 1, col: "8 / span 2" },
+    { slot: "REDGE", label: "REO", row: 1, col: "10 / span 2" },
+    { slot: "WLB", label: "WILB", row: 4, col: "5 / span 2" },
+    { slot: "MLB", label: "MILB", row: 4, col: "7 / span 2" },
+    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+  ];
+  const BASE_43_DEFENSE_FORMATION_SLOTS = [
+    { slot: "LEDGE", label: "LE", row: 1, col: "3 / span 2" },
+    { slot: "LDL", label: "DT", row: 1, col: "5 / span 2" },
+    { slot: "RDL", label: "DT", row: 1, col: "7 / span 2" },
+    { slot: "REDGE", label: "RE", row: 1, col: "9 / span 2" },
+    { slot: "WLB", label: "WLB", row: 4, col: "3 / span 2" },
+    { slot: "MLB", label: "MLB", row: 4, col: "6 / span 2" },
+    { slot: "SLB", label: "SLB", row: 4, col: "9 / span 2" },
+    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+  ];
+  const SPECIAL_TEAMS_FORMATION_SLOTS = [
+    { slot: "PK", label: "Kicker" },
+    { slot: "KO", label: "Kickoff" },
+    { slot: "PT", label: "Punter" },
+    { slot: "H", label: "Holder" },
+    { slot: "LS", label: "Long Snapper" },
+    { slot: "KR", label: "Kick Returner" },
+    { slot: "PR", label: "Punt Returner" },
+  ];
 
   function footballPositionSort(left, right) {
     const l = String(left || "");
@@ -379,6 +592,35 @@
     const rightRank = rightIndex >= 0 ? rightIndex : FOOTBALL_POSITION_ORDER.length;
     if (leftRank !== rightRank) return leftRank - rightRank;
     return l.localeCompare(r);
+  }
+
+  function orderedDepthUnits(depth) {
+    return [...(depth.units || [])]
+      .sort((a, b) => {
+        const leftIndex = DEPTH_UNIT_ORDER.indexOf(a.unit);
+        const rightIndex = DEPTH_UNIT_ORDER.indexOf(b.unit);
+        const leftRank = leftIndex >= 0 ? leftIndex : DEPTH_UNIT_ORDER.length;
+        const rightRank = rightIndex >= 0 ? rightIndex : DEPTH_UNIT_ORDER.length;
+        if (leftRank !== rightRank) return leftRank - rightRank;
+        return String(a.unit || "").localeCompare(String(b.unit || ""));
+      })
+      .map((unit) => ({
+        ...unit,
+        slots: [...(unit.slots || [])].sort((a, b) => {
+          const left = String(a.slot || "").toUpperCase();
+          const right = String(b.slot || "").toUpperCase();
+          const leftIndex = DEPTH_SLOT_ORDER.indexOf(left);
+          const rightIndex = DEPTH_SLOT_ORDER.indexOf(right);
+          const leftRank = leftIndex >= 0 ? leftIndex : DEPTH_SLOT_ORDER.length;
+          const rightRank = rightIndex >= 0 ? rightIndex : DEPTH_SLOT_ORDER.length;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          return left.localeCompare(right);
+        }),
+      }));
+  }
+
+  function orderedDepthSlots(depth) {
+    return orderedDepthUnits(depth).flatMap((unit) => unit.slots || []);
   }
 
   function scrollableSnapshot() {
@@ -1003,7 +1245,7 @@
 
   async function refreshLiveAfterAction(action) {
     if (!runnerMode()) return;
-    if (DEPTH_CHART_REFRESH_ACTIONS.has(action) || action.startsWith("depth_chart_")) {
+    if (DEPTH_CHART_REFRESH_ACTIONS.has(action) || action.startsWith("depth_chart_") || action.startsWith("roster_")) {
       state.depthChartLiveKey = null;
       showToast("Refreshing depth chart...");
       await loadLiveDepthChart();
@@ -1133,11 +1375,13 @@
     state.runnerBusy = true;
     state.busyAction = action;
     showToast(`${actionLabel(action)} in progress...`);
-    render();
+    const renderBusyState = action !== "box_score";
+    if (renderBusyState) render();
     const stopDraftProgressPolling = startDraftProgressPolling(action);
     try {
       const payload = await apiPost("runner", "/api/run", { action, params: params || {} });
       if (!payload) throw new Error("Runner request failed");
+      payload.params = params || {};
       if (payload.state) {
         data = payload.state;
       }
@@ -1146,7 +1390,7 @@
       }
       state.lastResult = payload;
       state.runnerAvailable = true;
-      if (payload.returncode === 0) {
+      if (payload.returncode === 0 && action !== "box_score") {
         await refreshLiveAfterAction(action);
       } else if (isDraftAction(action) || action.startsWith("ai_gm_")) {
         await refreshLiveAfterAction(action);
@@ -1159,6 +1403,39 @@
       if (stopDraftProgressPolling) stopDraftProgressPolling();
       state.runnerBusy = false;
       state.busyAction = null;
+      render();
+    }
+  }
+
+  async function loadCalendarBoxScore(gameId) {
+    if (!runnerMode() || !gameId) return;
+    state.selectedCalendarItem = { type: "game", id: gameId };
+    state.calendarBoxScoreLoadingId = String(gameId);
+    render();
+    try {
+      const params = { game_id: gameId, show_plays: 16 };
+      const payload = await apiGet("box score", "/api/box-score", {
+        params: { game_id: gameId, show_plays: 16 },
+      });
+      if (!payload) throw new Error("Box score request failed");
+      payload.params = params;
+      state.calendarBoxScores = {
+        ...(state.calendarBoxScores || {}),
+        [String(gameId)]: payload,
+      };
+      state.boxScoreModal = payload;
+      state.lastResult = payload;
+      showToast(payload.returncode === 0 ? "Box score loaded" : "Box score needs attention");
+    } catch (error) {
+      const payload = { action: "box_score", returncode: 1, error: String(error), params: { game_id: gameId } };
+      state.calendarBoxScores = {
+        ...(state.calendarBoxScores || {}),
+        [String(gameId)]: payload,
+      };
+      state.boxScoreModal = payload;
+      showToast("Box score could not be loaded");
+    } finally {
+      state.calendarBoxScoreLoadingId = null;
       render();
     }
   }
@@ -1186,6 +1463,9 @@
         "This will apply approved AI GM review item(s) and may change rosters, contracts, offers, cap, or transactions.\n\nContinue?",
       );
     }
+    if (action === "roster_release_player") {
+      return window.confirm("Release this player from your active roster?\n\nContinue?");
+    }
     return true;
   }
 
@@ -1197,6 +1477,8 @@
       contract_extend: "Extend Player",
       contract_release: "Release Player",
       contract_restructure: "Restructure Contract",
+      roster_release_player: "Release Player",
+      roster_change_number: "Change Number",
       depth_chart_set: "Set Depth Chart",
       depth_chart_move: "Move Depth Chart",
       postseason: "Run Postseason",
@@ -1401,7 +1683,7 @@
     const body = panelBody(p);
     const hero = node("div", "control-hero draft-control-hero");
     append(hero, [
-      teamLogo((draft.pickQueue || [])[0]?.teamLogo, currentTeam, "draft-control-logo"),
+      teamLogo(currentDraftQueuePick(draft, draftState)?.teamLogo, currentTeam, "draft-control-logo"),
       append(node("div", "control-copy draft-control-copy"), [
         node("span", "tag", draftState ? `Pick ${currentPick}` : `Draft ${draft?.year || ""}`),
         node("strong", null, draftState ? `${currentTeam} is on the clock` : dateReached(draft?.draftDate) ? "Draft room is ready" : `Draft date ${shortDate(draft?.draftDate)}`),
@@ -2102,24 +2384,38 @@
     const played = Number(game.played || 0) === 1;
     const away = game.away_team || "AWAY";
     const home = game.home_team || "HOME";
+    const awayScore = game.away_score ?? "-";
+    const homeScore = game.home_score ?? "-";
     const title = played
-      ? `${away} ${game.away_score ?? "-"} at ${home} ${game.home_score ?? "-"}`
+      ? `${away} ${awayScore} at ${home} ${homeScore}`
       : `${away} at ${home}`;
     const detail = `Week ${game.week || "-"} | ${shortDate(game.game_date)}${game.game_time_et ? ` | ${game.game_time_et} ET` : ""}`;
-    let right = played ? "Final" : "Upcoming";
+    let right = played ? `Final ${awayScore}-${homeScore}` : "Upcoming";
     let tone = played ? "good" : "";
     if (userTeam && (away === userTeam || home === userTeam)) {
       if (played) {
         const userScore = away === userTeam ? Number(game.away_score || 0) : Number(game.home_score || 0);
         const oppScore = away === userTeam ? Number(game.home_score || 0) : Number(game.away_score || 0);
-        right = userScore > oppScore ? "Win" : userScore < oppScore ? "Loss" : "Tie";
+        right = `${userScore > oppScore ? "Win" : userScore < oppScore ? "Loss" : "Tie"} ${userScore}-${oppScore}`;
         tone = userScore > oppScore ? "good" : userScore < oppScore ? "bad" : "warn";
       } else {
         right = "Vikings";
         tone = "warn";
       }
     }
-    return row(title, detail, right, tone);
+    const item = row(title, detail, right, tone);
+    if (played && runnerMode() && game.game_id) {
+      item.classList.add("clickable-row");
+      item.title = "Show box score";
+      item.addEventListener("click", () => {
+        if (state.view === "calendar") {
+          loadCalendarBoxScore(game.game_id);
+          return;
+        }
+        runAction("box_score", { game_id: game.game_id });
+      });
+    }
+    return item;
   }
 
   function runnerOutputPanel() {
@@ -2139,6 +2435,13 @@
     if (!state.lastResult) return null;
     const result = state.lastResult;
     const ok = result.returncode === 0 && !result.error;
+    if (result.action === "box_score" && ok) {
+      const p = panel("Box Score", result.summary?.message || "Stored game result");
+      const body = panelBody(p);
+      const text = String(result.stdout || "").trim();
+      body.append(text ? node("pre", "box-score-output", text) : node("div", "empty-state", "No stored box score text was returned for this game."));
+      return p;
+    }
     const p = panel("Action Status", result.summary?.title || actionLabel(result.action) || "Latest");
     const status = node("div", `action-status-card ${ok ? "good" : "bad"}`);
     const summary = result.summary;
@@ -2177,9 +2480,47 @@
     return banner;
   }
 
+  function boxScoreModal() {
+    const result = state.boxScoreModal;
+    if (!result) return null;
+    const overlay = node("div", "box-score-modal-overlay");
+    const modal = node("section", "box-score-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("strong", null, result.returncode === 0 ? "Box Score" : "Box Score Unavailable"),
+      node("small", null, result.params?.game_id ? `Game ${result.params.game_id}` : "Stored game result"),
+    ]);
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.boxScoreModal = null;
+      render();
+    });
+    append(top, [title, close]);
+    const body = node("div", "box-score-modal-body");
+    if (result.returncode === 0 && !result.error) {
+      const text = String(result.stdout || "").trim();
+      body.append(text ? node("pre", "box-score-output box-score-modal-output", text) : node("div", "empty-state", "No stored box score text was returned for this game."));
+    } else {
+      body.append(node("div", "friendly-error", result.summary?.message || result.stderr || result.error || "Box score could not be loaded."));
+    }
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.boxScoreModal = null;
+        render();
+      }
+    });
+    return overlay;
+  }
+
   function finishRender(root) {
     const banner = runnerBusyBanner();
     if (banner) root.prepend(banner);
+    const boxScore = boxScoreModal();
+    if (boxScore) root.append(boxScore);
     refs.content.replaceChildren(root);
   }
 
@@ -2495,7 +2836,7 @@
   }
 
   function renderSeason() {
-    setHeader("League Table", "Weekly progress, standings, Vikings schedule, and recent finals.");
+    setHeader("League Table", "NFL standings by conference and division, with schedule and box scores below.");
     const root = document.createDocumentFragment();
     const season = data.season || { weeks: [], totals: {}, postseason: {} };
     const currentSeason = season.season || data.currentSeason || "";
@@ -2510,37 +2851,7 @@
     panelBody(metrics).append(renderMetrics());
     root.append(metrics);
 
-    const weeksPanel = panel("Weeks", "Regular Season");
-    const weeks = node("div", "week-grid");
-    (season.weeks || []).forEach((item) => {
-      const week = node("div", "week");
-      const percent = pct(item.played, item.games);
-      const bar = node("div", "progress");
-      const fill = node("span");
-      fill.style.width = `${percent}%`;
-      bar.append(fill);
-      append(week, [
-        node("strong", null, `Week ${item.week}`),
-        node("div", "muted", `${item.played || 0}/${item.games || 0} games`),
-        bar,
-      ]);
-      weeks.append(week);
-    });
-    panelBody(weeksPanel).append(weeks.children.length ? weeks : node("div", "empty-state", "No schedule weeks found."));
-    root.append(weeksPanel);
-
-    const grid = node("div", "grid");
-    const controlPanel = seasonControlPanel(season);
-
-    const standingsPanel = panel("Top Standings", "Current");
-    const list = node("div", "list");
-    (season.standings || []).slice(0, 10).forEach((team) => {
-      const diff = Number(team.points_for || 0) - Number(team.points_against || 0);
-      list.append(row(team.team_name, `${team.conference} | ${team.division}`, `${team.wins}-${team.losses}-${team.ties} (${diff >= 0 ? "+" : ""}${diff})`));
-    });
-    panelBody(standingsPanel).append(list.children.length ? list : node("div", "empty-state", "Standings will populate after games are simmed."));
-    append(grid, [controlPanel, standingsPanel]);
-    root.append(grid);
+    root.append(standingsBoard(season.standings || []));
 
     const scheduleGrid = node("div", "grid");
     const userTeam = data.activeSave?.user_team;
@@ -2565,8 +2876,101 @@
     finishRender(root);
   }
 
+  function standingsBoard(standings) {
+    const p = panel("Standings", "Division view");
+    const body = panelBody(p);
+    const conferences = ["AFC", "NFC"];
+    const board = node("div", "standings-conference-grid");
+    conferences.forEach((conference) => {
+      const teams = standings.filter((team) => String(team.conference || "").toUpperCase() === conference);
+      if (!teams.length) return;
+      board.append(standingsConference(conference, teams));
+    });
+    body.append(board.children.length ? board : node("div", "empty-state", "Standings will populate after games are simmed."));
+    return p;
+  }
+
+  function standingsConference(conference, teams) {
+    const wrap = node("section", "standings-conference");
+    wrap.append(node("h3", null, conference));
+    const divisions = [...new Set(teams.map((team) => team.division || "Division"))].sort(divisionSort);
+    const divisionGrid = node("div", "standings-division-grid");
+    divisions.forEach((division) => {
+      const rows = teams
+        .filter((team) => (team.division || "Division") === division)
+        .sort(standingsSort);
+      divisionGrid.append(standingsDivision(division, rows));
+    });
+    wrap.append(divisionGrid);
+    return wrap;
+  }
+
+  function divisionSort(left, right) {
+    const order = ["East", "North", "South", "West"];
+    const l = String(left || "").split(/\s+/).pop();
+    const r = String(right || "").split(/\s+/).pop();
+    const li = order.indexOf(l);
+    const ri = order.indexOf(r);
+    const lr = li >= 0 ? li : order.length;
+    const rr = ri >= 0 ? ri : order.length;
+    if (lr !== rr) return lr - rr;
+    return String(left || "").localeCompare(String(right || ""));
+  }
+
+  function standingsSort(a, b) {
+    const winPctA = standingsWinPct(a);
+    const winPctB = standingsWinPct(b);
+    if (winPctA !== winPctB) return winPctB - winPctA;
+    if (Number(a.wins || 0) !== Number(b.wins || 0)) return Number(b.wins || 0) - Number(a.wins || 0);
+    const diffA = Number(a.points_for || 0) - Number(a.points_against || 0);
+    const diffB = Number(b.points_for || 0) - Number(b.points_against || 0);
+    if (diffA !== diffB) return diffB - diffA;
+    return String(a.abbreviation || "").localeCompare(String(b.abbreviation || ""));
+  }
+
+  function standingsWinPct(team) {
+    const wins = Number(team.wins || 0);
+    const losses = Number(team.losses || 0);
+    const ties = Number(team.ties || 0);
+    const games = wins + losses + ties;
+    if (!games) return 0;
+    return (wins + ties * 0.5) / games;
+  }
+
+  function standingsDivision(division, teams) {
+    const card = node("article", "standings-division-card");
+    card.append(node("h4", null, division));
+    const tableEl = node("table", "standings-table");
+    const thead = node("thead");
+    const headRow = node("tr");
+    ["Team", "W", "L", "T", "Pct", "PF", "PA", "Diff"].forEach((label) => headRow.append(node("th", null, label)));
+    thead.append(headRow);
+    const tbody = node("tbody");
+    teams.forEach((team, index) => {
+      const diff = Number(team.points_for || 0) - Number(team.points_against || 0);
+      const tr = node("tr", index === 0 ? "division-leader" : "");
+      append(tr, [
+        append(node("td", "standings-team"), [
+          node("strong", null, team.abbreviation || "-"),
+          node("span", null, team.team_name || ""),
+        ]),
+        node("td", null, whole(team.wins)),
+        node("td", null, whole(team.losses)),
+        node("td", null, whole(team.ties)),
+        node("td", null, standingsWinPct(team).toFixed(3).replace(/^0/, "")),
+        node("td", null, whole(team.points_for)),
+        node("td", null, whole(team.points_against)),
+        node("td", diff >= 0 ? "standings-diff good" : "standings-diff bad", `${diff >= 0 ? "+" : ""}${diff}`),
+      ]);
+      tbody.append(tr);
+    });
+    append(tableEl, [thead, tbody]);
+    card.append(tableEl);
+    return card;
+  }
+
   function renderFreeAgency() {
-    setHeader("Free Agency", "Opening day can move hour by hour. After the busy day, use daily advancement.");
+    setHeader("Free Agency", "Manage the market, track offers, and shop by position or tier.");
     const root = document.createDocumentFragment();
     const fa = data.freeAgency || { counts: {}, board: [], offers: [], events: [] };
     if (runnerMode() && state.freeAgencyLiveKey !== freeAgencyLiveKey() && !state.freeAgencyLoading) {
@@ -2576,11 +2980,12 @@
     const userTeam = data.activeSave?.user_team || data.contractNegotiations?.team || "User";
     const currentCap = data.contractNegotiations?.currentCap || data.contractNegotiations?.cap || {};
     const capSpace = Number(currentCap.cap_space || 0);
-    const status = panel("Market Status", `${period ? freeAgencyStageLabel(period.current_stage) : "Not Started"}${data.freeAgencyGeneratedAt ? ` | refreshed ${shortDateTime(data.freeAgencyGeneratedAt.replace("T", " "))}` : ""}`);
+    const status = panel("Market Desk", `${period ? freeAgencyStageLabel(period.current_stage) : "Not Started"}${data.freeAgencyGeneratedAt ? ` | refreshed ${shortDateTime(data.freeAgencyGeneratedAt.replace("T", " "))}` : ""}`);
+    status.classList.add("fa-status-panel");
     if (state.freeAgencyLoading) {
       panelBody(status).append(node("div", "empty-state", "Refreshing live free agency..."));
     }
-    const metrics = node("section", "metric-grid");
+    const metrics = node("section", "metric-grid fa-market-metrics");
     append(metrics, [
       metric("Available", String(fa.counts.available || 0), "Market pool"),
       metric("Signed", String(fa.counts.signed || 0), "Processor signings"),
@@ -2589,26 +2994,18 @@
       metric("Clock", period ? `${shortDate(period.current_date)} ${period.current_stage === "day_one_hourly" ? `${period.current_hour}:00` : ""}` : shortDate(fa.startDate), period ? "FA state" : "Scheduled start"),
     ]);
     panelBody(status).append(metrics);
-    root.append(status);
 
     const commands = data.commands || {};
-    root.append(nextStepPanel(
-      "Next Free Agency Step",
-      period ? freeAgencyStageLabel(period.current_stage) : "Not Started",
-      freeAgencyNextCards(fa, commands),
-    ));
-
-    const grid = node("div", "grid");
+    const dashboard = node("div", "fa-dashboard");
+    const sideStack = node("div", "fa-dashboard-stack");
     const controlsPanel = freeAgencyControlPanel(fa, commands);
-
-    const eventPanel = panel("Market Log", "Recent");
-    const eventList = node("div", "list");
-    (fa.events || []).slice(0, 10).forEach((event) => {
-      eventList.append(row(event.message, event.event_type, event.event_hour !== null && event.event_hour !== undefined ? `${event.event_hour}:00` : shortDate(event.event_date)));
-    });
-    panelBody(eventPanel).append(eventList.children.length ? eventList : node("div", "empty-state", "No free agency events yet."));
-    append(grid, [controlsPanel, eventPanel]);
-    root.append(grid);
+    append(sideStack, [
+      controlsPanel,
+      freeAgencyOfferQueuePanel(fa),
+      freeAgencyEventPanel(fa),
+    ]);
+    append(dashboard, [status, sideStack]);
+    root.append(dashboard);
 
     const availableRows = (fa.board || []).filter((player) => !player.market_status || player.market_status === "available");
     const positions = [...new Set(availableRows.map((player) => player.position).filter(Boolean))]
@@ -2624,7 +3021,8 @@
     const boardRows = activeTier === "all"
       ? positionRows
       : positionRows.filter((player) => freeAgencyTierValue(player.market_tier) === activeTier);
-    const boardPanel = panel("Top Market", marketPanelKicker(activePosition, activeTier, boardRows.length, availableRows.length));
+    const boardPanel = panel("Market Board", marketPanelKicker(activePosition, activeTier, boardRows.length, availableRows.length));
+    boardPanel.classList.add("fa-board-panel");
     const filterRow = node("div", "fa-board-toolbar");
     const filterLabel = node("label", "fa-position-filter");
     filterLabel.append(node("span", null, "Position"));
@@ -2654,11 +3052,47 @@
     });
     filterRow.append(filterLabel, tierTabs);
     panelBody(boardPanel).append(filterRow);
-    panelBody(boardPanel).append(freeAgencyMarketGrid(boardRows.slice(0, 36), capSpace));
+    panelBody(boardPanel).append(freeAgencyMarketGrid(boardRows.slice(0, 48), capSpace));
     root.append(boardPanel);
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
+  }
+
+  function freeAgencyEventPanel(fa) {
+    const eventPanel = panel("Market Log", "Recent");
+    eventPanel.classList.add("fa-mini-panel");
+    const eventList = node("div", "fa-log-list");
+    (fa.events || []).slice(0, 8).forEach((event) => {
+      const item = node("div", "fa-log-item");
+      append(item, [
+        node("strong", null, event.message || "Free agency event"),
+        node("span", null, `${event.event_type || "event"} | ${event.event_hour !== null && event.event_hour !== undefined ? `${event.event_hour}:00` : shortDate(event.event_date)}`),
+      ]);
+      eventList.append(item);
+    });
+    panelBody(eventPanel).append(eventList.children.length ? eventList : node("div", "empty-state", "No free agency events yet."));
+    return eventPanel;
+  }
+
+  function freeAgencyOfferQueuePanel(fa) {
+    const offers = (fa.offers || []).filter((offer) => String(offer.status || "").toLowerCase() === "pending");
+    const offerPanel = panel("Offer Queue", `${offers.length} pending`);
+    offerPanel.classList.add("fa-mini-panel");
+    const list = node("div", "fa-offer-list");
+    offers.slice(0, 6).forEach((offer) => {
+      const item = node("div", "fa-offer-item");
+      append(item, [
+        append(node("span", "fa-offer-player"), [
+          node("strong", null, offer.player_name || offer.name || "Player"),
+          node("small", null, `${offer.team || offer.team_abbr || "-"} | ${offer.status || "pending"}`),
+        ]),
+        node("span", "fa-offer-money", `${offer.years || offer.contract_years || 1} yr ${money(offer.aav || offer.average_annual_value || 0)}`),
+      ]);
+      list.append(item);
+    });
+    panelBody(offerPanel).append(list.children.length ? list : node("div", "empty-state", "No pending offers."));
+    return offerPanel;
   }
 
   function leadingBidCell(player) {
@@ -2742,7 +3176,15 @@
       freeAgencyIntelItem("Years", `${player.contract_year_preference || player.preferred_years || 1}`),
       freeAgencyIntelItem("Role", `${player.role_priority || 10}/20`),
     ]);
-    append(card, [top, middle, freeAgencyOfferButton(player)]);
+    const notes = player.signing_notes || player.motivation;
+    append(card, [top, middle]);
+    if (notes) {
+      append(card, [append(node("div", "fa-player-notes"), [
+        node("span", null, "Read"),
+        node("strong", null, notes),
+      ])]);
+    }
+    card.append(freeAgencyOfferButton(player));
     return card;
   }
 
@@ -3013,7 +3455,7 @@
   }
 
   function selectedDepthSlot(depth) {
-    const slots = (depth.units || []).flatMap((unit) => unit.slots || []);
+    const slots = orderedDepthSlots(depth);
     if (!slots.length) return null;
     const selected = slots.find((slot) => slot.slot === state.selectedDepthSlot);
     if (selected) return selected;
@@ -3044,6 +3486,56 @@
         return Number(b.role?.score || 0) - Number(a.role?.score || 0);
       })
       .slice(0, limit || 24);
+  }
+
+  function depthRankTargets(selected) {
+    const assignedCount = (selected?.players || []).length;
+    const maxRank = Math.min(8, Math.max(5, assignedCount + 1));
+    return Array.from({ length: maxRank }, (_, index) => index + 1);
+  }
+
+  function depthSetRankButton(slot, rank, player, label) {
+    const currentRank = Number(player.depth_rank || 0);
+    const button = node("button", "depth-rank-button", label || `#${rank}`);
+    button.type = "button";
+    button.disabled = state.runnerBusy || !runnerMode() || currentRank === Number(rank);
+    button.title = currentRank === Number(rank)
+      ? `${player.player_name} is already ${slot} #${rank}`
+      : `Set ${player.player_name} as ${slot} #${rank}`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runAction("depth_chart_set", {
+        position: slot,
+        rank,
+        player_id: player.player_id,
+      });
+    });
+    return button;
+  }
+
+  function depthRosterChip(depth, selected, player) {
+    const currentAssignment = (selected.players || []).find((assigned) => String(assigned.player_id) === String(player.player_id));
+    const currentRank = Number(currentAssignment?.depth_rank || 0);
+    const item = node("div", `depth-roster-chip ${playerFitsSlot(player, selected.slot) ? "fit" : ""}`.trim());
+    const top = node("div", "depth-roster-chip-top");
+    append(top, [
+      playerLink(player.player_id, player.player_name, "player-link strong-link", {
+        team: depth.team,
+        position: player.position,
+      }),
+      tag(currentRank ? `#${currentRank}` : "Bench", currentRank ? depthRoleTone(currentRank) : ""),
+    ]);
+    const meta = node(
+      "span",
+      null,
+      `${player.position} | ${player.role?.score ? oneDecimal(player.role.score) : "-"} role fit${playerFitsSlot(player, selected.slot) ? " | natural fit" : ""}`,
+    );
+    const actions = node("div", "depth-chip-actions");
+    depthRankTargets(selected).forEach((rank) => {
+      actions.append(depthSetRankButton(selected.slot, rank, player));
+    });
+    append(item, [top, meta, actions]);
+    return item;
   }
 
   function depthPlayerCard(depth, selected, player) {
@@ -3102,9 +3594,159 @@
     return summary;
   }
 
+  function depthSlotMap(depth) {
+    const map = new Map();
+    orderedDepthSlots(depth).forEach((slot) => map.set(String(slot.slot || "").toUpperCase(), slot));
+    return map;
+  }
+
+  function depthFormationLabel(depth, unitName) {
+    const map = depthSlotMap(depth);
+    if (unitName === "Offense") {
+      const wrs = ["LWR", "RWR", "SWR"].filter((slot) => map.has(slot)).length;
+      const tes = map.has("TE") ? 1 : 0;
+      const rbs = (map.has("RB") ? 1 : 0) + (map.has("FB") ? 1 : 0);
+      if (wrs >= 3 && tes >= 1 && rbs === 1) return "11 personnel";
+      if (wrs >= 2 && tes >= 2) return "12 personnel";
+      if (wrs >= 2 && rbs >= 2) return "21 personnel";
+      return "Base offense";
+    }
+    if (unitName === "Defense") {
+      const corners = ["LCB", "RCB", "NB"].filter((slot) => map.has(slot)).length;
+      const safeties = ["FS", "SS"].filter((slot) => map.has(slot)).length;
+      const downLinemen = ["LDL", "NT", "RDL"].filter((slot) => map.has(slot)).length;
+      const edges = ["LEDGE", "REDGE"].filter((slot) => map.has(slot)).length;
+      const linebackers = ["WLB", "MLB", "SLB"].filter((slot) => map.has(slot)).length;
+      if (corners >= 3 && safeties >= 2) return `Nickel ${downLinemen + edges}-${linebackers}`;
+      if (corners >= 2 && safeties >= 2) return `Base ${downLinemen + edges}-${linebackers}`;
+      return "Base defense";
+    }
+    return "Game-day specialists";
+  }
+
+  function defensePackageSlots() {
+    if (state.depthDefensePackage === "base43") return BASE_43_DEFENSE_FORMATION_SLOTS;
+    if (state.depthDefensePackage === "base") return BASE_DEFENSE_FORMATION_SLOTS;
+    return DEFENSE_FORMATION_SLOTS;
+  }
+
+  function offensePersonnelSlots() {
+    if (state.depthOffensePersonnel === "12") return OFFENSE_12_FORMATION_SLOTS;
+    if (state.depthOffensePersonnel === "21") return OFFENSE_21_FORMATION_SLOTS;
+    return OFFENSE_FORMATION_SLOTS;
+  }
+
+  function offensePersonnelToggle() {
+    const wrap = node("div", "formation-toggle");
+    [
+      { value: "11", label: "11", detail: "3 WR 1 TE" },
+      { value: "12", label: "12", detail: "2 WR 2 TE" },
+      { value: "21", label: "21", detail: "2 WR FB" },
+    ].forEach((option) => {
+      const button = node("button", state.depthOffensePersonnel === option.value ? "active" : "");
+      button.type = "button";
+      append(button, [
+        node("strong", null, option.label),
+        node("span", null, option.detail),
+      ]);
+      button.addEventListener("click", () => {
+        state.depthOffensePersonnel = option.value;
+        if (option.value !== "11" && state.selectedDepthSlot === "SWR") state.selectedDepthSlot = "TE";
+        if (option.value !== "21" && state.selectedDepthSlot === "FB") state.selectedDepthSlot = "RB";
+        render();
+      });
+      wrap.append(button);
+    });
+    return wrap;
+  }
+
+  function defensePackageToggle() {
+    const wrap = node("div", "formation-toggle");
+    [
+      { value: "nickel", label: "Nickel", detail: "NB + 2 LB" },
+      { value: "base", label: "3-4", detail: "2 ILB" },
+      { value: "base43", label: "4-3", detail: "3 LB" },
+    ].forEach((option) => {
+      const button = node("button", state.depthDefensePackage === option.value ? "active" : "");
+      button.type = "button";
+      append(button, [
+        node("strong", null, option.label),
+        node("span", null, option.detail),
+      ]);
+      button.addEventListener("click", () => {
+        state.depthDefensePackage = option.value;
+        if (option.value === "nickel" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "NB";
+        if (option.value !== "nickel" && state.selectedDepthSlot === "NB") state.selectedDepthSlot = option.value === "base43" ? "SLB" : "MLB";
+        if (option.value === "base" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "MLB";
+        render();
+      });
+      wrap.append(button);
+    });
+    return wrap;
+  }
+
+  function formationPlayerLabel(player) {
+    if (!player) return "Empty";
+    const number = player.jersey_number === null || player.jersey_number === undefined ? "" : `#${player.jersey_number} `;
+    return `${number}${player.player_name || "Player"}`;
+  }
+
+  function formationSlotTile(depth, selected, slot, meta) {
+    const rankIndex = Math.max(0, Number(meta.rank || 1) - 1);
+    const starter = (slot.players || [])[rankIndex];
+    const button = node("button", `formation-slot ${slot.slot === selected?.slot ? "active" : ""}`.trim());
+    button.type = "button";
+    if (meta.row) button.style.gridRow = String(meta.row);
+    if (meta.col) button.style.gridColumn = String(meta.col);
+    append(button, [
+      node("span", "formation-slot-label", meta.label || slot.slot),
+      node("strong", null, formationPlayerLabel(starter)),
+      node("small", null, starter ? `${starter.position || slot.slot}${starter.overall ? ` | ${starter.overall} OVR` : ""}${meta.rank ? ` | #${meta.rank}` : ""}` : `${slot.slot} depth${meta.rank ? ` #${meta.rank}` : ""}`),
+    ]);
+    button.addEventListener("click", () => {
+      state.selectedDepthSlot = slot.slot;
+      render();
+    });
+    return button;
+  }
+
+  function depthFormationPanel(depth, selected) {
+    const map = depthSlotMap(depth);
+    const panelNode = panel("Formation Board", "Click a position on the field");
+    const body = panelBody(panelNode);
+    const unitBlocks = [
+      { unit: "Offense", slots: offensePersonnelSlots() },
+      { unit: "Defense", slots: defensePackageSlots() },
+    ];
+    unitBlocks.forEach((unit) => {
+      const section = node("section", "formation-section");
+      const title = node("div", "formation-section-title");
+      append(title, [
+        node("strong", null, unit.unit),
+        unit.unit === "Defense" ? defensePackageToggle() : offensePersonnelToggle(),
+      ]);
+      const field = node("div", `formation-field ${unit.unit === "Defense" ? "defense" : "offense"}`);
+      unit.slots.forEach((meta) => {
+        const slot = map.get(meta.slot);
+        if (!slot && meta.optional) return;
+        field.append(formationSlotTile(depth, selected, slot || { slot: meta.slot, players: [] }, meta));
+      });
+      append(section, [title, field]);
+      body.append(section);
+    });
+    const specialists = node("div", "specialists-strip");
+    SPECIAL_TEAMS_FORMATION_SLOTS.forEach((meta) => {
+      const slot = map.get(meta.slot);
+      if (!slot) return;
+      specialists.append(formationSlotTile(depth, selected, slot, meta));
+    });
+    if (specialists.children.length) body.append(sectionBlock("Special Teams", specialists));
+    return panelNode;
+  }
+
   function rosterDepthMap(depth) {
     const map = new Map();
-    (depth.units || []).forEach((unit) => {
+    orderedDepthUnits(depth).forEach((unit) => {
       (unit.slots || []).forEach((slot) => {
         (slot.players || []).forEach((player) => {
           const id = String(player.player_id);
@@ -3159,6 +3801,10 @@
     if (key === "name") return String(player.player_name || "");
     if (key === "pos") return FOOTBALL_POSITION_ORDER.indexOf(player.position) >= 0 ? FOOTBALL_POSITION_ORDER.indexOf(player.position) : 99;
     if (key === "age") return Number(player.age || 0);
+    if (key === "number") return Number(player.jersey_number ?? 999);
+    if (key === "overall") return Number(player.overall || 0);
+    if (key === "potential") return Number(player.potential || 0);
+    if (key === "contract") return Number(player.contract?.cap_hit || player.contract?.asking_aav || 0);
     if (key === "status") return String(player.status || "");
     if (key === "depth") return Number(player.primaryAssignment?.rank || 99);
     return Number(player.roleScore || 0);
@@ -3237,6 +3883,212 @@
     return wrap;
   }
 
+  function rosterGroupForPosition(position) {
+    const pos = String(position || "");
+    return ROSTER_GROUPS.find((group) => group.value !== "all" && group.positions.includes(pos))?.value || "all";
+  }
+
+  function rosterGroupTabs(rows) {
+    const wrap = node("div", "roster-group-tabs");
+    ROSTER_GROUPS.forEach((group) => {
+      const count = group.value === "all"
+        ? rows.length
+        : rows.filter((player) => group.positions.includes(player.position)).length;
+      if (!count && group.value !== "all") return;
+      const button = node("button", `roster-group-tab ${state.rosterGroupFilter === group.value ? "active" : ""}`.trim());
+      button.type = "button";
+      append(button, [
+        node("span", null, group.label),
+        node("strong", null, String(count)),
+      ]);
+      button.addEventListener("click", () => {
+        state.rosterGroupFilter = group.value;
+        state.rosterPositionFilter = "all";
+        state.selectedRosterPlayerId = null;
+        render();
+      });
+      wrap.append(button);
+    });
+    return wrap;
+  }
+
+  function filteredRosterRows(rows) {
+    const group = ROSTER_GROUPS.find((item) => item.value === state.rosterGroupFilter) || ROSTER_GROUPS[0];
+    return rows
+      .filter((player) => group.value === "all" || group.positions.includes(player.position))
+      .filter((player) => state.rosterPositionFilter === "all" || player.position === state.rosterPositionFilter)
+      .filter((player) => state.rosterStatusFilter === "all" || (player.status || "Active") === state.rosterStatusFilter);
+  }
+
+  function selectedRosterPlayer(rows) {
+    const selected = rows.find((player) => String(player.player_id) === String(state.selectedRosterPlayerId));
+    if (selected) return selected;
+    const first = sortedRosterRows(rows)[0] || null;
+    state.selectedRosterPlayerId = first?.player_id ? String(first.player_id) : null;
+    return first;
+  }
+
+  function rosterTableHeader(label, key) {
+    const th = node("th");
+    th.append(rosterSortButton(label, key));
+    return th;
+  }
+
+  function rosterPlayerTable(depth, rows, selected) {
+    const wrap = node("div", "table-wrap roster-table-wrap");
+    const table = node("table", "data-table roster-table");
+    const head = node("thead");
+    const headRow = node("tr");
+    [
+      rosterTableHeader("#", "number"),
+      rosterTableHeader("Player", "name"),
+      rosterTableHeader("Pos", "pos"),
+      rosterTableHeader("OVR", "overall"),
+      rosterTableHeader("POT", "potential"),
+      rosterTableHeader("Age", "age"),
+      rosterTableHeader("Depth", "depth"),
+      rosterTableHeader("Role", "role"),
+      rosterTableHeader("Contract", "contract"),
+      rosterTableHeader("Status", "status"),
+    ].forEach((cell) => headRow.append(cell));
+    head.append(headRow);
+    const body = node("tbody");
+    sortedRosterRows(rows).forEach((player) => {
+      const assignment = player.primaryAssignment;
+      const contract = player.contract || {};
+      const tr = node("tr", String(player.player_id) === String(selected?.player_id) ? "selected" : "");
+      tr.tabIndex = 0;
+      tr.addEventListener("click", () => {
+        state.selectedRosterPlayerId = String(player.player_id);
+        render();
+      });
+      tr.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          state.selectedRosterPlayerId = String(player.player_id);
+          render();
+        }
+      });
+      const playerCell = node("td");
+      playerCell.append(smallPlayerCell(player.player_id, player.player_name, `${assignment ? `${assignment.slot} #${assignment.rank}` : "No depth role"} | ${player.is_rookie ? "Rookie" : "Veteran"}`, {
+        team: depth.team,
+        position: player.position,
+      }));
+      append(tr, [
+        node("td", "numeric", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
+        playerCell,
+        node("td", "numeric", player.position || "-"),
+        node("td", "numeric rating-cell", player.overall ?? "-"),
+        node("td", "numeric rating-cell", player.potential ?? "-"),
+        node("td", "numeric", player.age ?? "-"),
+        node("td", null, assignment ? `${assignment.slot} #${assignment.rank}` : "-"),
+        node("td", null, player.role?.key ? `${roleLabel(player.role.key)} ${oneDecimal(player.roleScore)}` : "-"),
+        node("td", null, contract.end_year ? `${money(contract.cap_hit || contract.asking_aav || 0)} / ${contract.end_year}` : (contract.type || "-")),
+        node("td", null, player.status || "Active"),
+      ]);
+      body.append(tr);
+    });
+    table.append(head, body);
+    wrap.append(table);
+    return wrap;
+  }
+
+  function rosterActionButton(label, action, params = {}, className = "") {
+    const button = node("button", `run-button compact ${className}`.trim(), state.runnerBusy ? "Running" : label);
+    button.type = "button";
+    button.disabled = !runnerMode() || state.runnerBusy;
+    if (!runnerMode()) button.title = "Live actions are unavailable.";
+    button.addEventListener("click", () => runAction(action, params));
+    return button;
+  }
+
+  function rosterJerseyControl(player) {
+    const wrap = node("form", "jersey-control");
+    const input = node("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "99";
+    input.value = player.jersey_number ?? "";
+    input.disabled = !runnerMode() || state.runnerBusy;
+    const button = node("button", "run-button compact", "Change #");
+    button.type = "submit";
+    button.disabled = !runnerMode() || state.runnerBusy;
+    wrap.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runAction("roster_change_number", {
+        player_id: player.player_id,
+        number: input.value,
+      });
+    });
+    append(wrap, [input, button]);
+    return wrap;
+  }
+
+  function rosterPlayerPanel(depth, player) {
+    const panelNode = panel("Player Actions", player ? "Roster tools" : "Select a player");
+    const body = panelBody(panelNode);
+    if (!player) {
+      body.append(node("div", "empty-state", "Choose a player from the roster table."));
+      return panelNode;
+    }
+    const assignment = player.primaryAssignment;
+    const contract = player.contract || {};
+    const title = node("div", "roster-player-panel-head");
+    const identity = node("div");
+    identity.append(smallPlayerCell(player.player_id, player.player_name, `${player.position} | Age ${player.age || "-"} | ${player.status || "Active"}`, {
+      team: depth.team,
+      position: player.position,
+    }));
+    append(title, [
+      node("div", "jersey-badge", player.jersey_number === null || player.jersey_number === undefined ? "--" : `#${player.jersey_number}`),
+      identity,
+    ]);
+    const facts = node("section", "metric-grid roster-card-facts roster-action-facts");
+    append(facts, [
+      metric("Overall", player.overall ?? "-", `Potential ${player.potential ?? "-"}`),
+      metric("Depth", assignment ? `${assignment.slot} #${assignment.rank}` : "Unassigned", assignment?.unit || "No room"),
+      metric("Role Fit", player.roleScore ? oneDecimal(player.roleScore) : "-", player.role?.key ? roleLabel(player.role.key) : "No role read"),
+      metric("Contract", contract.end_year ? `Through ${contract.end_year}` : (contract.type || "Rostered"), contract.cap_hit ? `Cap ${money(contract.cap_hit)}` : (contract.market_tier || "")),
+    ]);
+    const actions = node("div", "roster-action-grid");
+    const profile = node("a", "run-button compact", "View Profile");
+    profile.href = playerProfileHref({ playerId: player.player_id, name: player.player_name, team: depth.team, position: player.position });
+    const depthButton = node("button", "run-button compact", "Depth Chart");
+    depthButton.type = "button";
+    depthButton.addEventListener("click", () => {
+      state.view = "depth";
+      state.selectedDepthSlot = assignment?.slot || null;
+      render();
+    });
+    append(actions, [
+      profile,
+      depthButton,
+      rosterActionButton("Extend", "contract_extend", {
+        player_id: player.player_id,
+        years: contract.suggested_years || player.suggested_years || 1,
+        aav: contract.asking_aav || player.asking_aav || 0,
+      }),
+      rosterActionButton("Restructure", "contract_restructure", {
+        player_id: player.player_id,
+        amount: contract.suggested_convert || player.suggested_convert || 0,
+      }),
+      rosterActionButton("Release", "roster_release_player", {
+        player_id: player.player_id,
+      }, "danger"),
+    ]);
+    const assignments = node("div", "roster-assignment-strip");
+    (player.assignments || []).slice(0, 8).forEach((item) => assignments.append(tag(`${item.slot} #${item.rank}`, depthRoleTone(item.rank))));
+    if (!assignments.children.length) assignments.append(tag("No depth role", ""));
+    append(body, [
+      title,
+      facts,
+      sectionBlock("Jersey Number", rosterJerseyControl(player)),
+      sectionBlock("Actions", actions),
+      sectionBlock("Depth Usage", assignments),
+    ]);
+    return panelNode;
+  }
+
   function rosterCard(depth, player) {
     const card = node("article", "roster-card");
     const roleScore = player.roleScore ? oneDecimal(player.roleScore) : "-";
@@ -3268,7 +4120,7 @@
 
   function renderRosterHub() {
     const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
-    setHeader("Roster Hub", `Scan ${team}'s roster, roles, contracts, and depth-chart status from one screen.`);
+    setHeader("View Roster", `${team} roster by position group, ratings, depth role, and player actions.`);
     const root = document.createDocumentFragment();
     const depth = data.depthChart || { rows: [], roster: [], units: [] };
     if (runnerMode() && state.depthChartLiveKey !== depthChartLiveKey() && !state.depthChartLoading) {
@@ -3278,7 +4130,7 @@
     const starters = rows.filter((player) => player.primaryAssignment?.rank === 1).length;
     const rookies = rows.filter((player) => player.is_rookie).length;
     const contractAlerts = rows.filter((player) => player.contract?.type).length;
-    const summary = panel("Roster Desk", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Roster Snapshot", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
     if (state.depthChartLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live roster..."));
     }
@@ -3292,7 +4144,9 @@
     panelBody(summary).append(metrics);
     root.append(summary);
 
-    const board = panel("Roster Board", "Filter and sort");
+    const filteredRows = filteredRosterRows(rows);
+    const selected = selectedRosterPlayer(filteredRows);
+    const board = panel("Roster Board", `${filteredRows.length} players shown`);
     const body = panelBody(board);
     const toolbar = node("div", "roster-toolbar");
     const depthLink = node("button", "run-button compact", "Open Depth Chart");
@@ -3302,34 +4156,21 @@
       render();
     });
     append(toolbar, [
-      rosterPositionFilter(rows),
+      rosterGroupTabs(rows),
       rosterStatusFilter(rows),
       depthLink,
     ]);
     body.append(toolbar);
-    const activeRows = rows
-      .filter((player) => state.rosterPositionFilter === "all" || player.position === state.rosterPositionFilter)
-      .filter((player) => state.rosterStatusFilter === "all" || (player.status || "Active") === state.rosterStatusFilter);
-    const sortBar = node("div", "roster-sort-bar");
-    append(sortBar, [
-      rosterSortButton("Role", "role"),
-      rosterSortButton("Depth", "depth"),
-      rosterSortButton("Position", "pos"),
-      rosterSortButton("Age", "age"),
-      rosterSortButton("Name", "name"),
-      rosterSortButton("Status", "status"),
-    ]);
-    body.append(sortBar);
-    const grid = node("div", "roster-card-grid");
-    sortedRosterRows(activeRows).forEach((player) => grid.append(rosterCard(depth, player)));
-    body.append(grid.children.length ? grid : node("div", "empty-state", "No players match the current filters."));
-    root.append(board);
+    body.append(filteredRows.length ? rosterPlayerTable(depth, filteredRows, selected) : node("div", "empty-state", "No players match the current filters."));
+    const layout = node("div", "roster-manager-layout");
+    append(layout, [board, rosterPlayerPanel(depth, selected)]);
+    root.append(layout);
     finishRender(root);
   }
 
   function renderDepthChart() {
     const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
-    setHeader("Depth Chart", `Set roles and position rooms for ${team}. Changes write to the active save.`);
+    setHeader("Depth Chart", `Set ${team}'s depth chart from the offensive and defensive formations you are running.`);
     const root = document.createDocumentFragment();
     const depth = data.depthChart || { rows: [], roster: [], units: [] };
     const selected = selectedDepthSlot(depth);
@@ -3344,18 +4185,8 @@
     panelBody(summary).append(depthRoomSummary(depth, selected));
     root.append(summary);
 
-    const layout = node("div", "depth-editor-layout");
-    const slotsPanel = panel("Position Rooms", "Choose a room");
-    const slotBody = panelBody(slotsPanel);
-    (depth.units || []).forEach((unit) => {
-      const unitTitle = node("h3", "subsection-title", unit.unit);
-      slotBody.append(unitTitle);
-      const slotGrid = node("div", "slot-grid");
-      (unit.slots || []).forEach((slot) => {
-        slotGrid.append(depthSlotButton(depth, selected, slot));
-      });
-      slotBody.append(slotGrid);
-    });
+    const layout = node("div", "depth-editor-layout formation-depth-layout");
+    const formationPanel = depthFormationPanel(depth, selected);
 
     const editorPanel = panel(selected ? `${selected.slot} Room` : "Depth Board", "Adjust roles");
     const editorBody = panelBody(editorPanel);
@@ -3369,21 +4200,13 @@
       editorBody.append(sectionBlock("Assigned Roles", assigned));
 
       const rosterPanel = node("div", "depth-roster-strip");
-      const eligible = depthEligiblePlayers(depth, selected, 24);
+      const eligible = depthEligiblePlayers(depth, selected, 48);
       eligible.forEach((player) => {
-        const item = node("div", `depth-roster-chip ${playerFitsSlot(player, selected.slot) ? "fit" : ""}`.trim());
-        append(item, [
-          playerLink(player.player_id, player.player_name, "player-link strong-link", {
-            team: depth.team,
-            position: player.position,
-          }),
-          node("span", null, `${player.position} | ${player.role?.score ? oneDecimal(player.role.score) : "-"} role fit${playerFitsSlot(player, selected.slot) ? " | natural fit" : ""}`),
-        ]);
-        rosterPanel.append(item);
+        rosterPanel.append(depthRosterChip(depth, selected, player));
       });
       editorBody.append(sectionBlock("Best Roster Fits", rosterPanel));
     }
-    append(layout, [slotsPanel, editorPanel]);
+    append(layout, [formationPanel, editorPanel]);
     root.append(layout);
     finishRender(root);
   }
@@ -3437,7 +4260,7 @@
   }
 
   function renderDraft() {
-    setHeader("Draft Room", "Run the war room, track the board, make your pick, or let CPU teams move until your turn arrives.");
+    setHeader("Draft Room", "Work the board, make picks, and track CPU movement.");
     const root = document.createDocumentFragment();
     const draft = data.draft || { pickTotals: {}, board: [], pickQueue: [], events: [] };
     if (runnerMode() && state.draftLiveKey !== draftLiveKey() && !state.draftLoading) {
@@ -3455,6 +4278,7 @@
       : sortedBoard.filter((player) => player.position === activeDraftPosition);
     const selected = selectedDraftProspect(visibleDraftBoard);
     const status = panel("Room Status", `Draft ${draft.year || ""}${data.draftGeneratedAt ? ` | refreshed ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : ""}`);
+    status.classList.add("draft-status-panel");
     if (state.draftLoading) {
       panelBody(status).append(node("div", "empty-state", "Refreshing live draft room..."));
     }
@@ -3502,7 +4326,6 @@
     panelBody(queuePanel).append(queueList.children.length ? queueList : node("div", "empty-state", "No draft room queue exported."));
     append(grid, [controlsPanel, queuePanel]);
     root.append(grid);
-    root.append(draftUserSelectionsPanel(draft.userSelections || [], draft));
 
     const draftLayout = node("div", "draft-layout");
     const boardPanel = panel(
@@ -3513,8 +4336,12 @@
     );
     panelBody(boardPanel).append(draftBoardToolbar(board, visibleDraftBoard, draftPositions, activeDraftPosition));
     panelBody(boardPanel).append(draftBoardTable(visibleDraftBoard, selected));
-    append(draftLayout, [boardPanel, prospectCard(selected)]);
+    append(draftLayout, [boardPanel]);
     root.append(draftLayout);
+    root.append(draftUserSelectionsPanel(draft.userSelections || [], draft));
+    if (state.draftProspectPopoverOpen && selected) {
+      root.append(draftProspectPopover(selected));
+    }
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
@@ -3527,7 +4354,7 @@
     const currentTeam = draftState?.current_team || "-";
     const onClock = isUserOnClock();
     const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
-    const boardTop = visibleBoard.slice(0, 8);
+    const boardTop = visibleBoard.slice(0, 5);
     const highConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) >= 3).length;
     const mediumConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) === 2).length;
     const selectedName = selected?.player_name || `${selected?.first_name || ""} ${selected?.last_name || ""}`.trim() || "No prospect selected";
@@ -3535,7 +4362,7 @@
     const body = panelBody(panelEl);
     const top = node("div", "war-room-hero");
     append(top, [
-      teamLogo((draft.pickQueue || [])[0]?.teamLogo, currentTeam, "war-room-logo"),
+      teamLogo(currentDraftQueuePick(draft, draftState)?.teamLogo, currentTeam, "war-room-logo"),
       append(node("div", "war-room-copy"), [
         node("span", "tag", draftState ? `Pick ${currentPick}` : `Draft ${draft?.year || ""}`),
         node("strong", null, draftState ? (onClock ? "Your board is live" : `${currentTeam} is deciding`) : "Set the board before the clock starts"),
@@ -3557,8 +4384,7 @@
       const chip = node("button", `war-room-target ${String(player.prospect_id) === String(selected?.prospect_id) ? "active" : ""}`.trim());
       chip.type = "button";
       chip.addEventListener("click", () => {
-        state.selectedDraftProspectId = player.prospect_id;
-        render();
+        openDraftProspectPopover(player.prospect_id);
       });
       append(chip, [
         node("span", null, `#${player.public_board_rank || player.scouting_rank || index + 1}`),
@@ -3883,8 +4709,7 @@
     players.forEach((player) => {
       const tr = node("tr", String(player.prospect_id) === String(selected?.prospect_id) ? "selected-row" : "");
       tr.addEventListener("click", () => {
-        state.selectedDraftProspectId = player.prospect_id;
-        render();
+        openDraftProspectPopover(player.prospect_id);
       });
       [
         player.public_board_rank || player.scouting_rank || "-",
@@ -3947,14 +4772,24 @@
     button.type = "button";
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      state.selectedDraftProspectId = player.prospect_id;
-      render();
+      openDraftProspectPopover(player.prospect_id);
     });
     append(wrap, [
       button,
       node("small", null, roleLabel(player.primary_role || player.archetype)),
     ]);
     return wrap;
+  }
+
+  function openDraftProspectPopover(prospectId) {
+    state.selectedDraftProspectId = prospectId;
+    state.draftProspectPopoverOpen = true;
+    render();
+  }
+
+  function closeDraftProspectPopover() {
+    state.draftProspectPopoverOpen = false;
+    render();
   }
 
   function collegeCell(player) {
@@ -4106,6 +4941,43 @@
     return card;
   }
 
+  function draftProspectPopover(player) {
+    const overlay = node("div", "prospect-popover-overlay");
+    overlay.setAttribute("role", "presentation");
+    overlay.addEventListener("click", closeDraftProspectPopover);
+    const drawer = node("aside", "prospect-popover");
+    drawer.setAttribute("role", "dialog");
+    drawer.setAttribute("aria-modal", "true");
+    drawer.setAttribute("aria-label", "Draft prospect card");
+    drawer.addEventListener("click", (event) => event.stopPropagation());
+    const top = node("div", "prospect-popover-top");
+    append(top, [
+      append(node("div", "prospect-popover-title"), [
+        node("span", "tag", `#${player.public_board_rank || player.scouting_rank || "-"}`),
+        node("strong", null, player.player_name || "Prospect"),
+        node("small", null, `${player.position || "-"} | ${player.college || "-"} | ${player.scout_confidence || player.scouting_confidence || "Low"} confidence`),
+      ]),
+      closeButton(closeDraftProspectPopover),
+    ]);
+    const card = prospectCard(player);
+    card.classList.add("prospect-popover-card");
+    append(drawer, [top, card]);
+    overlay.append(drawer);
+    return overlay;
+  }
+
+  function closeButton(onClick) {
+    const button = node("button", "icon-button close-button", "x");
+    button.type = "button";
+    button.title = "Close";
+    button.setAttribute("aria-label", "Close");
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    return button;
+  }
+
   function prospectAttributeRows(attributes) {
     const stack = node("div", "prospect-attribute-list");
     if (!attributes.length) {
@@ -4187,6 +5059,16 @@
     return String(draftState.current_team || "").toUpperCase() === String(draftState.user_team || data.activeSave?.user_team || "").toUpperCase();
   }
 
+  function currentDraftQueuePick(draft, draftState) {
+    const queue = draft?.pickQueue || [];
+    const currentNumber = Number(draftState?.current_pick_number || 0);
+    if (currentNumber) {
+      const match = queue.find((pick) => Number(pick.effective_pick_number || pick.pick_number || 0) === currentNumber);
+      if (match) return match;
+    }
+    return queue.find((pick) => !Number(pick.is_used || 0)) || queue[0] || null;
+  }
+
   function renderInbox() {
     setHeader("Inbox", "Messages from scouting, staff, league events, and future front-office systems.");
     const root = document.createDocumentFragment();
@@ -4229,13 +5111,14 @@
         const card = node("article", `message-card ${Number(message.is_read || 0) ? "" : "unread"}`.trim());
         append(card, [
           append(node("div", "message-top"), [
-            node("strong", null, message.title || "Inbox Message"),
+            append(node("strong", null), inboxLinkedText(message.title || "Inbox Message", message)),
             node("span", "event-date", shortDate(message.message_date)),
           ]),
-          node("p", null, message.body || ""),
+          append(node("p", null), inboxLinkedText(message.body || "", message)),
           append(node("div", "message-meta"), [
             node("span", null, message.category || "Inbox"),
             node("span", null, message.source || "Front Office"),
+            inboxRelatedLink(message),
           ]),
         ]);
         list.append(card);
@@ -4243,6 +5126,63 @@
     }
     body.append(list);
     return p;
+  }
+
+  function inboxRelatedLink(message) {
+    const player = message.relatedPlayer;
+    if (player?.player_id) {
+      return playerLink(player.player_id, player.player_name || "Player", "message-related-link", {
+        team: player.team,
+        position: player.position,
+      });
+    }
+    const prospect = message.relatedProspect;
+    if (prospect?.prospect_id) {
+      return prospectLink(prospect.prospect_id, prospect.player_name || "Prospect", "message-related-link");
+    }
+    return null;
+  }
+
+  function inboxLinkedText(text, message) {
+    const fragment = document.createDocumentFragment();
+    const related = message.relatedPlayer
+      ? {
+        name: message.relatedPlayer.player_name,
+        makeLink: () => playerLink(
+          message.relatedPlayer.player_id,
+          message.relatedPlayer.player_name,
+          "message-inline-link",
+          { team: message.relatedPlayer.team, position: message.relatedPlayer.position },
+        ),
+      }
+      : message.relatedProspect
+        ? {
+          name: message.relatedProspect.player_name,
+          makeLink: () => prospectLink(
+            message.relatedProspect.prospect_id,
+            message.relatedProspect.player_name,
+            "message-inline-link",
+          ),
+        }
+        : null;
+    const cleanText = String(text || "");
+    const name = String(related?.name || "").trim();
+    if (!related || !name) {
+      fragment.append(cleanText);
+      return fragment;
+    }
+    const lowerText = cleanText.toLowerCase();
+    const lowerName = name.toLowerCase();
+    let cursor = 0;
+    let match = lowerText.indexOf(lowerName);
+    while (match >= 0) {
+      if (match > cursor) fragment.append(cleanText.slice(cursor, match));
+      fragment.append(related.makeLink());
+      cursor = match + name.length;
+      match = lowerText.indexOf(lowerName, cursor);
+    }
+    if (cursor < cleanText.length) fragment.append(cleanText.slice(cursor));
+    return fragment;
   }
 
   function renderLeagueNews() {
@@ -4379,7 +5319,7 @@
   }
 
   function renderScouting() {
-    setHeader("Scouting", "Manage weekly scouting, off-board discoveries, Senior Bowl exposure, and Top 30 visits.");
+    setHeader("Scouting", "Build your draft board, raise confidence, and choose where your staff spends the week.");
     const root = document.createDocumentFragment();
     if (runnerMode() && state.scoutingLiveKey !== scoutingLiveKey() && !state.scoutingLoading) {
       loadLiveScouting().then(render);
@@ -4393,7 +5333,7 @@
   function renderScoutingDesk(options = {}) {
     const limit = Number(options.limit || 40);
     const scouting = data.scouting || {};
-    const p = panel("Scouting Desk", `${scouting.draftYear ? `${scouting.draftYear} Draft` : "Draft Class"}${data.scoutingGeneratedAt ? ` | refreshed ${shortDateTime(data.scoutingGeneratedAt.replace("T", " "))}` : ""}`);
+    const p = panel("Scouting HQ", `${scouting.draftYear ? `${scouting.draftYear} Draft` : "Draft Class"}${data.scoutingGeneratedAt ? ` | refreshed ${shortDateTime(data.scoutingGeneratedAt.replace("T", " "))}` : ""}`);
     p.classList.add("scouting-desk-panel");
     const body = panelBody(p);
     if (state.scoutingLoading) {
@@ -4404,8 +5344,8 @@
       metric("Period", scouting.period?.label || "-", scouting.weeklyWindow?.open ? "Weekly scouting open" : "Weekly scouting closed"),
       metric("Weekly Action", actionCountText(scouting), scouting.weeklyWindow?.open ? (scouting.usedAction ? roleLabel(scouting.usedAction) : "Available") : scouting.weeklyWindow?.reason || "Closed"),
       metric("Top 30", `${scouting.top30?.used || 0}/30`, scouting.top30?.locked ? "Closed" : "Visits used"),
-      metric("Senior Bowl", `${scouting.seniorBowl?.accepted || 0}`, scouting.seniorBowl?.processed ? "Processed" : "Accepted"),
-      metric("Hidden", String(scouting.counts?.hiddenRemaining || 0), "Still undiscovered"),
+      metric("Board", String(scouting.counts?.visible || (scouting.board || []).length || 0), `${scouting.counts?.hiddenRemaining || 0} undiscovered`),
+      metric("Unread", String(scouting.counts?.unread || 0), "staff notes", scouting.counts?.unread ? "warn" : ""),
     ]);
     if (!scouting.available) {
       body.append(metrics);
@@ -4458,12 +5398,14 @@
     const controlDeck = node("div", "scouting-control-deck");
     append(controlDeck, [metrics, controls, eventGrid]);
     body.append(controlDeck);
-    body.append(renderScoutingAudit(scouting.audit));
 
-    const visibleBoard = sortedScoutingBoard(scouting.board || []).slice(0, limit);
+    normalizeScoutingFilters(scouting.board || []);
+    const filteredBoard = filteredScoutingBoard(scouting.board || []);
+    const visibleBoard = sortedScoutingBoard(filteredBoard).slice(0, limit);
     const selected = selectedDraftProspect(visibleBoard);
     const layout = node("div", "scouting-layout");
-    const boardPanel = panel("Visible Board", `${visibleBoard.length} shown`);
+    const boardPanel = panel("Prospect Board", `${visibleBoard.length}/${(scouting.board || []).length} shown`);
+    panelBody(boardPanel).append(scoutingBoardToolbar(scouting.board || [], filteredBoard));
     panelBody(boardPanel).append(scoutingBoardTable(visibleBoard, selected));
     append(layout, [boardPanel, prospectCard(selected, { showDraftActions: false })]);
     body.append(layout);
@@ -4646,6 +5588,81 @@
     ]);
     append(wrap, [head, metrics, tables]);
     return wrap;
+  }
+
+  function scoutingFilterSelect(label, value, options, onChange) {
+    const wrap = node("label", "scouting-filter");
+    wrap.append(node("span", null, label));
+    const select = node("select");
+    options.forEach((option) => {
+      const item = node("option", null, option.label);
+      item.value = option.value;
+      item.selected = option.value === value;
+      select.append(item);
+    });
+    select.addEventListener("change", () => onChange(select.value));
+    wrap.append(select);
+    return wrap;
+  }
+
+  function scoutingBoardToolbar(allProspects, filteredProspects) {
+    const positions = scoutingBoardPositions(allProspects);
+    const activePosition = state.scoutingPositionFilter;
+    const confidenceOptions = ["Very High", "High", "Medium", "Low", "Unscouted"]
+      .filter((confidence) => (allProspects || []).some((prospect) => String(prospect.scouting_confidence || "Low") === confidence));
+    const toolbar = node("div", "scouting-board-toolbar");
+    const filters = node("div", "scouting-filter-row");
+    append(filters, [
+      scoutingFilterSelect(
+        "Position",
+        activePosition,
+        [{ value: "all", label: "All positions" }, ...positions.map((position) => ({ value: position, label: position }))],
+        (value) => {
+          state.scoutingPositionFilter = value;
+          render();
+        },
+      ),
+      scoutingFilterSelect(
+        "Confidence",
+        state.scoutingConfidenceFilter,
+        [{ value: "all", label: "All confidence" }, ...confidenceOptions.map((confidence) => ({ value: confidence, label: confidence }))],
+        (value) => {
+          state.scoutingConfidenceFilter = value;
+          render();
+        },
+      ),
+    ]);
+    const summary = node("div", "scouting-board-summary");
+    append(summary, [
+      tag(`${filteredProspects.length} prospects`),
+      tag(`${filteredProspects.filter((prospect) => confidenceSortValue(prospect.scouting_confidence) >= 3).length} high confidence`, "good"),
+      tag(`${filteredProspects.filter((prospect) => prospect.queued).length} selected`, filteredProspects.some((prospect) => prospect.queued) ? "warn" : ""),
+    ]);
+    append(toolbar, [filters, summary]);
+    return toolbar;
+  }
+
+  function filteredScoutingBoard(prospects) {
+    return [...(prospects || [])]
+      .filter((prospect) => state.scoutingPositionFilter === "all" || prospect.position === state.scoutingPositionFilter)
+      .filter((prospect) => state.scoutingConfidenceFilter === "all" || String(prospect.scouting_confidence || "Low") === state.scoutingConfidenceFilter);
+  }
+
+  function scoutingBoardPositions(prospects) {
+    return [...new Set((prospects || []).map((prospect) => prospect.position).filter(Boolean))]
+      .sort(footballPositionSort);
+  }
+
+  function normalizeScoutingFilters(prospects) {
+    const positions = scoutingBoardPositions(prospects);
+    if (state.scoutingPositionFilter !== "all" && !positions.includes(state.scoutingPositionFilter)) {
+      state.scoutingPositionFilter = "all";
+    }
+    const confidences = ["Very High", "High", "Medium", "Low", "Unscouted"]
+      .filter((confidence) => (prospects || []).some((prospect) => String(prospect.scouting_confidence || "Low") === confidence));
+    if (state.scoutingConfidenceFilter !== "all" && !confidences.includes(state.scoutingConfidenceFilter)) {
+      state.scoutingConfidenceFilter = "all";
+    }
   }
 
   function actionCountText(scouting) {
@@ -5807,7 +6824,7 @@
     ]);
     button.addEventListener("click", () => {
       if (played && runnerMode()) {
-        runAction("box_score", { game_id: game.game_id });
+        loadCalendarBoxScore(game.game_id);
         return;
       }
       state.selectedCalendarItem = { type: "game", id: game.game_id };
@@ -5818,10 +6835,6 @@
 
   function calendarGameRow(game) {
     const item = gameLine(game, data.activeSave?.user_team);
-    if (Number(game.played || 0) === 1) {
-      item.classList.add("clickable-row");
-      item.addEventListener("click", () => runAction("box_score", { game_id: game.game_id }));
-    }
     return item;
   }
 
@@ -5839,6 +6852,16 @@
       return { type: "game", item: (calendar.gamesInView || []).find((game) => Number(game.game_id) === Number(selection.id)) };
     }
     return null;
+  }
+
+  function selectedGameBoxScore(gameId) {
+    const result = state.calendarBoxScores?.[String(gameId)] || state.lastResult;
+    if (!result || result.action !== "box_score") return null;
+    const resultGameId = result.params?.game_id || result.params?.schedule_game_id;
+    if (String(resultGameId) !== String(gameId)) return null;
+    if (result.returncode !== 0 || result.error) return node("div", "friendly-error", result.summary?.message || result.stderr || result.error || "Box score could not be loaded.");
+    const text = String(result.stdout || "").trim();
+    return text ? node("pre", "box-score-output calendar-box-score-output", text) : node("div", "empty-state", "No stored box score text was returned for this game.");
   }
 
   function calendarDetail() {
@@ -5883,10 +6906,16 @@
       ]);
     }
     const played = Number(item.played || 0) === 1;
-    const showBox = node("button", "copy-button", played ? "Show Box Score" : "Box Score After Sim");
+    const loadingBoxScore = String(state.calendarBoxScoreLoadingId || "") === String(item.game_id);
+    const showBox = node("button", "copy-button", loadingBoxScore ? "Loading Box Score" : played ? "Show Box Score" : "Box Score After Sim");
     showBox.type = "button";
-    showBox.disabled = !played || !runnerMode();
-    showBox.addEventListener("click", () => runAction("box_score", { game_id: item.game_id }));
+    showBox.disabled = !played || !runnerMode() || loadingBoxScore;
+    showBox.addEventListener("click", () => {
+      loadCalendarBoxScore(item.game_id);
+    });
+    const boxScore = loadingBoxScore
+      ? node("div", "empty-state", "Loading stored box score...")
+      : selectedGameBoxScore(item.game_id);
     return append(node("div", "calendar-detail"), [
       node("span", "tag", played ? "Final" : "Scheduled"),
       node("strong", null, played
@@ -5894,6 +6923,7 @@
         : `${item.away_team} at ${item.home_team}`),
       node("p", "muted", `Week ${item.week || "-"} | ${shortDate(item.game_date)}${item.game_time_et ? ` | ${item.game_time_et} ET` : ""}`),
       showBox,
+      boxScore,
     ]);
   }
 
@@ -6080,8 +7110,15 @@
     });
   });
 
+  setupRailToggle();
+
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshCurrentView();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.draftProspectPopoverOpen) {
+      closeDraftProspectPopover();
+    }
   });
   window.addEventListener("focus", () => refreshCurrentView());
   window.setInterval(() => {

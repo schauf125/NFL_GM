@@ -8,6 +8,8 @@ It deliberately does not run arbitrary browser-supplied shell commands.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import mimetypes
 import sqlite3
@@ -27,6 +29,7 @@ import export_game_center_ui_data
 import export_player_card_ui_data
 import export_player_profile_ui_data
 import free_agency_processor
+import view_box_score
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +66,8 @@ PLAYER_EXPORT_ACTIONS = {
     "contract_restructure",
     "depth_chart_set",
     "depth_chart_move",
+    "roster_release_player",
+    "roster_change_number",
 }
 LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "draft_start",
@@ -77,6 +82,8 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "contract_restructure",
     "depth_chart_set",
     "depth_chart_move",
+    "roster_release_player",
+    "roster_change_number",
     "free_agency_start",
     "free_agency_cpu_seed",
     "free_agency_advance_hour",
@@ -88,6 +95,8 @@ SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_extend",
     "contract_release",
     "contract_restructure",
+    "roster_release_player",
+    "roster_change_number",
 }
 DRAFT_RUN_ACTIONS = {
     "advance_to_draft",
@@ -432,7 +441,7 @@ def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[
     if action in DRAFT_RUN_ACTIONS:
         patch = draft_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
-    if action in {"depth_chart_set", "depth_chart_move"}:
+    if action in {"depth_chart_set", "depth_chart_move", "roster_release_player", "roster_change_number"}:
         patch = depth_chart_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     if action in FREE_AGENCY_RUN_ACTIONS:
@@ -665,6 +674,7 @@ def inbox_payload_for_active_db(limit: int = 40) -> dict[str, Any]:
         scouting_module = export_game_center_ui_data.scouting
         game_id = scouting_module.active_game_id(conn)
         inbox = scouting_module.inbox_rows(conn, game_id=game_id, limit=limit)
+        enrich_inbox_messages(conn, inbox)
         unread = scouting_module.unread_count(conn, game_id)
     return {
         "gameId": game_id,
@@ -675,6 +685,75 @@ def inbox_payload_for_active_db(limit: int = 40) -> dict[str, Any]:
             "messages": len(inbox),
         },
     }
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not table_exists(conn, table):
+        return set()
+    return {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def enrich_inbox_messages(conn: sqlite3.Connection, inbox: list[dict[str, Any]]) -> None:
+    player_ids = {
+        int(message["related_id"])
+        for message in inbox
+        if str(message.get("related_table") or "").lower() == "players" and message.get("related_id")
+    }
+    prospect_ids = {
+        int(message["related_id"])
+        for message in inbox
+        if str(message.get("related_table") or "").lower() == "draft_prospects" and message.get("related_id")
+    }
+    players: dict[int, dict[str, Any]] = {}
+    if player_ids and table_exists(conn, "players"):
+        placeholders = ",".join("?" for _ in player_ids)
+        for row in conn.execute(
+            f"""
+            SELECT
+                p.player_id,
+                p.first_name || ' ' || p.last_name AS player_name,
+                p.position,
+                t.abbreviation AS team
+            FROM players p
+            LEFT JOIN teams t ON t.team_id = p.team_id
+            WHERE p.player_id IN ({placeholders})
+            """,
+            sorted(player_ids),
+        ).fetchall():
+            players[int(row["player_id"])] = dict(row)
+
+    prospects: dict[int, dict[str, Any]] = {}
+    prospect_columns = table_columns(conn, "draft_prospects")
+    if prospect_ids and prospect_columns:
+        placeholders = ",".join("?" for _ in prospect_ids)
+        name_expr = (
+            "player_name"
+            if "player_name" in prospect_columns
+            else "TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, ''))"
+        )
+        position_expr = "position" if "position" in prospect_columns else "NULL"
+        college_expr = "college" if "college" in prospect_columns else "NULL"
+        for row in conn.execute(
+            f"""
+            SELECT
+                prospect_id,
+                {name_expr} AS player_name,
+                {position_expr} AS position,
+                {college_expr} AS college
+            FROM draft_prospects
+            WHERE prospect_id IN ({placeholders})
+            """,
+            sorted(prospect_ids),
+        ).fetchall():
+            prospects[int(row["prospect_id"])] = dict(row)
+
+    for message in inbox:
+        table = str(message.get("related_table") or "").lower()
+        related_id = int(message["related_id"]) if message.get("related_id") else None
+        if table == "players" and related_id in players:
+            message["relatedPlayer"] = players[related_id]
+        elif table == "draft_prospects" and related_id in prospects:
+            message["relatedProspect"] = prospects[related_id]
 
 
 def league_news_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
@@ -879,6 +958,11 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if not game_id:
             raise ValueError("load_game requires game_id.")
         return play("load", game_id)
+    if action == "delete_save":
+        game_id = str(params.get("game_id") or "").strip()
+        if not game_id:
+            raise ValueError("delete_save requires game_id.")
+        return play("delete-save", game_id)
     if action == "advance_next_event":
         return play("advance-to-next-event")
     if action == "validate_rosters":
@@ -953,6 +1037,70 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if params.get("amount"):
             command.extend(["--amount", str(int(params["amount"]))])
         return play(*command)
+    if action == "roster_release_player":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("roster_release_player requires player_id.")
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            player = con.execute(
+                """
+                SELECT p.player_id, p.first_name || ' ' || p.last_name AS player_name
+                FROM players p
+                JOIN teams t ON t.team_id = p.team_id
+                WHERE p.player_id = ? AND t.abbreviation = ?
+                """,
+                (int(player_id), str(user_team)),
+            ).fetchone()
+        if not player:
+            raise ValueError("Player is not on the active user-team roster.")
+        command = [
+            "roster",
+            "release",
+            "--team",
+            str(user_team),
+            "--player",
+            str(player["player_name"]),
+        ]
+        if params.get("post_june1"):
+            command.append("--post-june1")
+        return play(*command)
+    if action == "roster_change_number":
+        player_id = params.get("player_id")
+        number = params.get("number")
+        if not player_id or number is None:
+            raise ValueError("roster_change_number requires player_id and number.")
+        player_id = int(player_id)
+        number = int(number)
+        if number < 0 or number > 99:
+            raise ValueError("Jersey number must be between 0 and 99.")
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            team_row = con.execute("SELECT team_id FROM teams WHERE abbreviation = ?", (str(user_team),)).fetchone()
+            if not team_row:
+                raise ValueError(f"Team not found: {user_team}")
+            team_id = int(team_row["team_id"])
+            player = con.execute(
+                "SELECT player_id FROM players WHERE player_id = ? AND team_id = ?",
+                (player_id, team_id),
+            ).fetchone()
+            if not player:
+                raise ValueError("Player is not on the active user-team roster.")
+            conflict = con.execute(
+                """
+                SELECT first_name || ' ' || last_name AS player_name
+                FROM players
+                WHERE team_id = ? AND jersey_number = ? AND player_id != ?
+                  AND COALESCE(status, 'Active') != 'Retired'
+                LIMIT 1
+                """,
+                (team_id, number, player_id),
+            ).fetchone()
+            if conflict:
+                raise ValueError(f"#{number} is already assigned to {conflict['player_name']}.")
+            con.execute("UPDATE players SET jersey_number = ? WHERE player_id = ?", (number, player_id))
+            con.commit()
+        return [sys.executable, "-c", f"print('Jersey number updated to #{number}.')"]
     if action == "depth_chart_set":
         player_id = params.get("player_id")
         position = params.get("position")
@@ -1007,6 +1155,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(free_agency_year),
             "--start-date",
             str(start_date),
+            "--opening-cpu-offers",
+            str(int(params.get("opening_cpu_offers") or 64)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1016,6 +1166,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "advance-hour",
             "--league-year",
             str(free_agency_year),
+            "--cpu-offers",
+            str(int(params.get("cpu_offers") or 28)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1028,6 +1180,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(free_agency_year),
             "--days",
             str(days),
+            "--cpu-offers",
+            str(int(params.get("cpu_offers") or 40)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1067,6 +1221,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "cpu-seed",
             "--league-year",
             str(free_agency_year),
+            "--cpu-offers",
+            str(int(params.get("cpu_offers") or 64)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1655,10 +1811,14 @@ def action_response_summary(
         summary["mode"] = "applied"
     elif "dry" in action or "dry run" in (stdout or "").lower():
         summary["mode"] = "dry_run"
+    elif action == "delete_save":
+        summary["title"] = "Save Deleted" if returncode == 0 else "Delete Save Failed"
     return summary
 
 
 def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    if action == "box_score":
+        return run_box_score_action(params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
     command = action_command(action, params, before)
     started = perf_counter()
@@ -1698,6 +1858,72 @@ def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
         response["state"] = after
         response["app_shell_state"] = app_shell_after
     return response
+
+
+def run_box_score_action(params: dict[str, Any]) -> dict[str, Any]:
+    schedule_game_id = params.get("game_id") or params.get("schedule_game_id")
+    if not schedule_game_id:
+        raise ValueError("box_score requires game_id.")
+    show_plays = int(params.get("show_plays") or 16)
+    started = perf_counter()
+    stdout = ""
+    stderr = ""
+    returncode = 0
+    try:
+        buffer = io.StringIO()
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            with contextlib.redirect_stdout(buffer):
+                view_box_score.print_box_score(con, int(schedule_game_id), show_plays)
+        stdout = buffer.getvalue()
+    except Exception as exc:
+        returncode = 1
+        stderr = str(exc)
+    duration_seconds = perf_counter() - started
+    response = {
+        "action": "box_score",
+        "command": f"view_box_score --game-id {int(schedule_game_id)} --show-plays {show_plays}",
+        "returncode": returncode,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout[-20000:],
+        "stderr": stderr[-20000:],
+    }
+    response["summary"] = action_response_summary(
+        "box_score",
+        params,
+        returncode,
+        stdout,
+        stderr,
+        duration_seconds,
+    )
+    return response
+
+
+def box_score_payload_for_active_db(schedule_game_id: int, show_plays: int = 16) -> dict[str, Any]:
+    started = perf_counter()
+    stdout = ""
+    stderr = ""
+    returncode = 0
+    try:
+        buffer = io.StringIO()
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            with contextlib.redirect_stdout(buffer):
+                view_box_score.print_box_score(con, int(schedule_game_id), int(show_plays))
+        stdout = buffer.getvalue()
+    except Exception as exc:
+        returncode = 1
+        stderr = str(exc)
+    duration_seconds = perf_counter() - started
+    return {
+        "action": "box_score",
+        "gameId": int(schedule_game_id),
+        "params": {"game_id": int(schedule_game_id), "show_plays": int(show_plays)},
+        "returncode": returncode,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout[-20000:],
+        "stderr": stderr[-20000:],
+    }
 
 
 class UiHandler(SimpleHTTPRequestHandler):
@@ -1809,6 +2035,18 @@ class UiHandler(SimpleHTTPRequestHandler):
                 season = int(requested_season[0]) if requested_season and requested_season[0] else None
                 current_date = requested_date[0] if requested_date and requested_date[0] else None
                 self.write_json(HTTPStatus.OK, calendar_payload_for_active_db(season, current_date))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/box-score":
+            try:
+                params = parse_qs(parsed.query)
+                requested_game = params.get("game_id") or params.get("schedule_game_id")
+                if not requested_game or not requested_game[0]:
+                    raise ValueError("game_id is required.")
+                requested_plays = params.get("show_plays")
+                show_plays = int(requested_plays[0]) if requested_plays and requested_plays[0] else 16
+                self.write_json(HTTPStatus.OK, box_score_payload_for_active_db(int(requested_game[0]), show_plays))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return

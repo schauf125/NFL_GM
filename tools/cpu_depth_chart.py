@@ -112,15 +112,58 @@ def team_rows(con: sqlite3.Connection, team: str | None, user_team: str | None, 
 
 def legal_candidates(team: match_engine.TeamSnapshot, slot: str) -> list[match_engine.PlayerSnapshot]:
     positions = match_engine.SLOT_POSITION_FALLBACKS.get(slot, [slot])
+    if slot.upper() == "FB":
+        primary_positions = ["FB", "TE"]
+        primary = [player for player in team.roster if player.position in primary_positions]
+        if primary:
+            positions = primary_positions
     return sorted(
         [player for player in team.roster if player.position in positions],
-        key=lambda player: (
-            team.score_for_slot(player, slot),
-            float(player.metadata.get("overall") or player.general_score()),
-            float(player.metadata.get("potential") or player.general_score()),
-        ),
+        key=lambda player: depth_sort_score(team, player, slot),
         reverse=True,
     )
+
+
+def depth_sort_score(
+    team: match_engine.TeamSnapshot,
+    player: match_engine.PlayerSnapshot,
+    slot: str,
+) -> tuple[float, float, float, float]:
+    slot = slot.upper()
+    role_score = team.score_for_slot(player, slot)
+    overall = float(player.metadata.get("overall") or player.general_score())
+    potential = float(player.metadata.get("potential") or overall)
+    age = float(player.metadata.get("age") or 27)
+    position_bonus = 0.0
+    if slot == "FB":
+        if player.position == "FB":
+            position_bonus = 10.0
+        elif player.position == "TE":
+            position_bonus = 7.0
+        elif player.position == "RB":
+            position_bonus = -7.0
+    elif slot == "NB":
+        if player.position == "NB":
+            position_bonus = 5.0
+        elif player.position == "CB":
+            position_bonus = 3.0
+    elif slot in {"FS", "SS"} and player.position in {"FS", "SS", "S"}:
+        position_bonus = 3.0
+    elif slot in {"LEDGE", "REDGE"} and player.position == "EDGE":
+        position_bonus = 3.0
+    elif slot in {"LDL", "RDL", "NT"} and player.position in {"IDL", "DT", "NT"}:
+        position_bonus = 3.0
+
+    if slot == "RB":
+        primary = overall * 0.62 + role_score * 0.38
+        if overall < 70:
+            primary -= (70.0 - overall) * 0.45
+    elif slot == "FB":
+        primary = overall * 0.72 + role_score * 0.18 + position_bonus
+    else:
+        primary = overall * 0.45 + role_score * 0.55 + position_bonus
+    youth_tiebreak = max(0.0, potential - overall) * 0.35 - max(0.0, age - 30.0) * 0.20
+    return (primary, overall, youth_tiebreak, potential)
 
 
 def choose_starters(team: match_engine.TeamSnapshot, slots: list[str]) -> dict[str, match_engine.PlayerSnapshot]:

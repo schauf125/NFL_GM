@@ -28,9 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 SOURCE = "draft_room_processor"
 CONFIDENCE_RANK_PENALTY_BASE = {
-    "unscouted": 24.0,
-    "low": 18.0,
-    "medium": 7.0,
+    "unscouted": 34.0,
+    "low": 28.0,
+    "medium": 10.0,
     "high": 2.0,
     "very high": 0.0,
 }
@@ -45,14 +45,17 @@ CONFIDENCE_ROUND_MULTIPLIER = {
 }
 ROUND_ONE_PLAN_TIER_SIZE = 12
 ROUND_ONE_PUBLIC_ESCAPE_RANK = 16
-ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE = {"medium", "high", "very high"}
-DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 14, 2: 12, 3: 10, 4: 8, 5: 7, 6: 6, 7: 5}
-DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 18.0, "high": 12.0, "medium": 5.0, "low": -6.0, "unscouted": -14.0}
+ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE = {"high", "very high"}
+DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
+DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 16.0, "high": 8.0, "medium": 1.0, "low": -12.0, "unscouted": -22.0}
 DRAFT_TRADE_PREMIUM_POSITIONS = {"QB", "OT", "EDGE", "CB", "WR"}
-DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 48.0, 2: 44.0, 3: 42.0, 4: 40.0, 5: 38.0, 6: 36.0, 7: 34.0}
+DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 62.0, 2: 58.0, 3: 54.0, 4: 52.0, 5: 50.0, 6: 50.0, 7: 50.0}
+DRAFT_TRADE_MAX_BY_ROUND = {1: 6, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
+DRAFT_TRADE_MAX_TOTAL = 24
 EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
 EARLY_DRAFT_STRONG_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_ELITE_CONFIDENCE = {"very high"}
+QB_DUPLICATE_PICK_PENALTY_BY_ROUND = {1: 95.0, 2: 95.0, 3: 90.0, 4: 72.0, 5: 42.0, 6: 20.0, 7: 8.0}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -696,7 +699,9 @@ def cpu_early_round_value_penalty(
     true_rank = int(row_float(row, "true_rank", 0)) if true_rank_value is not None else None
     true_grade = row_float(row, "true_grade", row_float(row, "overall", perceived_grade))
     potential = row_float(row, "potential", row_float(row, "ceiling_grade", perceived_ceiling))
+    true_ceiling = row_float(row, "ceiling_grade", potential)
     upside_gap = max(0.0, perceived_ceiling - perceived_grade)
+    wild_ceiling_miss = perceived_ceiling - true_ceiling >= 16 and true_ceiling < 72
     penalty = 0.0
 
     if position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
@@ -742,15 +747,70 @@ def cpu_early_round_value_penalty(
     elif round_number == 2:
         if position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
             return penalty
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and wild_ceiling_miss:
+            penalty += 34.0
         if confidence in {"unscouted", "low"} and base_rank > 80:
             penalty += 12.0
+        if true_rank is not None and true_rank > 115 and true_grade < 60 and confidence not in EARLY_DRAFT_STRONG_CONFIDENCE:
+            penalty += 18.0
         if true_rank is not None and true_rank > 125 and confidence not in EARLY_DRAFT_STRONG_CONFIDENCE:
             penalty += 18.0
         if true_grade < 57 and potential >= 82 and confidence != "very high":
             penalty += 12.0
-    elif round_number == 3 and position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
-        penalty += 4.0
+    elif round_number == 3:
+        if position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
+            penalty += 4.0
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and wild_ceiling_miss:
+            penalty += 18.0
 
+    return penalty
+
+
+def drafted_position_counts_before(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    team_id: int,
+    before_pick_number: int,
+) -> dict[str, int]:
+    rows = con.execute(
+        f"""
+        {ordered_pick_cte()}
+        SELECT p.position, COUNT(*) AS count
+        FROM ordered dp
+        JOIN players p ON p.player_id = dp.selected_player_id
+        WHERE dp.draft_year = ?
+          AND dp.current_team_id = ?
+          AND COALESCE(dp.is_used, 0) = 1
+          AND dp.effective_pick_number < ?
+        GROUP BY p.position
+        """,
+        (draft_year, team_id, before_pick_number),
+    ).fetchall()
+    return {str(row["position"] or "").upper(): int(row["count"] or 0) for row in rows}
+
+
+def cpu_duplicate_position_penalty(
+    row: sqlite3.Row,
+    *,
+    round_number: int,
+    base_rank: int,
+    overall_pick_number: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    selected_counts: dict[str, int],
+) -> float:
+    position = str(row["position"] or "").upper()
+    if position != "QB" or selected_counts.get("QB", 0) <= 0:
+        return 0.0
+    penalty = QB_DUPLICATE_PICK_PENALTY_BY_ROUND.get(max(1, min(7, round_number)), 20.0)
+    exceptional_value = (
+        perceived_grade >= 70
+        and perceived_ceiling >= 82
+        and base_rank <= max(1, overall_pick_number - 20)
+    )
+    if exceptional_value:
+        penalty *= 0.35
     return penalty
 
 
@@ -835,6 +895,12 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
     round_number = int(pick["round"])
     overall_pick_number = effective_pick_number(pick)
     plan_ranks = latest_plan_rank_map(con, team_id=team_id, draft_year=draft_year, game_id=game_id)
+    selected_counts = drafted_position_counts_before(
+        con,
+        draft_year=draft_year,
+        team_id=team_id,
+        before_pick_number=overall_pick_number,
+    )
     scored: list[tuple[float, int, sqlite3.Row]] = []
     plan_tier_ids: set[int] = set()
     if round_number == 1 and plan_ranks:
@@ -856,6 +922,14 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
         }
     for row in candidates:
         base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
+        confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+        if round_number == 1:
+            public_escape = base_rank <= ROUND_ONE_PUBLIC_ESCAPE_RANK and confidence in ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE
+            in_plan_tier = int(row["prospect_id"]) in plan_tier_ids
+            if confidence in {"unscouted", "low"} and not public_escape:
+                continue
+            if confidence == "medium" and not in_plan_tier and not public_escape:
+                continue
         bonus = position_need_bonus(con, team_id, str(row["position"]))
         premium_bonus = 0
         if round_number <= 2 and row["position"] in {"QB", "OT", "EDGE", "CB", "WR"}:
@@ -892,6 +966,15 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
         )
+        duplicate_position_penalty = cpu_duplicate_position_penalty(
+            row,
+            round_number=round_number,
+            base_rank=base_rank,
+            overall_pick_number=overall_pick_number,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            selected_counts=selected_counts,
+        )
         adjusted = (
             base_rank
             - bonus
@@ -900,6 +983,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             - plan_bonus
             + confidence_penalty
             + early_value_penalty
+            + duplicate_position_penalty
         )
         scored.append((adjusted, base_rank, row))
     if round_number == 1 and plan_tier_ids:
@@ -1002,6 +1086,10 @@ def draft_trade_target_for_team(
         if need <= 0 and position not in DRAFT_TRADE_PREMIUM_POSITIONS:
             continue
         if confidence in {"low", "unscouted"} and times <= 0:
+            continue
+        if round_number <= 1 and confidence not in {"high", "very high"}:
+            continue
+        if round_number <= 3 and confidence in {"low", "unscouted"}:
             continue
         perceived_grade = cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
         perceived_ceiling = cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
@@ -1171,6 +1259,29 @@ def maybe_execute_cpu_draft_trade_up(
         return pick, None
     current_pick_number = effective_pick_number(pick) or 0
     round_number = int(pick["round"])
+    total_trades = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM draft_room_events
+        WHERE draft_year = ?
+          AND event_type = 'draft_trade'
+        """,
+        (draft_year,),
+    ).fetchone()[0]
+    if int(total_trades or 0) >= DRAFT_TRADE_MAX_TOTAL:
+        return pick, None
+    round_trades = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM draft_room_events
+        WHERE draft_year = ?
+          AND event_type = 'draft_trade'
+          AND round = ?
+        """,
+        (draft_year, round_number),
+    ).fetchone()[0]
+    if int(round_trades or 0) >= DRAFT_TRADE_MAX_BY_ROUND.get(max(1, min(7, round_number)), 3):
+        return pick, None
     rng = random.Random(f"{active_game_id(con)}:{draft_year}:{current_pick_number}:draft-trade-up")
     buyer_candidates: list[tuple[float, int, sqlite3.Row, sqlite3.Row, str]] = []
     for team in con.execute("SELECT team_id FROM teams WHERE team_id <> ? ORDER BY team_id", (seller_team_id,)).fetchall():

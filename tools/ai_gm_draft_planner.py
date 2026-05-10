@@ -31,9 +31,9 @@ DEFAULT_BOARD_LIMIT = 120
 PREMIUM_GROUPS = {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
 LOW_COST_GROUPS = {"K", "P", "LS"}
 CONFIDENCE_PENALTY_BASE = {
-    "unscouted": 9.0,
-    "low": 7.0,
-    "medium": 2.5,
+    "unscouted": 18.0,
+    "low": 14.0,
+    "medium": 4.0,
     "high": 0.5,
     "very high": 0.0,
 }

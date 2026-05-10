@@ -1343,6 +1343,10 @@ def build_parser() -> argparse.ArgumentParser:
     load_parser.add_argument("game_id")
     load_parser.set_defaults(func=lambda args: save_manager.load_save(SimpleNamespace(game_id=args.game_id)))
 
+    delete_parser = subparsers.add_parser("delete-save", help="Delete a save and remove it from the registry.")
+    delete_parser.add_argument("game_id")
+    delete_parser.set_defaults(func=lambda args: save_manager.delete_save(SimpleNamespace(game_id=args.game_id)))
+
     active_parser = subparsers.add_parser("active", help="Show active save.")
     active_parser.set_defaults(func=action_active)
 

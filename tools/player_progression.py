@@ -28,6 +28,7 @@ if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
 
 import apply_new_game_variance  # noqa: E402
+import league_news  # noqa: E402
 import player_development_modifiers  # noqa: E402
 import scheme_fits  # noqa: E402
 
@@ -638,6 +639,54 @@ def load_stats(con: sqlite3.Connection, season: int) -> dict[int, dict[str, floa
     return stats
 
 
+def load_practice_squad_shares(con: sqlite3.Connection, season: int) -> dict[int, float]:
+    """Approximate how much of the development year a player spent on a PS."""
+
+    if not table_exists(con, "practice_squad_moves"):
+        return {}
+    start_date = date(season, 6, 1)
+    end_date = date(season + 1, 6, 1)
+    total_days = max(1, (end_date - start_date).days)
+    rows = con.execute(
+        """
+        SELECT player_id, move_date, from_status, to_status
+        FROM practice_squad_moves
+        WHERE season = ?
+        ORDER BY player_id, move_date, move_id
+        """,
+        (season,),
+    ).fetchall()
+    shares: dict[int, float] = {}
+    active_since: dict[int, date] = {}
+    seen_players: set[int] = set()
+    for row in rows:
+        player_id = int(row["player_id"])
+        seen_players.add(player_id)
+        try:
+            move_date = date.fromisoformat(str(row["move_date"]))
+        except ValueError:
+            move_date = start_date
+        move_date = max(start_date, min(end_date, move_date))
+        from_status = str(row["from_status"] or "")
+        to_status = str(row["to_status"] or "")
+        if from_status == "Practice Squad" and player_id in active_since:
+            shares[player_id] = shares.get(player_id, 0.0) + max(0, (move_date - active_since[player_id]).days) / total_days
+            active_since.pop(player_id, None)
+        if to_status == "Practice Squad":
+            active_since[player_id] = move_date
+    for player_id, signed_date in active_since.items():
+        shares[player_id] = shares.get(player_id, 0.0) + max(0, (end_date - signed_date).days) / total_days
+
+    if table_exists(con, "players"):
+        for row in con.execute(
+            "SELECT player_id FROM players WHERE status = 'Practice Squad'"
+        ).fetchall():
+            player_id = int(row["player_id"])
+            if player_id not in seen_players:
+                shares[player_id] = 1.0
+    return {player_id: clamp(share, 0.0, 1.0) for player_id, share in shares.items()}
+
+
 def load_injury_context(con: sqlite3.Connection, season: int) -> dict[int, dict[str, float]]:
     injuries: dict[int, dict[str, float]] = {}
     if table_exists(con, "player_injury_history"):
@@ -801,6 +850,52 @@ def load_contract_context(con: sqlite3.Connection, season: int) -> dict[int, dic
     return context
 
 
+def load_qb_reboot_context(con: sqlite3.Connection, season: int) -> dict[int, dict[str, float]]:
+    context: dict[int, dict[str, float]] = {}
+    if table_exists(con, "player_career_stats"):
+        for row in con.execute(
+            """
+            SELECT player_id, seasons_played, teams_played_for, passing_attempts,
+                   passing_tds, passing_interceptions, sacks_suffered
+            FROM player_career_stats
+            """
+        ).fetchall():
+            teams = [
+                item.strip()
+                for item in str(row["teams_played_for"] or "").replace(";", ",").split(",")
+                if item.strip()
+            ]
+            attempts = float(row["passing_attempts"] or 0.0)
+            tds = float(row["passing_tds"] or 0.0)
+            interceptions = float(row["passing_interceptions"] or 0.0)
+            sacks = float(row["sacks_suffered"] or 0.0)
+            context[int(row["player_id"])] = {
+                "career_seasons": float(row["seasons_played"] or 0.0),
+                "career_teams": float(len(set(teams))),
+                "career_attempts": attempts,
+                "career_td_rate": tds / attempts if attempts > 0 else 0.0,
+                "career_int_rate": interceptions / attempts if attempts > 0 else 0.0,
+                "career_sack_rate": sacks / attempts if attempts > 0 else 0.0,
+                "changed_team": 0.0,
+            }
+    if table_exists(con, "transaction_log"):
+        for row in con.execute(
+            """
+            SELECT player_id, COUNT(*) AS moves
+            FROM transaction_log
+            WHERE season = ?
+              AND player_id IS NOT NULL
+              AND from_team_id IS NOT NULL
+              AND to_team_id IS NOT NULL
+              AND from_team_id != to_team_id
+            GROUP BY player_id
+            """,
+            (season,),
+        ).fetchall():
+            context.setdefault(int(row["player_id"]), {})["changed_team"] = 1.0
+    return context
+
+
 def mentor_room_scores(
     players: list[sqlite3.Row],
     traits_by_player: dict[int, dict[str, int]],
@@ -943,11 +1038,17 @@ def low_primary_snap_penalty(
     return clamp(penalty, -1.9, 0.0)
 
 
-def usage_score(player: sqlite3.Row, stats: dict[str, float], depth_rank: int | None) -> float:
+def usage_score(
+    player: sqlite3.Row,
+    stats: dict[str, float],
+    depth_rank: int | None,
+    *,
+    practice_squad_share: float = 0.0,
+) -> float:
     position = str(player["position"])
     status = str(player["status"] or "Active")
-    if status == "Practice Squad":
-        return -2.8
+    if status == "Practice Squad" and not has_meaningful_stats(stats):
+        return practice_squad_usage_modifier(int(player["years_exp"] or 0), practice_squad_share)
     free_agent_context = status == "Free Agent" or player["team_id"] is None
 
     depth_component = 0.0
@@ -1264,17 +1365,225 @@ def response_multiplier(mods: dict[str, int], key: str) -> float:
     return clamp(1.0 + float(mods.get(key, 0) or 0) * 0.055, 0.45, 1.65)
 
 
-def practice_squad_effect(mods: dict[str, int], band: str) -> float:
+def practice_squad_usage_modifier(years_exp: int, practice_squad_share: float) -> float:
+    if practice_squad_share < 0.50:
+        return 0.0
+    penalty = {
+        0: 0.0,
+        1: -0.85,
+        2: -1.55,
+        3: -2.15,
+    }.get(years_exp, -2.65)
+    return penalty * clamp((practice_squad_share - 0.50) / 0.50, 0.0, 1.0)
+
+
+def practice_squad_effect(mods: dict[str, int], band: str, years_exp: int, practice_squad_share: float) -> float:
     """Practice squad should wash out many players, but still hide gems."""
+    if practice_squad_share < 0.50:
+        return 0.0
     value = float(mods.get("practice_squad_response", 0) or 0)
-    age_penalty = {
-        "rookie": 0.0,
-        "young": -0.20,
-        "prime": -0.55,
-        "veteran": -0.95,
-        "late_veteran": -1.35,
-    }.get(band, -0.55)
-    return clamp(value * 0.38 - 1.35 + age_penalty, -5.5, 3.0)
+    tenure_penalty = practice_squad_usage_modifier(years_exp, practice_squad_share)
+    developmental_patience = {
+        "rookie": 0.55,
+        "young": 0.15,
+        "prime": -0.30,
+        "veteran": -0.70,
+        "late_veteran": -1.05,
+    }.get(band, -0.30)
+    share_pressure = -0.35 * clamp((practice_squad_share - 0.50) / 0.50, 0.0, 1.0)
+    return clamp(value * 0.42 + developmental_patience + tenure_penalty + share_pressure, -4.5, 3.25)
+
+
+def practice_squad_late_bloomer_delta(
+    rng: random.Random,
+    *,
+    mods: dict[str, int],
+    traits: dict[str, int],
+    band: str,
+    years_exp: int,
+    old_overall: int,
+    potential_gap: int,
+    practice_squad_share: float,
+    coaching_score: float,
+    scheme_score: float,
+) -> float:
+    """Rare practice-squad development hit for late bloomers."""
+
+    if practice_squad_share < 0.50 or band not in {"rookie", "young", "prime"}:
+        return 0.0
+    if years_exp > 4 or old_overall >= 70:
+        return 0.0
+    if potential_gap < 4 and old_overall >= 62:
+        return 0.0
+
+    ps_response = float(mods.get("practice_squad_response", 0) or 0)
+    late_bloomer = max(0.0, float(mods.get("late_bloomer_tendency", 0) or 0))
+    practice_habits = max(0.0, float(mods.get("practice_habits", 0) or 0))
+    football_iq = max(0.0, float(mods.get("football_iq_growth", 0) or 0))
+    positive_traits = (
+        trait_strength(traits, "chip_on_shoulder") * 0.014
+        + trait_strength(traits, "lunch_pail") * 0.012
+        + trait_strength(traits, "film_junkie") * 0.012
+        + trait_strength(traits, "quiet_professional") * 0.008
+        + trait_strength(traits, "coach_connector") * 0.006
+    )
+    negative_traits = (
+        trait_strength(traits, "off_field_issue") * 0.018
+        + trait_strength(traits, "locker_room_distraction") * 0.015
+        + trait_strength(traits, "greedy") * 0.005
+    )
+
+    probability = 0.006
+    probability += max(0.0, ps_response) * 0.004
+    probability += late_bloomer * 0.0035
+    probability += practice_habits * 0.0025
+    probability += football_iq * 0.0015
+    probability += clamp(potential_gap, 0, 18) * 0.0012
+    probability += max(0.0, coaching_score) * 0.002
+    probability += max(0.0, scheme_score) * 0.001
+    probability += positive_traits - negative_traits
+    if years_exp == 0:
+        probability *= 0.70
+    elif years_exp == 1:
+        probability *= 1.15
+    elif years_exp == 2:
+        probability *= 1.30
+    else:
+        probability *= 0.82
+
+    if rng.random() >= clamp(probability, 0.0, 0.115):
+        return 0.0
+
+    severity = rng.uniform(1.0, 3.2)
+    severity += max(0.0, ps_response) * rng.uniform(0.04, 0.13)
+    severity += late_bloomer * rng.uniform(0.03, 0.12)
+    severity += clamp(potential_gap, 0, 16) * rng.uniform(0.025, 0.07)
+    severity += max(0.0, coaching_score) * rng.uniform(0.03, 0.12)
+    severity += positive_traits * rng.uniform(8.0, 18.0)
+    if rng.random() < 0.10 + max(0.0, ps_response + late_bloomer) * 0.004:
+        severity += rng.uniform(1.1, 2.4)
+    return clamp(severity, 0.0, 6.0)
+
+
+def qb_career_reboot_delta(
+    rng: random.Random,
+    *,
+    player: sqlite3.Row,
+    stats: dict[str, float],
+    mods: dict[str, int],
+    traits: dict[str, int],
+    career: dict[str, float],
+    contract: dict[str, float],
+    old_overall: int,
+    potential_gap: int,
+    usage_score: float,
+    performance_score: float,
+    coaching_score: float,
+    scheme_score: float,
+    team_success_score: float,
+    injury_score: float,
+) -> float:
+    if str(player["position"]) != "QB":
+        return 0.0
+    age = int(player["age"] or 0)
+    years_exp = int(player["years_exp"] or 0)
+    if age < 28 or age > 32 or years_exp < 4 or old_overall >= 82:
+        return 0.0
+
+    attempts = stat_value(stats, "pass_attempts")
+    current_int_rate = stat_value(stats, "interceptions_thrown") / max(1.0, attempts)
+    current_td_rate = stat_value(stats, "pass_tds") / max(1.0, attempts)
+    current_sack_rate = stat_value(stats, "sacks_taken") / max(1.0, attempts)
+    career_attempts = float(career.get("career_attempts", 0.0) or 0.0)
+    career_int_rate = float(career.get("career_int_rate", 0.0) or 0.0)
+    career_td_rate = float(career.get("career_td_rate", 0.0) or 0.0)
+    career_sack_rate = float(career.get("career_sack_rate", 0.0) or 0.0)
+
+    former_prospect = old_overall >= 66 or potential_gap >= 4 or float(mods.get("late_bloomer_tendency", 0) or 0) > 0
+    early_struggle = (
+        (career_attempts >= 450 and (career_int_rate >= 0.026 or career_sack_rate >= 0.070 or career_td_rate <= 0.039))
+        or (years_exp >= 5 and attempts < 360)
+        or potential_gap <= 2
+    )
+    second_chance = (
+        float(career.get("changed_team", 0.0) or 0.0) > 0
+        or float(career.get("career_teams", 0.0) or 0.0) >= 2
+        or float(contract.get("new_big_deal", 0.0) or 0.0) > 0
+    )
+    stabilizing = (
+        attempts >= 240
+        and performance_score >= -0.1
+        and current_int_rate <= max(0.024, career_int_rate - 0.002)
+        and current_td_rate >= min(0.055, career_td_rate + 0.003)
+    )
+    protected = scheme_score >= 1.0 or coaching_score >= 1.5 or current_sack_rate <= max(0.060, career_sack_rate - 0.008)
+    bridge_path = attempts < 260 and usage_score > -1.2 and second_chance and old_overall <= 74
+
+    if not former_prospect or not (early_struggle or second_chance or bridge_path):
+        return 0.0
+
+    late = max(0.0, float(mods.get("late_bloomer_tendency", 0) or 0))
+    adversity = max(0.0, float(mods.get("adversity_response", 0) or 0))
+    coaching_response = max(0.0, float(mods.get("coaching_response", 0) or 0))
+    iq_growth = max(0.0, float(mods.get("football_iq_growth", 0) or 0))
+    confidence = max(0.0, float(mods.get("confidence_response", 0) or 0))
+    poise_traits = (
+        trait_strength(traits, "film_junkie") * 0.018
+        + trait_strength(traits, "quiet_professional") * 0.014
+        + trait_strength(traits, "chip_on_shoulder") * 0.012
+        + trait_strength(traits, "coach_connector") * 0.010
+        + trait_strength(traits, "big_stage") * 0.008
+    )
+    volatility_drag = (
+        trait_strength(traits, "streaky_confidence") * 0.010
+        + trait_strength(traits, "locker_room_distraction") * 0.014
+        + trait_strength(traits, "off_field_issue") * 0.018
+    )
+
+    probability = 0.006
+    probability += late * 0.004
+    probability += adversity * 0.0025
+    probability += coaching_response * 0.002
+    probability += iq_growth * 0.0025
+    probability += confidence * 0.0015
+    probability += max(0.0, coaching_score) * 0.0025
+    probability += max(0.0, scheme_score) * 0.002
+    probability += max(0.0, team_success_score) * 0.001
+    probability += max(0.0, performance_score) * 0.012
+    probability += max(0.0, usage_score) * 0.004
+    probability += poise_traits - volatility_drag
+    if second_chance:
+        probability += 0.018
+    if stabilizing:
+        probability += 0.030
+    if protected:
+        probability += 0.012
+    if bridge_path:
+        probability += 0.010
+    if injury_score < -1.0:
+        probability -= 0.012
+    if old_overall <= 62 and not stabilizing:
+        probability *= 0.72
+    probability = clamp(probability, 0.0, 0.115)
+    if rng.random() >= probability:
+        return 0.0
+
+    severity = rng.uniform(0.8, 2.4)
+    severity += late * rng.uniform(0.04, 0.12)
+    severity += adversity * rng.uniform(0.025, 0.08)
+    severity += iq_growth * rng.uniform(0.025, 0.07)
+    severity += max(0.0, coaching_score) * rng.uniform(0.04, 0.14)
+    severity += max(0.0, scheme_score) * rng.uniform(0.03, 0.10)
+    severity += max(0.0, performance_score) * rng.uniform(0.28, 0.70)
+    if second_chance:
+        severity += rng.uniform(0.3, 1.0)
+    if stabilizing:
+        severity += rng.uniform(0.6, 1.8)
+    if bridge_path:
+        severity += rng.uniform(0.2, 0.8)
+    if rng.random() < 0.08 + late * 0.006 + (0.04 if stabilizing else 0.0):
+        severity += rng.uniform(1.0, 2.6)
+    return clamp(severity, 0.0, 6.0)
 
 
 def potential_volatility_sigma(volatility: float) -> float:
@@ -1844,6 +2153,8 @@ def build_contexts(
     scheme_context = load_scheme_context(con, from_season)
     team_success = load_team_success(con, from_season)
     contract_context = load_contract_context(con, from_season)
+    practice_squad_shares = load_practice_squad_shares(con, from_season)
+    qb_reboot_context = load_qb_reboot_context(con, from_season)
     mentor_scores = mentor_room_scores(players, personality_traits)
     coach_scores = coach_position_scores(con)
     rating_rows = load_ratings(con, from_season)
@@ -1870,11 +2181,17 @@ def build_contexts(
         success_score = team_success.get(int(player["team_id"]), 0.0) if player["team_id"] is not None else -0.6
         player_stats = stats_by_player.get(player_id, {})
         depth_rank = depth.get(player_id)
-        player_usage_score = usage_score(player, player_stats, depth_rank)
+        practice_squad_share = practice_squad_shares.get(player_id, 1.0 if str(player["status"]) == "Practice Squad" else 0.0)
+        player_usage_score = usage_score(
+            player,
+            player_stats,
+            depth_rank,
+            practice_squad_share=practice_squad_share,
+        )
         player_perf_score = performance_score(position, player_stats)
         practice_squad_score = 0.0
-        if str(player["status"]) == "Practice Squad":
-            practice_squad_score = practice_squad_effect(mods, band)
+        if str(player["status"]) == "Practice Squad" or practice_squad_share >= 0.50:
+            practice_squad_score = practice_squad_effect(mods, band, years_exp, practice_squad_share)
         elif str(player["status"]) == "Free Agent":
             practice_squad_score = -0.7
 
@@ -1910,6 +2227,35 @@ def build_contexts(
             band=band,
             mods=mods,
             profile=profile,
+        )
+        qb_reboot = qb_career_reboot_delta(
+            rng,
+            player=player,
+            stats=player_stats,
+            mods=mods,
+            traits=traits,
+            career=qb_reboot_context.get(player_id, {}),
+            contract=contract_context.get(player_id, {}),
+            old_overall=old_overall,
+            potential_gap=potential_gap,
+            usage_score=player_usage_score,
+            performance_score=player_perf_score,
+            coaching_score=coaching_score,
+            scheme_score=scheme_score,
+            team_success_score=success_score,
+            injury_score=player_injury_score,
+        )
+        ps_late_bloomer = practice_squad_late_bloomer_delta(
+            rng,
+            mods=mods,
+            traits=traits,
+            band=band,
+            years_exp=years_exp,
+            old_overall=old_overall,
+            potential_gap=potential_gap,
+            practice_squad_share=practice_squad_share,
+            coaching_score=coaching_score,
+            scheme_score=scheme_score,
         )
         mentor_score = 0.0
         if player["team_id"] is not None:
@@ -1996,6 +2342,8 @@ def build_contexts(
             + player_perf_score * 0.18
             + role_stability_effect
             + practice_squad_score
+            + qb_reboot
+            + ps_late_bloomer
             + random_score
             + boom
             + bust
@@ -2021,7 +2369,7 @@ def build_contexts(
             mods=mods,
             profile=profile,
             performance=player_perf_score,
-            breakout=boom,
+            breakout=boom + ps_late_bloomer * 0.55 + qb_reboot * 0.60,
             decline=bust,
             position_age_score=position_age_score,
             injury_score=player_injury_score,
@@ -2052,6 +2400,8 @@ def build_contexts(
             work_habit_effect,
             ceiling_gravity,
             potential_miss,
+            ps_late_bloomer,
+            qb_reboot,
         )
         contexts.append(
             PlayerContext(
@@ -2275,6 +2625,8 @@ def context_notes(
     work_habit_effect: float,
     ceiling_gravity: float,
     potential_miss: float,
+    ps_late_bloomer: float,
+    qb_reboot: float,
 ) -> str:
     bits = [f"{band} curve", f"base {base_delta:+.2f}"]
     if abs(position_age_score) >= 0.2:
@@ -2303,6 +2655,10 @@ def context_notes(
         bits.append(f"decline {decline:+.2f}")
     if potential_miss <= -0.8:
         bits.append(f"potential miss {potential_miss:+.1f}")
+    if ps_late_bloomer >= 1.0:
+        bits.append(f"PS late bloomer +{ps_late_bloomer:.1f}")
+    if qb_reboot >= 1.0:
+        bits.append(f"QB career reboot +{qb_reboot:.1f}")
     if abs(scheme_score) >= 2.0:
         bits.append(f"scheme {scheme_score:+.1f}")
     if abs(coaching_score) >= 2.0:
@@ -2483,6 +2839,27 @@ def coach_note_candidate(
     title = f"Coach note: {c.name}"
     templates: list[str] = []
 
+    if c.practice_squad_score >= 1.0 and (result.overall_delta >= 1 or result.potential_delta >= 1):
+        score += 1.8 + min(1.2, c.practice_squad_score * 0.35) + grinder * 0.7
+        templates.append(
+            f"The development staff circled {c.name} as a player whose practice work carried more weight than the public depth chart would show. "
+            "They were careful not to oversell it, but the tone sounded like someone earned a longer look."
+        )
+
+    if "PS late bloomer" in (c.notes or ""):
+        score += 2.0 + max(0.0, result.overall_delta) * 0.25 + grinder * 0.6
+        templates.append(
+            f"Coaches brought up {c.name} as one of the more interesting slow-burn cases from the development group. "
+            "It is not a finished evaluation, but there was a clear sense that the staff sees more there now than it did a year ago."
+        )
+
+    if "QB career reboot" in (c.notes or ""):
+        score += 2.4 + max(0.0, c.performance_score) * 0.5 + leader * 0.4
+        templates.append(
+            f"The quarterback room notes on {c.name} were more optimistic than expected. "
+            "The staff framed it less as a sudden leap and more as a player processing the offense with a different kind of calm."
+        )
+
     if st_snaps >= 150 and primary_snaps < 360:
         score += 1.6 + min(1.2, st_snaps / 320.0) + grinder * 0.6
         if result.overall_delta >= 0:
@@ -2623,6 +3000,117 @@ def create_progression_coach_notes(
             ),
         )
         created += 1
+    return created
+
+
+def progression_news_candidate(result: PlayerResult, *, traits: dict[str, int]) -> tuple[float, str, str, bool, list[str]] | None:
+    c = result.context
+    note = c.notes or ""
+    is_ps_story = "PS late bloomer" in note
+    is_qb_story = "QB career reboot" in note
+    strong_ps_response = c.practice_squad_score >= 2.0 and (result.overall_delta >= 2 or result.potential_delta >= 2)
+    if not (is_ps_story or is_qb_story or strong_ps_response):
+        return None
+
+    intrigue = trait_hint(traits, "chip_on_shoulder", "film_junkie", "lunch_pail", "quiet_professional", "big_stage")
+    volatility = trait_hint(traits, "streaky_confidence", "locker_room_distraction", "off_field_issue")
+    score = 0.0
+    tags = ["progression", "development"]
+    title = f"{c.name} drawing quiet offseason attention"
+    body = (
+        f"People around {c.team} have been careful not to make sweeping claims, but {c.name}'s development review "
+        "generated more internal interest than his public role would suggest."
+    )
+    major = False
+
+    if is_qb_story:
+        score += 3.2 + max(0.0, c.performance_score) * 0.55 + max(0, result.overall_delta) * 0.25
+        tags.extend(["quarterback", "career-reboot"])
+        title = f"{c.name}'s QB arc gets a little more interesting"
+        body = (
+            f"{c.name}'s year has created some renewed conversation in quarterback circles. "
+            "The feeling is not that everything suddenly changed, but that the game may be slowing down for him at the right time."
+        )
+        major = result.overall_delta >= 3 or result.potential_delta >= 2
+    elif is_ps_story:
+        score += 2.6 + max(0, result.overall_delta) * 0.35 + max(0, result.potential_delta) * 0.22
+        tags.extend(["practice-squad", "late-bloomer"])
+        title = f"{c.name} emerging from the development track"
+        body = (
+            f"{c.name} is not being treated like a finished product, but his practice-squad/development-year notes "
+            "were stronger than expected. It is the kind of slow-burn profile that can change a roster conversation."
+        )
+        major = result.overall_delta >= 4 or result.potential_delta >= 3
+    elif strong_ps_response:
+        score += 1.8 + c.practice_squad_score * 0.35 + max(0, result.overall_delta) * 0.25
+        tags.append("practice-squad")
+
+    score += intrigue * 0.55
+    score -= volatility * 0.35
+    if c.team == "FA":
+        score -= 0.35
+    if c.old_overall < 52 and result.overall_delta < 3:
+        score -= 0.45
+    if score < 2.25:
+        return None
+    return score, title, body, major, tags
+
+
+def create_progression_league_news(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    run_id: int,
+    from_season: int,
+    to_season: int,
+    seed: int,
+    results: list[PlayerResult],
+) -> int:
+    league_news.ensure_schema(con)
+    news_date = current_alert_date(con)
+    traits_by_player = player_development_modifiers.load_personality_traits(con, game_id=game_id, season=from_season)
+    rng = random.Random(seed ^ (run_id * 917611) ^ 0xA11CE)
+    candidates: list[tuple[float, PlayerResult, str, str, bool, list[str]]] = []
+    for result in results:
+        candidate = progression_news_candidate(
+            result,
+            traits=traits_by_player.get(result.context.player_id, {}),
+        )
+        if not candidate:
+            continue
+        score, title, body, major, tags = candidate
+        score += rng.uniform(-0.45, 0.55)
+        if score >= 2.45:
+            candidates.append((score, result, title, body, major, tags))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+
+    created = 0
+    for score, result, title, body, major, tags in candidates[:4]:
+        if created >= 3:
+            break
+        if created > 0 and rng.random() > 0.58:
+            continue
+        c = result.context
+        news_id = league_news.add_news_item(
+            con,
+            game_id=game_id,
+            news_date=news_date,
+            category="Development",
+            priority="major" if major else "normal",
+            scope="team" if c.team_id is not None else "league",
+            source="League Development Wire",
+            title=title,
+            body=f"{body} [Progression review {from_season}->{to_season}]",
+            team_id=c.team_id,
+            player_id=c.player_id,
+            related_table="player_progression_runs",
+            related_id=run_id,
+            tags=tags,
+            is_major=major,
+            fingerprint=league_news.fingerprint_for("progression-development", game_id, run_id, c.player_id, title),
+        )
+        if news_id is not None:
+            created += 1
     return created
 
 
@@ -3013,6 +3501,15 @@ def apply_progression(
         seed=seed,
         results=list(result_by_player.values()),
     )
+    league_news_items = create_progression_league_news(
+        con,
+        game_id=game_id,
+        run_id=run_id,
+        from_season=from_season,
+        to_season=to_season,
+        seed=seed,
+        results=list(result_by_player.values()),
+    )
     return {
         "run_id": run_id,
         "results": list(result_by_player.values()),
@@ -3022,6 +3519,7 @@ def apply_progression(
         "hidden_modifier_rows": hidden_rows,
         "hidden_foundation_rows": hidden_foundation_rows,
         "coach_note_alerts": coach_note_alerts,
+        "league_news_items": league_news_items,
     }
 
 
@@ -3042,6 +3540,8 @@ def print_run_summary(result: dict[str, Any], *, game_id: str, from_season: int,
         print(f"Progression run id: {result['run_id']}")
     if not dry_run and result.get("coach_note_alerts"):
         print(f"Coach note inbox alerts: {result['coach_note_alerts']}")
+    if not dry_run and result.get("league_news_items"):
+        print(f"Progression league news items: {result['league_news_items']}")
     if not results:
         return
     avg_overall_delta = sum(item.overall_delta for item in results) / len(results)

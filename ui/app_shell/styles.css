@@ -171,6 +171,17 @@ button {
   text-align: center;
 }
 
+.danger-button {
+  border-color: rgba(220, 85, 85, 0.42);
+  color: #f0b8b8;
+}
+
+.danger-button:hover {
+  border-color: rgba(255, 120, 120, 0.78);
+  background: rgba(180, 45, 45, 0.18);
+  color: #fff3f3;
+}
+
 button:disabled {
   cursor: progress;
   opacity: 0.58;
@@ -380,6 +391,13 @@ h1 {
 .save-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+}
+
+.save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .event-row strong,

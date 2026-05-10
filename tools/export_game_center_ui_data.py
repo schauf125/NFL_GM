@@ -791,7 +791,6 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
                 JOIN teams t ON t.team_id = r.team_id
                 WHERE r.season = ?
                 ORDER BY r.wins DESC, r.losses ASC, (r.points_for - r.points_against) DESC, t.abbreviation
-                LIMIT 16
                 """,
                 (season,),
             ).fetchall()
@@ -2321,6 +2320,8 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             p.player_id,
             p.first_name || ' ' || p.last_name AS player_name,
             p.position,
+            p.overall,
+            p.potential,
             p.age,
             p.jersey_number,
             p.status,
@@ -2344,6 +2345,8 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             "player_id": player_id,
             "player_name": row["player_name"],
             "position": row["position"],
+            "overall": row["overall"],
+            "potential": row["potential"],
             "age": row["age"],
             "jersey_number": row["jersey_number"],
             "status": row["status"] or "Active",
@@ -2365,6 +2368,8 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
                 p.player_id,
                 p.first_name || ' ' || p.last_name AS player_name,
                 p.position,
+                p.overall,
+                p.potential,
                 p.age,
                 p.jersey_number
             FROM depth_charts dc

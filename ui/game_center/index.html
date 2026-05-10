@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>NFL GM Game Center</title>
-    <link rel="stylesheet" href="./styles.css?v=20260509-polished-shell">
+    <link rel="stylesheet" href="./styles.css?v=20260509-draft-current-pick-logo">
   </head>
   <body>
     <main class="shell">
@@ -13,19 +13,18 @@
           <strong>NFL GM</strong>
           <span id="seasonLabel"></span>
         </div>
-        <div class="links" aria-label="Quick links">
-          <a href="../app_shell/index.html">Main Menu</a>
-          <a href="../front_office/index.html">Front Office</a>
-          <a href="../player_profile/index.html">Player Profiles</a>
-          <a href="../player_card/index.html">Player Cards</a>
-        </div>
+        <button id="railToggle" class="rail-toggle" type="button" aria-label="Collapse navigation" aria-pressed="false">
+          <span class="rail-toggle-icon">=</span>
+          <span class="rail-toggle-text">Collapse</span>
+        </button>
         <nav class="nav" aria-label="Game center sections">
+          <button type="button" data-view="calendar" class="active">Calendar</button>
+          <button type="button" data-view="inbox">Inbox</button>
           <span class="nav-label">Season Flow</span>
-          <button type="button" data-view="overview" class="active">Season Hub</button>
+          <button type="button" data-view="overview">Season Hub</button>
           <button type="button" data-view="season">League Table</button>
           <button type="button" data-view="stats">Stats</button>
           <span class="nav-label">Front Office</span>
-          <button type="button" data-view="inbox">Inbox</button>
           <button type="button" data-view="leagueNews">League News</button>
           <button type="button" data-view="scouting">Scouting</button>
           <span class="nav-label">Roster Work</span>
@@ -34,9 +33,14 @@
           <button type="button" data-view="contracts">Contract Talks</button>
           <button type="button" data-view="freeAgency">Free Agency</button>
           <button type="button" data-view="draft">Draft Room</button>
+          <div class="links" aria-label="Quick links">
+            <a href="../app_shell/index.html">Main Menu</a>
+            <a href="../front_office/index.html">Front Office</a>
+            <a href="../player_profile/index.html">Player Profiles</a>
+            <a href="../player_card/index.html">Player Cards</a>
+          </div>
           <span class="nav-label">League Tools</span>
           <button type="button" data-view="aiGm">AI GMs</button>
-          <button type="button" data-view="calendar">Calendar</button>
         </nav>
       </aside>
 
@@ -67,6 +71,6 @@
     <div id="runnerToast" class="runner-toast" hidden></div>
 
     <script src="./game-center-data.js?v=20260506-live-scouting-fa"></script>
-    <script src="./app.js?v=20260509-polished-shell"></script>
+    <script src="./app.js?v=20260509-draft-current-pick-logo"></script>
   </body>
 </html>

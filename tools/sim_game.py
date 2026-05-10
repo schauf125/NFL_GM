@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import match_engine  # noqa: E402
+from engine import injury_model  # noqa: E402
 import weekly_processor  # noqa: E402
 
 
@@ -368,6 +369,33 @@ def process_weekly_hooks_for_rows(
         return
     season = int(rows[0]["season"])
     for week in weeks:
+        completion = con.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+            FROM season_games
+            WHERE season = ? AND week = ?
+            """,
+            (season, week),
+        ).fetchone()
+        total_games = int(completion["total"] or 0) if completion else 0
+        played_games = int(completion["played"] or 0) if completion else 0
+        if total_games <= 0 or played_games < total_games:
+            print(f"Weekly practice injuries skipped for {season} Week {week}: {played_games}/{total_games} games complete.")
+        else:
+            practice_events = injury_model.create_weekly_practice_injuries(
+                con,
+                season=season,
+                week=week,
+                seed=season * 1000 + week * 97,
+                apply=True,
+            )
+            if practice_events:
+                expected_games = sum(event.expected_games for event in practice_events)
+                print(
+                    f"Weekly practice injuries for {season} Week {week}: "
+                    f"{len(practice_events)} event(s), {expected_games} expected games missed."
+                )
         try:
             result = weekly_processor.process_week(
                 con,

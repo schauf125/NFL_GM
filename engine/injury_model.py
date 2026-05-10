@@ -18,6 +18,7 @@ from typing import Any
 
 MODEL_VERSION = "injury_v1"
 MATCH_SOURCE = "match_engine"
+WEEKLY_PRACTICE_SOURCE = "weekly_practice"
 INJURY_UNAVAILABLE_STATUSES = {"Out", "IR", "PUP", "NFI"}
 INJURY_STATUS_CODES = {"Questionable", "Doubtful", "Out", "IR", "PUP", "NFI"}
 
@@ -57,6 +58,19 @@ class InjuryEvent:
     expected_games: int
     status: str
     description: str
+
+
+@dataclass(frozen=True)
+class PracticePlayerSnapshot:
+    player_id: int
+    name: str
+    position: str
+    team_id: int
+    ratings: dict[str, int]
+    metadata: dict[str, object]
+
+    def rating(self, key: str, default: float = 50.0) -> float:
+        return float(self.ratings.get(key, default))
 
 
 INJURY_CATALOG: tuple[InjuryCatalogEntry, ...] = (
@@ -511,10 +525,14 @@ def injury_probability(
         base = 0.0044 if player.position == "QB" else 0.0014
     elif mechanism == "special_teams":
         base = 0.0032
+    elif mechanism == "trench":
+        base = 0.00105
+    elif mechanism == "practice":
+        base = 0.0018
     elif mechanism == "non_contact":
-        base = 0.00042
+        base = 0.00054
     else:
-        base = 0.0022
+        base = 0.00265
     if high_impact:
         base += 0.0012
     position_multiplier = {
@@ -528,6 +546,9 @@ def injury_probability(
         "IDL": 1.04,
         "DT": 1.04,
         "NT": 1.04,
+        "OT": 1.10,
+        "OG": 1.08,
+        "C": 1.06,
         "QB": 0.88 if mechanism != "sack" else 1.08,
         "K": 0.55,
         "P": 0.55,
@@ -541,6 +562,8 @@ def injury_probability(
     fatigue_multiplier = 1.0 + max(0.0, snap_load - 42.0) * 0.0035
     if play_type in {"kneel", "spike", "penalty"}:
         return 0.0
+    if mechanism == "practice":
+        fatigue_multiplier = max(fatigue_multiplier, 1.0 + max(0.0, snap_load - 58.0) * 0.004)
     return max(0.0, min(0.018, base * position_multiplier * durability_multiplier * age_multiplier * history_multiplier * fatigue_multiplier))
 
 
@@ -557,12 +580,22 @@ def choose_catalog_entry(
             weight = item.weight_sack
         elif mechanism == "special_teams":
             weight = item.weight_special_teams
-        elif mechanism == "non_contact":
+        elif mechanism in {"non_contact", "practice"}:
             weight = item.weight_non_contact
+        elif mechanism == "trench":
+            weight = (item.weight_contact * 0.58) + (item.weight_non_contact * 0.42)
         else:
             weight = item.weight_contact
         if item.severity_bucket == "major" and not high_impact:
             weight *= 0.35
+        if mechanism == "practice":
+            if item.severity_bucket == "major":
+                weight *= 0.18
+            if item.body_part in {"hamstring", "calf", "quadriceps", "groin", "back"}:
+                weight *= 1.65
+        if mechanism == "trench":
+            if item.body_part in {"pectoral", "shoulder", "knee", "back", "ankle"}:
+                weight *= 1.45
         if player.position == "QB" and item.body_part in {"shoulder", "elbow", "ribs", "head"}:
             weight *= 1.35
         if player.position in {"RB", "WR", "CB", "S"} and item.body_region == "lower_body":
@@ -645,6 +678,10 @@ def maybe_create_injury_event(
     severity = "severe" if item.severity_bucket == "major" and days >= 180 else item.severity_bucket
     if opponent_player is not None:
         description = f"{player.name} suffered a {item.label.lower()} after contact with {opponent_player.name}."
+    elif mechanism == "practice":
+        description = f"{player.name} picked up a {item.label.lower()} during the practice week."
+    elif mechanism == "trench":
+        description = f"{player.name} suffered a {item.label.lower()} during line play."
     elif mechanism == "non_contact":
         description = f"{player.name} suffered a non-contact {item.label.lower()}."
     else:
@@ -672,12 +709,21 @@ def maybe_create_injury_event(
     )
 
 
-def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> int:
+def persist_injury_events(
+    con: sqlite3.Connection,
+    events: list[InjuryEvent],
+    *,
+    season: int,
+    week: int | None,
+    game_date: str,
+    source: str,
+    source_run_id: int | None = None,
+    schedule_game_id: int | None = None,
+    run_id: int | None = None,
+) -> int:
     ensure_schema(con)
-    events: list[InjuryEvent] = list(getattr(result, "injury_events", []) or [])
     if not events:
         return 0
-    game_date = game_date_for_schedule(con, result.schedule_game_id, result.season)
     game_day = parse_date(game_date)
     persisted = 0
     for event in events:
@@ -702,9 +748,9 @@ def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> 
                 event.expected_days,
                 event.expected_games,
                 recurrence_for_code(event.injury_code),
-                MATCH_SOURCE,
-                run_id,
-                result.schedule_game_id,
+                source,
+                source_run_id,
+                schedule_game_id,
                 event.description,
             ),
         )
@@ -731,9 +777,9 @@ def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> 
                 event.expected_games,
                 event.status,
                 return_date,
-                MATCH_SOURCE,
-                run_id,
-                result.schedule_game_id,
+                source,
+                source_run_id,
+                schedule_game_id,
                 event.description,
             ),
         )
@@ -751,9 +797,9 @@ def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> 
             """,
             (
                 run_id,
-                result.schedule_game_id,
-                result.season,
-                result.week,
+                schedule_game_id,
+                season,
+                week,
                 game_date,
                 event.quarter,
                 event.clock_tenths,
@@ -774,7 +820,7 @@ def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> 
                 event.expected_games,
                 event.status,
                 event.description,
-                MATCH_SOURCE,
+                source,
             ),
         )
         if event.status in INJURY_STATUS_CODES:
@@ -783,11 +829,326 @@ def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> 
     return persisted
 
 
+def persist_game_injuries(con: sqlite3.Connection, result: Any, run_id: int) -> int:
+    ensure_schema(con)
+    events: list[InjuryEvent] = list(getattr(result, "injury_events", []) or [])
+    if not events:
+        return 0
+    game_date = game_date_for_schedule(con, result.schedule_game_id, result.season)
+    return persist_injury_events(
+        con,
+        events,
+        season=result.season,
+        week=result.week,
+        game_date=game_date,
+        source=MATCH_SOURCE,
+        source_run_id=run_id,
+        schedule_game_id=result.schedule_game_id,
+        run_id=run_id,
+    )
+
+
 def recurrence_for_code(injury_code: str) -> float:
     for item in INJURY_CATALOG:
         if item.injury_code == injury_code:
             return item.recurrence_risk
     return 0.0
+
+
+def week_practice_date(con: sqlite3.Connection, season: int, week: int) -> str:
+    if table_exists(con, "season_weeks"):
+        row = con.execute(
+            """
+            SELECT week_start_date, primary_game_date
+            FROM season_weeks
+            WHERE season = ? AND week = ?
+            """,
+            (season, week),
+        ).fetchone()
+        if row and row["primary_game_date"]:
+            return (parse_date(str(row["primary_game_date"])) + timedelta(days=1)).isoformat()
+        if row and row["week_start_date"]:
+            return (parse_date(str(row["week_start_date"])) + timedelta(days=3)).isoformat()
+    if table_exists(con, "season_games"):
+        row = con.execute(
+            """
+            SELECT MAX(game_date) AS game_date
+            FROM season_games
+            WHERE season = ? AND week = ? AND game_date IS NOT NULL
+            """,
+            (season, week),
+        ).fetchone()
+        if row and row["game_date"]:
+            return (parse_date(str(row["game_date"])) + timedelta(days=1)).isoformat()
+    return f"{season}-09-01"
+
+
+def active_team_ids(con: sqlite3.Connection) -> list[int]:
+    return [
+        int(row["team_id"])
+        for row in con.execute(
+            """
+            SELECT team_id
+            FROM teams
+            ORDER BY team_id
+            """
+        )
+    ]
+
+
+def load_practice_candidates(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    team_id: int,
+    as_of_date: str,
+) -> list[PracticePlayerSnapshot]:
+    rows = con.execute(
+        """
+        SELECT player_id, first_name, last_name, position, team_id, age, overall,
+               injury_prone, speed, strength, agility, awareness
+        FROM players
+        WHERE team_id = ?
+          AND COALESCE(status, 'Active') NOT IN ('Retired', 'Released', 'Free Agent')
+        ORDER BY overall DESC, player_id
+        """,
+        (team_id,),
+    ).fetchall()
+    if not rows:
+        return []
+    unavailable = unavailable_player_ids(con, [int(row["player_id"]) for row in rows], as_of_date)
+    player_ids = [int(row["player_id"]) for row in rows if int(row["player_id"]) not in unavailable]
+    ratings_by_player: dict[int, dict[str, int]] = {}
+    if player_ids and table_exists(con, "player_ratings"):
+        placeholders = ",".join("?" for _ in player_ids)
+        for row in con.execute(
+            f"""
+            SELECT player_id, rating_key, rating_value
+            FROM player_ratings
+            WHERE season = ? AND player_id IN ({placeholders})
+            """,
+            [season, *player_ids],
+        ):
+            ratings_by_player.setdefault(int(row["player_id"]), {})[str(row["rating_key"])] = int(row["rating_value"])
+    contexts = injury_context_by_player(con, player_ids, as_of_date)
+    players: list[PracticePlayerSnapshot] = []
+    for row in rows:
+        player_id = int(row["player_id"])
+        if player_id in unavailable:
+            continue
+        ratings = ratings_by_player.get(player_id, {}).copy()
+        ratings.setdefault("durability", int(row["injury_prone"] or 50))
+        ratings.setdefault("speed", int(row["speed"] or 50))
+        ratings.setdefault("strength", int(row["strength"] or 50))
+        ratings.setdefault("agility", int(row["agility"] or 50))
+        ratings.setdefault("stamina", int(row["overall"] or 55))
+        context = contexts.get(player_id, {})
+        metadata = {
+            "age": int(row["age"] or 26),
+            "injury_prone": int(row["injury_prone"] or 50),
+            "injury_history_risk": float(context.get("risk_score") or 0.0),
+            "injury_body_risks": context.get("body_risks", {}),
+        }
+        players.append(
+            PracticePlayerSnapshot(
+                player_id=player_id,
+                name=f"{row['first_name']} {row['last_name']}",
+                position=str(row["position"]),
+                team_id=int(row["team_id"]),
+                ratings=ratings,
+                metadata=metadata,
+            )
+        )
+    return players
+
+
+def practice_candidate_weight(player: PracticePlayerSnapshot) -> float:
+    position = player.position
+    position_weight = {
+        "RB": 1.18,
+        "FB": 1.10,
+        "WR": 1.10,
+        "TE": 1.08,
+        "OT": 1.08,
+        "OG": 1.07,
+        "C": 1.06,
+        "EDGE": 1.06,
+        "IDL": 1.06,
+        "DT": 1.06,
+        "NT": 1.04,
+        "ILB": 1.04,
+        "OLB": 1.04,
+        "CB": 1.08,
+        "NB": 1.08,
+        "FS": 1.06,
+        "SS": 1.06,
+        "QB": 0.50,
+        "K": 0.25,
+        "P": 0.25,
+        "LS": 0.35,
+    }.get(position, 1.0)
+    role_weight = 0.75 + max(0.0, player.rating("stamina", 55) - 50.0) * 0.012
+    durability = player.rating("durability", 60)
+    durability_weight = 1.0 + max(0.0, 65.0 - durability) * 0.018
+    history_weight = 1.0 + float(player.metadata.get("injury_history_risk", 0.0) or 0.0) * 0.25
+    return max(0.05, position_weight * role_weight * durability_weight * history_weight)
+
+
+def weighted_practice_choice(
+    rng: random.Random,
+    players: list[PracticePlayerSnapshot],
+    used: set[int],
+) -> PracticePlayerSnapshot | None:
+    weighted = [(player, practice_candidate_weight(player)) for player in players if player.player_id not in used]
+    total = sum(weight for _player, weight in weighted)
+    if total <= 0:
+        return None
+    roll = rng.random() * total
+    cursor = 0.0
+    for player, weight in weighted:
+        cursor += weight
+        if roll <= cursor:
+            return player
+    return weighted[-1][0] if weighted else None
+
+
+def create_weekly_practice_injuries(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    week: int,
+    seed: int | None = None,
+    apply: bool = False,
+) -> list[InjuryEvent]:
+    ensure_schema(con)
+    practice_date = week_practice_date(con, season, week)
+    resolve_available_injuries(con, practice_date)
+    rng = random.Random(seed if seed is not None else (season * 1000 + week * 37 + 17))
+    events: list[InjuryEvent] = []
+    used: set[int] = set()
+    play_number = 900000 + week * 100
+    for team_id in active_team_ids(con):
+        candidates = load_practice_candidates(con, season=season, team_id=team_id, as_of_date=practice_date)
+        if not candidates:
+            continue
+        team_roll = rng.random()
+        injuries_for_team = 0
+        if team_roll < 0.72:
+            injuries_for_team = 1
+        if team_roll < 0.18:
+            injuries_for_team = 2
+        if team_roll < 0.04:
+            injuries_for_team = 3
+        for _ in range(injuries_for_team):
+            player = weighted_practice_choice(rng, candidates, used)
+            if player is None:
+                break
+            used.add(player.player_id)
+            high_impact = rng.random() < 0.025
+            item = choose_catalog_entry(rng, player, mechanism="practice", high_impact=high_impact)
+            days = expected_days_for_injury(rng, player, item)
+            status = status_for_expected_days(days)
+            body_risk = existing_body_risk(player, item.body_part)
+            severity = "severe" if item.severity_bucket == "major" and days >= 180 else item.severity_bucket
+            description = f"{player.name} picked up a {item.label.lower()} during the practice week."
+            if body_risk:
+                description += " Prior body-area history increased the risk."
+            event = InjuryEvent(
+                play_number=play_number,
+                quarter=0,
+                clock_tenths=0,
+                player_id=player.player_id,
+                team_id=team_id,
+                opponent_player_id=None,
+                opponent_team_id=None,
+                injury_code=item.injury_code,
+                injury_label=item.label,
+                body_region=item.body_region,
+                body_part=item.body_part,
+                severity=severity,
+                mechanism="practice",
+                expected_days=days,
+                expected_games=expected_games(days),
+                status=status,
+                description=description,
+            )
+            play_number += 1
+            events.append(event)
+    if apply and events:
+        retract_weekly_practice_injuries(con, season=season, week=week, practice_date=practice_date)
+        persist_injury_events(
+            con,
+            events,
+            season=season,
+            week=week,
+            game_date=practice_date,
+            source=WEEKLY_PRACTICE_SOURCE,
+            source_run_id=None,
+            schedule_game_id=None,
+            run_id=None,
+        )
+    return events
+
+
+def retract_weekly_practice_injuries(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    week: int,
+    practice_date: str | None = None,
+) -> int:
+    ensure_schema(con)
+    if practice_date is None:
+        practice_date = week_practice_date(con, season, week)
+    rows = con.execute(
+        """
+        SELECT DISTINCT player_id
+        FROM game_injury_events
+        WHERE season = ?
+          AND week = ?
+          AND source = ?
+        """,
+        (season, week, WEEKLY_PRACTICE_SOURCE),
+    ).fetchall()
+    player_ids = {int(row["player_id"]) for row in rows}
+    active_rows = con.execute(
+        """
+        SELECT active_injury_id, injury_history_id
+        FROM active_player_injuries
+        WHERE source = ?
+          AND schedule_game_id IS NULL
+          AND start_date = ?
+        """,
+        (WEEKLY_PRACTICE_SOURCE, practice_date),
+    ).fetchall()
+    history_ids = [int(row["injury_history_id"]) for row in active_rows if row["injury_history_id"] is not None]
+    con.execute(
+        """
+        DELETE FROM active_player_injuries
+        WHERE source = ?
+          AND schedule_game_id IS NULL
+          AND start_date = ?
+        """,
+        (WEEKLY_PRACTICE_SOURCE, practice_date),
+    )
+    if history_ids:
+        placeholders = ",".join("?" for _ in history_ids)
+        con.execute(
+            f"DELETE FROM player_injury_history WHERE injury_history_id IN ({placeholders}) AND source = ?",
+            (*history_ids, WEEKLY_PRACTICE_SOURCE),
+        )
+    cur = con.execute(
+        """
+        DELETE FROM game_injury_events
+        WHERE season = ?
+          AND week = ?
+          AND source = ?
+        """,
+        (season, week, WEEKLY_PRACTICE_SOURCE),
+    )
+    for player_id in player_ids:
+        reset_player_status_if_available(con, player_id)
+    return int(cur.rowcount or 0)
 
 
 def retract_schedule_game_injuries(con: sqlite3.Connection, schedule_game_id: int) -> int:
@@ -829,4 +1190,3 @@ def retract_schedule_game_injuries(con: sqlite3.Connection, schedule_game_id: in
     for player_id in player_ids:
         reset_player_status_if_available(con, player_id)
     return int(cur.rowcount or 0)
-

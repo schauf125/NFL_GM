@@ -378,6 +378,12 @@ class DraftAttributeGenerator:
             raw_grade=raw_grade,
             talent_profile=talent_profile,
         )
+        raw_grade += self._rookie_readiness_boost(
+            position=position,
+            rank=rank,
+            tier=tier,
+            talent_profile=talent_profile,
+        )
         if talent_profile == "hidden_unlisted":
             raw_grade = self._hidden_unlisted_true_grade(raw_grade)
         return clamp(raw_grade, 35, 82)
@@ -479,6 +485,33 @@ class DraftAttributeGenerator:
             modifier *= 0.35
         return modifier + self.rng.gauss(0.0, 0.65)
 
+    def _rookie_readiness_boost(
+        self,
+        *,
+        position: str,
+        rank: int,
+        tier: str,
+        talent_profile: str,
+    ) -> float:
+        """Lift current rookie ability without turning every prospect into upside."""
+
+        if position in {"K", "P", "LS"}:
+            return 0.0
+        if tier == "round_1":
+            boost = 0.8
+        elif tier == "round_2_3":
+            boost = 1.5 if rank <= 64 else 3.0
+        elif tier == "round_4_5":
+            boost = 5.0 if rank <= 128 else 3.0
+        elif tier == "round_6_7":
+            boost = 1.5
+        else:
+            boost = 0.6
+
+        if talent_profile == "hidden_unlisted":
+            boost *= 0.45
+        return boost
+
     def _ceiling_grade(
         self,
         position: str,
@@ -521,6 +554,12 @@ class DraftAttributeGenerator:
             "leftover": 5,
         }[tier]
         class_mod = (class_strength - 50) / 12.0
+        readiness_offset = self._rookie_readiness_boost(
+            position=position,
+            rank=rank,
+            tier=tier,
+            talent_profile=talent_profile,
+        )
         ceiling = (
             true_grade
             + gap_base
@@ -536,6 +575,7 @@ class DraftAttributeGenerator:
             )
             + class_mod
             + self.rng.gauss(0, 4.0)
+            - (readiness_offset * 0.85)
         )
         if dev_trait == "X-Factor":
             ceiling = max(ceiling, 80 + self.rng.random() * 8)

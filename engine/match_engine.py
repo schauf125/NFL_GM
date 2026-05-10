@@ -1618,6 +1618,61 @@ class MatchEngine:
             return None
         return weighted_choice(self.rng, [(player, special_teams_coverage_weight(player)) for player in players])
 
+    def select_offball_injury_candidate(self, team: TeamSnapshot, slots: list[str]) -> PlayerSnapshot | None:
+        candidates: list[tuple[PlayerSnapshot, float]] = []
+        seen: set[int] = set()
+        for slot in slots:
+            for rank, player in enumerate(team.depth.get(slot, [])[:2]):
+                if player.player_id in seen or player.player_id in self.injured_player_ids:
+                    continue
+                seen.add(player.player_id)
+                snap_load = self.injury_snap_load(player)
+                rank_weight = 1.0 if rank == 0 else 0.34
+                trench_weight = 1.0 + max(0.0, player.rating("strength", 55) - 55.0) * 0.006
+                fatigue_weight = 1.0 + max(0.0, snap_load - 30.0) * 0.006
+                candidates.append((player, max(0.05, rank_weight * trench_weight * fatigue_weight)))
+        if not candidates:
+            return None
+        return weighted_choice(self.rng, candidates)
+
+    def record_offball_injuries(
+        self,
+        *,
+        offense: TeamSnapshot,
+        defense: TeamSnapshot,
+        play_type: str,
+        high_impact: bool,
+    ) -> None:
+        if play_type not in {"run", "pass"}:
+            return
+        offensive_slots = ["LT", "LG", "C", "RG", "RT", "TE"]
+        if play_type == "pass":
+            defensive_slots = ["LEDGE", "REDGE", "LDL", "RDL", "NT"]
+            offense_roll = 0.70
+            defense_roll = 0.62
+        else:
+            defensive_slots = ["LEDGE", "REDGE", "LDL", "NT", "RDL", "MLB", "WLB", "SLB"]
+            offense_roll = 0.58
+            defense_roll = 0.66
+        if self.rng.random() < offense_roll:
+            player = self.select_offball_injury_candidate(offense, offensive_slots)
+            self.consider_injury(
+                player,
+                offense,
+                play_type=play_type,
+                mechanism="trench",
+                high_impact=high_impact and self.rng.random() < 0.28,
+            )
+        if self.rng.random() < defense_roll:
+            player = self.select_offball_injury_candidate(defense, defensive_slots)
+            self.consider_injury(
+                player,
+                defense,
+                play_type=play_type,
+                mechanism="trench",
+                high_impact=high_impact and self.rng.random() < 0.30,
+            )
+
     def record_play_injuries(
         self,
         *,
@@ -1635,6 +1690,12 @@ class MatchEngine:
         if concept in {"kneel", "spike"} or play_type == "penalty":
             return
         high_impact = turnover or touchdown or yards >= 18 or yards <= -5
+        self.record_offball_injuries(
+            offense=offense,
+            defense=defense,
+            play_type=play_type,
+            high_impact=high_impact,
+        )
         if play_type == "run":
             mechanism = "contact" if defense_player else "non_contact"
             self.consider_injury(
@@ -2751,6 +2812,11 @@ class MatchEngine:
             weight *= 0.84
         if idx >= 2:
             weight *= 0.72
+        game_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
+        if idx == 0 and game_carries > 20:
+            weight *= clamp(1.0 - (game_carries - 20.0) * 0.040, 0.50, 1.0)
+        elif idx >= 1 and game_carries > 10:
+            weight *= clamp(1.0 - (game_carries - 10.0) * 0.035, 0.58, 1.0)
         weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
         if distance <= 3 or field_pos >= 85:
             weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014

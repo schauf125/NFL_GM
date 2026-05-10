@@ -352,6 +352,7 @@ def run_offseason(
         },
         "free_agency_period": active_free_agency_status(con, league_year),
         "teams": [],
+        "free_agency_resolution": None,
         "committable": False,
     }
 
@@ -392,6 +393,36 @@ def run_offseason(
             if free_agency_result.get("plan_id") or free_agency_result.get("operations"):
                 result["committable"] = True
         result["teams"].append(team_result)
+
+    if run_free_agents:
+        period_status = active_free_agency_status(con, league_year)
+        result["free_agency_period"] = period_status
+        if period_status.get("active"):
+            period = fa.active_period(con, league_year)
+            signings = fa.resolve_pending_offers(
+                con,
+                period,
+                write_cap_snapshot=False,
+            )
+            result["free_agency_resolution"] = {
+                "status": "resolved",
+                "signings": signings,
+                "pending_offers": con.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM free_agency_offers
+                    WHERE league_year = ? AND status = 'pending'
+                    """,
+                    (league_year,),
+                ).fetchone()[0],
+            }
+            if signings:
+                result["committable"] = True
+        else:
+            result["free_agency_resolution"] = {
+                "status": "skipped",
+                "reason": period_status.get("error") or period_status.get("status") or "free agency is not active",
+            }
 
     result["totals"] = calculate_totals(result)
     return result
@@ -449,6 +480,16 @@ def print_offseason_result(
         f"{totals.get('blocked_results', 0)} blocked, "
         f"{totals.get('error_results', 0)} errors"
     )
+    resolution = result.get("free_agency_resolution") or {}
+    if resolution:
+        if resolution.get("status") == "resolved":
+            print(
+                "Offer resolution: "
+                f"{resolution.get('signings', 0)} signing(s), "
+                f"{resolution.get('pending_offers', 0)} pending offer(s) remain"
+            )
+        else:
+            print(f"Offer resolution: skipped ({resolution.get('reason', 'unknown')})")
     print()
     for team_result in (result.get("teams") or [])[: max(0, detail_limit)]:
         print(team_result["team"])

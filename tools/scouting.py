@@ -1507,6 +1507,34 @@ def simple_scouting_report(prospect: sqlite3.Row, old_confidence: str, new_confi
     )
 
 
+def tighten_displayed_scout_read(
+    current_value: Any,
+    true_value: Any,
+    confidence: str,
+    *,
+    ceiling: bool = False,
+) -> int:
+    """Move the shared board read toward true value as confidence rises."""
+    current = float(current_value or true_value or 50)
+    true = float(true_value or current)
+    weight = {
+        "Low": 0.18,
+        "Medium": 0.42,
+        "High": 0.74,
+        "Very High": 0.90,
+    }.get(normalize_confidence(confidence), 0.18)
+    tightened = current + ((true - current) * weight)
+    max_gap = {
+        "Low": 18.0 if ceiling else 12.0,
+        "Medium": 10.0 if ceiling else 7.0,
+        "High": 5.0 if ceiling else 4.0,
+        "Very High": 3.0 if ceiling else 2.0,
+    }.get(normalize_confidence(confidence), 12.0)
+    if abs(tightened - true) > max_gap:
+        tightened = true + (max_gap if tightened > true else -max_gap)
+    return int(round(max(20.0, min(99.0, tightened))))
+
+
 def advance_prospect_one_tier(
     con: sqlite3.Connection,
     *,
@@ -1575,6 +1603,8 @@ def advance_prospect_one_tier(
         """
         UPDATE draft_prospects
         SET scout_confidence = ?,
+            scout_grade = ?,
+            scout_ceiling = ?,
             discovery_status = CASE
                 WHEN COALESCE(public_board_status, '') = 'off_public_board'
                      AND COALESCE(discovery_status, 'undiscovered') = 'undiscovered'
@@ -1584,7 +1614,17 @@ def advance_prospect_one_tier(
             updated_at = datetime('now')
         WHERE prospect_id = ?
         """,
-        (new_confidence, int(prospect["prospect_id"])),
+        (
+            new_confidence,
+            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], new_confidence),
+            tighten_displayed_scout_read(
+                prospect["scout_ceiling"],
+                prospect["ceiling_grade"],
+                new_confidence,
+                ceiling=True,
+            ),
+            int(prospect["prospect_id"]),
+        ),
     )
     add_inbox_message(
         con,
@@ -2860,10 +2900,22 @@ def process_assignments(
             """
             UPDATE draft_prospects
             SET scout_confidence = ?,
+                scout_grade = ?,
+                scout_ceiling = ?,
                 updated_at = datetime('now')
             WHERE prospect_id = ?
             """,
-            (confidence, int(assignment["prospect_id"])),
+            (
+                confidence,
+                tighten_displayed_scout_read(assignment["scout_grade"], assignment["true_grade"], confidence),
+                tighten_displayed_scout_read(
+                    assignment["scout_ceiling"],
+                    assignment["ceiling_grade"],
+                    confidence,
+                    ceiling=True,
+                ),
+                int(assignment["prospect_id"]),
+            ),
         )
         con.execute(
             """
@@ -3424,10 +3476,22 @@ def execute_top30_visit(
         """
         UPDATE draft_prospects
         SET scout_confidence = ?,
+            scout_grade = ?,
+            scout_ceiling = ?,
             updated_at = datetime('now')
         WHERE prospect_id = ?
         """,
-        (visit_confidence, prospect_id),
+        (
+            visit_confidence,
+            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], visit_confidence),
+            tighten_displayed_scout_read(
+                prospect["scout_ceiling"],
+                prospect["ceiling_grade"],
+                visit_confidence,
+                ceiling=True,
+            ),
+            prospect_id,
+        ),
     )
 
     add_inbox_message(

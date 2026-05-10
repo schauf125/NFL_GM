@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -369,6 +370,27 @@ def load_save(args: argparse.Namespace) -> None:
     print(f"Status command: python tools\\game_flow.py --db {rel(db_path)} status")
 
 
+def delete_save(args: argparse.Namespace) -> None:
+    registry = load_registry()
+    game_id = validate_game_id(args.game_id)
+    saves = registry.setdefault("saves", {})
+    record = saves.pop(game_id, None)
+    target_dir = save_dir(game_id).resolve()
+    saves_root = SAVES_DIR.resolve()
+    if target_dir == saves_root or saves_root not in target_dir.parents:
+        raise ValueError(f"Refusing to delete path outside saves directory: {target_dir}")
+    existed = target_dir.exists()
+    if existed:
+        shutil.rmtree(target_dir)
+    if registry.get("active_game_id") == game_id:
+        registry["active_game_id"] = None
+    save_registry(registry)
+    if record or existed:
+        print(f"Deleted save: {game_id}")
+    else:
+        print(f"Save not found: {game_id}")
+
+
 def print_active(args: argparse.Namespace) -> None:
     game_id, record = get_save_record(None)
     db_path = ROOT / record["db_path"]
@@ -427,6 +449,8 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("list", help="List registered saves.")
     load_parser = subparsers.add_parser("load", help="Set an existing save active.")
     load_parser.add_argument("--game-id", required=True)
+    delete_parser = subparsers.add_parser("delete", help="Delete a registered save and its save folder.")
+    delete_parser.add_argument("--game-id", required=True)
     subparsers.add_parser("active", help="Show the active save.")
     path_parser = subparsers.add_parser("path", help="Print a save DB path.")
     path_parser.add_argument("--game-id")
@@ -445,6 +469,8 @@ def main() -> int:
         list_saves(args)
     elif args.command == "load":
         load_save(args)
+    elif args.command == "delete":
+        delete_save(args)
     elif args.command == "active":
         print_active(args)
     elif args.command == "path":

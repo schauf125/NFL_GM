@@ -162,6 +162,7 @@
     return {
       new_june1_save: "Start Game",
       load_game: "Load Game",
+      delete_save: "Delete Save",
       refresh: "Refresh",
     }[action] || action || "Command";
   }
@@ -445,11 +446,21 @@
         load.type = "button";
         load.disabled = state.runnerBusy || save.active || !runnerMode();
         load.addEventListener("click", () => runAction("load_game", { game_id: save.gameId }));
+        const del = node("button", "copy-button danger-button", save.active ? "Delete Active" : "Delete");
+        del.type = "button";
+        del.disabled = state.runnerBusy || !runnerMode();
+        del.addEventListener("click", () => {
+          const label = save.name || save.gameId;
+          if (!window.confirm(`Delete save "${label}"? This removes the local save folder.`)) {
+            return;
+          }
+          runAction("delete_save", { game_id: save.gameId });
+        });
         const left = append(node("div"), [
           node("strong", null, save.name),
           node("div", "muted", `${save.userTeam || "-"} | ${save.currentDate || "-"} | ${save.phase || "-"}`),
         ]);
-        append(row, [left, load]);
+        append(row, [left, append(node("div", "save-actions"), [load, del])]);
         list.append(row);
       });
     }
