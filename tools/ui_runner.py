@@ -266,6 +266,7 @@ def draft_state_patch(db_path: Path) -> dict[str, Any]:
             con,
             draft_year,
             user_team_id=user_team_id,
+            game_id=(active or {}).get("game_id") or (active or {}).get("save_id"),
             current_date_value=str(context["currentDate"]),
         )
         rookie_class = {
@@ -918,6 +919,7 @@ def draft_payload_for_active_db(year: int | None = None) -> dict[str, Any]:
             conn,
             target_year,
             user_team_id=user_team_id,
+            game_id=(active or {}).get("game_id") or (active or {}).get("save_id"),
             current_date_value=str(context["currentDate"]),
         )
         rookie_class = {
@@ -944,6 +946,7 @@ def scouting_payload_for_active_db(limit: int = 240) -> dict[str, Any]:
             conn,
             draft_year,
             user_team_id=user_team_id,
+            game_id=(active or {}).get("game_id") or (active or {}).get("save_id"),
             current_date_value=str(context["currentDate"]),
         )
         scouting_payload = export_game_center_ui_data.enrich_scouting_payload_with_draft_board(

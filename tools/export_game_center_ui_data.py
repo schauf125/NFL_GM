@@ -1781,6 +1781,7 @@ def draft_summary(
     year: int,
     *,
     user_team_id: int | None = None,
+    game_id: str | None = None,
     current_date_value: str | None = None,
 ) -> dict[str, Any]:
     state = None
@@ -1882,6 +1883,15 @@ def draft_summary(
         )
     if table_exists(conn, "draft_room_board_ui_view"):
         board_columns = relation_columns(conn, "draft_room_board_ui_view")
+        draft_date_value = draft_event_date(conn, year)
+        draft_day_reveal = False
+        if state:
+            draft_day_reveal = True
+        elif current_date_value and draft_date_value:
+            try:
+                draft_day_reveal = date.fromisoformat(str(current_date_value)) >= date.fromisoformat(str(draft_date_value))
+            except ValueError:
+                draft_day_reveal = str(current_date_value) >= str(draft_date_value)
         discovery_columns = []
         for column, fallback in (
             ("public_board_status", "'ranked'"),
@@ -1896,6 +1906,27 @@ def draft_summary(
             ("senior_bowl_notes", "''"),
         ):
             discovery_columns.append(column if column in board_columns else f"{fallback} AS {column}")
+        visibility_filter = ""
+        params: list[Any] = [year]
+        if not draft_day_reveal:
+            if game_id and table_exists(conn, "scouting_prospect_progress"):
+                visibility_filter = """
+                  AND (
+                      COALESCE(public_board_status, 'public_board') <> 'off_public_board'
+                      OR EXISTS (
+                          SELECT 1
+                          FROM scouting_prospect_progress spp
+                          WHERE spp.game_id = ?
+                            AND spp.draft_year = draft_room_board_ui_view.draft_year
+                            AND spp.prospect_id = draft_room_board_ui_view.prospect_id
+                            AND spp.visibility_status = 'discovered'
+                      )
+                  )
+                """
+                params.append(game_id)
+            else:
+                visibility_filter = " AND COALESCE(public_board_status, 'public_board') <> 'off_public_board'"
+        params.append(DRAFT_BOARD_LIMIT)
         board = rows_as_dicts(
             conn.execute(
                 f"""
@@ -1955,10 +1986,11 @@ def draft_summary(
                     pro_day_medical_recheck
                 FROM draft_room_board_ui_view
                 WHERE draft_year = ?
+                {visibility_filter}
                 ORDER BY COALESCE(public_board_rank, scouting_rank, 9999), prospect_id
                 LIMIT ?
                 """,
-                (year, DRAFT_BOARD_LIMIT),
+                params,
             ).fetchall()
         )
         detailed_board = board[:DRAFT_BOARD_DETAIL_LIMIT]
@@ -3326,6 +3358,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             conn,
             draft_year_value,
             user_team_id=user_team_id,
+            game_id=game_id,
             current_date_value=current_date,
         )
         scouting_payload = enrich_scouting_payload_with_draft_board(
