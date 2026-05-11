@@ -687,6 +687,84 @@ def load_practice_squad_shares(con: sqlite3.Connection, season: int) -> dict[int
     return {player_id: clamp(share, 0.0, 1.0) for player_id, share in shares.items()}
 
 
+def load_preseason_development_context(con: sqlite3.Connection, *, game_id: str, season: int) -> dict[int, dict[str, float]]:
+    """Load training-camp and preseason evaluation context for progression."""
+    context: dict[int, dict[str, float]] = {}
+    if table_exists(con, "preseason_camp_events"):
+        rows = con.execute(
+            """
+            SELECT
+                player_id,
+                SUM(COALESCE(impact_delta, 0)) AS camp_delta,
+                SUM(COALESCE(potential_delta, 0)) AS potential_delta,
+                SUM(CASE WHEN COALESCE(trait_revealed, 0) = 1 THEN 1 ELSE 0 END) AS trait_reveals
+            FROM preseason_camp_events
+            WHERE game_id = ? AND season = ?
+            GROUP BY player_id
+            """,
+            (game_id, season),
+        ).fetchall()
+        for row in rows:
+            player_context = context.setdefault(int(row["player_id"]), {})
+            player_context["camp_delta"] = float(row["camp_delta"] or 0.0)
+            player_context["potential_delta"] = float(row["potential_delta"] or 0.0)
+            player_context["trait_reveals"] = float(row["trait_reveals"] or 0.0)
+    if table_exists(con, "preseason_player_snaps"):
+        rows = con.execute(
+            """
+            SELECT
+                player_id,
+                SUM(COALESCE(offensive_snaps, 0) + COALESCE(defensive_snaps, 0) + COALESCE(special_teams_snaps, 0)) AS total_snaps,
+                SUM(COALESCE(offensive_snaps, 0) + COALESCE(defensive_snaps, 0)) AS unit_snaps,
+                AVG(COALESCE(performance_delta, 0)) AS avg_performance,
+                COUNT(*) AS weeks
+            FROM preseason_player_snaps
+            WHERE game_id = ? AND season = ?
+            GROUP BY player_id
+            """,
+            (game_id, season),
+        ).fetchall()
+        for row in rows:
+            player_context = context.setdefault(int(row["player_id"]), {})
+            player_context["preseason_snaps"] = float(row["total_snaps"] or 0.0)
+            player_context["preseason_unit_snaps"] = float(row["unit_snaps"] or 0.0)
+            player_context["preseason_performance"] = float(row["avg_performance"] or 0.0)
+            player_context["preseason_weeks"] = float(row["weeks"] or 0.0)
+    return context
+
+
+def preseason_development_score(
+    *,
+    context: dict[str, float],
+    band: str,
+    years_exp: int,
+    old_overall: int,
+    potential_gap: int,
+) -> float:
+    if not context:
+        return 0.0
+    camp_delta = float(context.get("camp_delta", 0.0) or 0.0)
+    potential_delta = float(context.get("potential_delta", 0.0) or 0.0)
+    snaps = float(context.get("preseason_snaps", 0.0) or 0.0)
+    unit_snaps = float(context.get("preseason_unit_snaps", 0.0) or 0.0)
+    performance = float(context.get("preseason_performance", 0.0) or 0.0)
+    young_factor = 1.0 if band in {"rookie", "young"} else 0.58 if band == "prime" else 0.34
+    if years_exp <= 2:
+        young_factor += 0.18
+    snap_bonus = min(0.55, unit_snaps / 190.0) + min(0.22, snaps / 360.0)
+    if old_overall >= 78 and band not in {"rookie", "young"}:
+        snap_bonus *= 0.25
+    elif old_overall >= 72 and band in {"prime", "veteran", "late_veteran"}:
+        snap_bonus *= 0.45
+    score = camp_delta * 0.72
+    score += potential_delta * 0.22
+    score += performance * 0.85
+    score += snap_bonus * young_factor
+    if potential_gap >= 8 and band in {"rookie", "young"} and snaps >= 45:
+        score += min(0.22, potential_gap * 0.012)
+    return clamp(score, -1.35, 1.75)
+
+
 def load_injury_context(con: sqlite3.Connection, season: int) -> dict[int, dict[str, float]]:
     injuries: dict[int, dict[str, float]] = {}
     if table_exists(con, "player_injury_history"):
@@ -1790,8 +1868,8 @@ def random_sigma(age_band_value: str) -> float:
         "rookie": 1.45,
         "young": 1.25,
         "prime": 0.95,
-        "veteran": 1.05,
-        "late_veteran": 1.25,
+        "veteran": 1.16,
+        "late_veteran": 1.38,
     }.get(age_band_value, 1.0)
 
 
@@ -2074,7 +2152,7 @@ def decline_delta(
     if band not in {"veteran", "late_veteran"}:
         return 0.0
     decline_risk = profile_value(profile, "decline_risk", float(mods.get("decline_acceleration_risk", 0) or 0))
-    probability = 0.025 if band == "veteran" else 0.055
+    probability = 0.030 if band == "veteran" else 0.064
     probability += max(0.0, decline_risk) * 0.006
     probability -= max(0.0, mods.get("regression_resistance", 0)) * 0.002
     probability_mult, severity_mult = position_decline_profile(position, age, band)
@@ -2088,6 +2166,126 @@ def decline_delta(
         max_loss = 4.5 if band == "late_veteran" else 3.4
         return -rng.uniform(1.2, max_loss) * clamp(severity_mult, 0.45, 1.75)
     return 0.0
+
+
+def veteran_career_variance_delta(
+    rng: random.Random,
+    *,
+    position: str,
+    age: int,
+    band: str,
+    old_overall: int,
+    mods: dict[str, int],
+    traits: dict[str, int],
+    profile: Mapping[str, Any] | None,
+    usage_score: float,
+    performance_score: float,
+    scheme_score: float,
+    coaching_score: float,
+    team_success_score: float,
+    injury_score: float,
+    opportunity_drag: float,
+    work_habit_effect: float,
+) -> float:
+    """Small veteran-only career swings so established players are not static.
+
+    This is intentionally smaller than breakout/decline events. It models the
+    normal NFL churn where a vet has a better offseason, loses a step, clicks in
+    a role, struggles through injuries, or responds unusually well to adversity.
+    """
+    if band not in {"veteran", "late_veteran"}:
+        return 0.0
+
+    group = position_group(position)
+    volatility = profile_value(profile, "potential_volatility", float(mods.get("potential_volatility", 0) or 0))
+    decline_risk = profile_value(profile, "decline_risk", float(mods.get("decline_acceleration_risk", 0) or 0))
+    resistance = profile_value(profile, "regression_resistance", float(mods.get("regression_resistance", 0) or 0))
+    personality_volatility = personality_variance_score(traits)
+    pro_habit = (
+        trait_strength(traits, "lunch_pail") * 0.10
+        + trait_strength(traits, "film_junkie") * 0.08
+        + trait_strength(traits, "quiet_professional") * 0.07
+        + trait_strength(traits, "natural_leader") * 0.04
+        + trait_strength(traits, "mentor") * 0.03
+    )
+    messy_context = (
+        trait_strength(traits, "streaky_confidence") * 0.10
+        + trait_strength(traits, "locker_room_distraction") * 0.12
+        + trait_strength(traits, "off_field_issue") * 0.14
+    )
+
+    probability = 0.20 if band == "veteran" else 0.27
+    probability += abs(personality_volatility) * 0.045
+    probability += max(0.0, volatility) * 0.006
+    probability += max(0.0, decline_risk) * 0.005
+    probability += max(0.0, -injury_score) * 0.018
+    probability += max(0.0, abs(performance_score) - 0.7) * 0.015
+    probability += max(0.0, abs(usage_score) - 1.0) * 0.012
+    probability += messy_context * 0.20
+    probability -= max(0.0, resistance) * 0.004
+    if old_overall >= 88:
+        probability *= 0.88
+    probability = clamp(probability, 0.10, 0.46)
+    if rng.random() >= probability:
+        return 0.0
+
+    up_weight = 0.42
+    up_weight += clamp(performance_score, -2.0, 2.0) * 0.070
+    up_weight += clamp(usage_score, -2.5, 2.5) * 0.038
+    up_weight += clamp(scheme_score, -3.0, 3.0) * 0.020
+    up_weight += clamp(coaching_score, -3.0, 3.0) * 0.018
+    up_weight += clamp(team_success_score, -2.0, 2.0) * 0.018
+    up_weight += clamp(work_habit_effect, -1.5, 1.0) * 0.055
+    up_weight += max(0.0, resistance) * 0.010
+    up_weight += max(0.0, float(mods.get("adversity_response", 0) or 0)) * max(0.0, -opportunity_drag) * 0.003
+    up_weight += max(0.0, float(mods.get("injury_recovery_response", 0) or 0)) * max(0.0, -injury_score) * 0.003
+    up_weight += pro_habit
+    up_weight -= max(0.0, -injury_score) * 0.055
+    up_weight -= max(0.0, -opportunity_drag) * 0.045
+    up_weight -= max(0.0, decline_risk) * 0.010
+    up_weight -= messy_context * 0.18
+    if band == "late_veteran":
+        up_weight -= 0.08
+    if group in {"RB", "CB"} and age >= 29:
+        up_weight -= 0.06
+    elif group in {"WR", "EDGE", "LB", "S"} and age >= 31:
+        up_weight -= 0.04
+    elif group in {"QB", "ST"}:
+        up_weight += 0.06
+    up_weight = clamp(up_weight, 0.18, 0.72)
+
+    if rng.random() < up_weight:
+        magnitude = rng.uniform(0.22, 0.78)
+        magnitude += max(0.0, performance_score) * rng.uniform(0.03, 0.11)
+        magnitude += max(0.0, usage_score) * rng.uniform(0.02, 0.07)
+        magnitude += max(0.0, coaching_score + scheme_score) * rng.uniform(0.004, 0.020)
+        magnitude += max(0.0, work_habit_effect) * rng.uniform(0.05, 0.16)
+        magnitude += trait_strength(traits, "chip_on_shoulder") * rng.uniform(0.05, 0.16)
+        magnitude += trait_strength(traits, "big_stage") * rng.uniform(0.02, 0.10)
+        if old_overall >= 90:
+            magnitude *= 0.52
+        elif old_overall >= 84:
+            magnitude *= 0.72
+        if band == "late_veteran":
+            magnitude *= 0.84
+        return clamp(magnitude, 0.15, 1.25)
+
+    magnitude = rng.uniform(0.25, 0.90)
+    magnitude += max(0.0, -performance_score) * rng.uniform(0.03, 0.12)
+    magnitude += max(0.0, -usage_score) * rng.uniform(0.02, 0.08)
+    magnitude += max(0.0, -injury_score) * rng.uniform(0.05, 0.18)
+    magnitude += max(0.0, -opportunity_drag) * rng.uniform(0.03, 0.12)
+    magnitude += max(0.0, decline_risk) * rng.uniform(0.02, 0.08)
+    magnitude += messy_context * rng.uniform(0.20, 0.52)
+    magnitude -= max(0.0, resistance) * rng.uniform(0.02, 0.06)
+    magnitude -= pro_habit * rng.uniform(0.18, 0.36)
+    if band == "late_veteran":
+        magnitude *= 1.15
+    if group == "RB" and age >= 28:
+        magnitude *= 1.12
+    elif group in {"QB", "ST"}:
+        magnitude *= 0.76
+    return -clamp(magnitude, 0.15, 1.55 if band == "veteran" else 1.95)
 
 
 def rating_delta_for_type(
@@ -2154,6 +2352,7 @@ def build_contexts(
     team_success = load_team_success(con, from_season)
     contract_context = load_contract_context(con, from_season)
     practice_squad_shares = load_practice_squad_shares(con, from_season)
+    preseason_context = load_preseason_development_context(con, game_id=game_id, season=from_season)
     qb_reboot_context = load_qb_reboot_context(con, from_season)
     mentor_scores = mentor_room_scores(players, personality_traits)
     coach_scores = coach_position_scores(con)
@@ -2198,6 +2397,13 @@ def build_contexts(
         old_overall = int(player["overall"] or 50)
         old_potential = int(player["potential"] or player["overall"] or 50)
         potential_gap = old_potential - old_overall
+        preseason_score = preseason_development_score(
+            context=preseason_context.get(player_id, {}),
+            band=band,
+            years_exp=years_exp,
+            old_overall=old_overall,
+            potential_gap=potential_gap,
+        )
         dev_trait = str(player["dev_trait"] or "Normal")
         dev_score = development_score(mods, profile)
         trait_growth_score = personality_development_score(traits, band)
@@ -2323,6 +2529,24 @@ def build_contexts(
             opportunity_drag=opportunity_drag,
             band=band,
         )
+        veteran_variance = veteran_career_variance_delta(
+            rng,
+            position=position,
+            age=age,
+            band=band,
+            old_overall=old_overall,
+            mods=mods,
+            traits=traits,
+            profile=profile,
+            usage_score=player_usage_score,
+            performance_score=player_perf_score,
+            scheme_score=scheme_score,
+            coaching_score=coaching_score,
+            team_success_score=success_score,
+            injury_score=player_injury_score,
+            opportunity_drag=opportunity_drag,
+            work_habit_effect=work_habit_effect,
+        )
         base = (
             age_curve(band)
             + position_age_score
@@ -2342,8 +2566,10 @@ def build_contexts(
             + player_perf_score * 0.18
             + role_stability_effect
             + practice_squad_score
+            + preseason_score
             + qb_reboot
             + ps_late_bloomer
+            + veteran_variance
             + random_score
             + boom
             + bust
@@ -2402,6 +2628,8 @@ def build_contexts(
             potential_miss,
             ps_late_bloomer,
             qb_reboot,
+            veteran_variance,
+            preseason_score,
         )
         contexts.append(
             PlayerContext(
@@ -2627,6 +2855,8 @@ def context_notes(
     potential_miss: float,
     ps_late_bloomer: float,
     qb_reboot: float,
+    veteran_variance: float,
+    preseason_score: float,
 ) -> str:
     bits = [f"{band} curve", f"base {base_delta:+.2f}"]
     if abs(position_age_score) >= 0.2:
@@ -2659,6 +2889,10 @@ def context_notes(
         bits.append(f"PS late bloomer +{ps_late_bloomer:.1f}")
     if qb_reboot >= 1.0:
         bits.append(f"QB career reboot +{qb_reboot:.1f}")
+    if abs(veteran_variance) >= 0.35:
+        bits.append(f"veteran variance {veteran_variance:+.1f}")
+    if abs(preseason_score) >= 0.35:
+        bits.append(f"preseason context {preseason_score:+.1f}")
     if abs(scheme_score) >= 2.0:
         bits.append(f"scheme {scheme_score:+.1f}")
     if abs(coaching_score) >= 2.0:

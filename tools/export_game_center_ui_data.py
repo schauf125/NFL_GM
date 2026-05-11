@@ -22,6 +22,7 @@ import ai_gm_draft_planner as draft_planner
 import ai_gm_free_agent_planner as free_agent_planner
 import ai_gm_team_evaluator as team_eval
 import contract_negotiations
+import export_player_profile_ui_data
 import league_news
 import roster_rules
 import scouting
@@ -574,7 +575,13 @@ def calendar_news_rows(
                 ln.is_major,
                 ln.team_id,
                 ln.player_id,
-                ln.prospect_id,
+                COALESCE(
+                    ln.prospect_id,
+                    CASE
+                        WHEN LOWER(COALESCE(ln.related_table, '')) = 'draft_prospects' THEN ln.related_id
+                        ELSE NULL
+                    END
+                ) AS prospect_id,
                 ln.related_table,
                 ln.related_id,
                 p.first_name || ' ' || p.last_name AS player_name,
@@ -587,9 +594,17 @@ def calendar_news_rows(
             FROM league_news_items ln
             LEFT JOIN teams t ON t.team_id = ln.team_id
             LEFT JOIN players p ON p.player_id = ln.player_id
-            LEFT JOIN draft_prospects dp ON dp.prospect_id = ln.prospect_id
+            LEFT JOIN draft_prospects dp
+              ON dp.prospect_id = COALESCE(
+                    ln.prospect_id,
+                    CASE
+                        WHEN LOWER(COALESCE(ln.related_table, '')) = 'draft_prospects' THEN ln.related_id
+                        ELSE NULL
+                    END
+                 )
             WHERE ln.game_id IN (?, 'default')
               AND date(ln.news_date) BETWEEN date(?) AND date(?)
+              AND LOWER(COALESCE(ln.category, '')) <> 'injuries'
             ORDER BY ln.news_date, ln.is_major DESC, ln.news_id DESC
             """,
             (game_id or "default", start_date, end_date),
@@ -609,6 +624,34 @@ def next_calendar_event(conn: sqlite3.Connection) -> dict[str, Any] | None:
             LIMIT 1
             """
         ).fetchone()
+    )
+
+
+def upcoming_calendar_events(conn: sqlite3.Connection, *, current_date: str, limit: int = 10) -> list[dict[str, Any]]:
+    if not table_exists(conn, "league_calendar_view"):
+        return []
+    return rows_as_dicts(
+        conn.execute(
+            """
+            SELECT
+                event_id,
+                league_year,
+                event_code,
+                event_name,
+                event_category,
+                event_start_date,
+                event_end_date,
+                event_time_et,
+                phase_name,
+                notes,
+                sort_order
+            FROM league_calendar_view
+            WHERE date(event_start_date) > date(?)
+            ORDER BY event_start_date, sort_order, event_id
+            LIMIT ?
+            """,
+            (current_date, limit),
+        ).fetchall()
     )
 
 
@@ -705,6 +748,7 @@ def calendar_summary(
         cursor += timedelta(days=1)
 
     next_event = next_calendar_event(conn)
+    upcoming_events = upcoming_calendar_events(conn, current_date=current_date, limit=12)
     next_games = upcoming_calendar_games(conn, season=season, current_date=current_date, user_team_id=user_team_id)
     return {
         "focusDate": current_date,
@@ -717,7 +761,227 @@ def calendar_summary(
         "gamesInView": games,
         "newsInView": news,
         "nextEvent": next_event,
+        "upcomingEvents": upcoming_events,
         "upcomingGames": next_games,
+    }
+
+
+def format_transaction(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": int(row["transaction_id"]),
+        "date": row["transaction_date"],
+        "season": row["season"],
+        "phase": row["phase"],
+        "week": row["week"],
+        "type": row["transaction_type"],
+        "category": row["transaction_category"],
+        "team": row["team"],
+        "secondaryTeam": row["secondary_team"],
+        "playerId": row["player_id"],
+        "player": row["player_name"],
+        "position": row["player_position"],
+        "fromTeam": row["from_team"],
+        "toTeam": row["to_team"],
+        "oldStatus": row["old_status"],
+        "newStatus": row["new_status"],
+        "capDeltaCurrent": int(row["cap_delta_current"] or 0),
+        "capDeltaNext": int(row["cap_delta_next"] or 0),
+        "cashDelta": int(row["cash_delta"] or 0),
+        "description": row["description"] or "",
+        "source": row["source"],
+        "createdAt": row["created_at"],
+    }
+
+
+def league_transactions_summary(conn: sqlite3.Connection, *, limit: int = 400, include_baseline: bool = False) -> dict[str, Any]:
+    if not table_exists(conn, "transaction_log_view"):
+        return {"items": [], "counts": {"total": 0}, "categories": [], "includeBaseline": include_baseline}
+    baseline_filter = "" if include_baseline else "WHERE COALESCE(transaction_category, '') != 'Baseline'"
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM transaction_log_view
+        {baseline_filter}
+        ORDER BY date(transaction_date) DESC, transaction_id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    count_rows = conn.execute(
+        f"""
+        SELECT COALESCE(transaction_category, 'Other') AS category, COUNT(*) AS count
+        FROM transaction_log_view
+        {baseline_filter}
+        GROUP BY COALESCE(transaction_category, 'Other')
+        ORDER BY count DESC, category
+        """
+    ).fetchall()
+    categories = [str(row["category"]) for row in count_rows]
+    counts = {str(row["category"]): int(row["count"] or 0) for row in count_rows}
+    counts["total"] = sum(counts.values())
+    return {
+        "items": [format_transaction(row) for row in rows],
+        "counts": counts,
+        "categories": categories,
+        "includeBaseline": include_baseline,
+        "limit": limit,
+    }
+
+
+def injury_center_summary(
+    conn: sqlite3.Connection,
+    *,
+    current_date: str | None = None,
+    user_team_id: int | None = None,
+    active_limit: int = 160,
+    recent_limit: int = 120,
+) -> dict[str, Any]:
+    if not table_exists(conn, "active_player_injuries") or not table_exists(conn, "game_injury_events"):
+        return {
+            "active": [],
+            "recent": [],
+            "counts": {"active": 0, "userActive": 0, "majorActive": 0, "recent": 0, "userRecent": 0},
+            "updatedAt": datetime.now().isoformat(timespec="seconds"),
+        }
+    today = current_date or date.today().isoformat()
+    active_rows = conn.execute(
+        """
+        SELECT
+            api.active_injury_id,
+            api.player_id,
+            TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')) AS player_name,
+            p.position,
+            p.status AS player_status,
+            p.overall,
+            api.injury_label,
+            api.body_region,
+            api.body_part,
+            api.severity,
+            api.start_date,
+            api.expected_days,
+            api.expected_games,
+            api.status,
+            api.return_earliest_date,
+            api.schedule_game_id,
+            api.source,
+            api.notes,
+            t.team_id,
+            t.abbreviation AS team,
+            t.city || ' ' || t.nickname AS team_name,
+            CAST(MAX(0, julianday(api.return_earliest_date) - julianday(?)) AS INTEGER) AS days_remaining
+        FROM active_player_injuries api
+        JOIN players p ON p.player_id = api.player_id
+        LEFT JOIN teams t ON t.team_id = p.team_id
+        WHERE api.resolved_at IS NULL
+        ORDER BY
+            CASE WHEN t.team_id = ? THEN 0 ELSE 1 END,
+            api.expected_games DESC,
+            api.return_earliest_date,
+            player_name
+        LIMIT ?
+        """,
+        (today, user_team_id or -1, int(active_limit)),
+    ).fetchall()
+    recent_rows = conn.execute(
+        """
+        SELECT
+            gie.event_id,
+            gie.schedule_game_id,
+            gie.season,
+            gie.week,
+            gie.game_date,
+            gie.player_id,
+            TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')) AS player_name,
+            p.position,
+            gie.team_id,
+            t.abbreviation AS team,
+            t.city || ' ' || t.nickname AS team_name,
+            gie.injury_label,
+            gie.body_region,
+            gie.body_part,
+            gie.severity,
+            gie.expected_days,
+            gie.expected_games,
+            gie.status,
+            gie.source,
+            gie.description
+        FROM game_injury_events gie
+        JOIN players p ON p.player_id = gie.player_id
+        LEFT JOIN teams t ON t.team_id = gie.team_id
+        ORDER BY gie.game_date DESC, gie.event_id DESC
+        LIMIT ?
+        """,
+        (int(recent_limit),),
+    ).fetchall()
+
+    active = [
+        {
+            "activeInjuryId": row["active_injury_id"],
+            "playerId": row["player_id"],
+            "playerName": row["player_name"],
+            "position": row["position"],
+            "teamId": row["team_id"],
+            "team": row["team"],
+            "teamName": row["team_name"],
+            "overall": row["overall"],
+            "injury": row["injury_label"],
+            "bodyRegion": row["body_region"],
+            "bodyPart": row["body_part"],
+            "severity": row["severity"],
+            "startDate": row["start_date"],
+            "expectedDays": row["expected_days"],
+            "expectedGames": row["expected_games"],
+            "status": row["status"] or row["player_status"],
+            "returnDate": row["return_earliest_date"],
+            "daysRemaining": row["days_remaining"],
+            "source": row["source"],
+            "notes": row["notes"],
+            "isUserTeam": bool(user_team_id and row["team_id"] == user_team_id),
+        }
+        for row in active_rows
+    ]
+    recent = [
+        {
+            "eventId": row["event_id"],
+            "gameId": row["schedule_game_id"],
+            "season": row["season"],
+            "week": row["week"],
+            "date": row["game_date"],
+            "playerId": row["player_id"],
+            "playerName": row["player_name"],
+            "position": row["position"],
+            "teamId": row["team_id"],
+            "team": row["team"],
+            "teamName": row["team_name"],
+            "injury": row["injury_label"],
+            "bodyRegion": row["body_region"],
+            "bodyPart": row["body_part"],
+            "severity": row["severity"],
+            "expectedDays": row["expected_days"],
+            "expectedGames": row["expected_games"],
+            "status": row["status"],
+            "source": row["source"],
+            "description": row["description"],
+            "isUserTeam": bool(user_team_id and row["team_id"] == user_team_id),
+        }
+        for row in recent_rows
+    ]
+    counts = {
+        "active": len(active),
+        "userActive": sum(1 for item in active if item["isUserTeam"]),
+        "majorActive": sum(
+            1
+            for item in active
+            if int(item.get("expectedGames") or 0) >= 4 or str(item.get("severity") or "").lower() in {"major", "severe"}
+        ),
+        "recent": len(recent),
+        "userRecent": sum(1 for item in recent if item["isUserTeam"]),
+    }
+    return {
+        "active": active,
+        "recent": recent,
+        "counts": counts,
+        "updatedAt": datetime.now().isoformat(timespec="seconds"),
     }
 
 
@@ -773,6 +1037,7 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         )
     standings = []
     if table_exists(conn, "season_team_records"):
+        logos = team_logo_map(conn)
         standings = rows_as_dicts(
             conn.execute(
                 """
@@ -795,6 +1060,8 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
                 (season,),
             ).fetchall()
         )
+        for row in standings:
+            row["teamLogo"] = logos.get(str(row.get("abbreviation")))
     next_week_games = []
     if next_week is not None:
         next_week_games = game_rows(
@@ -2338,6 +2605,7 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
     player_ids = [int(row["player_id"]) for row in roster_rows]
     roles = best_roles(conn, season, player_ids)
     flex = flex_positions(conn, player_ids)
+    headshots = export_player_profile_ui_data.headshots(conn)
     roster = []
     for row in roster_rows:
         player_id = int(row["player_id"])
@@ -2353,6 +2621,7 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             "is_rookie": bool(row["is_rookie"]),
             "height_in": row["height_in"],
             "weight_lbs": row["weight_lbs"],
+            "headshot": headshots.get(player_id),
             "role": roles.get(player_id, {}),
             "flex": flex.get(player_id, []),
         })
@@ -3083,6 +3352,8 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "log": flow_log(conn),
             "season": season_summary(conn, current_season, user_team_id),
             "stats": stat_leaders(conn, current_season),
+            "transactions": league_transactions_summary(conn, limit=400),
+            "injuries": injury_center_summary(conn, current_date=current_date, user_team_id=user_team_id),
             "leagueNews": league_news.build_ui_payload(conn, limit=80),
             "contractNegotiations": contract_negotiation_summary(conn, current_season, user_team),
             "depthChart": depth_chart_summary(conn, user_team, current_season),

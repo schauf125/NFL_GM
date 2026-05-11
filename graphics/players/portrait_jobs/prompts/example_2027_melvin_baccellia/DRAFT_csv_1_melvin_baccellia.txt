@@ -1,0 +1,9 @@
+Create a realistic fictional rookie American football player portrait for a local sports management simulation.
+This must be an original fictional person. Do not make the portrait resemble a real athlete, celebrity, or public figure.
+Player context: Melvin Baccellia, QB, assigned to 2027 Draft Preview (DRAFT).
+Use the listed football body type: 6'3", 213 lbs, QB. Reflect that size in the neck, shoulders, and frame while keeping this a head-and-shoulders portrait.
+Metadata: age 23; college background: Hampton; archetype: Dual-threat; handedness: Right-handed; eyes: Blue; hair: Brown Crew cut; facial hair: Goatee; White; blue eyes; hair: brown crew cut; goatee
+Scouting flavor to guide posture and expression: Melvin Baccellia brings a premium blend of baseline skill and projectable traits. The current report frames him as a dual-threat with a scrambling quarterback projection.
+Visual style: official team media-day headshot, chest-up, straight-on camera, neutral confident expression, realistic skin texture, studio lighting, dark matte background.
+Wardrobe: generic professional football jersey or training top in team-inspired colors, but no real team logos, NFL shields, brand marks, visible text, watermarks, or captions.
+Framing: square 1024x1024 composition, face centered, shoulders visible, no helmet, no action pose, no extra people.

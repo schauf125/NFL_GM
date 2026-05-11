@@ -806,6 +806,54 @@ def week_game_score(game: GameSpec, week: int) -> float:
     return 12 if week <= 14 else -12
 
 
+def division_game(game: GameSpec) -> bool:
+    return TEAM_DIVISION[game.away] == TEAM_DIVISION[game.home]
+
+
+def matchup_pair(game: GameSpec | tuple[str, str]) -> tuple[str, str]:
+    if isinstance(game, GameSpec):
+        return tuple(sorted((game.away, game.home)))
+    return tuple(sorted((game[0], game[1])))
+
+
+def consecutive_division_rematches_by_week(
+    week_schedule: dict[int, list[GameSpec | tuple[str, str]]],
+) -> list[tuple[int, int, tuple[str, str]]]:
+    violations: list[tuple[int, int, tuple[str, str]]] = []
+    for week in range(1, 18):
+        current_pairs = {
+            matchup_pair(game)
+            for game in week_schedule.get(week, [])
+            if TEAM_DIVISION[game.away if isinstance(game, GameSpec) else game[0]]
+            == TEAM_DIVISION[game.home if isinstance(game, GameSpec) else game[1]]
+        }
+        next_pairs = {
+            matchup_pair(game)
+            for game in week_schedule.get(week + 1, [])
+            if TEAM_DIVISION[game.away if isinstance(game, GameSpec) else game[0]]
+            == TEAM_DIVISION[game.home if isinstance(game, GameSpec) else game[1]]
+        }
+        for pair in sorted(current_pairs & next_pairs):
+            violations.append((week, week + 1, pair))
+    return violations
+
+
+def conflicts_with_adjacent_division_rematch(
+    game: GameSpec,
+    *,
+    week: int,
+    scheduled: dict[int, list[GameSpec]],
+) -> bool:
+    if not division_game(game):
+        return False
+    pair = matchup_pair(game)
+    for adjacent_week in (week - 1, week + 1):
+        for adjacent_game in scheduled.get(adjacent_week, []):
+            if division_game(adjacent_game) and matchup_pair(adjacent_game) == pair:
+                return True
+    return False
+
+
 def find_week_matching(
     games: list[GameSpec],
     *,
@@ -813,8 +861,10 @@ def find_week_matching(
     target_games: int,
     week: int,
     rng: random.Random,
+    scheduled: dict[int, list[GameSpec]] | None = None,
 ) -> list[GameSpec] | None:
     available = set(available_teams)
+    scheduled = scheduled or {}
     games_by_team = {team: [] for team in available}
     for game in games:
         if game.away in available and game.home in available:
@@ -829,6 +879,7 @@ def find_week_matching(
             game
             for game in games_by_team[team]
             if game.away not in used and game.home not in used
+            and not conflicts_with_adjacent_division_rematch(game, week=week, scheduled=scheduled)
         ]
 
     def search() -> bool:
@@ -869,7 +920,7 @@ def generate_projected_week_schedule(
     games: list[GameSpec],
     *,
     season: int,
-    max_attempts: int = 1000,
+    max_attempts: int = 5000,
 ) -> tuple[dict[int, list[GameSpec]], dict[str, int]]:
     byes = projected_byes(season)
     schedule_order = [17, 18, 15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
@@ -889,6 +940,7 @@ def generate_projected_week_schedule(
                 target_games=WEEK_GAME_TARGETS[week],
                 week=week,
                 rng=rng,
+                scheduled=scheduled,
             )
             if matching is None:
                 failed = True
@@ -900,7 +952,7 @@ def generate_projected_week_schedule(
             chosen = set(matching)
             remaining = [game for game in remaining if game not in chosen]
 
-        if not failed and not remaining:
+        if not failed and not remaining and not consecutive_division_rematches_by_week(scheduled):
             return scheduled, byes
 
     raise RuntimeError(f"Could not generate a complete projected week schedule for {season}.")
@@ -944,6 +996,14 @@ def validate_seed_data() -> ScheduleValidation:
 
     if set(PROVISIONAL_2026_WEEKS) != set(range(1, 19)):
         errors.append("Provisional schedule must include weeks 1 through 18.")
+
+    consecutive_rematches = consecutive_division_rematches_by_week(PROVISIONAL_2026_WEEKS)
+    if consecutive_rematches:
+        details = ", ".join(
+            f"Weeks {left}-{right} {'/'.join(pair)}"
+            for left, right, pair in consecutive_rematches
+        )
+        warnings.append(f"2026 provisional schedule has back-to-back divisional rematches: {details}.")
 
     if scheduled_games != official_games:
         missing = sorted(official_games - scheduled_games)
@@ -1222,6 +1282,21 @@ def validate_database(con: sqlite3.Connection, season: int) -> ScheduleValidatio
         found = by_week_count.get(week, 0)
         if found != expected:
             errors.append(f"Week {week} has {found} games, expected {expected}.")
+
+    scheduled_by_week: dict[int, list[tuple[str, str]]] = {}
+    for away, home, week in games:
+        scheduled_by_week.setdefault(week, []).append((away, home))
+    consecutive_rematches = consecutive_division_rematches_by_week(scheduled_by_week)
+    if consecutive_rematches:
+        details = ", ".join(
+            f"Weeks {left}-{right} {'/'.join(pair)}"
+            for left, right, pair in consecutive_rematches
+        )
+        message = f"Back-to-back divisional rematches found: {details}."
+        if season == DEFAULT_SEASON:
+            warnings.append(message)
+        else:
+            errors.append(message)
 
     bye_rows = con.execute(
         """

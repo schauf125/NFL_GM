@@ -1,0 +1,26 @@
+{
+  "created_at": "2026-05-01T03:42:38Z",
+  "job_count": 1,
+  "job_status_counts": {
+    "generation_failed": 1
+  },
+  "last_generation_run": {
+    "api": "image_api",
+    "at": "2026-05-01T13:54:52Z",
+    "background": "opaque",
+    "failed": 0,
+    "generated": 0,
+    "model": "gpt-image-2",
+    "output_format": "png",
+    "provider": "openai",
+    "quality": "high",
+    "size": "1024x1024",
+    "skipped": 1
+  },
+  "notes": "Generated portraits remain staged until reviewed and imported. This worker does not update player_graphics_assets.",
+  "prompts_dir": "graphics/players/portrait_jobs/prompts/example_2027_melvin_baccellia",
+  "queued_jsonl": "graphics/players/portrait_jobs/queued/example_2027_melvin_baccellia.jsonl",
+  "run_id": "example_2027_melvin_baccellia",
+  "staged_dir": "graphics/players/portrait_jobs/staged/example_2027_melvin_baccellia",
+  "status": "generation_errors"
+}

@@ -1,0 +1,9 @@
+Create a realistic fictional rookie American football player portrait for a local sports management simulation.
+This must be an original fictional person. Do not make the portrait resemble a real athlete, celebrity, or public figure.
+Player context: Arch Manning, QB, assigned to Test Draft Team (TEST).
+Use the listed football body type: 6'4", 219 lbs, QB. Reflect that size in the neck, shoulders, and frame while keeping this a head-and-shoulders portrait.
+Metadata: college background: Texas; archetype: toolsy franchise QB
+Scouting flavor to guide posture and expression: Prototype size and athleticism with enough late-2025 momentum to sit near the top, but his true grade should stay volatile until more starts are in.
+Visual style: official team media-day headshot, chest-up, straight-on camera, neutral confident expression, realistic skin texture, studio lighting, dark matte background.
+Wardrobe: generic professional football jersey or training top in team-inspired colors, but no real team logos, NFL shields, brand marks, visible text, watermarks, or captions.
+Framing: square 1024x1024 composition, face centered, shoulders visible, no helmet, no action pose, no extra people.

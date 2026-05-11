@@ -112,11 +112,11 @@ QB_PROFILES: dict[tuple[str, str, str], dict[str, object]] = {
     ("Shedeur", "Sanders", "CLE"): profile(72, 70, 68, 80, 72, 68, 69, 70, 70, 66, 60, 61, 62, 58, 68, 52, "Developmental pocket prospect with useful accuracy but real rookie volatility."),
     ("Michael", "Penix Jr.", "ATL"): profile(79, 77, 78, 88, 78, 75, 76, 76, 76, 74, 65, 66, 66, 64, 74, 48, "Arm talent remains, but 2025 disappointment/injury lowers readiness."),
     ("J.J.", "McCarthy", "MIN"): profile(78, 76, 76, 85, 76, 75, 75, 75, 77, 74, 74, 75, 76, 76, 73, 52, "Some late growth, but still a developmental starter profile."),
-    ("Quinn", "Ewers", "MIA"): profile(78, 76, 77, 86, 77, 75, 75, 75, 76, 74, 67, 68, 68, 66, 73, 54, "Arm talent and prospect pedigree, but not starter-ready in ratings."),
+    ("Quinn", "Ewers", "MIA"): profile(70, 68, 69, 84, 70, 68, 68, 68, 69, 66, 67, 68, 68, 66, 70, 54, "Toolsy developmental backup; starter upside and readiness toned below Malik Willis."),
     ("Fernando", "Mendoza", "LV"): profile(77, 75, 77, 89, 76, 74, 74, 74, 76, 73, 68, 69, 68, 68, 72, 55, "Top-pick upside in a weaker QB class, with rookie readiness toned down."),
     ("Justin", "Fields", "KC"): profile(75, 73, 75, 88, 75, 75, 73, 74, 74, 72, 90, 91, 88, 88, 70, 60, "Elite rushing still matters, passing role remains limited."),
     ("Justin", "Fields", "NYJ"): profile(74, 72, 74, 88, 74, 74, 72, 73, 73, 71, 90, 91, 88, 88, 70, 58, "Elite rushing still matters, passing role remains limited."),
-    ("Malik", "Willis", "MIA"): profile(74, 72, 75, 87, 74, 73, 72, 72, 74, 71, 88, 89, 88, 86, 71, 58, "Improved athletic backup, still a limited passer."),
+    ("Malik", "Willis", "MIA"): profile(76, 74, 75, 91, 76, 74, 74, 74, 76, 73, 89, 90, 89, 88, 74, 60, "Improved athletic bridge QB with enough growth runway to rate above Quinn Ewers in Miami."),
     ("Anthony", "Richardson Sr.", "IND"): profile(72, 70, 74, 96, 72, 73, 71, 71, 73, 70, 91, 92, 90, 90, 68, 50, "Rare tools, but passing polish and durability remain major constraints."),
 }
 

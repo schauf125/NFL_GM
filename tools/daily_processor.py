@@ -24,6 +24,7 @@ import league_calendar
 import ai_gm
 import contract_negotiations
 import draft_class_bootstrap
+import preseason_processor
 import roster_rules
 
 
@@ -56,11 +57,6 @@ AI_GM_EVENT_PHASES = {
     "SCOUTING_COMBINE": "draft_prep",
     "DRAFT_FACILITY_VISIT_DEADLINE": "draft_prep",
     "NFL_DRAFT": "draft_prep",
-    "VETERAN_TRAINING_CAMP_REPORTING": "roster_cutdown",
-    "HALL_OF_FAME_GAME": "roster_cutdown",
-    "PRESEASON_WEEK_1": "roster_cutdown",
-    "PRESEASON_WEEK_2": "roster_cutdown",
-    "PRESEASON_WEEK_3": "roster_cutdown",
     "FINAL_ROSTER_CUTDOWN_53": "roster_cutdown",
     "PRACTICE_SQUADS_ESTABLISHED": "roster_cutdown",
     "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN": "roster_cutdown",
@@ -203,6 +199,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     roster_rules.ensure_schema(con)
     roster_rules.seed_rules(con)
     injury_model.ensure_schema(con)
+    preseason_processor.ensure_schema(con)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS game_daily_processing_runs (
@@ -599,6 +596,16 @@ def process_calendar_events(con: sqlite3.Connection, game_id: str, target_date: 
                 refresh_legacy_without_offboard=True,
             )
             details = f"{details} {draft_result.message}".strip()
+        preseason_result = preseason_processor.run_for_event(
+            con,
+            game_id=game_id,
+            season=int(event["league_year"]),
+            event_code=str(event["event_code"]),
+            event_date=str(event["event_start_date"]),
+            seed=f"{game_id}:{event['league_year']}:{event['event_code']}:{event['event_start_date']}",
+        )
+        if preseason_result is not None:
+            details = f"{details} {preseason_processor.result_summary(preseason_result)}".strip()
         ai_gm_note = run_ai_gm_event_reviews(con, game_id=game_id, event=event)
         if ai_gm_note:
             details = f"{details} {ai_gm_note}".strip()
@@ -973,7 +980,7 @@ def print_event_range_result(result: EventRangeResult) -> None:
     print(f"  Event dates checked: {result.event_dates_processed}")
     print(f"  Calendar events processed: {result.processed_event_count}/{result.event_count}")
     print(f"  Alerts created: {result.alerts_created}")
-    print("  Hooks: AI GM review generation on processed calendar events; roster checks weekly only")
+    print("  Hooks: AI GM review generation, preseason/camp processing, FA movement on camp dates; roster checks weekly only")
 
 
 def print_alerts(rows: list[sqlite3.Row]) -> None:

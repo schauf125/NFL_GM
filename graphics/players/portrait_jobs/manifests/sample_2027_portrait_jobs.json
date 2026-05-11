@@ -1,0 +1,10 @@
+{
+  "created_at": "2026-05-01T03:40:55Z",
+  "job_count": 2,
+  "notes": "Prompt/job prep only. No image API call has been made.",
+  "prompts_dir": "graphics/players/portrait_jobs/prompts/sample_2027_portrait_jobs",
+  "queued_jsonl": "graphics/players/portrait_jobs/queued/sample_2027_portrait_jobs.jsonl",
+  "run_id": "sample_2027_portrait_jobs",
+  "staged_dir": "graphics/players/portrait_jobs/staged/sample_2027_portrait_jobs",
+  "status": "queued"
+}

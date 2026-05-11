@@ -29,6 +29,8 @@ import export_game_center_ui_data
 import export_player_card_ui_data
 import export_player_profile_ui_data
 import free_agency_processor
+import injury_notifications
+import sim_control
 import view_box_score
 
 
@@ -55,6 +57,7 @@ PLAYER_EXPORT_ACTIONS = {
     "sim_season",
     "postseason",
     "complete_season",
+    "advance_to_date",
     "advance_next_league_year",
     "free_agency_advance_hour",
     "free_agency_advance_day",
@@ -118,9 +121,12 @@ FREE_AGENCY_RUN_ACTIONS = {
 }
 CALENDAR_RUN_ACTIONS = {
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
 }
+INJURY_ALERT_ACTIONS = {"sim_week", "sim_season"}
+SIM_CANCEL_ACTIONS = {"sim_week", "sim_season"}
 
 
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -640,13 +646,49 @@ def schedule_payload_for_active_db(season: int | None = None, week: int | None =
     }
 
 
-def calendar_payload_for_active_db(season: int | None = None, current_date: str | None = None) -> dict[str, Any]:
+def live_calendar_focus_date(conn: sqlite3.Connection, season: int, fallback: str) -> str:
+    if not export_game_center_ui_data.table_exists(conn, "season_games"):
+        return fallback
+    row = conn.execute(
+        """
+        SELECT MAX(game_date) AS latest_played_date
+        FROM season_games
+        WHERE season = ?
+          AND played = 1
+          AND game_type = 'REG'
+        """,
+        (season,),
+    ).fetchone()
+    if row and row["latest_played_date"]:
+        return str(row["latest_played_date"])
+    row = conn.execute(
+        """
+        SELECT MIN(game_date) AS next_game_date
+        FROM season_games
+        WHERE season = ?
+          AND played = 0
+          AND game_type = 'REG'
+        """,
+        (season,),
+    ).fetchone()
+    if row and row["next_game_date"]:
+        return str(row["next_game_date"])
+    return fallback
+
+
+def calendar_payload_for_active_db(
+    season: int | None = None,
+    current_date: str | None = None,
+    live_focus: bool = False,
+) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
     target_season = int(season or context["currentSeason"])
     target_date = current_date or str(context["currentDate"])
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        if live_focus:
+            target_date = live_calendar_focus_date(conn, target_season, str(context["currentDate"]))
         active = export_game_center_ui_data.active_save(conn) or {}
         game_id = active.get("game_id") or active.get("save_id")
         user_team_id = active.get("user_team_id")
@@ -661,6 +703,8 @@ def calendar_payload_for_active_db(season: int | None = None, current_date: str 
     return {
         "season": target_season,
         "currentDate": target_date,
+        "saveCurrentDate": str(context["currentDate"]),
+        "liveFocus": bool(live_focus),
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
         "calendar": calendar,
         "events": events,
@@ -755,6 +799,66 @@ def enrich_inbox_messages(conn: sqlite3.Connection, inbox: list[dict[str, Any]])
         elif table == "draft_prospects" and related_id in prospects:
             message["relatedProspect"] = prospects[related_id]
 
+    enrich_inbox_player_mentions(conn, inbox, players)
+
+
+def enrich_inbox_player_mentions(
+    conn: sqlite3.Connection,
+    inbox: list[dict[str, Any]],
+    known_players: dict[int, dict[str, Any]] | None = None,
+) -> None:
+    if not inbox or not table_exists(conn, "players"):
+        return
+    haystack_by_message = {
+        int(message["message_id"]): f"{message.get('title') or ''}\n{message.get('body') or ''}".lower()
+        for message in inbox
+        if message.get("message_id")
+    }
+    if not haystack_by_message:
+        return
+    rows = conn.execute(
+        """
+        SELECT
+            p.player_id,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            t.abbreviation AS team
+        FROM players p
+        LEFT JOIN teams t ON t.team_id = p.team_id
+        WHERE p.first_name IS NOT NULL
+          AND p.last_name IS NOT NULL
+          AND LENGTH(TRIM(p.first_name || ' ' || p.last_name)) >= 6
+        """
+    ).fetchall()
+    candidates = [dict(row) for row in rows]
+    by_id = dict(known_players or {})
+    for player in candidates:
+        by_id[int(player["player_id"])] = player
+
+    for message in inbox:
+        message_id = int(message["message_id"]) if message.get("message_id") else None
+        text = haystack_by_message.get(message_id or -1, "")
+        if not text:
+            continue
+        mentioned: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        if message.get("relatedPlayer", {}).get("player_id"):
+            player_id = int(message["relatedPlayer"]["player_id"])
+            mentioned.append(message["relatedPlayer"])
+            seen.add(player_id)
+        for player in candidates:
+            player_id = int(player["player_id"])
+            if player_id in seen:
+                continue
+            name = str(player.get("player_name") or "").strip()
+            if name and name.lower() in text:
+                mentioned.append(by_id[player_id])
+                seen.add(player_id)
+            if len(mentioned) >= 8:
+                break
+        if mentioned:
+            message["mentionedPlayers"] = mentioned
+
 
 def league_news_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
     db_path = active_db_path()
@@ -764,6 +868,40 @@ def league_news_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
     return {
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
         "leagueNews": news,
+    }
+
+
+def transactions_payload_for_active_db(limit: int = 400, include_baseline: bool = False) -> dict[str, Any]:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        transactions = export_game_center_ui_data.league_transactions_summary(
+            conn,
+            limit=limit,
+            include_baseline=include_baseline,
+        )
+    return {
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "transactions": transactions,
+    }
+
+
+def injuries_payload_for_active_db(active_limit: int = 160, recent_limit: int = 120) -> dict[str, Any]:
+    db_path = active_db_path()
+    context = game_context(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        active = export_game_center_ui_data.active_save(conn)
+        injuries = export_game_center_ui_data.injury_center_summary(
+            conn,
+            current_date=context.get("current_date"),
+            user_team_id=(active or {}).get("user_team_id"),
+            active_limit=active_limit,
+            recent_limit=recent_limit,
+        )
+    return {
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "injuries": injuries,
     }
 
 
@@ -794,7 +932,7 @@ def draft_payload_for_active_db(year: int | None = None) -> dict[str, Any]:
     }
 
 
-def scouting_payload_for_active_db(limit: int = 80) -> dict[str, Any]:
+def scouting_payload_for_active_db(limit: int = 240) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -965,6 +1103,11 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         return play("delete-save", game_id)
     if action == "advance_next_event":
         return play("advance-to-next-event")
+    if action == "advance_to_date":
+        target_date = str(params.get("date") or "").strip()
+        if not target_date:
+            raise ValueError("advance_to_date requires date.")
+        return play("advance-to-date", "--date", target_date)
     if action == "validate_rosters":
         return play("validate-rosters", "--summary-only")
     if action == "auto_cutdown":
@@ -1683,6 +1826,14 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if not prospect_id:
             raise ValueError("scouting_one requires prospect_id.")
         return play("scouting", "assign", "--prospect-id", str(int(prospect_id)))
+    if action == "scouting_assign_batch":
+        prospect_ids = params.get("prospect_ids") or []
+        if not isinstance(prospect_ids, list) or not prospect_ids:
+            raise ValueError("scouting_assign_batch requires prospect_ids.")
+        command = ["scouting", "assign-batch"]
+        for prospect_id in prospect_ids:
+            command.extend(["--prospect-id", str(int(prospect_id))])
+        return play(*command)
     if action == "scouting_unassign":
         prospect_id = params.get("prospect_id")
         if not prospect_id:
@@ -1805,6 +1956,7 @@ def action_response_summary(
         summary["affectedPanels"] = ["calendar", "season", "inbox", "leagueNews"]
         summary["title"] = {
             "advance_next_event": "Advanced To Next Date",
+            "advance_to_date": "Advanced To Date",
             "advance_next_league_year": "Advanced To Next League Year",
         }.get(action, summary["title"])
     if params.get("apply"):
@@ -1821,6 +1973,16 @@ def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return run_box_score_action(params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
     command = action_command(action, params, before)
+    if action in SIM_CANCEL_ACTIONS:
+        sim_control.clear_cancel(active_db_path())
+    injury_marker = None
+    if action in INJURY_ALERT_ACTIONS:
+        try:
+            with sqlite3.connect(active_db_path()) as marker_con:
+                marker_con.row_factory = sqlite3.Row
+                injury_marker = injury_notifications.max_event_id(marker_con)
+        except Exception:
+            injury_marker = None
     started = perf_counter()
     result = subprocess.run(
         command,
@@ -1857,7 +2019,30 @@ def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
         after, app_shell_after = write_exports(include_players=include_players)
         response["state"] = after
         response["app_shell_state"] = app_shell_after
+    if result.returncode == 0 and injury_marker is not None:
+        try:
+            with sqlite3.connect(active_db_path()) as alert_con:
+                alert_con.row_factory = sqlite3.Row
+                response["injuryAlerts"] = injury_notifications.alert_payloads_since(
+                    alert_con,
+                    min_event_id=injury_marker,
+                )
+        except Exception as exc:
+            response["injuryAlertsError"] = str(exc)
     return response
+
+
+def request_runner_cancel(action: str | None = None) -> dict[str, Any]:
+    db_path = active_db_path()
+    marker = sim_control.request_cancel(
+        db_path,
+        reason=f"UI stop requested for {action or 'running action'}",
+    )
+    return {
+        "status": "requested",
+        "message": "Stop requested. The sim will pause after the current game or weekly hook finishes.",
+        "marker": str(marker),
+    }
 
 
 def run_box_score_action(params: dict[str, Any]) -> dict[str, Any]:
@@ -2032,9 +2217,11 @@ class UiHandler(SimpleHTTPRequestHandler):
                 params = parse_qs(parsed.query)
                 requested_season = params.get("season")
                 requested_date = params.get("date")
+                requested_live = params.get("live")
                 season = int(requested_season[0]) if requested_season and requested_season[0] else None
                 current_date = requested_date[0] if requested_date and requested_date[0] else None
-                self.write_json(HTTPStatus.OK, calendar_payload_for_active_db(season, current_date))
+                live_focus = bool(requested_live and requested_live[0] in {"1", "true", "yes"})
+                self.write_json(HTTPStatus.OK, calendar_payload_for_active_db(season, current_date, live_focus))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -2063,8 +2250,30 @@ class UiHandler(SimpleHTTPRequestHandler):
             try:
                 params = parse_qs(parsed.query)
                 requested_limit = params.get("limit")
-                limit = int(requested_limit[0]) if requested_limit and requested_limit[0] else 80
+                limit = int(requested_limit[0]) if requested_limit and requested_limit[0] else 240
                 self.write_json(HTTPStatus.OK, league_news_payload_for_active_db(limit))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/transactions":
+            try:
+                params = parse_qs(parsed.query)
+                requested_limit = params.get("limit")
+                requested_baseline = params.get("include_baseline")
+                limit = int(requested_limit[0]) if requested_limit and requested_limit[0] else 400
+                include_baseline = bool(requested_baseline and requested_baseline[0] in {"1", "true", "yes"})
+                self.write_json(HTTPStatus.OK, transactions_payload_for_active_db(limit, include_baseline))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/injuries":
+            try:
+                params = parse_qs(parsed.query)
+                active_limit_raw = params.get("active_limit")
+                recent_limit_raw = params.get("recent_limit")
+                active_limit = int(active_limit_raw[0]) if active_limit_raw and active_limit_raw[0] else 160
+                recent_limit = int(recent_limit_raw[0]) if recent_limit_raw and recent_limit_raw[0] else 120
+                self.write_json(HTTPStatus.OK, injuries_payload_for_active_db(active_limit, recent_limit))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -2135,6 +2344,16 @@ class UiHandler(SimpleHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/cancel":
+            try:
+                length = int(self.headers.get("Content-Length") or "0")
+                body = self.rfile.read(length).decode("utf-8") if length else "{}"
+                request = json.loads(body)
+                action = str(request.get("action") or "")
+                self.write_json(HTTPStatus.OK, request_runner_cancel(action))
+            except Exception as exc:
+                self.write_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            return
         if parsed.path != "/api/run":
             self.write_json(HTTPStatus.NOT_FOUND, {"error": "Unknown endpoint."})
             return
@@ -2163,7 +2382,12 @@ def main() -> int:
     args = parser.parse_args()
 
     mimetypes.add_type("text/javascript", ".js")
-    write_exports()
+    try:
+        write_exports()
+    except sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower():
+            raise
+        print(f"Initial export skipped because the active save is busy: {exc}")
     server = ThreadingHTTPServer((args.host, args.port), UiHandler)
     print(f"NFL GM UI runner serving http://{args.host}:{args.port}/ui/app_shell/index.html")
     try:

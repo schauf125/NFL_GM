@@ -5,6 +5,7 @@
     runnerAvailable: location.protocol.startsWith("http"),
     runnerBusy: false,
     busyAction: null,
+    cancelRequested: false,
     lastResult: null,
     selectedDraftProspectId: null,
     draftProspectPopoverOpen: false,
@@ -19,7 +20,9 @@
     selectedCalendarItem: null,
     calendarBoxScores: {},
     calendarBoxScoreLoadingId: null,
+    calendarLiveFocus: false,
     boxScoreModal: null,
+    injuryModal: null,
     selectedAiGmReviewId: null,
     newsFilter: "all",
     statsLiveSeason: null,
@@ -32,6 +35,12 @@
     inboxLoading: false,
     leagueNewsLiveKey: null,
     leagueNewsLoading: false,
+    transactionsLiveKey: null,
+    transactionsLoading: false,
+    transactionsCategoryFilter: "all",
+    injuriesLiveKey: null,
+    injuriesLoading: false,
+    injuriesScopeFilter: "all",
     draftLiveKey: null,
     draftLoading: false,
     scoutingLiveKey: null,
@@ -45,6 +54,8 @@
     rosterStatusFilter: "all",
     selectedRosterPlayerId: null,
     rosterSort: { key: "role", direction: "desc" },
+    localScoutingKey: null,
+    localScoutingSelections: [],
     contractsLiveKey: null,
     contractsLoading: false,
     depthChartLiveKey: null,
@@ -84,6 +95,7 @@
     "postseason",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
   ]);
@@ -102,6 +114,7 @@
     "postseason",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
     "free_agency_start",
@@ -118,6 +131,7 @@
     "postseason",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "inbox_mark_read",
     "event_generate_week",
@@ -130,9 +144,47 @@
     "postseason",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "league_news_seed",
     "event_generate_week",
+  ]);
+  const TRANSACTIONS_REFRESH_ACTIONS = new Set([
+    "new_june1_save",
+    "load_game",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_next_league_year",
+    "advance_to_draft",
+    "sim_week",
+    "sim_season",
+    "postseason",
+    "complete_season",
+    "free_agency_start",
+    "free_agency_cpu_seed",
+    "free_agency_advance_hour",
+    "free_agency_advance_day",
+    "free_agency_offer",
+    "draft_pick",
+    "draft_skip",
+    "draft_skip_to_user",
+    "draft_finish",
+    "contract_extend",
+    "contract_release",
+    "contract_restructure",
+    "roster_release_player",
+    "depth_chart_set",
+    "depth_chart_move",
+  ]);
+  const INJURIES_REFRESH_ACTIONS = new Set([
+    "load_game",
+    "sim_week",
+    "sim_season",
+    "postseason",
+    "complete_season",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_next_league_year",
   ]);
   const DRAFT_REFRESH_ACTIONS = new Set([
     "advance_to_draft",
@@ -149,11 +201,13 @@
     "sim_week",
     "sim_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
     "scouting_setup",
     "scouting_auto",
     "scouting_one",
+    "scouting_assign_batch",
     "scouting_unassign",
     "scouting_random_two",
     "scouting_discover_four",
@@ -162,11 +216,21 @@
     "scouting_top30_visit",
     "scouting_top30_auto",
   ]);
+  const SCOUTING_FLUSH_ACTIONS = new Set([
+    "sim_week",
+    "sim_season",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_next_league_year",
+    "postseason",
+    "complete_season",
+  ]);
   const FREE_AGENCY_REFRESH_ACTIONS = new Set([
     "new_june1_save",
     "load_game",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
     "free_agency_start",
@@ -241,11 +305,11 @@
   function navShortLabel(label) {
     const clean = String(label || "").trim();
     const exact = {
-      "Season Hub": "Hub",
       "League Table": "Tbl",
       "Stats": "Sta",
       "Inbox": "In",
       "League News": "News",
+      "Transactions": "Txn",
       "Scouting": "Sct",
       "Roster Hub": "Ros",
       "Depth Chart": "Dep",
@@ -303,6 +367,10 @@
   }
 
   function append(parent, children) {
+    if (!Array.isArray(children)) {
+      if (children !== null && children !== undefined) parent.append(children);
+      return parent;
+    }
     children.forEach((child) => {
       if (child !== null && child !== undefined) parent.append(child);
     });
@@ -446,6 +514,7 @@
   ];
   const ROSTER_GROUPS = [
     { value: "all", label: "All", positions: [] },
+    { value: "PS", label: "Practice Squad", positions: [] },
     { value: "QB", label: "QB", positions: ["QB"] },
     { value: "RB", label: "RB", positions: ["RB", "FB"] },
     { value: "WR", label: "WR", positions: ["WR"] },
@@ -494,84 +563,84 @@
     "PR",
   ];
   const OFFENSE_FORMATION_SLOTS = [
-    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
-    { slot: "SWR", label: "Slot", row: 5, col: "3 / span 2" },
-    { slot: "LT", label: "LT", row: 3, col: "4" },
-    { slot: "LG", label: "LG", row: 3, col: "5" },
-    { slot: "C", label: "C", row: 3, col: "6" },
-    { slot: "RG", label: "RG", row: 3, col: "7" },
-    { slot: "RT", label: "RT", row: 3, col: "8" },
-    { slot: "TE", label: "TE", row: 3, col: "9 / span 2" },
-    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
-    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
-    { slot: "RB", label: "HB", row: 6, col: "8 / span 2" },
+    { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
+    { slot: "SWR", label: "Slot", row: 4, col: "3 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "5" },
+    { slot: "LG", label: "LG", row: 3, col: "6" },
+    { slot: "C", label: "C", row: 3, col: "7" },
+    { slot: "RG", label: "RG", row: 3, col: "8" },
+    { slot: "RT", label: "RT", row: 3, col: "9" },
+    { slot: "TE", label: "TE", row: 3, col: "10" },
+    { slot: "RWR", label: "Z", row: 3, col: "12 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "7" },
+    { slot: "RB", label: "HB", row: 6, col: "7" },
   ];
   const OFFENSE_12_FORMATION_SLOTS = [
-    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
-    { slot: "LT", label: "LT", row: 3, col: "4" },
-    { slot: "LG", label: "LG", row: 3, col: "5" },
-    { slot: "C", label: "C", row: 3, col: "6" },
-    { slot: "RG", label: "RG", row: 3, col: "7" },
-    { slot: "RT", label: "RT", row: 3, col: "8" },
-    { slot: "TE", label: "Y", row: 3, col: "9 / span 2", rank: 1 },
-    { slot: "TE", label: "F", row: 5, col: "9 / span 2", rank: 2 },
-    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
-    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
-    { slot: "RB", label: "HB", row: 6, col: "8 / span 2" },
+    { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "5" },
+    { slot: "LG", label: "LG", row: 3, col: "6" },
+    { slot: "C", label: "C", row: 3, col: "7" },
+    { slot: "RG", label: "RG", row: 3, col: "8" },
+    { slot: "RT", label: "RT", row: 3, col: "9" },
+    { slot: "TE", label: "Y", row: 3, col: "10", rank: 1 },
+    { slot: "TE", label: "F", row: 4, col: "11", rank: 2 },
+    { slot: "RWR", label: "Z", row: 3, col: "12 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "7" },
+    { slot: "RB", label: "HB", row: 6, col: "7" },
   ];
   const OFFENSE_21_FORMATION_SLOTS = [
-    { slot: "LWR", label: "X", row: 5, col: "1 / span 2" },
-    { slot: "LT", label: "LT", row: 3, col: "4" },
-    { slot: "LG", label: "LG", row: 3, col: "5" },
-    { slot: "C", label: "C", row: 3, col: "6" },
-    { slot: "RG", label: "RG", row: 3, col: "7" },
-    { slot: "RT", label: "RT", row: 3, col: "8" },
-    { slot: "TE", label: "TE", row: 3, col: "9 / span 2" },
-    { slot: "RWR", label: "Z", row: 5, col: "10 / span 2" },
-    { slot: "QB", label: "QB", row: 5, col: "6 / span 2" },
-    { slot: "FB", label: "FB", row: 6, col: "6 / span 2" },
-    { slot: "RB", label: "HB", row: 7, col: "6 / span 2" },
+    { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "5" },
+    { slot: "LG", label: "LG", row: 3, col: "6" },
+    { slot: "C", label: "C", row: 3, col: "7" },
+    { slot: "RG", label: "RG", row: 3, col: "8" },
+    { slot: "RT", label: "RT", row: 3, col: "9" },
+    { slot: "TE", label: "TE", row: 3, col: "10" },
+    { slot: "RWR", label: "Z", row: 3, col: "12 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "7" },
+    { slot: "FB", label: "FB", row: 6, col: "6" },
+    { slot: "RB", label: "HB", row: 7, col: "7" },
   ];
   const DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LEO", row: 1, col: "2 / span 2" },
-    { slot: "LDL", label: "DT", row: 1, col: "4 / span 2" },
+    { slot: "LEDGE", label: "LEO", row: 1, col: "3" },
+    { slot: "LDL", label: "DT", row: 1, col: "5" },
     { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
-    { slot: "RDL", label: "DT", row: 1, col: "8 / span 2" },
-    { slot: "REDGE", label: "REO", row: 1, col: "10 / span 2" },
-    { slot: "WLB", label: "WLB", row: 4, col: "4 / span 2" },
-    { slot: "MLB", label: "MLB", row: 4, col: "7 / span 2" },
-    { slot: "SLB", label: "SLB", row: 4, col: "9 / span 2", optional: true },
+    { slot: "RDL", label: "DT", row: 1, col: "8" },
+    { slot: "REDGE", label: "REO", row: 1, col: "10" },
+    { slot: "WLB", label: "WLB", row: 3, col: "5" },
+    { slot: "MLB", label: "MLB", row: 3, col: "7" },
+    { slot: "SLB", label: "SLB", row: 3, col: "9", optional: true },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
-    { slot: "NB", label: "Nickel", row: 5, col: "3 / span 2" },
+    { slot: "NB", label: "Nickel", row: 4, col: "3 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const BASE_DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LEO", row: 1, col: "2 / span 2" },
-    { slot: "LDL", label: "DT", row: 1, col: "4 / span 2" },
+    { slot: "LEDGE", label: "LEO", row: 1, col: "3" },
+    { slot: "LDL", label: "DT", row: 1, col: "5" },
     { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
-    { slot: "RDL", label: "DT", row: 1, col: "8 / span 2" },
-    { slot: "REDGE", label: "REO", row: 1, col: "10 / span 2" },
-    { slot: "WLB", label: "WILB", row: 4, col: "5 / span 2" },
-    { slot: "MLB", label: "MILB", row: 4, col: "7 / span 2" },
+    { slot: "RDL", label: "DT", row: 1, col: "8" },
+    { slot: "REDGE", label: "REO", row: 1, col: "10" },
+    { slot: "WLB", label: "WILB", row: 3, col: "6" },
+    { slot: "MLB", label: "MILB", row: 3, col: "8" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const BASE_43_DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LE", row: 1, col: "3 / span 2" },
-    { slot: "LDL", label: "DT", row: 1, col: "5 / span 2" },
-    { slot: "RDL", label: "DT", row: 1, col: "7 / span 2" },
-    { slot: "REDGE", label: "RE", row: 1, col: "9 / span 2" },
-    { slot: "WLB", label: "WLB", row: 4, col: "3 / span 2" },
-    { slot: "MLB", label: "MLB", row: 4, col: "6 / span 2" },
-    { slot: "SLB", label: "SLB", row: 4, col: "9 / span 2" },
+    { slot: "LEDGE", label: "LE", row: 1, col: "4" },
+    { slot: "LDL", label: "DT", row: 1, col: "6" },
+    { slot: "RDL", label: "DT", row: 1, col: "7" },
+    { slot: "REDGE", label: "RE", row: 1, col: "9" },
+    { slot: "WLB", label: "WLB", row: 3, col: "4" },
+    { slot: "MLB", label: "MLB", row: 3, col: "7" },
+    { slot: "SLB", label: "SLB", row: 3, col: "10" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "4 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "8 / span 2" },
+    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const SPECIAL_TEAMS_FORMATION_SLOTS = [
     { slot: "PK", label: "Kicker" },
@@ -798,9 +867,19 @@
     const id = String(prospectId || "");
     state.selectedDraftProspectId = prospectId;
     state.selectedCalendarItem = null;
+    state.draftProspectPopoverOpen = true;
     const scoutingHasProspect = (data.scouting?.board || []).some((prospect) => String(prospect.prospect_id) === id);
     const draftHasProspect = (data.draft?.board || []).some((prospect) => String(prospect.prospect_id) === id);
     state.view = scoutingHasProspect || !draftHasProspect ? "scouting" : "draft";
+    if (!scoutingHasProspect && !draftHasProspect && runnerMode()) {
+      render();
+      loadLiveScouting({ limit: 500, quiet: true }).then(() => {
+        state.selectedDraftProspectId = prospectId;
+        state.draftProspectPopoverOpen = true;
+        render();
+      });
+      return;
+    }
     render();
   }
 
@@ -844,6 +923,15 @@
     return state.runnerAvailable && location.protocol.startsWith("http");
   }
 
+  function switchView(view, options = {}) {
+    state.view = view;
+    render();
+    if (options.scroll !== false) {
+      refs.content?.scrollIntoView({ block: "start" });
+    }
+    if (options.refresh) refreshCurrentView();
+  }
+
   function isDraftAction(action) {
     return DRAFT_ACTIONS.has(action);
   }
@@ -862,7 +950,7 @@
     const url = apiUrl(path, options.params);
     const key = `${scope}:${url}`;
     if (liveApi.inflight.has(key)) return liveApi.inflight.get(key);
-    if (options.loadingKey) {
+    if (options.loadingKey && !options.quiet) {
       state[options.loadingKey] = true;
       updateLiveStatus();
     }
@@ -883,7 +971,7 @@
       })
       .finally(() => {
         liveApi.inflight.delete(key);
-        if (options.loadingKey) {
+        if (options.loadingKey && !options.quiet) {
           state[options.loadingKey] = false;
           updateLiveStatus();
         }
@@ -962,13 +1050,15 @@
     return true;
   }
 
-  async function loadLiveCalendar() {
+  async function loadLiveCalendar(options = {}) {
     if (!location.protocol.startsWith("http") || state.calendarLoading) return false;
     const season = data.currentSeason || data.season?.season || "";
-    const currentDate = data.currentDate || data.calendar?.focusDate || "";
+    const liveFocus = Boolean(options.liveFocus);
+    const currentDate = liveFocus ? "" : (data.currentDate || data.calendar?.focusDate || "");
     const payload = await apiGet("calendar", "/api/calendar", {
-      params: { season, date: currentDate },
+      params: { season, date: currentDate, live: liveFocus ? "1" : "" },
       loadingKey: "calendarLoading",
+      quiet: Boolean(options.quiet),
     });
     if (!payload) return false;
     data = {
@@ -977,8 +1067,10 @@
       events: payload.events || data.events || [],
       calendarGeneratedAt: payload.generatedAt,
       currentDate: payload.currentDate || data.currentDate,
+      saveCurrentDate: payload.saveCurrentDate || data.saveCurrentDate,
     };
     state.calendarLiveKey = `${payload.season || season || ""}:${payload.currentDate || currentDate || ""}`;
+    state.calendarLiveFocus = Boolean(payload.liveFocus);
     return true;
   }
 
@@ -992,6 +1084,19 @@
     const news = data.leagueNews || {};
     const first = (news.items || [])[0] || {};
     return `${news.gameId || ""}:${news.updatedAt || data.currentDate || ""}:${news.counts?.total || 0}:${first.news_id || ""}`;
+  }
+
+  function transactionsLiveKey() {
+    const tx = data.transactions || {};
+    const first = (tx.items || [])[0] || {};
+    return `${data.activeSave?.game_id || data.activeSave?.save_id || ""}:${tx.counts?.total || 0}:${first.id || ""}:${first.date || ""}:${state.transactionsCategoryFilter}`;
+  }
+
+  function injuriesLiveKey() {
+    const injuries = data.injuries || {};
+    const active = (injuries.active || [])[0] || {};
+    const recent = (injuries.recent || [])[0] || {};
+    return `${data.activeSave?.game_id || data.activeSave?.save_id || ""}:${injuries.counts?.active || 0}:${active.activeInjuryId || ""}:${recent.eventId || ""}:${injuries.updatedAt || ""}:${state.injuriesScopeFilter}`;
   }
 
   function draftLiveKey() {
@@ -1025,6 +1130,25 @@
       boardFirst.prospect_id || "",
       boardFirst.scouting_confidence || "",
     ].join(":");
+  }
+
+  function currentScoutingSelectionKey() {
+    const scouting = data.scouting || {};
+    const period = scouting.period || {};
+    return `${scouting.gameId || ""}:${scouting.draftYear || ""}:${period.season || ""}:${period.week || ""}`;
+  }
+
+  function ensureLocalScoutingSelections() {
+    const key = currentScoutingSelectionKey();
+    if (state.localScoutingKey !== key) {
+      state.localScoutingKey = key;
+      state.localScoutingSelections = [];
+    }
+    return state.localScoutingSelections || [];
+  }
+
+  function localScoutingSelectionIds() {
+    return ensureLocalScoutingSelections().map((id) => Number(id)).filter(Boolean);
   }
 
   function freeAgencyLiveKey() {
@@ -1138,6 +1262,38 @@
     return true;
   }
 
+  async function loadLiveTransactions() {
+    if (!location.protocol.startsWith("http") || state.transactionsLoading) return false;
+    const payload = await apiGet("transactions", "/api/transactions", {
+      params: { limit: 500 },
+      loadingKey: "transactionsLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      transactions: payload.transactions || data.transactions || { items: [], categories: [], counts: {} },
+      transactionsGeneratedAt: payload.generatedAt,
+    };
+    state.transactionsLiveKey = transactionsLiveKey();
+    return true;
+  }
+
+  async function loadLiveInjuries() {
+    if (!location.protocol.startsWith("http") || state.injuriesLoading) return false;
+    const payload = await apiGet("injuries", "/api/injuries", {
+      params: { active_limit: 180, recent_limit: 140 },
+      loadingKey: "injuriesLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      injuries: payload.injuries || data.injuries || { active: [], recent: [], counts: {} },
+      injuriesGeneratedAt: payload.generatedAt,
+    };
+    state.injuriesLiveKey = injuriesLiveKey();
+    return true;
+  }
+
   async function loadLiveDraft() {
     if (!location.protocol.startsWith("http") || state.draftLoading) return false;
     const year = data.draft?.year || data.currentSeason || "";
@@ -1156,11 +1312,12 @@
     return true;
   }
 
-  async function loadLiveScouting() {
+  async function loadLiveScouting(options = {}) {
     if (!location.protocol.startsWith("http") || state.scoutingLoading) return false;
     const payload = await apiGet("scouting", "/api/scouting", {
-      params: { limit: 80 },
+      params: { limit: options.limit || 240 },
       loadingKey: "scoutingLoading",
+      quiet: Boolean(options.quiet),
     });
     if (!payload) return false;
     data = {
@@ -1286,6 +1443,12 @@
     if (LEAGUE_NEWS_REFRESH_ACTIONS.has(action) || action.startsWith("ai_gm_")) {
       refreshes.push(loadLiveLeagueNews());
     }
+    if (TRANSACTIONS_REFRESH_ACTIONS.has(action) || action.startsWith("ai_gm_")) {
+      refreshes.push(loadLiveTransactions());
+    }
+    if (INJURIES_REFRESH_ACTIONS.has(action)) {
+      refreshes.push(loadLiveInjuries());
+    }
     if (DRAFT_REFRESH_ACTIONS.has(action) || isDraftAction(action) || action === "ai_gm_draft_plan" || action === "ai_gm_draft_plan_persist") {
       refreshes.push(loadLiveDraft());
     }
@@ -1325,11 +1488,29 @@
     };
   }
 
+  function startSimProgressPolling(action) {
+    if (!["sim_week", "sim_season"].includes(action) || !runnerMode()) return null;
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      const changed = await loadLiveCalendar({ liveFocus: true, quiet: true });
+      if (changed && state.view === "calendar") render();
+    };
+    tick();
+    const interval = window.setInterval(tick, 1600);
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }
+
   function activeViewRefreshers() {
     if (state.view === "season") return [loadLiveSeason, loadLiveCalendar];
     if (state.view === "stats") return [loadLiveLeaders];
     if (state.view === "inbox") return [loadLiveInbox];
     if (state.view === "leagueNews") return [loadLiveLeagueNews];
+    if (state.view === "transactions") return [loadLiveTransactions];
+    if (state.view === "injuries") return [loadLiveInjuries];
     if (state.view === "scouting") return [loadLiveScouting, loadLiveInbox];
     if (state.view === "roster") return [loadLiveDepthChart, loadLiveContracts];
     if (state.view === "depth") return [loadLiveDepthChart];
@@ -1372,13 +1553,21 @@
   async function runAction(action, params) {
     if (!runnerMode() || state.runnerBusy) return;
     if (!confirmBeforeAction(action, params || {})) return;
+    const simAction = action === "sim_week" || action === "sim_season";
+    if (simAction) {
+      state.calendarLiveFocus = true;
+      switchView("calendar", { refresh: true });
+    }
     state.runnerBusy = true;
     state.busyAction = action;
+    state.cancelRequested = false;
     showToast(`${actionLabel(action)} in progress...`);
     const renderBusyState = action !== "box_score";
     if (renderBusyState) render();
     const stopDraftProgressPolling = startDraftProgressPolling(action);
+    const stopSimProgressPolling = startSimProgressPolling(action);
     try {
+      await flushLocalScoutingSelections(action);
       const payload = await apiPost("runner", "/api/run", { action, params: params || {} });
       if (!payload) throw new Error("Runner request failed");
       payload.params = params || {};
@@ -1389,6 +1578,9 @@
         applyStatePatch(payload.statePatch);
       }
       state.lastResult = payload;
+      if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
+        state.injuryModal = payload.injuryAlerts;
+      }
       state.runnerAvailable = true;
       if (payload.returncode === 0 && action !== "box_score") {
         await refreshLiveAfterAction(action);
@@ -1401,10 +1593,49 @@
       showToast("Action could not be completed");
     } finally {
       if (stopDraftProgressPolling) stopDraftProgressPolling();
+      if (stopSimProgressPolling) stopSimProgressPolling();
       state.runnerBusy = false;
       state.busyAction = null;
+      state.cancelRequested = false;
+      state.calendarLiveFocus = false;
       render();
     }
+  }
+
+  function cancellableRunnerAction(action) {
+    return action === "sim_week" || action === "sim_season";
+  }
+
+  async function requestRunnerCancel() {
+    if (!runnerMode() || !state.runnerBusy || !cancellableRunnerAction(state.busyAction) || state.cancelRequested) return;
+    state.cancelRequested = true;
+    showToast("Stop requested. Waiting for the next safe spot...");
+    render();
+    const payload = await apiPost("cancel", "/api/cancel", { action: state.busyAction });
+    if (payload?.message) {
+      showToast(payload.message);
+    } else if (!payload) {
+      state.cancelRequested = false;
+      showToast("Stop request could not be sent");
+    }
+    render();
+  }
+
+  async function flushLocalScoutingSelections(action) {
+    if (!SCOUTING_FLUSH_ACTIONS.has(action)) return;
+    const prospectIds = localScoutingSelectionIds();
+    if (!prospectIds.length) return;
+    showToast(`Saving ${prospectIds.length} scouting selection${prospectIds.length === 1 ? "" : "s"}...`);
+    const payload = await apiPost("runner", "/api/run", {
+      action: "scouting_assign_batch",
+      params: { prospect_ids: prospectIds },
+    });
+    if (!payload || payload.returncode !== 0) {
+      const message = payload?.summary?.message || payload?.stderr || payload?.error || "Scouting selections could not be saved.";
+      throw new Error(message);
+    }
+    state.localScoutingSelections = [];
+    state.localScoutingKey = currentScoutingSelectionKey();
   }
 
   async function loadCalendarBoxScore(gameId) {
@@ -1441,7 +1672,7 @@
   }
 
   function draftNeedsAdvanceWarning(action) {
-    if (!["advance_next_event", "advance_next_league_year"].includes(action)) return false;
+    if (!["advance_next_event", "advance_to_date", "advance_next_league_year"].includes(action)) return false;
     const draft = data.draft || {};
     const remaining = Number(draft.pickTotals?.remaining || 0);
     if (remaining <= 0) return false;
@@ -1484,6 +1715,7 @@
       postseason: "Run Postseason",
       validate_rosters: "Validate Rosters",
       advance_next_event: "Advance To Next Date",
+      advance_to_date: "Advance To Date",
       box_score: "Show Box Score",
       advance_to_draft: "Advance To Draft",
       free_agency_start: "Advance To Free Agency",
@@ -1535,6 +1767,7 @@
       scouting_process_week: "Scouting Week",
       scouting_auto: "Auto Assign Scouts",
       scouting_one: "Select Scout Player",
+      scouting_assign_batch: "Save Scout Selections",
       scouting_unassign: "Unselect Scout Player",
       scouting_random_two: "Scout 8 Random Players",
       scouting_discover_four: "Scout 4 + 8 Discoveries",
@@ -2220,8 +2453,14 @@
     if (action === "advance_next_event" && !nextEvent) {
       return { disabledReason: "No next calendar event is available." };
     }
+    if (action === "advance_to_date") {
+      return {};
+    }
     if (action === "sim_week" && !nextWeek) {
       return { disabledReason: "No regular-season week is queued." };
+    }
+    if (action === "sim_season") {
+      return seasonActionAvailability(action, data.season || {});
     }
     if (action === "event_generate_week") {
       if (!data.currentSeason && !data.season?.season) return { disabledReason: "No active season is available." };
@@ -2260,11 +2499,8 @@
     const controls = node("div", "control-bar calendar-control-bar");
     const controlEntries = [
       ["Advance Date", "advance_next_event", {}, draftRemaining > 0 ? "warn" : "good"],
+      ["Sim Rest Season", "sim_season", {}, "warn"],
       [nextWeek ? `Sim Week ${nextWeek}` : "Sim Week", "sim_week", { week: nextWeek }, "good"],
-      ["Roll Weekly Events", "event_generate_week", {
-        season: data.currentSeason || data.season?.season || 2026,
-        week: nextWeek || data.season?.currentWeek || 1,
-      }, ""],
     ].map(([label, action, params, tone]) => ({
       label,
       action,
@@ -2275,6 +2511,22 @@
     append(controls, [
       ...controlEntries.map((entry) => controlButton({ ...entry, className: "calendar-control-button" })),
     ]);
+    const upcoming = (calendar?.upcomingEvents || []).slice(0, 12);
+    const milestoneStrip = node("div", "calendar-milestone-strip");
+    if (upcoming.length) {
+      milestoneStrip.append(node("span", "muted", "Advance to"));
+      upcoming.forEach((event) => {
+        const label = `${shortDate(event.event_start_date)} ${event.event_name || "Calendar Event"}`;
+        milestoneStrip.append(controlButton({
+          label,
+          action: "advance_to_date",
+          params: { date: event.event_start_date },
+          availability: {},
+          tone: String(event.event_code || "").includes("PRESEASON") || String(event.event_code || "").includes("CAMP") ? "good" : "",
+          className: "calendar-milestone-button",
+        }));
+      });
+    }
     const secondary = node("div", "control-secondary calendar-control-secondary");
     secondary.append(node("span", "muted", draftRemaining > 0
       ? "Advancing the calendar can auto-sim unfinished draft picks. The confirmation dialog will still protect this action."
@@ -2282,6 +2534,7 @@
     append(body, [
       hero,
       controls,
+      milestoneStrip,
       controlMetaLine({
         generatedAt: data.calendarGeneratedAt,
         reasons: controlDisabledReasons(controlEntries),
@@ -2471,12 +2724,25 @@
 
   function runnerBusyBanner() {
     if (!state.runnerBusy) return null;
+    const cancellable = cancellableRunnerAction(state.busyAction);
     const banner = node("div", "runner-busy-banner");
     const text = append(node("div"), [
       node("strong", null, `${actionLabel(state.busyAction)} is running`),
-      node("span", null, "Keep this page open. The affected panels will refresh when the action finishes."),
+      node(
+        "span",
+        null,
+        cancellable
+          ? "Keep this page open. Stop safely pauses after the current game or weekly hook finishes."
+          : "Keep this page open. The affected panels will refresh when the action finishes."
+      ),
     ]);
-    append(banner, [node("span", "spinner"), text]);
+    const stop = cancellable ? node("button", "runner-cancel-button", state.cancelRequested ? "Stop requested" : "Stop safely") : null;
+    if (stop) {
+      stop.type = "button";
+      stop.disabled = state.cancelRequested;
+      stop.addEventListener("click", requestRunnerCancel);
+    }
+    append(banner, [node("span", "spinner"), text, stop]);
     return banner;
   }
 
@@ -2516,11 +2782,72 @@
     return overlay;
   }
 
+  function injuryAlertModal() {
+    const alerts = Array.isArray(state.injuryModal) ? state.injuryModal : [];
+    if (!alerts.length) return null;
+    const overlay = node("div", "box-score-modal-overlay injury-alert-overlay");
+    const modal = node("section", "box-score-modal injury-alert-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("strong", null, "Injury Report"),
+      node("small", null, `${alerts.length} player${alerts.length === 1 ? "" : "s"} expected to miss time`),
+    ]);
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.injuryModal = null;
+      render();
+    });
+    append(top, [title, close]);
+
+    const body = node("div", "box-score-modal-body injury-alert-body");
+    const list = node("div", "injury-alert-list");
+    alerts.forEach((alert) => {
+      const card = node("article", "injury-alert-card");
+      const meta = [
+        alert.team,
+        alert.position,
+        alert.severity ? String(alert.severity).toUpperCase() : null,
+      ].filter(Boolean).join(" | ");
+      const expected = Number(alert.expectedGames || 0);
+      const cardTop = node("div", "injury-alert-card-top");
+      append(cardTop, [
+        playerLink(alert.playerId, alert.playerName, "player-link strong-link", {
+          team: alert.team,
+          position: alert.position,
+        }),
+        node("span", "injury-alert-duration", `${expected} game${expected === 1 ? "" : "s"}`),
+      ]);
+      append(card, [
+        cardTop,
+        node("div", "injury-alert-meta", meta),
+        node("p", null, alert.message || `${alert.injury || "Injury"}; status ${alert.status || "Unavailable"}.`),
+      ]);
+      list.append(card);
+    });
+    append(body, [
+      node("div", "injury-alert-summary", "These updates were added to your inbox. Major league injuries were also sent to league news."),
+      list,
+    ]);
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.injuryModal = null;
+        render();
+      }
+    });
+    return overlay;
+  }
+
   function finishRender(root) {
     const banner = runnerBusyBanner();
     if (banner) root.prepend(banner);
     const boxScore = boxScoreModal();
     if (boxScore) root.append(boxScore);
+    const injuryAlerts = injuryAlertModal();
+    if (injuryAlerts) root.append(injuryAlerts);
     refs.content.replaceChildren(root);
   }
 
@@ -2836,7 +3163,7 @@
   }
 
   function renderSeason() {
-    setHeader("League Table", "NFL standings by conference and division, with schedule and box scores below.");
+    setHeader("League Table", "Compact standings by conference and division.");
     const root = document.createDocumentFragment();
     const season = data.season || { weeks: [], totals: {}, postseason: {} };
     const currentSeason = season.season || data.currentSeason || "";
@@ -2844,27 +3171,30 @@
       loadLiveSeason().then(render);
     }
 
-    const metrics = panel("Season Progress", `${currentSeason}${data.seasonGeneratedAt ? ` | refreshed ${shortDateTime(data.seasonGeneratedAt.replace("T", " "))}` : ""}`);
-    if (state.seasonLoading) {
-      panelBody(metrics).append(node("div", "empty-state", "Refreshing live season table..."));
-    }
-    panelBody(metrics).append(renderMetrics());
-    root.append(metrics);
+    const summary = node("section", "league-table-summary");
+    append(summary, [
+      metric("Season", String(currentSeason || "-"), data.seasonGeneratedAt ? `Updated ${shortDateTime(data.seasonGeneratedAt.replace("T", " "))}` : "Current year"),
+      metric("Regular Season", `${season.totals?.played || 0}/${season.totals?.games || 0}`, `${season.totals?.remaining || 0} left`, season.totals?.remaining ? "warn" : "good"),
+      metric("Next Week", season.nextWeek ? `Week ${season.nextWeek}` : "Done", "Schedule queue"),
+      metric("Postseason", season.postseason?.remaining ? `${season.postseason.remaining} left` : "Idle", `${season.postseason?.games || 0} games`),
+    ]);
+    if (state.seasonLoading) summary.append(node("div", "empty-state", "Refreshing live season table..."));
+    root.append(summary);
 
     root.append(standingsBoard(season.standings || []));
 
-    const scheduleGrid = node("div", "grid");
+    const scheduleGrid = node("div", "grid league-table-lower-grid");
     const userTeam = data.activeSave?.user_team;
     const userSchedule = panel(userTeam ? `${userTeam} Schedule` : "User Team Schedule", "Regular Season");
     const scheduleList = node("div", "list compact-list");
-    (season.userTeamSchedule || []).forEach((game) => {
+    (season.userTeamSchedule || []).slice(0, 18).forEach((game) => {
       scheduleList.append(gameLine(game, userTeam));
     });
     panelBody(userSchedule).append(scheduleList.children.length ? scheduleList : node("div", "empty-state", "No user-team schedule exported."));
 
     const resultsPanel = panel("Recent Finals", "League");
     const resultsList = node("div", "list compact-list");
-    (season.recentResults || []).slice(0, 18).forEach((game) => {
+    (season.recentResults || []).slice(0, 12).forEach((game) => {
       resultsList.append(gameLine(game, userTeam));
     });
     panelBody(resultsPanel).append(resultsList.children.length ? resultsList : node("div", "empty-state", "No completed games yet."));
@@ -2877,7 +3207,8 @@
   }
 
   function standingsBoard(standings) {
-    const p = panel("Standings", "Division view");
+    const p = panel("Standings", "Division View");
+    p.classList.add("standings-board-panel");
     const body = panelBody(p);
     const conferences = ["AFC", "NFC"];
     const board = node("div", "standings-conference-grid");
@@ -2950,9 +3281,14 @@
       const diff = Number(team.points_for || 0) - Number(team.points_against || 0);
       const tr = node("tr", index === 0 ? "division-leader" : "");
       append(tr, [
-        append(node("td", "standings-team"), [
-          node("strong", null, team.abbreviation || "-"),
-          node("span", null, team.team_name || ""),
+        append(node("td", null), [
+          append(node("div", "standings-team"), [
+            teamLogo(team.teamLogo, team.abbreviation, "standings-team-logo"),
+            append(node("span", "standings-team-copy"), [
+              node("strong", null, team.abbreviation || "-"),
+              node("span", null, team.team_name || ""),
+            ]),
+          ]),
         ]),
         node("td", null, whole(team.wins)),
         node("td", null, whole(team.losses)),
@@ -3888,12 +4224,22 @@
     return ROSTER_GROUPS.find((group) => group.value !== "all" && group.positions.includes(pos))?.value || "all";
   }
 
+  function isPracticeSquadPlayer(player) {
+    return String(player?.status || "").toLowerCase() === "practice squad";
+  }
+
+  function rosterPlayerMatchesGroup(player, group) {
+    if (!group || group.value === "all") return true;
+    if (group.value === "PS") return isPracticeSquadPlayer(player);
+    return group.positions.includes(player.position);
+  }
+
   function rosterGroupTabs(rows) {
     const wrap = node("div", "roster-group-tabs");
     ROSTER_GROUPS.forEach((group) => {
       const count = group.value === "all"
         ? rows.length
-        : rows.filter((player) => group.positions.includes(player.position)).length;
+        : rows.filter((player) => rosterPlayerMatchesGroup(player, group)).length;
       if (!count && group.value !== "all") return;
       const button = node("button", `roster-group-tab ${state.rosterGroupFilter === group.value ? "active" : ""}`.trim());
       button.type = "button";
@@ -3904,6 +4250,7 @@
       button.addEventListener("click", () => {
         state.rosterGroupFilter = group.value;
         state.rosterPositionFilter = "all";
+        state.rosterStatusFilter = "all";
         state.selectedRosterPlayerId = null;
         render();
       });
@@ -3915,7 +4262,7 @@
   function filteredRosterRows(rows) {
     const group = ROSTER_GROUPS.find((item) => item.value === state.rosterGroupFilter) || ROSTER_GROUPS[0];
     return rows
-      .filter((player) => group.value === "all" || group.positions.includes(player.position))
+      .filter((player) => rosterPlayerMatchesGroup(player, group))
       .filter((player) => state.rosterPositionFilter === "all" || player.position === state.rosterPositionFilter)
       .filter((player) => state.rosterStatusFilter === "all" || (player.status || "Active") === state.rosterStatusFilter);
   }
@@ -3930,8 +4277,33 @@
 
   function rosterTableHeader(label, key) {
     const th = node("th");
+    if (!key) {
+      th.textContent = label || "";
+      return th;
+    }
     th.append(rosterSortButton(label, key));
     return th;
+  }
+
+  function rosterHeadshot(player) {
+    const wrap = node("span", "roster-headshot");
+    if (player.headshot) {
+      const img = node("img");
+      img.src = player.headshot;
+      img.alt = "";
+      img.loading = "lazy";
+      wrap.append(img);
+    } else {
+      const initials = String(player.player_name || "?")
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0])
+        .join("")
+        .toUpperCase();
+      wrap.append(node("span", null, initials || "?"));
+    }
+    return wrap;
   }
 
   function rosterPlayerTable(depth, rows, selected) {
@@ -3940,6 +4312,7 @@
     const head = node("thead");
     const headRow = node("tr");
     [
+      rosterTableHeader("", null),
       rosterTableHeader("#", "number"),
       rosterTableHeader("Player", "name"),
       rosterTableHeader("Pos", "pos"),
@@ -3975,7 +4348,8 @@
         position: player.position,
       }));
       append(tr, [
-        node("td", "numeric", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
+        append(node("td", "roster-photo-cell"), [rosterHeadshot(player)]),
+        node("td", "numeric roster-number-cell", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
         playerCell,
         node("td", "numeric", player.position || "-"),
         node("td", "numeric rating-cell", player.overall ?? "-"),
@@ -4277,68 +4651,36 @@
       ? sortedBoard
       : sortedBoard.filter((player) => player.position === activeDraftPosition);
     const selected = selectedDraftProspect(visibleDraftBoard);
-    const status = panel("Room Status", `Draft ${draft.year || ""}${data.draftGeneratedAt ? ` | refreshed ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : ""}`);
-    status.classList.add("draft-status-panel");
-    if (state.draftLoading) {
-      panelBody(status).append(node("div", "empty-state", "Refreshing live draft room..."));
-    }
-    if (draft.orderWarning) {
-      panelBody(status).append(node("div", "empty-state warn", draft.orderWarning));
-    }
-    const metrics = node("section", "metric-grid compact-metrics");
-    append(metrics, [
-      metric("Room", stateRow ? stateRow.status : "Not Started", stateRow ? stateRow.clock_status : "Open the draft room"),
-      metric("Current Pick", stateRow?.current_pick_number ? `#${stateRow.current_pick_number}` : "-", stateRow?.current_team || "No team on clock"),
-      metric("Picks Used", `${draft.pickTotals.used || 0}/${draft.pickTotals.total || 0}`, `${draft.pickTotals.remaining || 0} remaining`),
-      metric("Draft Order", draft.orderFinalized === false ? "Not Final" : "Final", draft.orderFinalized === false ? `${draft.orderSlotCount || 0}/32 slots` : "Postseason order"),
-      metric("Clock", stateRow ? `${stateRow.seconds_remaining || 0}s` : "-", "Draft clock"),
-      metric("Board", state.draftLoading ? "Refreshing" : "Ready", data.draftGeneratedAt ? `Updated ${shortDateTime(data.draftGeneratedAt.replace("T", " "))}` : "Latest board"),
-    ]);
-    panelBody(status).append(metrics);
-    root.append(status);
-    root.append(draftWarRoomPanel(draft, visibleDraftBoard, selected));
+    root.append(draftRoomTopline(draft, visibleDraftBoard, selected));
 
     const commands = data.commands || {};
-    root.append(nextStepPanel(
-      "Next Draft Step",
-      stateRow ? (isUserOnClock() ? "Your Pick" : "Draft Clock") : (dateReached(draft.draftDate) ? "Ready To Start" : "Calendar"),
-      draftNextCards(draft, commands, selected),
-    ));
-    const rookieClass = data.rookieClass || {};
-    if ((rookieClass.selections || []).length && Number(rookieClass.year || 0) !== Number(draft.year || 0)) {
-      root.append(draftUserSelectionsPanel(
-        rookieClass.selections,
-        {
-          state: { user_team: data.activeSave?.user_team },
-          pickTotals: { total: rookieClass.selections.length, used: rookieClass.selections.length, remaining: 0 },
-        },
-      ));
-    }
-
-    const grid = node("div", "grid");
+    const draftMain = node("div", "draft-room-main");
+    const sideRail = node("aside", "draft-side-rail");
     const controlsPanel = draftControlPanel(draft, commands, selected);
     const queuePanel = panel("Pick Queue", `${(draft.pickQueue || []).length || 0} picks`);
+    queuePanel.classList.add("draft-queue-panel");
     const queueList = node("div", "list draft-queue-list");
     const currentQueuePick = Number(stateRow?.current_pick_number || (draft.pickQueue || []).find((pick) => !Number(pick.is_used))?.effective_pick_number || 0);
     (draft.pickQueue || []).forEach((pick) => {
       queueList.append(draftQueueRow(pick, currentQueuePick));
     });
     panelBody(queuePanel).append(queueList.children.length ? queueList : node("div", "empty-state", "No draft room queue exported."));
-    append(grid, [controlsPanel, queuePanel]);
-    root.append(grid);
 
-    const draftLayout = node("div", "draft-layout");
     const boardPanel = panel(
       "Draft Board",
       activeDraftPosition === "all"
         ? `${visibleDraftBoard.length || 0} shown`
         : `${visibleDraftBoard.length || 0} ${activeDraftPosition}`
     );
+    boardPanel.classList.add("draft-board-panel");
     panelBody(boardPanel).append(draftBoardToolbar(board, visibleDraftBoard, draftPositions, activeDraftPosition));
     panelBody(boardPanel).append(draftBoardTable(visibleDraftBoard, selected));
-    append(draftLayout, [boardPanel]);
-    root.append(draftLayout);
-    root.append(draftUserSelectionsPanel(draft.userSelections || [], draft));
+    append(sideRail, [controlsPanel, queuePanel]);
+    append(draftMain, [boardPanel, sideRail]);
+    root.append(draftMain);
+    if ((draft.userSelections || []).length) {
+      root.append(draftUserSelectionsPanel(draft.userSelections || [], draft));
+    }
     if (state.draftProspectPopoverOpen && selected) {
       root.append(draftProspectPopover(selected));
     }
@@ -4346,6 +4688,41 @@
     if (output) root.append(output);
     finishRender(root);
     window.requestAnimationFrame(() => centerCurrentDraftQueuePick());
+  }
+
+  function draftRoomTopline(draft, visibleBoard, selected) {
+    const draftState = draft?.state || null;
+    const userTeam = draftState?.user_team || data.activeSave?.user_team || "MIN";
+    const currentTeam = draftState?.current_team || "-";
+    const onClock = isUserOnClock();
+    const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
+    const highConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) >= 3).length;
+    const mediumConfidence = visibleBoard.filter((player) => confidenceSortValue(player.scout_confidence || player.scouting_confidence) === 2).length;
+    const selectedName = selected?.player_name || `${selected?.first_name || ""} ${selected?.last_name || ""}`.trim() || "No prospect selected";
+    const wrap = node("section", "draft-room-topline");
+    append(wrap, [
+      teamLogo(currentDraftQueuePick(draft, draftState)?.teamLogo, currentTeam, "draft-room-topline-logo"),
+      append(node("div", "draft-room-topline-main"), [
+        node("span", "tag", draftState ? `Pick ${currentPick}` : `Draft ${draft?.year || ""}`),
+        node("strong", null, draftState ? (onClock ? `${userTeam} is on the clock` : `${currentTeam} is on the clock`) : "Draft room ready"),
+        node("small", null, draftState
+          ? `${draft.pickTotals?.used || 0}/${draft.pickTotals?.total || 0} picks used. Board target: ${selectedName}.`
+          : dateReached(draft?.draftDate) ? "Start the draft when ready." : `Draft date ${shortDate(draft?.draftDate)}.`),
+      ]),
+      append(node("div", "draft-room-topline-tags"), [
+        tag(state.draftLoading ? "Refreshing" : (draftState?.status || "Not Started"), state.draftLoading ? "warn" : ""),
+        tag(`${draft.pickTotals?.remaining || 0} left`, ""),
+        tag(`${visibleBoard.length || 0} board`, ""),
+        tag(`${highConfidence} high / ${mediumConfidence} med`, highConfidence ? "good" : ""),
+        draft.orderFinalized === false ? tag("Order Not Final", "warn") : null,
+      ]),
+    ]);
+    if (state.draftLoading) {
+      wrap.append(node("div", "draft-room-topline-note", "Refreshing live draft room..."));
+    } else if (draft.orderWarning) {
+      wrap.append(node("div", "draft-room-topline-note warn", draft.orderWarning));
+    }
+    return wrap;
   }
 
   function draftWarRoomPanel(draft, visibleBoard, selected) {
@@ -4941,14 +5318,14 @@
     return card;
   }
 
-  function draftProspectPopover(player) {
+  function draftProspectPopover(player, options = {}) {
     const overlay = node("div", "prospect-popover-overlay");
     overlay.setAttribute("role", "presentation");
     overlay.addEventListener("click", closeDraftProspectPopover);
     const drawer = node("aside", "prospect-popover");
     drawer.setAttribute("role", "dialog");
     drawer.setAttribute("aria-modal", "true");
-    drawer.setAttribute("aria-label", "Draft prospect card");
+    drawer.setAttribute("aria-label", options.ariaLabel || "Draft prospect card");
     drawer.addEventListener("click", (event) => event.stopPropagation());
     const top = node("div", "prospect-popover-top");
     append(top, [
@@ -4959,7 +5336,7 @@
       ]),
       closeButton(closeDraftProspectPopover),
     ]);
-    const card = prospectCard(player);
+    const card = prospectCard(player, options.cardOptions || {});
     card.classList.add("prospect-popover-card");
     append(drawer, [top, card]);
     overlay.append(drawer);
@@ -5145,41 +5522,69 @@
 
   function inboxLinkedText(text, message) {
     const fragment = document.createDocumentFragment();
-    const related = message.relatedPlayer
-      ? {
-        name: message.relatedPlayer.player_name,
-        makeLink: () => playerLink(
+    const cleanText = String(text || "");
+    const entities = [];
+    const seen = new Set();
+    const addEntity = (key, name, makeLink) => {
+      const label = String(name || "").trim();
+      if (!label || seen.has(key)) return;
+      seen.add(key);
+      entities.push({ name: label, lowerName: label.toLowerCase(), makeLink });
+    };
+    if (message.relatedPlayer?.player_id) {
+      addEntity(
+        `player:${message.relatedPlayer.player_id}`,
+        message.relatedPlayer.player_name,
+        () => playerLink(
           message.relatedPlayer.player_id,
           message.relatedPlayer.player_name,
           "message-inline-link",
           { team: message.relatedPlayer.team, position: message.relatedPlayer.position },
         ),
-      }
-      : message.relatedProspect
-        ? {
-          name: message.relatedProspect.player_name,
-          makeLink: () => prospectLink(
-            message.relatedProspect.prospect_id,
-            message.relatedProspect.player_name,
-            "message-inline-link",
-          ),
-        }
-        : null;
-    const cleanText = String(text || "");
-    const name = String(related?.name || "").trim();
-    if (!related || !name) {
+      );
+    }
+    (message.mentionedPlayers || []).forEach((player) => {
+      if (!player?.player_id) return;
+      addEntity(
+        `player:${player.player_id}`,
+        player.player_name,
+        () => playerLink(player.player_id, player.player_name, "message-inline-link", {
+          team: player.team,
+          position: player.position,
+        }),
+      );
+    });
+    if (message.relatedProspect?.prospect_id) {
+      addEntity(
+        `prospect:${message.relatedProspect.prospect_id}`,
+        message.relatedProspect.player_name,
+        () => prospectLink(
+          message.relatedProspect.prospect_id,
+          message.relatedProspect.player_name,
+          "message-inline-link",
+        ),
+      );
+    }
+    if (!entities.length) {
       fragment.append(cleanText);
       return fragment;
     }
     const lowerText = cleanText.toLowerCase();
-    const lowerName = name.toLowerCase();
     let cursor = 0;
-    let match = lowerText.indexOf(lowerName);
-    while (match >= 0) {
-      if (match > cursor) fragment.append(cleanText.slice(cursor, match));
-      fragment.append(related.makeLink());
-      cursor = match + name.length;
-      match = lowerText.indexOf(lowerName, cursor);
+    const sortedEntities = [...entities].sort((a, b) => b.name.length - a.name.length);
+    while (cursor < cleanText.length) {
+      let next = null;
+      sortedEntities.forEach((entity) => {
+        const index = lowerText.indexOf(entity.lowerName, cursor);
+        if (index < 0) return;
+        if (!next || index < next.index || (index === next.index && entity.name.length > next.entity.name.length)) {
+          next = { index, entity };
+        }
+      });
+      if (!next) break;
+      if (next.index > cursor) fragment.append(cleanText.slice(cursor, next.index));
+      fragment.append(next.entity.makeLink());
+      cursor = next.index + next.entity.name.length;
     }
     if (cursor < cleanText.length) fragment.append(cleanText.slice(cursor));
     return fragment;
@@ -5318,13 +5723,280 @@
     return "";
   }
 
+  function renderTransactions() {
+    setHeader("League Transactions", "A chronological league ledger of signings, releases, trades, contract moves, waivers, draft picks, and roster status changes.");
+    const root = document.createDocumentFragment();
+    const transactions = data.transactions || { items: [], categories: [], counts: {} };
+    if (runnerMode() && state.transactionsLiveKey !== transactionsLiveKey() && !state.transactionsLoading) {
+      loadLiveTransactions().then(render);
+    }
+    const items = transactions.items || [];
+    const filtered = state.transactionsCategoryFilter === "all"
+      ? items
+      : items.filter((item) => String(item.category || "Other") === state.transactionsCategoryFilter);
+
+    const summary = panel("Transaction Ledger", `${data.transactionsGeneratedAt ? `refreshed ${shortDateTime(data.transactionsGeneratedAt.replace("T", " "))}` : "Newest first"}${transactions.includeBaseline ? " | including baseline imports" : " | baseline imports hidden"}`);
+    const body = panelBody(summary);
+    if (state.transactionsLoading) body.append(node("div", "empty-state", "Refreshing live transactions..."));
+    append(body, [
+      append(node("section", "metric-grid transaction-metrics"), [
+        metric("Transactions", String(transactions.counts?.total || items.length), "Logged league moves"),
+        metric("Roster", String(transactions.counts?.Roster || 0), "Signings, releases, waivers"),
+        metric("Contracts", String(transactions.counts?.Contract || 0), "Extensions and restructures"),
+        metric("Draft", String(transactions.counts?.Draft || 0), "Selections and pick moves"),
+      ]),
+      transactionFilterRow(transactions),
+    ]);
+    root.append(summary);
+
+    const listPanel = panel("All Transactions", `${filtered.length} shown`);
+    const list = node("div", "transaction-list");
+    groupTransactionsByDate(filtered).forEach((group) => list.append(transactionDateGroup(group)));
+    panelBody(listPanel).append(list.children.length ? list : node("div", "empty-state", "No transactions match this filter yet."));
+    root.append(listPanel);
+
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
+  }
+
+  function transactionFilterRow(transactions) {
+    const filters = node("div", "transaction-filter-row");
+    filters.append(transactionFilterButton("all", "All"));
+    (transactions.categories || []).forEach((category) => filters.append(transactionFilterButton(category, category)));
+    return filters;
+  }
+
+  function transactionFilterButton(filter, label) {
+    const button = node("button", `transaction-filter ${state.transactionsCategoryFilter === filter ? "active" : ""}`.trim(), label);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      state.transactionsCategoryFilter = filter;
+      render();
+    });
+    return button;
+  }
+
+  function groupTransactionsByDate(items) {
+    const groups = [];
+    const byDate = new Map();
+    items.forEach((item) => {
+      const key = item.date || "Unknown";
+      if (!byDate.has(key)) {
+        const group = { date: key, items: [] };
+        byDate.set(key, group);
+        groups.push(group);
+      }
+      byDate.get(key).items.push(item);
+    });
+    return groups;
+  }
+
+  function transactionDateGroup(group) {
+    const wrap = node("section", "transaction-date-group");
+    wrap.append(append(node("div", "transaction-date-header"), [
+      node("strong", null, shortDate(group.date)),
+      node("span", null, `${group.items.length} move${group.items.length === 1 ? "" : "s"}`),
+    ]));
+    group.items.forEach((item) => wrap.append(transactionRow(item)));
+    return wrap;
+  }
+
+  function transactionRow(item) {
+    const row = node("article", "transaction-row");
+    const player = item.playerId && item.player
+      ? playerLink(item.playerId, `${item.player}${item.position ? `, ${item.position}` : ""}`, "transaction-player-link", {
+        team: item.team || item.toTeam || item.fromTeam,
+        position: item.position,
+      })
+      : node("span", "transaction-player-empty", item.player || "League move");
+    const teams = [item.fromTeam, item.toTeam].filter(Boolean).join(" -> ")
+      || [item.team, item.secondaryTeam].filter(Boolean).join(" / ")
+      || "-";
+    const moneyBits = [];
+    if (Number(item.capDeltaCurrent || 0)) moneyBits.push(`Cap ${money(item.capDeltaCurrent)}`);
+    if (Number(item.cashDelta || 0)) moneyBits.push(`Cash ${money(item.cashDelta)}`);
+    append(row, [
+      node("span", `transaction-type-pill ${transactionTypeClass(item.category || item.type)}`, item.type || "Transaction"),
+      append(node("div", "transaction-main"), [
+        append(node("div", "transaction-line"), [
+          player,
+          node("span", "transaction-team-flow", teams),
+        ]),
+        node("p", null, item.description || transactionFallbackDescription(item)),
+        append(node("div", "transaction-meta"), [
+          node("span", null, item.category || "Other"),
+          item.phase ? node("span", null, item.phase) : null,
+          item.week ? node("span", null, `Week ${item.week}`) : null,
+          moneyBits.length ? node("span", null, moneyBits.join(" | ")) : null,
+        ]),
+      ]),
+    ]);
+    return row;
+  }
+
+  function transactionFallbackDescription(item) {
+    if (item.oldStatus || item.newStatus) return `${item.oldStatus || "-"} to ${item.newStatus || "-"}`;
+    return [item.team, item.secondaryTeam, item.fromTeam, item.toTeam].filter(Boolean).join(" / ") || "Transaction logged.";
+  }
+
+  function transactionTypeClass(value) {
+    const text = String(value || "").toLowerCase();
+    if (text.includes("sign")) return "signing";
+    if (text.includes("release") || text.includes("waiver")) return "release";
+    if (text.includes("trade") || text.includes("draft")) return "trade";
+    if (text.includes("contract") || text.includes("extension") || text.includes("restructure")) return "contract";
+    return "other";
+  }
+
+  function renderInjuries() {
+    setHeader("Injuries", "Current availability and recent injury reports across the league.");
+    const root = document.createDocumentFragment();
+    const injuries = data.injuries || { active: [], recent: [], counts: {} };
+    if (runnerMode() && state.injuriesLiveKey !== injuriesLiveKey() && !state.injuriesLoading) {
+      loadLiveInjuries().then(render);
+    }
+    const activeItems = filterInjuryItems(injuries.active || []);
+    const recentItems = filterInjuryItems(injuries.recent || []);
+    const summary = panel("Medical Center", `${data.injuriesGeneratedAt ? `refreshed ${shortDateTime(data.injuriesGeneratedAt.replace("T", " "))}` : injuries.updatedAt ? `updated ${shortDateTime(String(injuries.updatedAt).replace("T", " "))}` : "Live save data"}`);
+    const body = panelBody(summary);
+    if (state.injuriesLoading) body.append(node("div", "empty-state", "Refreshing injury report..."));
+    append(body, [
+      append(node("section", "metric-grid injury-metrics"), [
+        metric("Active", String(injuries.counts?.active || 0), "League injuries"),
+        metric("Your Team", String(injuries.counts?.userActive || 0), "Active injuries", injuries.counts?.userActive ? "warn" : "good"),
+        metric("Major", String(injuries.counts?.majorActive || 0), "Longer absences", injuries.counts?.majorActive ? "warn" : ""),
+        metric("Recent", String(injuries.counts?.recent || 0), "Latest injury events"),
+      ]),
+      injuryFilterRow(),
+    ]);
+    root.append(summary);
+
+    const activePanel = panel("Active Injuries", `${activeItems.length} shown`);
+    panelBody(activePanel).append(activeItems.length ? injuryActiveTable(activeItems) : node("div", "empty-state", "No active injuries match this filter."));
+    root.append(activePanel);
+
+    const recentPanel = panel("Recent Injury Reports", `${recentItems.length} shown`);
+    const recentList = node("div", "injury-report-list");
+    recentItems.slice(0, 80).forEach((item) => recentList.append(injuryReportRow(item)));
+    panelBody(recentPanel).append(recentList.children.length ? recentList : node("div", "empty-state", "No recent injury reports match this filter."));
+    root.append(recentPanel);
+
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
+  }
+
+  function injuryFilterRow() {
+    const filters = node("div", "injury-filter-row");
+    [
+      ["all", "All"],
+      ["user", "Your Team"],
+      ["major", "Major"],
+    ].forEach(([value, label]) => {
+      const button = node("button", `injury-filter ${state.injuriesScopeFilter === value ? "active" : ""}`.trim(), label);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        state.injuriesScopeFilter = value;
+        render();
+      });
+      filters.append(button);
+    });
+    return filters;
+  }
+
+  function filterInjuryItems(items) {
+    if (state.injuriesScopeFilter === "user") return items.filter((item) => item.isUserTeam);
+    if (state.injuriesScopeFilter === "major") {
+      return items.filter((item) => Number(item.expectedGames || 0) >= 4 || ["major", "severe"].includes(String(item.severity || "").toLowerCase()));
+    }
+    return items;
+  }
+
+  function injuryActiveTable(items) {
+    return table(
+      ["Player", "Team", "Injury", "Status", "Return", "Expected"],
+      items.map((item) => [
+        playerLink(item.playerId, `${item.playerName || "Player"}${item.position ? `, ${item.position}` : ""}`, "player-link strong-link", {
+          team: item.team,
+          position: item.position,
+        }),
+        item.team || "-",
+        injuryLabelNode(item),
+        item.status || "-",
+        item.returnDate ? shortDate(item.returnDate) : "-",
+        injuryExpectedText(item),
+      ]),
+    );
+  }
+
+  function injuryReportRow(item) {
+    const row = node("article", `injury-report-row ${item.isUserTeam ? "user-team" : ""}`.trim());
+    const player = playerLink(item.playerId, `${item.playerName || "Player"}${item.position ? `, ${item.position}` : ""}`, "player-link strong-link", {
+      team: item.team,
+      position: item.position,
+    });
+    append(row, [
+      append(node("div", "injury-report-main"), [
+        append(node("div", "injury-report-top"), [
+          player,
+          node("span", `injury-severity ${injurySeverityClass(item.severity)}`, item.severity || "injury"),
+        ]),
+        node("p", null, item.description || `${item.injury || "Injury"}; expected to miss ${injuryExpectedText(item).toLowerCase()}.`),
+        append(node("div", "injury-report-meta"), [
+          node("span", null, item.team || "-"),
+          item.week ? node("span", null, `Week ${item.week}`) : null,
+          item.date ? node("span", null, shortDate(item.date)) : null,
+          item.source ? node("span", null, sourceLabel(item.source)) : null,
+        ]),
+      ]),
+    ]);
+    return row;
+  }
+
+  function injuryLabelNode(item) {
+    const wrap = node("span", "injury-label-stack");
+    append(wrap, [
+      node("strong", null, item.injury || "Injury"),
+      node("small", null, [item.bodyPart, item.severity].filter(Boolean).join(" | ")),
+    ]);
+    return wrap;
+  }
+
+  function injuryExpectedText(item) {
+    const games = Number(item.expectedGames || 0);
+    if (games > 0) return `${games} game${games === 1 ? "" : "s"}`;
+    const days = Number(item.expectedDays || item.daysRemaining || 0);
+    if (days > 0) return `${days} day${days === 1 ? "" : "s"}`;
+    return "TBD";
+  }
+
+  function injurySeverityClass(value) {
+    const text = String(value || "").toLowerCase();
+    if (text.includes("severe") || text.includes("major")) return "major";
+    if (text.includes("moderate")) return "moderate";
+    return "minor";
+  }
+
+  function sourceLabel(value) {
+    const text = String(value || "").replaceAll("_", " ");
+    return text.replace(/\b\w/g, (char) => char.toUpperCase());
+  }
+
   function renderScouting() {
     setHeader("Scouting", "Build your draft board, raise confidence, and choose where your staff spends the week.");
     const root = document.createDocumentFragment();
     if (runnerMode() && state.scoutingLiveKey !== scoutingLiveKey() && !state.scoutingLoading) {
       loadLiveScouting().then(render);
     }
-    root.append(renderScoutingDesk({ limit: 80 }));
+    root.append(renderScoutingDesk({ limit: 240 }));
+    const selected = selectedDraftProspect(data.scouting?.board || []);
+    if (state.draftProspectPopoverOpen && selected) {
+      root.append(draftProspectPopover(selected, {
+        ariaLabel: "Scouting prospect card",
+        cardOptions: { showDraftActions: false },
+      }));
+    }
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
@@ -5365,9 +6037,10 @@
 
     const used = scouting.actionsUsed || {};
     const choiceUsed = Boolean(scouting.weeklyChoiceUsed);
-    const actionStarted = Boolean(scouting.weeklyActionStarted);
+    const localSpecificUses = localScoutingSpecificCost(scouting.board || []);
+    const actionStarted = Boolean(scouting.weeklyActionStarted) || localSpecificUses > 0;
     const nonSpecificActionUsed = Boolean(scouting.nonSpecificActionUsed);
-    const specificUses = Number(scouting.actionUses?.specific || 0);
+    const specificUses = Number(scouting.actionUses?.specific || 0) + localSpecificUses;
     const specificLimit = Number(scouting.actionLimits?.specific || scouting.weeklyWindow?.specificCount || 2);
     const weeklyOpen = Boolean(scouting.weeklyWindow?.open);
     const closedReason = scouting.weeklyWindow?.reason || "Weekly scouting is currently closed.";
@@ -5405,9 +6078,10 @@
     const selected = selectedDraftProspect(visibleBoard);
     const layout = node("div", "scouting-layout");
     const boardPanel = panel("Prospect Board", `${visibleBoard.length}/${(scouting.board || []).length} shown`);
+    boardPanel.classList.add("scouting-board-panel");
     panelBody(boardPanel).append(scoutingBoardToolbar(scouting.board || [], filteredBoard));
     panelBody(boardPanel).append(scoutingBoardTable(visibleBoard, selected));
-    append(layout, [boardPanel, prospectCard(selected, { showDraftActions: false })]);
+    append(layout, [boardPanel]);
     body.append(layout);
     return p;
   }
@@ -5666,10 +6340,34 @@
   }
 
   function actionCountText(scouting) {
-    const specificUses = Number(scouting.actionUses?.specific || 0);
+    const specificUses = Number(scouting.actionUses?.specific || 0) + localScoutingSpecificCost(scouting.board || []);
     const specificLimit = Number(scouting.actionLimits?.specific || scouting.weeklyWindow?.specificCount || 2);
     if (specificUses > 0) return `${Math.min(specificUses, specificLimit)}/${specificLimit}`;
     return scouting.weeklyChoiceUsed ? "1/1" : "0/1";
+  }
+
+  function localScoutingSpecificCost(board) {
+    const ids = new Set(localScoutingSelectionIds().map(String));
+    return (board || []).reduce((total, prospect) => {
+      if (!ids.has(String(prospect.prospect_id)) || prospect.queued) return total;
+      return total + (String(prospect.position || "").toUpperCase() === "QB" ? Number(data.scouting?.actionLimits?.specific || data.scouting?.weeklyWindow?.specificCount || 4) : 1);
+    }, 0);
+  }
+
+  function toggleLocalScoutingSelection(prospect) {
+    const selections = ensureLocalScoutingSelections();
+    const id = Number(prospect?.prospect_id || 0);
+    if (!id) return;
+    const existing = selections.map(String).indexOf(String(id));
+    if (existing >= 0) {
+      selections.splice(existing, 1);
+      showToast(`${prospect.player_name || "Prospect"} removed from weekly scouting`);
+      render();
+      return;
+    }
+    selections.push(id);
+    showToast(`${prospect.player_name || "Prospect"} selected for weekly scouting`);
+    render();
   }
 
   function scoutingActionButton(label, action, used, hint, disabled) {
@@ -5718,14 +6416,14 @@
     thead.append(headerRow);
     const tbody = node("tbody");
     prospects.forEach((prospect) => {
+      const locallyQueued = localScoutingSelectionIds().map(String).includes(String(prospect.prospect_id));
       const rowClass = [
         String(prospect.prospect_id) === String(selected?.prospect_id) ? "selected-row" : "",
-        prospect.queued ? "queued-scouting-row" : "",
+        prospect.queued || locallyQueued ? "queued-scouting-row" : "",
       ].filter(Boolean).join(" ");
       const tr = node("tr", rowClass);
       tr.addEventListener("click", () => {
-        state.selectedDraftProspectId = prospect.prospect_id;
-        render();
+        openDraftProspectPopover(prospect.prospect_id);
       });
       const cells = [
         prospect.public_board_rank || "DISC",
@@ -5796,8 +6494,7 @@
     button.title = "Open prospect card";
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      state.selectedDraftProspectId = prospect.prospect_id;
-      render();
+      openDraftProspectPopover(prospect.prospect_id);
     });
     append(wrap, [
       button,
@@ -5943,17 +6640,19 @@
 
   function scoutingProspectActionButtons(prospect, options = {}) {
     const used = Boolean(data.scouting?.actionsUsed?.specific);
-    const specificUses = Number(data.scouting?.actionUses?.specific || 0);
+    const specificUses = Number(data.scouting?.actionUses?.specific || 0) + localScoutingSpecificCost(data.scouting?.board || []);
     const specificLimit = Number(data.scouting?.actionLimits?.specific || data.scouting?.weeklyWindow?.specificCount || 2);
     const nonSpecificActionUsed = Boolean(data.scouting?.nonSpecificActionUsed);
     const weeklyChoiceUsed = Boolean(data.scouting?.weeklyChoiceUsed);
     const weeklyOpen = Boolean(data.scouting?.weeklyWindow?.open);
     const top30 = data.scouting?.top30 || {};
     const actions = node("div", "prospect-actions compact-prospect-actions");
-    const queued = Boolean(prospect.queued);
+    const locallyQueued = localScoutingSelectionIds().map(String).includes(String(prospect.prospect_id));
+    const queued = Boolean(prospect.queued) || locallyQueued;
+    const scoutCost = String(prospect.position || "").toUpperCase() === "QB" ? specificLimit : 1;
     const scoutButton = node("button", `copy-button mini-button ${queued ? "queued-button" : ""}`.trim(), queued ? "Selected" : used ? "Used" : "Scout");
     scoutButton.type = "button";
-    scoutButton.disabled = state.runnerBusy || !runnerMode() || !weeklyOpen || nonSpecificActionUsed || (!queued && specificUses >= specificLimit) || prospect.scouting_confidence === "Very High";
+    scoutButton.disabled = state.runnerBusy || !runnerMode() || !weeklyOpen || nonSpecificActionUsed || (!queued && specificUses + scoutCost > specificLimit) || prospect.scouting_confidence === "Very High";
     scoutButton.title = !weeklyOpen
       ? data.scouting?.weeklyWindow?.reason || "Weekly scouting is locked right now."
       : nonSpecificActionUsed
@@ -5967,7 +6666,11 @@
       : `Scout this player. ${specificUses}/${specificLimit} specific scouts used this week.`;
     scoutButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      runAction(queued ? "scouting_unassign" : "scouting_one", { prospect_id: prospect.prospect_id });
+      if (prospect.queued && !locallyQueued) {
+        runAction("scouting_unassign", { prospect_id: prospect.prospect_id });
+        return;
+      }
+      toggleLocalScoutingSelection(prospect);
     });
     const visitButton = node("button", "copy-button mini-button", prospect.top30_visit_id ? "Visited" : "Top 30");
     visitButton.type = "button";
@@ -6713,6 +7416,9 @@
     const nextEvent = calendar.nextEvent || (data.events || [])[0];
     const nextWeek = data.season?.nextWeek;
     root.append(calendarControlPanel(calendar, nextEvent, nextWeek));
+    if (state.runnerBusy && cancellableRunnerAction(state.busyAction)) {
+      root.append(calendarSimProgressStrip(calendar));
+    }
 
     const scopeLabel = calendar.scope === "user_team" ? `${userTeam} Calendar` : "League Calendar";
     const monthPanel = panel(calendar.monthLabel || "Calendar", `${scopeLabel} | ${shortDate(calendar.rangeStart)} - ${shortDate(calendar.rangeEnd)}${data.calendarGeneratedAt ? ` | refreshed ${shortDateTime(data.calendarGeneratedAt.replace("T", " "))}` : ""}`);
@@ -6772,6 +7478,7 @@
       "calendar-day",
       day.isCurrentMonth ? "" : "outside-month",
       day.isToday ? "today" : "",
+      state.calendarLiveFocus && day.date === calendarLiveFocusDate() ? "sim-focus" : "",
       (day.events || []).length || (day.games || []).length || (day.news || []).length ? "has-items" : "",
     ].filter(Boolean).join(" ");
     const cell = node("article", classes);
@@ -6789,6 +7496,25 @@
     return cell;
   }
 
+  function calendarLiveFocusDate() {
+    return data.calendar?.focusDate || data.currentDate || "";
+  }
+
+  function calendarSimProgressStrip(calendar) {
+    const games = calendar?.gamesInView || [];
+    const played = games.filter((game) => Number(game.played || 0) === 1).length;
+    const total = games.length;
+    const strip = node("div", "calendar-sim-progress");
+    append(strip, [
+      append(node("div"), [
+        node("strong", null, "Live sim calendar"),
+        node("span", null, `Focused on ${shortDate(calendarLiveFocusDate())}. Finished games will appear here as they commit.`),
+      ]),
+      node("span", "tag", total ? `${played}/${total} in view final` : "Finding games"),
+    ]);
+    return strip;
+  }
+
   function calendarEventChip(event) {
     const button = node("button", "calendar-chip event", event.event_name || "League Event");
     button.type = "button";
@@ -6803,8 +7529,12 @@
   function calendarNewsChip(item) {
     const button = node("button", `calendar-chip news ${Number(item.is_major || 0) ? "major" : ""}`.trim(), item.title || "League News");
     button.type = "button";
-    button.title = item.body || item.source || "";
+    button.title = item.prospect_id ? "Open prospect profile" : (item.body || item.source || "");
     button.addEventListener("click", () => {
+      if (item.prospect_id) {
+        openProspect(item.prospect_id);
+        return;
+      }
       state.selectedCalendarItem = { type: "news", id: item.news_id };
       render();
     });
@@ -6895,6 +7625,11 @@
         state.view = "leagueNews";
         render();
       });
+      const openProspectButton = item.prospect_id ? node("button", "copy-button", "Open Prospect") : null;
+      if (openProspectButton) {
+        openProspectButton.type = "button";
+        openProspectButton.addEventListener("click", () => openProspect(item.prospect_id));
+      }
       const subject = newsSubjectNode(item);
       return append(node("div", "calendar-detail"), [
         node("span", "tag", item.category || "League News"),
@@ -6902,6 +7637,7 @@
         node("p", "muted", `${shortDate(item.news_date)} | ${item.source || "League Wire"}`),
         subject ? append(node("div", "calendar-news-subject"), [node("span", null, "Subject"), subject]) : null,
         node("p", null, item.body || ""),
+        openProspectButton,
         open,
       ]);
     }
@@ -7078,6 +7814,8 @@
     else if (state.view === "stats") renderStats();
     else if (state.view === "inbox") renderInbox();
     else if (state.view === "leagueNews") renderLeagueNews();
+    else if (state.view === "transactions") renderTransactions();
+    else if (state.view === "injuries") renderInjuries();
     else if (state.view === "scouting") renderScouting();
     else if (state.view === "roster") renderRosterHub();
     else if (state.view === "depth") renderDepthChart();
@@ -7086,7 +7824,7 @@
     else if (state.view === "draft") renderDraft();
     else if (state.view === "aiGm") renderAiGm();
     else if (state.view === "calendar") renderCalendar();
-    else renderOverview();
+    else renderCalendar();
     state.lastRenderedView = state.view;
     if (shouldRestoreScroll) {
       requestAnimationFrame(() => {

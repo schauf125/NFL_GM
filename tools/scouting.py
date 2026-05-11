@@ -38,6 +38,8 @@ CONFIDENCE_TARGET_LEVELS = {
     "High": 65,
     "Very High": 85,
 }
+DISCOVERY_START_CONFIDENCE = "Medium"
+DISCOVERY_START_LEVEL = CONFIDENCE_TARGET_LEVELS[DISCOVERY_START_CONFIDENCE]
 
 SIMPLE_ACTION_LABELS = {
     "auto_assign": "Auto Assign 6 Scouts",
@@ -1920,10 +1922,10 @@ def discover_non_public_players(
     selected = choose_hidden_discovery_candidates(candidates, count=count, rng=rng)
     results = []
     for prospect in selected:
-        level = CONFIDENCE_TARGET_LEVELS["Low"]
+        level = DISCOVERY_START_LEVEL
         report = (
             f"Area scouts found {prospect_name(prospect)} ({prospect['position']}, {prospect['college']}). "
-            "He was not on the public board. This is only a low-confidence discovery and needs follow-up work."
+            "He was not on the public board. The early file starts at medium confidence, but still needs follow-up work."
         )
         con.execute(
             """
@@ -1932,13 +1934,14 @@ def discover_non_public_players(
                 scouting_confidence, times_scouted, last_scouted_season,
                 last_scouted_week, last_scouted_date, last_report, updated_at
             )
-            VALUES (?, ?, ?, 'discovered', ?, 'Low', 0, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, 'discovered', ?, ?, 0, ?, ?, ?, ?, datetime('now'))
             """,
             (
                 target_game_id,
                 target_year,
                 int(prospect["prospect_id"]),
                 level,
+                DISCOVERY_START_CONFIDENCE,
                 period.season,
                 period.week,
                 period.date,
@@ -1949,11 +1952,11 @@ def discover_non_public_players(
             """
             UPDATE draft_prospects
             SET discovery_status = 'discovered',
-                scout_confidence = 'Low',
+                scout_confidence = ?,
                 updated_at = datetime('now')
             WHERE prospect_id = ?
             """,
-            (int(prospect["prospect_id"]),),
+            (DISCOVERY_START_CONFIDENCE, int(prospect["prospect_id"])),
         )
         add_inbox_message(
             con,
@@ -1974,7 +1977,7 @@ def discover_non_public_players(
                 "position": prospect["position"],
                 "college": prospect["college"],
                 "old_confidence": "Hidden",
-                "new_confidence": "Low",
+                "new_confidence": DISCOVERY_START_CONFIDENCE,
                 "scouting_level": level,
             }
         )
@@ -2669,8 +2672,8 @@ def discover_cpu_hidden_prospects(
         return 0
     created = 0
     for candidate in choose_hidden_discovery_candidates(candidates, count=discovery_count, rng=rng):
-        level = rng.randint(8, 18)
-        confidence = confidence_for_level(level)
+        level = DISCOVERY_START_LEVEL
+        confidence = DISCOVERY_START_CONFIDENCE
         con.execute(
             """
             INSERT INTO cpu_scouting_prospect_progress (
@@ -3032,11 +3035,11 @@ def discover_user_extra_hidden_prospect(
         return []
     candidate = selected[0]
 
-    level = rng.randint(8, 18)
-    confidence = confidence_for_level(level)
+    level = DISCOVERY_START_LEVEL
+    confidence = DISCOVERY_START_CONFIDENCE
     report = (
         f"An area scout surfaced {prospect_name(candidate)} ({candidate['position']}, {candidate['college']}) "
-        "outside the public board. This is a low-confidence name and needs follow-up work."
+        "outside the public board. The early file starts at medium confidence, but still needs follow-up work."
     )
     con.execute(
         """
@@ -3160,8 +3163,8 @@ def discover_hidden_prospects(
         ),
     ).fetchall()
     for prospect in choose_hidden_discovery_candidates(candidates, count=count, rng=rng):
-        level = rng.randint(8, 18)
-        confidence = confidence_for_level(level)
+        level = DISCOVERY_START_LEVEL
+        confidence = DISCOVERY_START_CONFIDENCE
         con.execute(
             """
             INSERT INTO scouting_prospect_progress (
@@ -3187,11 +3190,11 @@ def discover_hidden_prospects(
             """
             UPDATE draft_prospects
             SET discovery_status = 'discovered',
-                scout_confidence = 'Low',
+                scout_confidence = ?,
                 updated_at = datetime('now')
             WHERE prospect_id = ?
             """,
-            (int(prospect["prospect_id"]),),
+            (confidence, int(prospect["prospect_id"])),
         )
         add_inbox_message(
             con,
@@ -5352,6 +5355,28 @@ def action_assign(args: argparse.Namespace) -> None:
     print(f"Queued scouting: {prospect_name(prospect)} ({prospect['position']}, {prospect['college']})")
 
 
+def action_assign_batch(args: argparse.Namespace) -> None:
+    prospect_ids = [int(value) for value in args.prospect_ids if value]
+    if not prospect_ids:
+        raise ValueError("Provide at least one --prospect-id.")
+    queued = []
+    with connect(args.db) as con:
+        for prospect_id in prospect_ids:
+            prospect = assign_prospect(
+                con,
+                prospect_id=prospect_id,
+                game_id=args.game_id,
+                draft_year=args.draft_year,
+                season=args.season,
+                week=args.week,
+                focus=args.focus,
+            )
+            queued.append(prospect)
+        con.commit()
+    names = ", ".join(prospect_name(prospect) for prospect in queued)
+    print(f"Queued {len(queued)} scouting assignment(s): {names}")
+
+
 def action_unassign(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
         result = unassign_prospect(
@@ -5635,6 +5660,15 @@ def build_parser() -> argparse.ArgumentParser:
     assign.add_argument("--prospect-id", type=int, required=True)
     assign.add_argument("--focus", choices=sorted(FOCUS_LABELS), default="film")
     assign.set_defaults(func=action_assign)
+
+    assign_batch = subparsers.add_parser("assign-batch", help="Queue multiple prospects for the current scouting period.")
+    assign_batch.add_argument("--game-id")
+    assign_batch.add_argument("--draft-year", type=int)
+    assign_batch.add_argument("--season", type=int)
+    assign_batch.add_argument("--week", type=int)
+    assign_batch.add_argument("--prospect-id", dest="prospect_ids", type=int, action="append", required=True)
+    assign_batch.add_argument("--focus", choices=sorted(FOCUS_LABELS), default="film")
+    assign_batch.set_defaults(func=action_assign_batch)
 
     unassign = subparsers.add_parser("unassign", help="Remove one pending scouting assignment.")
     unassign.add_argument("--game-id")

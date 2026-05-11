@@ -16,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 from engine import match_engine  # noqa: E402
 from engine import injury_model  # noqa: E402
+import injury_notifications  # noqa: E402
+import sim_control  # noqa: E402
 import weekly_processor  # noqa: E402
 
 
@@ -271,6 +273,7 @@ def action_game(args: argparse.Namespace) -> None:
         )
         print_result(result, show_plays=args.show_plays, box=args.box)
         if args.apply:
+            injury_marker = injury_notifications.max_event_id(con)
             run_id = match_engine.persist_result(
                 con,
                 result,
@@ -278,8 +281,18 @@ def action_game(args: argparse.Namespace) -> None:
                 force=args.force,
                 notes=args.notes,
             )
+            injury_summary = injury_notifications.create_injury_notifications(
+                con,
+                min_event_id=injury_marker,
+            )
             con.commit()
             print(f"\nSaved sim run {run_id} and marked schedule game {args.schedule_game_id} played.")
+            if injury_summary["injury_events"]:
+                print(
+                    "Injury notifications: "
+                    f"{injury_summary['inbox_created']} inbox, "
+                    f"{injury_summary['league_news_created']} league news."
+                )
         else:
             print("\nDry run only. Add --apply to save this result.")
     finally:
@@ -329,9 +342,16 @@ def simulate_scheduled_rows(
     force: bool = False,
     notes: str | None = None,
     rebuild_at_end: bool = True,
+    cancel_db_path: Path | None = None,
 ) -> tuple[int, int]:
     saved = 0
+    injury_marker = injury_notifications.max_event_id(con) if apply else 0
     for idx, row in enumerate(rows):
+        if cancel_db_path is not None:
+            sim_control.raise_if_cancelled(
+                cancel_db_path,
+                f"before {int(row['season'])} Week {int(row['week'])} game {int(row['game_id'])}.",
+            )
         game_seed = seed + idx if seed is not None else None
         result = match_engine.simulate_game(
             con,
@@ -353,8 +373,22 @@ def simulate_scheduled_rows(
                 rebuild_history=False,
             )
             saved += 1
+            con.commit()
     if apply and rebuild_at_end and rows:
+        if cancel_db_path is not None:
+            sim_control.raise_if_cancelled(cancel_db_path, "before rebuilding season history.")
         match_engine.rebuild_season_history(con, int(rows[0]["season"]))
+        con.commit()
+    if apply and rows:
+        if cancel_db_path is not None:
+            sim_control.raise_if_cancelled(cancel_db_path, "before injury notifications.")
+        injury_summary = injury_notifications.create_injury_notifications(con, min_event_id=injury_marker)
+        if injury_summary["injury_events"]:
+            print(
+                "Game injury notifications: "
+                f"{injury_summary['inbox_created']} inbox, "
+                f"{injury_summary['league_news_created']} league news."
+            )
     return len(rows), saved
 
 
@@ -363,12 +397,15 @@ def process_weekly_hooks_for_rows(
     rows: list[sqlite3.Row],
     *,
     force: bool = False,
+    cancel_db_path: Path | None = None,
 ) -> None:
     weeks = sorted({int(row["week"]) for row in rows})
     if not weeks:
         return
     season = int(rows[0]["season"])
     for week in weeks:
+        if cancel_db_path is not None:
+            sim_control.raise_if_cancelled(cancel_db_path, f"before weekly hooks for {season} Week {week}.")
         completion = con.execute(
             """
             SELECT COUNT(*) AS total,
@@ -407,6 +444,13 @@ def process_weekly_hooks_for_rows(
         except ValueError as exc:
             print(f"Weekly hooks skipped for {season} Week {week}: {exc}")
             continue
+        injury_summary = injury_notifications.create_injury_notifications(con, season=season, week=week)
+        if injury_summary["injury_events"]:
+            print(
+                f"Week {week} injury notifications: "
+                f"{injury_summary['inbox_created']} inbox, "
+                f"{injury_summary['league_news_created']} league news."
+            )
         weekly_processor.print_weekly_result(result)
 
 
@@ -426,14 +470,28 @@ def action_week(args: argparse.Namespace) -> None:
             apply=args.apply,
             force=args.force,
             notes=args.notes,
+            cancel_db_path=args.db if args.apply else None,
         )
         if args.apply:
             if args.weekly_hooks:
-                process_weekly_hooks_for_rows(con, rows, force=args.force)
+                process_weekly_hooks_for_rows(con, rows, force=args.force, cancel_db_path=args.db)
             con.commit()
             print(f"Saved {saved} game result(s).")
         else:
             print("Dry run only. Add --apply to save these results.")
+    except sim_control.SimCancelled as exc:
+        if args.apply:
+            match_engine.rebuild_season_history(con, args.season)
+            injury_summary = injury_notifications.create_injury_notifications(con, season=args.season)
+            if injury_summary["injury_events"]:
+                print(
+                    "Injury notifications checked before pausing: "
+                    f"{injury_summary['inbox_created']} inbox, "
+                    f"{injury_summary['league_news_created']} league news."
+                )
+            con.commit()
+            sim_control.clear_cancel(args.db)
+        print(f"{exc} Saved progress through the last completed safe checkpoint.")
     finally:
         con.close()
 
@@ -460,14 +518,28 @@ def action_season(args: argparse.Namespace) -> None:
             apply=args.apply,
             force=args.force,
             notes=args.notes,
+            cancel_db_path=args.db if args.apply else None,
         )
         if args.apply:
             if args.weekly_hooks:
-                process_weekly_hooks_for_rows(con, rows, force=args.force)
+                process_weekly_hooks_for_rows(con, rows, force=args.force, cancel_db_path=args.db)
             con.commit()
             print(f"Saved {saved} game result(s) for {args.season}.")
         else:
             print(f"Dry run only. Simulated {simulated} game(s). Add --apply to save these results.")
+    except sim_control.SimCancelled as exc:
+        if args.apply:
+            match_engine.rebuild_season_history(con, args.season)
+            injury_summary = injury_notifications.create_injury_notifications(con, season=args.season)
+            if injury_summary["injury_events"]:
+                print(
+                    "Injury notifications checked before pausing: "
+                    f"{injury_summary['inbox_created']} inbox, "
+                    f"{injury_summary['league_news_created']} league news."
+                )
+            con.commit()
+            sim_control.clear_cancel(args.db)
+        print(f"{exc} Saved progress through the last completed safe checkpoint.")
     finally:
         con.close()
 

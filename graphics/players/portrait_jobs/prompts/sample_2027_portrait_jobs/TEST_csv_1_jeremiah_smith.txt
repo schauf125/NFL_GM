@@ -1,0 +1,9 @@
+Create a realistic fictional rookie American football player portrait for a local sports management simulation.
+This must be an original fictional person. Do not make the portrait resemble a real athlete, celebrity, or public figure.
+Player context: Jeremiah Smith, WR, assigned to Test Draft Team (TEST).
+Use the listed football body type: 6'3", 223 lbs, WR. Reflect that size in the neck, shoulders, and frame while keeping this a head-and-shoulders portrait.
+Metadata: college background: Ohio State; archetype: X receiver / alpha separator
+Scouting flavor to guide posture and expression: Established elite production profile with rare size/speed/strength blend. Treat as the safest non-QB in the starter board.
+Visual style: official team media-day headshot, chest-up, straight-on camera, neutral confident expression, realistic skin texture, studio lighting, dark matte background.
+Wardrobe: generic professional football jersey or training top in team-inspired colors, but no real team logos, NFL shields, brand marks, visible text, watermarks, or captions.
+Framing: square 1024x1024 composition, face centered, shoulders visible, no helmet, no action pose, no extra people.

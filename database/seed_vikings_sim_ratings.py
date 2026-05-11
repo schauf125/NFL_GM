@@ -25,7 +25,7 @@ ROLE_OVERRIDES = {
     ("Tai", "Felton"): ("slot_wr", "boundary_wr"),
     ("Myles", "Price"): ("slot_wr", None),
     ("T.J.", "Hockenson"): ("move_te", "inline_te"),
-    ("Josh", "Oliver"): ("inline_te", None),
+    ("Josh", "Oliver"): ("inline_te", "move_te"),
     ("Christian", "Darrisaw"): ("pass_protecting_ot", None),
     ("Brian", "O'Neill"): ("pass_protecting_ot", None),
     ("Will", "Fries"): ("interior_run_blocker", None),
@@ -48,6 +48,49 @@ ROLE_OVERRIDES = {
     ("Joshua", "Metellus"): ("box_safety", "deep_safety"),
     ("Jay", "Ward"): ("deep_safety", "box_safety"),
     ("Theo", "Jackson"): ("deep_safety", "box_safety"),
+}
+
+
+ROLE_SCORE_FLOORS = {
+    # Jefferson has played plenty inside, but his Vikings usage is primarily
+    # the boundary/X receiver role. Keep slot elite without letting it sort
+    # above his outside role when regenerated.
+    ("Justin", "Jefferson"): {
+        "boundary_wr": 95.25,
+        "slot_wr": 93.75,
+    },
+    ("Josh", "Oliver"): {
+        "inline_te": 78.5,
+        "move_te": 70.0,
+    },
+}
+
+
+RATING_OVERRIDES = {
+    ("Josh", "Oliver"): {
+        "hands": 74,
+        "catch_in_traffic": 75,
+        "contested_catch": 74,
+        "release_vs_press": 70,
+        "route_snap": 69,
+        "route_timing": 70,
+        "run_block_drive": 84,
+        "reach_block": 82,
+        "lead_block": 83,
+        "block_sustain": 85,
+        "pass_block_power": 78,
+        "pass_block_finesse": 76,
+        "pass_block_speed": 76,
+        "strength": 80,
+        "balance": 78,
+        "contact_power": 77,
+        "play_recognition": 74,
+        "processing_speed": 73,
+        "discipline": 76,
+        "composure": 75,
+        "consistency": 74,
+        "durability": 70,
+    },
 }
 
 
@@ -468,6 +511,7 @@ def generate_ratings(player, roles):
                 ratings[key] = min(ratings[key], specialist_floor)
 
     ratings = apply_relevance_caps(player, ratings, roles)
+    ratings.update(RATING_OVERRIDES.get((player["first_name"], player["last_name"]), {}))
     return {key: clamp(value) for key, value in ratings.items()}
 
 
@@ -592,16 +636,20 @@ def calculate_role_score(player, ratings, role_key):
 
 def insert_role_scores(conn, player, ratings, roles):
     rows = []
+    score_floors = ROLE_SCORE_FLOORS.get((player["first_name"], player["last_name"]), {})
     for role_key in roles:
         if role_key is None:
             continue
+        role_score = calculate_role_score(player, ratings, role_key)
+        if role_key in score_floors:
+            role_score = max(role_score, score_floors[role_key])
         rows.append(
             (
                 player["player_id"],
                 SEASON,
                 role_key,
                 "default",
-                calculate_role_score(player, ratings, role_key),
+                role_score,
                 SOURCE,
             )
         )
