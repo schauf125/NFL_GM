@@ -30,6 +30,7 @@ import export_player_card_ui_data
 import export_player_profile_ui_data
 import free_agency_processor
 import injury_notifications
+import roster_rules
 import sim_control
 import view_box_score
 
@@ -71,8 +72,15 @@ PLAYER_EXPORT_ACTIONS = {
     "depth_chart_move",
     "roster_release_player",
     "roster_change_number",
+    "practice_squad_assign",
+    "practice_squad_release",
+    "auto_cutdown",
+    "auto_cutdown_continue",
 }
 LIGHTWEIGHT_PRESTATE_ACTIONS = {
+    "new_june1_save",
+    "load_game",
+    "delete_save",
     "draft_start",
     "draft_pause",
     "draft_resume",
@@ -87,6 +95,8 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "depth_chart_move",
     "roster_release_player",
     "roster_change_number",
+    "practice_squad_assign",
+    "practice_squad_release",
     "free_agency_start",
     "free_agency_cpu_seed",
     "free_agency_advance_hour",
@@ -100,6 +110,8 @@ SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_restructure",
     "roster_release_player",
     "roster_change_number",
+    "practice_squad_assign",
+    "practice_squad_release",
 }
 DRAFT_RUN_ACTIONS = {
     "advance_to_draft",
@@ -124,6 +136,7 @@ CALENDAR_RUN_ACTIONS = {
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "auto_cutdown_continue",
 }
 INJURY_ALERT_ACTIONS = {"sim_week", "sim_season"}
 SIM_CANCEL_ACTIONS = {"sim_week", "sim_season"}
@@ -445,10 +458,12 @@ def free_agency_state_patch(db_path: Path) -> dict[str, Any]:
 
 def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[str, Any]]:
     db_path = active_db_path()
+    if action in {"new_june1_save", "load_game", "delete_save"}:
+        return {}, export_app_shell_ui_data.export(db_path, APP_SHELL_OUTPUT)
     if action in DRAFT_RUN_ACTIONS:
         patch = draft_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
-    if action in {"depth_chart_set", "depth_chart_move", "roster_release_player", "roster_change_number"}:
+    if action in {"depth_chart_set", "depth_chart_move", "roster_release_player", "roster_change_number", "practice_squad_assign", "practice_squad_release"}:
         patch = depth_chart_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     if action in FREE_AGENCY_RUN_ACTIONS:
@@ -1010,6 +1025,95 @@ def depth_chart_payload_for_active_db(season: int | None = None, team: str | Non
     }
 
 
+def practice_squad_payload_for_active_db(season: int | None = None, team: str | None = None) -> dict[str, Any]:
+    db_path = active_db_path()
+    context = game_context(db_path)
+    target_season = int(season or context["currentSeason"])
+    target_team = str(team or context.get("userTeam") or "MIN").upper()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        team_row = roster_rules.get_team(conn, target_team)
+        rule_set = roster_rules.practice_squad_rule_set(conn, target_season, "Regular Season")
+        usage = roster_rules.practice_squad_usage(conn, int(team_row["team_id"]), rule_set)
+        rows = roster_rules.practice_squad_eligibility_rows(
+            conn,
+            team=team_row,
+            season=target_season,
+            rule_set=rule_set,
+            include_active=True,
+            include_all_active=True,
+            include_current=True,
+            include_blocked=True,
+            limit=260,
+        )
+        active_count = roster_rules.active_roster_count(conn, int(team_row["team_id"]))
+        if export_game_center_ui_data.table_exists(conn, "transaction_log_view"):
+            recent_moves = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT
+                        transaction_id,
+                        transaction_date,
+                        transaction_type,
+                        team,
+                        from_team,
+                        to_team,
+                        player_id,
+                        player_name,
+                        player_position,
+                        description
+                    FROM transaction_log_view
+                    WHERE season = ?
+                      AND transaction_type IN ('Practice Squad Poaching', 'Practice Squad Signing', 'Practice Squad Release')
+                      AND (
+                            team_id = ?
+                         OR from_team_id = ?
+                         OR to_team_id = ?
+                         OR secondary_team_id = ?
+                      )
+                    ORDER BY transaction_date DESC, transaction_id DESC
+                    LIMIT 12
+                    """,
+                    (
+                        target_season,
+                        int(team_row["team_id"]),
+                        int(team_row["team_id"]),
+                        int(team_row["team_id"]),
+                        int(team_row["team_id"]),
+                    ),
+                ).fetchall()
+            ]
+        else:
+            recent_moves = []
+    limits = {
+        "active": int(rule_set["active_roster_limit"] or 53),
+        "base": int(rule_set["practice_squad_limit"] or 16),
+        "developmental": int(rule_set["practice_squad_developmental_limit"] or 10),
+        "veteranException": int(rule_set["practice_squad_veteran_exception_limit"] or 6),
+        "internationalExemption": int(rule_set["practice_squad_international_exemption_limit"] or 1),
+        "total": int(rule_set["practice_squad_limit"] or 16) + int(rule_set["practice_squad_international_exemption_limit"] or 0),
+    }
+    return {
+        "season": target_season,
+        "team": target_team,
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "practiceSquad": {
+            "team": target_team,
+            "phase": rule_set["phase"],
+            "enabled": bool(int(rule_set["practice_squad_enabled"] or 0)),
+            "activeCount": active_count,
+            "activeLimit": limits["active"],
+            "usage": usage,
+            "limits": limits,
+            "candidates": rows,
+            "recentMoves": recent_moves,
+        },
+    }
+
+
 def ai_gm_payload_for_active_db(season: int | None = None, team: str | None = None) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
@@ -1049,6 +1153,134 @@ def refresh_static_data_asset(path: str) -> None:
         payload = export_game_center_ui_data.build_payload(db_path)
         export_player_profile_ui_data.export(db_path, PLAYER_PROFILE_OUTPUT, player_export_season(payload))
         return
+
+
+def assign_practice_squad_player(player_id: int, team: str, season: int) -> str:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        team_row = roster_rules.get_team(conn, team)
+        rule_set = roster_rules.practice_squad_rule_set(conn, season, "Regular Season")
+        player = conn.execute(
+            """
+            SELECT p.*, t.abbreviation AS team
+            FROM players p
+            LEFT JOIN teams t ON t.team_id = p.team_id
+            WHERE p.player_id = ?
+            """,
+            (player_id,),
+        ).fetchone()
+        if not player:
+            raise ValueError(f"Player not found: {player_id}")
+        own_team = player["team_id"] is not None and int(player["team_id"]) == int(team_row["team_id"])
+        if player["status"] not in {"Active", roster_rules.PRACTICE_SQUAD_STATUS, "Free Agent", roster_rules.WAIVED_STATUS}:
+            raise ValueError(f"{roster_rules.player_name(player)} has status {player['status']} and cannot be assigned.")
+        if player["status"] == roster_rules.PRACTICE_SQUAD_STATUS and own_team:
+            raise ValueError(f"{roster_rules.player_name(player)} is already on the practice squad.")
+        if player["status"] == "Active" and not own_team:
+            raise ValueError("Only your own active players can be moved directly to the practice squad.")
+        eligibility = roster_rules.practice_squad_eligibility(conn, player, team_row, rule_set, season=season)
+        if not eligibility["eligible"]:
+            raise ValueError(
+                f"{roster_rules.player_name(player)} is not practice-squad eligible: "
+                + " ".join(str(item) for item in eligibility["blockers"])
+            )
+        old_status = player["status"]
+        if old_status == roster_rules.WAIVED_STATUS:
+            conn.execute(
+                "UPDATE waiver_wire SET status = 'Cancelled', resolved_at = datetime('now') WHERE player_id = ? AND status = 'Open'",
+                (player_id,),
+            )
+        roster_rules.set_player_status(
+            conn,
+            player=player,
+            team_id=int(team_row["team_id"]),
+            new_status=roster_rules.PRACTICE_SQUAD_STATUS,
+            season=season,
+            reason="Assigned through roster cutdown registration.",
+        )
+        roster_rules.clear_depth_chart(conn, player_id)
+        roster_rules.record_practice_squad_move(
+            conn,
+            player_id=player_id,
+            team_id=int(team_row["team_id"]),
+            season=season,
+            move_type="Sign",
+            from_status=old_status,
+            to_status=roster_rules.PRACTICE_SQUAD_STATUS,
+            notes="Assigned through UI squad registration.",
+        )
+        transaction_id = roster_rules.log_transaction(
+            conn,
+            transaction_type="Practice Squad Signing",
+            season=season,
+            team_id=int(team_row["team_id"]),
+            player_id=player_id,
+            to_team_id=int(team_row["team_id"]),
+            old_status=old_status,
+            new_status=roster_rules.PRACTICE_SQUAD_STATUS,
+            description=f"Assigned {roster_rules.player_name(player)} to {team_row['abbreviation']} practice squad.",
+        )
+        conn.commit()
+    return f"Assigned {roster_rules.player_name(player)} to {team} practice squad (transaction {transaction_id})."
+
+
+def release_practice_squad_player(player_id: int, team: str, season: int) -> str:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        team_row = roster_rules.get_team(conn, team)
+        player = conn.execute(
+            """
+            SELECT p.*, t.abbreviation AS team
+            FROM players p
+            LEFT JOIN teams t ON t.team_id = p.team_id
+            WHERE p.player_id = ?
+              AND p.team_id = ?
+              AND p.status = ?
+            """,
+            (player_id, int(team_row["team_id"]), roster_rules.PRACTICE_SQUAD_STATUS),
+        ).fetchone()
+        if not player:
+            raise ValueError("Player is not on this practice squad.")
+        old_status = player["status"]
+        roster_rules.set_player_status(
+            conn,
+            player=player,
+            team_id=None,
+            new_status="Free Agent",
+            season=season,
+            reason="Released from practice squad.",
+        )
+        roster_rules.record_practice_squad_move(
+            conn,
+            player_id=player_id,
+            team_id=int(team_row["team_id"]),
+            season=season,
+            move_type="Release",
+            from_status=old_status,
+            to_status="Free Agent",
+            notes="Released through UI squad registration.",
+        )
+        transaction_id = roster_rules.log_transaction(
+            conn,
+            transaction_type="Practice Squad Release",
+            season=season,
+            team_id=int(team_row["team_id"]),
+            player_id=player_id,
+            from_team_id=int(team_row["team_id"]),
+            old_status=old_status,
+            new_status="Free Agent",
+            description=f"Released {roster_rules.player_name(player)} from {team_row['abbreviation']} practice squad.",
+        )
+        conn.commit()
+    return f"Released {roster_rules.player_name(player)} from {team} practice squad (transaction {transaction_id})."
 
 
 def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -> list[str]:
@@ -1247,6 +1479,18 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             con.execute("UPDATE players SET jersey_number = ? WHERE player_id = ?", (number, player_id))
             con.commit()
         return [sys.executable, "-c", f"print('Jersey number updated to #{number}.')"]
+    if action == "practice_squad_assign":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("practice_squad_assign requires player_id.")
+        message = assign_practice_squad_player(int(player_id), str(user_team), season)
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
+    if action == "practice_squad_release":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("practice_squad_release requires player_id.")
+        message = release_practice_squad_player(int(player_id), str(user_team), season)
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
     if action == "depth_chart_set":
         player_id = params.get("player_id")
         position = params.get("position")
@@ -1961,7 +2205,11 @@ def action_response_summary(
             "advance_next_event": "Advanced To Next Date",
             "advance_to_date": "Advanced To Date",
             "advance_next_league_year": "Advanced To Next League Year",
+            "auto_cutdown_continue": "Auto Cutdown Complete",
         }.get(action, summary["title"])
+    elif action == "auto_cutdown":
+        summary["affectedPanels"] = ["roster", "depth", "contracts", "transactions"]
+        summary["title"] = "Auto Cutdown Complete"
     if params.get("apply"):
         summary["mode"] = "applied"
     elif "dry" in action or "dry run" in (stdout or "").lower():
@@ -1971,9 +2219,104 @@ def action_response_summary(
     return summary
 
 
+ROSTER_GATE_MARKERS = (
+    "Roster cutdown/practice squad setup required",
+    "Stopping at final roster cutdown day",
+    "Stopping when practice squads open",
+)
+
+
+def roster_gate_payload(action: str, params: dict[str, Any], stdout: str, stderr: str) -> dict[str, Any] | None:
+    combined = f"{stdout or ''}\n{stderr or ''}"
+    if not any(marker in combined for marker in ROSTER_GATE_MARKERS):
+        return None
+    return {
+        "title": "Roster Cutdown Needed",
+        "message": first_output_line(stdout, stderr)
+        or "Final cuts and practice squad decisions are due before the regular season.",
+        "stoppedAction": action,
+        "stoppedParams": params or {},
+    }
+
+
+def run_auto_cutdown_continue_action(params: dict[str, Any]) -> dict[str, Any]:
+    started = perf_counter()
+    allowed_continue = {
+        "advance_next_event",
+        "advance_to_date",
+        "advance_next_league_year",
+        "advance_to_draft",
+        "sim_week",
+        "sim_season",
+    }
+    continue_action = str(params.get("continue_action") or "").strip()
+    continue_params = params.get("continue_params") if isinstance(params.get("continue_params"), dict) else {}
+    if continue_action not in allowed_continue:
+        raise ValueError("auto_cutdown_continue requires a supported continue_action.")
+
+    before = payload_for_active_db()
+    season = int(before.get("currentSeason") or (before.get("season") or {}).get("season") or datetime.now().year)
+    cutdown_command = action_command("auto_cutdown", {"season": season}, before)
+    cutdown = subprocess.run(
+        cutdown_command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        timeout=int(params.get("timeout_seconds") or 3600),
+    )
+    stdout_parts = [cutdown.stdout]
+    stderr_parts = [cutdown.stderr]
+    command_parts = [cutdown_command]
+    returncode = cutdown.returncode
+    if returncode == 0:
+        after_cutdown = payload_for_active_db()
+        continue_command = action_command(continue_action, continue_params, after_cutdown)
+        command_parts.append(continue_command)
+        if continue_action in SIM_CANCEL_ACTIONS:
+            sim_control.clear_cancel(active_db_path())
+        continued = subprocess.run(
+            continue_command,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=int(params.get("timeout_seconds") or 3600),
+        )
+        stdout_parts.append(continued.stdout)
+        stderr_parts.append(continued.stderr)
+        returncode = continued.returncode
+
+    duration_seconds = perf_counter() - started
+    stdout = "\n".join(part for part in stdout_parts if part)
+    stderr = "\n".join(part for part in stderr_parts if part)
+    response = {
+        "action": "auto_cutdown_continue",
+        "command": " && ".join(" ".join(f'"{part}"' if " " in str(part) else str(part) for part in command) for command in command_parts),
+        "returncode": returncode,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout[-20000:],
+        "stderr": stderr[-20000:],
+    }
+    response["summary"] = action_response_summary(
+        "auto_cutdown_continue",
+        params,
+        returncode,
+        stdout,
+        stderr,
+        duration_seconds,
+    )
+    after, app_shell_after = write_exports(include_players=True)
+    response["state"] = after
+    response["app_shell_state"] = app_shell_after
+    response["continuedAction"] = continue_action
+    response["rosterGate"] = roster_gate_payload(continue_action, continue_params, stdout, stderr)
+    return response
+
+
 def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
     if action == "box_score":
         return run_box_score_action(params)
+    if action == "auto_cutdown_continue":
+        return run_auto_cutdown_continue_action(params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
     command = action_command(action, params, before)
     if action in SIM_CANCEL_ACTIONS:
@@ -2014,10 +2357,20 @@ def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
         result.stderr,
         duration_seconds,
     )
+    response["rosterGate"] = roster_gate_payload(action, params, result.stdout, result.stderr)
     if action in LIGHTWEIGHT_PRESTATE_ACTIONS:
         state_patch, app_shell_after = write_lightweight_action_exports(action)
         response["statePatch"] = state_patch
         response["app_shell_state"] = app_shell_after
+        if action in {"new_june1_save", "load_game"} and result.returncode == 0:
+            try:
+                after, refreshed_app_shell = write_exports(include_players=True)
+                response["state"] = after
+                response["app_shell_state"] = refreshed_app_shell
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).lower():
+                    raise
+                response["refreshWarning"] = str(exc)
     else:
         after, app_shell_after = write_exports(include_players=include_players)
         response["state"] = after
@@ -2324,6 +2677,17 @@ class UiHandler(SimpleHTTPRequestHandler):
                 season = int(requested_season[0]) if requested_season and requested_season[0] else None
                 team = requested_team[0] if requested_team and requested_team[0] else None
                 self.write_json(HTTPStatus.OK, depth_chart_payload_for_active_db(season, team))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/practice-squad":
+            try:
+                params = parse_qs(parsed.query)
+                requested_season = params.get("season")
+                requested_team = params.get("team")
+                season = int(requested_season[0]) if requested_season and requested_season[0] else None
+                team = requested_team[0] if requested_team and requested_team[0] else None
+                self.write_json(HTTPStatus.OK, practice_squad_payload_for_active_db(season, team))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return

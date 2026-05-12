@@ -563,6 +563,46 @@ def apply_cpu_roster_cutdowns_if_due(game_id: str, target_date: str) -> None:
     sync_save(target_game_id)
 
 
+def stop_for_user_roster_cutdown_if_due(game_id: str | None, season: int) -> bool:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        game = game_flow.active_game(con)
+        if not game:
+            return False
+        current = date.fromisoformat(str(game.current_date))
+        cutdown = calendar_event_date(con, season, "FINAL_ROSTER_CUTDOWN_53")
+        practice_squad = calendar_event_date(con, season, "PRACTICE_SQUADS_ESTABLISHED")
+        kickoff = calendar_event_date(con, season, "REGULAR_SEASON_KICKOFF")
+
+        stop_date: str | None = None
+        gate_message: str | None = None
+        if cutdown and current < date.fromisoformat(cutdown):
+            stop_date = cutdown
+            gate_message = (
+                "Stopping at final roster cutdown day. CPU teams will make their cutdowns; "
+                "the user team must handle its own final roster and practice squad setup."
+            )
+        elif practice_squad and current < date.fromisoformat(practice_squad):
+            stop_date = practice_squad
+            gate_message = "Stopping when practice squads open so the user can assign the practice squad."
+        elif kickoff and current < date.fromisoformat(kickoff):
+            gate_message = user_roster_gate_message(con, season)
+
+    if stop_date:
+        auto_top30_before_calendar_advance(target_game_id, stop_date)
+        finish_draft_before_calendar_advance(target_game_id, stop_date)
+        game_id, _db_path, con = open_save_db(target_game_id)
+        try:
+            game_flow.action_advance_to_date(con, SimpleNamespace(date=stop_date))
+        finally:
+            con.close()
+        sync_save(target_game_id)
+    if gate_message:
+        print(gate_message)
+        return True
+    return False
+
+
 def draft_remaining_picks(con, draft_year: int) -> int:
     if not table_exists(con, "draft_picks"):
         return 0
@@ -1243,6 +1283,8 @@ def action_playtest_logs(args: argparse.Namespace) -> None:
 
 def action_sim_week(args: argparse.Namespace) -> None:
     if args.apply:
+        if stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
+            return
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
         ensure_cpu_depth_charts(args.game_id, args.season)
@@ -1264,6 +1306,8 @@ def action_sim_week(args: argparse.Namespace) -> None:
 
 def action_sim_season(args: argparse.Namespace) -> None:
     if args.apply:
+        if stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
+            return
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
         ensure_cpu_depth_charts(args.game_id, args.season)

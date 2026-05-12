@@ -136,6 +136,9 @@
         body: JSON.stringify({ action, params: params || {} }),
       });
       const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || `Request failed with ${response.status}`);
+      }
       if (payload.app_shell_state) data = payload.app_shell_state;
       state.lastResult = payload;
       state.runnerAvailable = true;
@@ -168,7 +171,17 @@
   }
 
   function busyMessage() {
-    return `${actionLabel(state.busyAction)} is running...\n\nElapsed: ${state.elapsedSeconds}s\n\nThe league is preparing a playable save with roster variance, personalities, development traits, scheme fits, and draft class setup. This page will move forward when it is ready.`;
+    const elapsed = `Elapsed: ${state.elapsedSeconds}s`;
+    if (state.busyAction === "new_june1_save") {
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league is preparing a playable save with roster variance, personalities, development traits, scheme fits, and draft class setup. This page will move forward when it is ready.`;
+    }
+    if (state.busyAction === "load_game") {
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is switching the active save and refreshing the UI data. This does not regenerate draft classes, traits, ratings variance, or development modifiers.`;
+    }
+    if (state.busyAction === "delete_save") {
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is removing the selected save from the local registry and save folder.`;
+    }
+    return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is running the requested action and will refresh when it finishes.`;
   }
 
   function shortDate(value) {

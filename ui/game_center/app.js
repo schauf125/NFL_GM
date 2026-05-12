@@ -23,6 +23,8 @@
     calendarLiveFocus: false,
     boxScoreModal: null,
     injuryModal: null,
+    rosterCutdownPrompt: null,
+    rosterCutdownPromptDismissedKey: null,
     selectedAiGmReviewId: null,
     newsFilter: "all",
     statsLiveSeason: null,
@@ -41,6 +43,9 @@
     injuriesLiveKey: null,
     injuriesLoading: false,
     injuriesScopeFilter: "all",
+    practiceSquadLiveKey: null,
+    practiceSquadLoading: false,
+    practiceSquadFilter: "eligible",
     draftLiveKey: null,
     draftLoading: false,
     scoutingLiveKey: null,
@@ -98,6 +103,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "auto_cutdown_continue",
   ]);
   const STATS_REFRESH_ACTIONS = new Set([
     "sim_week",
@@ -117,6 +123,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "auto_cutdown_continue",
     "free_agency_start",
     "free_agency_advance_hour",
     "free_agency_advance_day",
@@ -173,8 +180,12 @@
     "contract_release",
     "contract_restructure",
     "roster_release_player",
+    "practice_squad_assign",
+    "practice_squad_release",
     "depth_chart_set",
     "depth_chart_move",
+    "auto_cutdown",
+    "auto_cutdown_continue",
   ]);
   const INJURIES_REFRESH_ACTIONS = new Set([
     "load_game",
@@ -188,11 +199,13 @@
   ]);
   const DRAFT_REFRESH_ACTIONS = new Set([
     "advance_to_draft",
+    "auto_cutdown_continue",
     "draft_start",
     "draft_pick",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
+    "auto_cutdown_continue",
     "advance_next_league_year",
   ]);
   const SCOUTING_REFRESH_ACTIONS = new Set([
@@ -278,11 +291,15 @@
     "depth_chart_set",
     "depth_chart_move",
     "contract_release",
+    "practice_squad_assign",
+    "practice_squad_release",
     "ai_gm_cutdown_plan",
     "ai_gm_cutdown_plan_persist",
     "ai_gm_apply_cutdown_plan",
     "ai_gm_review_apply",
     "ai_gm_daily_run",
+    "auto_cutdown",
+    "auto_cutdown_continue",
   ]);
   const DRAFT_ACTIONS = new Set([
     "advance_to_draft",
@@ -607,11 +624,11 @@
     { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
     { slot: "RDL", label: "DT", row: 1, col: "8" },
     { slot: "REDGE", label: "REO", row: 1, col: "10" },
-    { slot: "WLB", label: "WLB", row: 3, col: "5" },
-    { slot: "MLB", label: "MLB", row: 3, col: "7" },
-    { slot: "SLB", label: "SLB", row: 3, col: "9", optional: true },
+    { slot: "WLB", label: "WLB", row: 2, col: "5" },
+    { slot: "MLB", label: "MLB", row: 2, col: "7" },
+    { slot: "SLB", label: "SLB", row: 2, col: "9", optional: true },
+    { slot: "NB", label: "Nickel", row: 4, col: "4" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
-    { slot: "NB", label: "Nickel", row: 4, col: "3 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
     { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
     { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
@@ -622,8 +639,8 @@
     { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
     { slot: "RDL", label: "DT", row: 1, col: "8" },
     { slot: "REDGE", label: "REO", row: 1, col: "10" },
-    { slot: "WLB", label: "WILB", row: 3, col: "6" },
-    { slot: "MLB", label: "MILB", row: 3, col: "8" },
+    { slot: "WLB", label: "WILB", row: 2, col: "6" },
+    { slot: "MLB", label: "MILB", row: 2, col: "8" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
     { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
@@ -634,9 +651,9 @@
     { slot: "LDL", label: "DT", row: 1, col: "6" },
     { slot: "RDL", label: "DT", row: 1, col: "7" },
     { slot: "REDGE", label: "RE", row: 1, col: "9" },
-    { slot: "WLB", label: "WLB", row: 3, col: "4" },
-    { slot: "MLB", label: "MLB", row: 3, col: "7" },
-    { slot: "SLB", label: "SLB", row: 3, col: "10" },
+    { slot: "WLB", label: "WLB", row: 2, col: "4" },
+    { slot: "MLB", label: "MLB", row: 2, col: "7" },
+    { slot: "SLB", label: "SLB", row: 2, col: "10" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
     { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
@@ -1099,6 +1116,12 @@
     return `${data.activeSave?.game_id || data.activeSave?.save_id || ""}:${injuries.counts?.active || 0}:${active.activeInjuryId || ""}:${recent.eventId || ""}:${injuries.updatedAt || ""}:${state.injuriesScopeFilter}`;
   }
 
+  function practiceSquadLiveKey() {
+    const ps = data.practiceSquad || {};
+    const usage = ps.usage || {};
+    return `${data.activeSave?.game_id || data.activeSave?.save_id || ""}:${data.currentDate || ""}:${ps.activeCount || 0}:${usage.total || 0}:${usage.developmental_count || 0}:${usage.veteran_exception_count || 0}:${usage.international_exemption_count || 0}:${(ps.candidates || []).length}`;
+  }
+
   function draftLiveKey() {
     const draft = data.draft || {};
     const stateRow = draft.state || {};
@@ -1294,6 +1317,24 @@
     return true;
   }
 
+  async function loadLivePracticeSquad() {
+    if (!location.protocol.startsWith("http") || state.practiceSquadLoading) return false;
+    const season = data.currentSeason || data.season?.season || "";
+    const team = data.activeSave?.user_team || data.practiceSquad?.team || "";
+    const payload = await apiGet("practice squad", "/api/practice-squad", {
+      params: { season, team },
+      loadingKey: "practiceSquadLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      practiceSquad: payload.practiceSquad || data.practiceSquad || { usage: {}, limits: {}, candidates: [] },
+      practiceSquadGeneratedAt: payload.generatedAt,
+    };
+    state.practiceSquadLiveKey = practiceSquadLiveKey();
+    return true;
+  }
+
   async function loadLiveDraft() {
     if (!location.protocol.startsWith("http") || state.draftLoading) return false;
     const year = data.draft?.year || data.currentSeason || "";
@@ -1404,8 +1445,9 @@
     if (!runnerMode()) return;
     if (DEPTH_CHART_REFRESH_ACTIONS.has(action) || action.startsWith("depth_chart_") || action.startsWith("roster_")) {
       state.depthChartLiveKey = null;
+      state.practiceSquadLiveKey = null;
       showToast("Refreshing depth chart...");
-      await loadLiveDepthChart();
+      await Promise.allSettled([loadLiveDepthChart(), loadLivePracticeSquad()]);
       return;
     }
     if (DRAFT_REFRESH_ACTIONS.has(action) || isDraftAction(action)) {
@@ -1424,6 +1466,7 @@
     state.freeAgencyLiveKey = null;
     state.contractsLiveKey = null;
     state.depthChartLiveKey = null;
+    state.practiceSquadLiveKey = null;
     state.aiGmLiveKey = null;
     showToast("Refreshing live game data...");
     await loadLiveState();
@@ -1464,6 +1507,9 @@
     if (DEPTH_CHART_REFRESH_ACTIONS.has(action) || action.startsWith("depth_chart_")) {
       refreshes.push(loadLiveDepthChart());
     }
+    if (DEPTH_CHART_REFRESH_ACTIONS.has(action)) {
+      refreshes.push(loadLivePracticeSquad());
+    }
     if (action.startsWith("ai_gm_")) {
       refreshes.push(loadLiveAiGm());
     }
@@ -1489,7 +1535,7 @@
   }
 
   function startSimProgressPolling(action) {
-    if (!["sim_week", "sim_season"].includes(action) || !runnerMode()) return null;
+    if (!["sim_week", "sim_season", "advance_to_draft", "auto_cutdown_continue"].includes(action) || !runnerMode()) return null;
     let stopped = false;
     const tick = async () => {
       if (stopped) return;
@@ -1511,6 +1557,7 @@
     if (state.view === "leagueNews") return [loadLiveLeagueNews];
     if (state.view === "transactions") return [loadLiveTransactions];
     if (state.view === "injuries") return [loadLiveInjuries];
+    if (state.view === "practiceSquad") return [loadLivePracticeSquad, loadLiveDepthChart];
     if (state.view === "scouting") return [loadLiveScouting, loadLiveInbox];
     if (state.view === "roster") return [loadLiveDepthChart, loadLiveContracts];
     if (state.view === "depth") return [loadLiveDepthChart];
@@ -1553,8 +1600,8 @@
   async function runAction(action, params) {
     if (!runnerMode() || state.runnerBusy) return;
     if (!confirmBeforeAction(action, params || {})) return;
-    const simAction = action === "sim_week" || action === "sim_season";
-    if (simAction) {
+    const calendarProgressAction = action === "sim_week" || action === "sim_season" || action === "advance_to_draft" || action === "auto_cutdown_continue";
+    if (calendarProgressAction) {
       state.calendarLiveFocus = true;
       switchView("calendar", { refresh: true });
     }
@@ -1580,6 +1627,20 @@
       state.lastResult = payload;
       if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
+      }
+      if (payload.rosterGate) {
+        payload.returncode = 1;
+        state.rosterCutdownPrompt = payload.rosterGate;
+        state.lastResult = {
+          ...payload,
+          returncode: 1,
+          summary: {
+            ...(payload.summary || {}),
+            title: payload.rosterGate.title || "Roster Cutdown Needed",
+            message: payload.rosterGate.message || payload.summary?.message,
+            status: "warning",
+          },
+        };
       }
       state.runnerAvailable = true;
       if (payload.returncode === 0 && action !== "box_score") {
@@ -1672,13 +1733,13 @@
   }
 
   function draftNeedsAdvanceWarning(action) {
-    if (!["advance_next_event", "advance_to_date", "advance_next_league_year"].includes(action)) return false;
+    if (!["advance_next_event", "advance_to_date", "advance_next_league_year", "sim_week", "sim_season"].includes(action)) return false;
     const draft = data.draft || {};
     const remaining = Number(draft.pickTotals?.remaining || 0);
     if (remaining <= 0) return false;
-    const draftDate = draft.draftDate ? new Date(`${draft.draftDate}T00:00:00`) : null;
-    const currentDate = data.currentDate ? new Date(`${data.currentDate}T00:00:00`) : null;
-    return !draftDate || !currentDate || currentDate >= draftDate;
+    const draftDate = String(draft.draftDate || "").slice(0, 10);
+    const currentDate = String(data.currentDate || "").slice(0, 10);
+    return Boolean(draftDate && currentDate && currentDate === draftDate);
   }
 
   function confirmBeforeAction(action, params = {}) {
@@ -1710,6 +1771,10 @@
       contract_restructure: "Restructure Contract",
       roster_release_player: "Release Player",
       roster_change_number: "Change Number",
+      practice_squad_assign: "Assign Practice Squad",
+      practice_squad_release: "Release Practice Squad Player",
+      auto_cutdown: "Auto Cutdown",
+      auto_cutdown_continue: "Auto Cutdown And Continue",
       depth_chart_set: "Set Depth Chart",
       depth_chart_move: "Move Depth Chart",
       postseason: "Run Postseason",
@@ -1821,8 +1886,9 @@
     const remaining = Number(draft?.pickTotals?.remaining || 0);
     if (action === "advance_to_draft") {
       if (draftState) return { disabledReason: "Draft room is already active." };
-      if (dateReached(draft?.draftDate)) return {};
-      return { disabledReason: `Draft date is ${shortDate(draft?.draftDate)}.` };
+      if (!draft?.draftDate) return { disabledReason: "No draft date is available." };
+      if (dateReached(draft?.draftDate)) return { disabledReason: "Draft day has arrived. Start the draft room." };
+      return {};
     }
     if (action === "draft_start") {
       if (draftState) return { disabledReason: "Draft room is already started." };
@@ -1928,7 +1994,7 @@
     ]);
     const controls = node("div", "control-bar draft-control-bar");
     const controlEntries = [
-      ["Advance To Draft", "advance_to_draft", {}, "good"],
+      [dateReached(draft?.draftDate) ? "At Draft Day" : "Sim To Draft", "advance_to_draft", {}, "good"],
       ["Start Room", "draft_start", {}, "good"],
       ["Skip Pick", "draft_skip", { count: 1 }, ""],
       [`Skip To ${userTeam}`, "draft_skip_to_user", {}, ""],
@@ -2481,7 +2547,6 @@
   }
 
   function calendarControlPanel(calendar, nextEvent, nextWeek) {
-    const draftRemaining = Number(data.draft?.pickTotals?.remaining || 0);
     const eventDate = nextEvent?.event_start_date ? shortDate(nextEvent.event_start_date) : "No date";
     const p = panel("Calendar Control", nextEvent ? eventDate : "No Advance Target");
     const body = panelBody(p);
@@ -2494,11 +2559,11 @@
           ? `${eventDate}${nextEvent.phase_name ? ` | ${nextEvent.phase_name}` : ""}${nextEvent.notes ? ` | ${nextEvent.notes}` : ""}`
           : nextWeek ? "Sim the next unfinished regular-season week." : "The active save has no exported next event or week."),
       ]),
-      tag(draftRemaining > 0 ? `${draftRemaining} Draft Picks Left` : "Clear", draftRemaining > 0 ? "warn" : "good"),
+      tag("Calendar", "good"),
     ]);
     const controls = node("div", "control-bar calendar-control-bar");
     const controlEntries = [
-      ["Advance Date", "advance_next_event", {}, draftRemaining > 0 ? "warn" : "good"],
+      ["Advance Date", "advance_next_event", {}, "good"],
       ["Sim Rest Season", "sim_season", {}, "warn"],
       [nextWeek ? `Sim Week ${nextWeek}` : "Sim Week", "sim_week", { week: nextWeek }, "good"],
     ].map(([label, action, params, tone]) => ({
@@ -2527,10 +2592,6 @@
         }));
       });
     }
-    const secondary = node("div", "control-secondary calendar-control-secondary");
-    secondary.append(node("span", "muted", draftRemaining > 0
-      ? "Advancing the calendar can auto-sim unfinished draft picks. The confirmation dialog will still protect this action."
-      : "Calendar actions refresh the month, inbox, news, and season state after completion."));
     append(body, [
       hero,
       controls,
@@ -2539,7 +2600,6 @@
         generatedAt: data.calendarGeneratedAt,
         reasons: controlDisabledReasons(controlEntries),
       }),
-      secondary,
     ]);
     return p;
   }
@@ -2841,6 +2901,110 @@
     return overlay;
   }
 
+  function rosterCutdownModal() {
+    const prompt = state.rosterCutdownPrompt;
+    if (!prompt) return null;
+    const overlay = node("div", "box-score-modal-overlay injury-alert-overlay");
+    const modal = node("section", "box-score-modal injury-alert-modal roster-cutdown-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("strong", null, prompt.title || "Roster Cutdown Needed"),
+      node("small", null, "Final cuts and practice squad decisions are due"),
+    ]);
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
+      state.rosterCutdownPrompt = null;
+      render();
+    });
+    append(top, [title, close]);
+
+    const body = node("div", "box-score-modal-body injury-alert-body");
+    const actions = node("div", "control-bar roster-cutdown-actions");
+    const manage = node("button", "control-button good", "Open Practice Squad Selection");
+    manage.type = "button";
+    manage.addEventListener("click", () => {
+      state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
+      state.rosterCutdownPrompt = null;
+      switchView("practiceSquad", { refresh: true });
+    });
+    const auto = node("button", "control-button warn", "Auto Cutdown And Continue");
+    auto.type = "button";
+    auto.disabled = state.runnerBusy || !runnerMode();
+    auto.addEventListener("click", () => {
+      const stoppedAction = prompt.stoppedAction || state.lastResult?.action || "sim_season";
+      const stoppedParams = prompt.stoppedParams || state.lastResult?.params || {};
+      state.rosterCutdownPrompt = null;
+      runAction("auto_cutdown_continue", {
+        continue_action: stoppedAction,
+        continue_params: stoppedParams,
+      });
+    });
+    append(actions, [manage, auto]);
+    append(body, [
+      node("p", null, prompt.message || "Your active roster and practice squad need to be settled before the regular season can continue."),
+      node("p", "muted", "Handle it yourself in Roster Hub, or let the CPU apply a cutdown/practice-squad plan and continue the sim."),
+      actions,
+    ]);
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
+        state.rosterCutdownPrompt = null;
+        render();
+      }
+    });
+    return overlay;
+  }
+
+  function rosterGateCountsFromState() {
+    const depth = data.depthChart || {};
+    const rows = rosterRows(depth);
+    if (!rows.length) return null;
+    const activeStatuses = new Set(["active", "questionable", "doubtful", "out"]);
+    const activeCount = rows.filter((player) => activeStatuses.has(String(player.status || "Active").toLowerCase())).length;
+    const practiceSquadCount = rows.filter((player) => isPracticeSquadPlayer(player)).length;
+    return { activeCount, practiceSquadCount };
+  }
+
+  function currentRosterGateKey() {
+    const counts = rosterGateCountsFromState();
+    if (!counts) return "";
+    return [
+      data.activeSave?.game_id || data.activeSave?.save_id || "",
+      data.currentDate || data.activeSave?.current_date || "",
+      counts.activeCount,
+      counts.practiceSquadCount,
+    ].join(":");
+  }
+
+  function maybeShowRosterGatePromptFromState() {
+    if (state.rosterCutdownPrompt || state.runnerBusy) return;
+    const phase = String(data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "").toLowerCase();
+    if (!phase.includes("cutdown") && !phase.includes("practice squad")) return;
+    const counts = rosterGateCountsFromState();
+    if (!counts) return;
+    const activeLimit = 53;
+    const practiceSquadLimit = 16;
+    const issues = [];
+    if (counts.activeCount > activeLimit) issues.push(`cut active roster from ${counts.activeCount} to ${activeLimit}`);
+    if (counts.practiceSquadCount < practiceSquadLimit) issues.push(`fill practice squad (${counts.practiceSquadCount}/${practiceSquadLimit})`);
+    if (!issues.length) return;
+    const key = currentRosterGateKey();
+    if (key && state.rosterCutdownPromptDismissedKey === key) return;
+    const team = data.activeSave?.user_team || data.depthChart?.team || "your team";
+    state.rosterCutdownPrompt = {
+      key,
+      title: "Roster Cutdown Needed",
+      message: `Roster cutdown/practice squad setup required for ${team}: ${issues.join("; ")}.`,
+      stoppedAction: "sim_season",
+      stoppedParams: {},
+    };
+  }
+
   function finishRender(root) {
     const banner = runnerBusyBanner();
     if (banner) root.prepend(banner);
@@ -2848,6 +3012,8 @@
     if (boxScore) root.append(boxScore);
     const injuryAlerts = injuryAlertModal();
     if (injuryAlerts) root.append(injuryAlerts);
+    const cutdownPrompt = rosterCutdownModal();
+    if (cutdownPrompt) root.append(cutdownPrompt);
     refs.content.replaceChildren(root);
   }
 
@@ -4490,6 +4656,159 @@
     if (!assignments.children.length) assignments.append(tag("No depth role", ""));
     append(card, [top, facts, assignments]);
     return card;
+  }
+
+  function bucketLabel(bucket) {
+    return {
+      developmental: "Developmental",
+      veteran_exception: "Veteran exception",
+      international_exemption: "International",
+    }[bucket] || valueOrDash(bucket);
+  }
+
+  function practiceSquadTone(candidate) {
+    if (candidate.current_status === "Practice Squad") return "good";
+    if (candidate.eligible) return "warn";
+    return "bad";
+  }
+
+  function practiceSquadFilteredRows(rows) {
+    if (state.practiceSquadFilter === "current") return rows.filter((row) => row.current_status === "Practice Squad");
+    if (state.practiceSquadFilter === "eligible") return rows.filter((row) => row.eligible || row.current_status === "Practice Squad");
+    if (state.practiceSquadFilter === "blocked") return rows.filter((row) => !row.eligible && row.current_status !== "Practice Squad");
+    return rows;
+  }
+
+  function practiceSquadFilterTabs(rows) {
+    const options = [
+      ["eligible", "Eligible", rows.filter((row) => row.eligible || row.current_status === "Practice Squad").length],
+      ["current", "Current PS", rows.filter((row) => row.current_status === "Practice Squad").length],
+      ["blocked", "Blocked", rows.filter((row) => !row.eligible && row.current_status !== "Practice Squad").length],
+      ["all", "All", rows.length],
+    ];
+    const wrap = node("div", "roster-group-tabs ps-filter-tabs");
+    options.forEach(([value, label, count]) => {
+      const button = node("button", `roster-group-tab ${state.practiceSquadFilter === value ? "active" : ""}`.trim());
+      button.type = "button";
+      append(button, [node("span", null, label), node("strong", null, String(count))]);
+      button.addEventListener("click", () => {
+        state.practiceSquadFilter = value;
+        render();
+      });
+      wrap.append(button);
+    });
+    return wrap;
+  }
+
+  function practiceSquadActionCell(candidate) {
+    const wrap = node("div", "row-actions");
+    if (candidate.current_status === "Practice Squad") {
+      wrap.append(rosterActionButton("Release PS", "practice_squad_release", { player_id: candidate.player_id }, "warn"));
+      return wrap;
+    }
+    if (candidate.eligible) {
+      wrap.append(rosterActionButton("Assign PS", "practice_squad_assign", { player_id: candidate.player_id }, "good"));
+    }
+    if (candidate.current_status === "Active") {
+      wrap.append(rosterActionButton("Release", "roster_release_player", { player_id: candidate.player_id }, "warn"));
+    }
+    if (!wrap.children.length) wrap.append(node("span", "muted", "No action"));
+    return wrap;
+  }
+
+  function practiceSquadTable(ps) {
+    const rows = practiceSquadFilteredRows(ps.candidates || []);
+    if (!rows.length) return node("div", "empty-state", "No players match this practice squad view.");
+    const wrap = node("div", "table-wrap ps-registration-table");
+    const tableEl = node("table", "data-table compact-table");
+    const head = node("thead");
+    const trHead = node("tr");
+    ["Player", "Pos", "Ovr", "Pot", "Age", "Exp", "Status", "Bucket", "Read", "Action"].forEach((label) => trHead.append(node("th", null, label)));
+    head.append(trHead);
+    const body = node("tbody");
+    rows.forEach((candidate) => {
+      const tr = node("tr", candidate.eligible ? "" : "muted-row");
+      const read = candidate.eligible ? (candidate.reasons || []).join(" ") : (candidate.blockers || []).join(" ");
+      append(tr, [
+        node("td", null, candidate.player_name || "-"),
+        node("td", "numeric", candidate.position || "-"),
+        node("td", "numeric rating-cell", candidate.overall ?? "-"),
+        node("td", "numeric rating-cell", candidate.potential ?? "-"),
+        node("td", "numeric", candidate.age ?? "-"),
+        node("td", "numeric", candidate.years_exp ?? "-"),
+        append(node("td"), [tag(candidate.current_status || "Active", practiceSquadTone(candidate))]),
+        node("td", null, bucketLabel(candidate.bucket)),
+        node("td", "small-note", read || "-"),
+        append(node("td"), [practiceSquadActionCell(candidate)]),
+      ]);
+      body.append(tr);
+    });
+    append(tableEl, [head, body]);
+    wrap.append(tableEl);
+    return wrap;
+  }
+
+  function practiceSquadRecentMoves(ps) {
+    const moves = ps.recentMoves || [];
+    const card = panel("Recent Practice Squad Movement", moves.length ? `${moves.length} recent` : "No recent movement");
+    const body = panelBody(card);
+    if (!moves.length) {
+      body.append(node("div", "empty-state", "Practice squad signings and poaches will show here."));
+      return card;
+    }
+    const list = node("div", "transaction-list compact-list");
+    moves.slice(0, 8).forEach((move) => {
+      const item = node("article", "transaction-item");
+      const title = node("div", "transaction-title");
+      title.append(
+        tag(move.transaction_type || "Practice Squad", move.transaction_type === "Practice Squad Poaching" ? "warn" : "good"),
+        node("strong", null, move.player_name || "Player"),
+      );
+      const route = [move.from_team, move.to_team].filter(Boolean).join(" -> ");
+      append(item, [
+        title,
+        node("div", "small-note", `${move.transaction_date || ""}${route ? ` | ${route}` : ""}${move.player_position ? ` | ${move.player_position}` : ""}`),
+        node("p", null, move.description || ""),
+      ]);
+      list.append(item);
+    });
+    body.append(list);
+    return card;
+  }
+
+  function renderPracticeSquad() {
+    const team = data.activeSave?.user_team || data.practiceSquad?.team || "MIN";
+    setHeader("Practice Squad Selection", `Set ${team}'s 53-man roster and practice squad before the regular season.`);
+    const root = document.createDocumentFragment();
+    if (runnerMode() && state.practiceSquadLiveKey !== practiceSquadLiveKey() && !state.practiceSquadLoading) {
+      loadLivePracticeSquad().then(render);
+    }
+    const ps = data.practiceSquad || { usage: {}, limits: {}, candidates: [] };
+    const usage = ps.usage || {};
+    const limits = ps.limits || {};
+    const activeLimit = ps.activeLimit || limits.active || 53;
+    const summary = panel("Registration Counter", `${ps.phase || "Regular Season"}${data.practiceSquadGeneratedAt ? ` | refreshed ${shortDateTime(data.practiceSquadGeneratedAt.replace("T", " "))}` : ""}`);
+    if (state.practiceSquadLoading) panelBody(summary).append(node("div", "empty-state", "Refreshing practice squad rules..."));
+    const metrics = node("section", "metric-grid compact-metrics ps-registration-metrics");
+    append(metrics, [
+      metric("Active Roster", `${ps.activeCount ?? 0}/${activeLimit}`, "Must be 53 or fewer", Number(ps.activeCount || 0) > Number(activeLimit) ? "warn" : "good"),
+      metric("Practice Squad", `${usage.total || 0}/${limits.total || 17}`, "Normal slots plus IPP exemption", Number(usage.total || 0) >= Number(limits.total || 17) ? "warn" : ""),
+      metric("Developmental", `${usage.developmental_count || 0}/${limits.developmental || 10}`, "Rookies and one/two-year players"),
+      metric("Veteran Exceptions", `${usage.veteran_exception_count || 0}/${limits.veteranException || 6}`, "Three-plus accrued-season proxy"),
+      metric("International", `${usage.international_exemption_count || 0}/${limits.internationalExemption || 1}`, "Exempt IPP slot"),
+    ]);
+    panelBody(summary).append(metrics);
+    root.append(summary);
+
+    const board = panel("Practice Squad Board", `${practiceSquadFilteredRows(ps.candidates || []).length} shown`);
+    const body = panelBody(board);
+    body.append(practiceSquadFilterTabs(ps.candidates || []));
+    body.append(practiceSquadTable(ps));
+    root.append(board);
+    root.append(practiceSquadRecentMoves(ps));
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
   }
 
   function renderRosterHub() {
@@ -7432,44 +7751,6 @@
     (calendar.days || []).forEach((day) => monthGrid.append(calendarDayCell(day)));
     append(monthBody, [weekdayRow, monthGrid]);
     root.append(monthPanel);
-
-    const lowerGrid = node("div", "grid calendar-lower-grid");
-    const detailsPanel = panel("Date Details", "Click a calendar item");
-    panelBody(detailsPanel).append(calendarDetail());
-
-    const upcomingPanel = panel("Upcoming", "Events And Games");
-    const upcomingList = node("div", "list compact-list");
-    (data.events || []).slice(0, 8).forEach((event) => {
-      const item = row(
-        event.event_name,
-        `${event.phase_name || event.event_category || "League"}${event.notes ? ` | ${event.notes}` : ""}`,
-        shortDate(event.event_start_date),
-      );
-      upcomingList.append(item);
-    });
-    (calendar.upcomingGames || []).slice(0, 8).forEach((game) => upcomingList.append(calendarGameRow(game)));
-    panelBody(upcomingPanel).append(upcomingList.children.length ? upcomingList : node("div", "empty-state", "No upcoming events or games in the exported state."));
-    append(lowerGrid, [detailsPanel, upcomingPanel]);
-    root.append(lowerGrid);
-
-    const alertsLogGrid = node("div", "grid");
-    const alertsPanel = panel("Open Alerts", "Save Hooks");
-    const alertsList = node("div", "list compact-list");
-    (data.alerts || []).forEach((alert) => {
-      alertsList.append(row(alert.title, alert.message, alert.severity, alert.severity === "ERROR" ? "bad" : "warn"));
-    });
-    panelBody(alertsPanel).append(alertsList.children.length ? alertsList : node("div", "empty-state", "No open alerts."));
-
-    const logPanel = panel("Recent Log", "Game Flow");
-    const logList = node("div", "list compact-list");
-    (data.log || []).slice(0, 8).forEach((entry) => {
-      logList.append(row(entry.title, `${entry.log_type}${entry.details ? ` | ${entry.details}` : ""}`, shortDate(entry.game_date)));
-    });
-    panelBody(logPanel).append(logList.children.length ? logList : node("div", "empty-state", "No game-flow log entries yet."));
-    append(alertsLogGrid, [alertsPanel, logPanel]);
-    root.append(alertsLogGrid);
-    const output = runnerOutputPanel();
-    if (output) root.append(output);
     finishRender(root);
   }
 
@@ -7804,6 +8085,7 @@
   }
 
   function render() {
+    maybeShowRosterGatePromptFromState();
     const previousView = state.lastRenderedView;
     const shouldRestoreScroll = previousView === state.view;
     const scrollElement = document.scrollingElement || document.documentElement;
@@ -7818,6 +8100,7 @@
     else if (state.view === "injuries") renderInjuries();
     else if (state.view === "scouting") renderScouting();
     else if (state.view === "roster") renderRosterHub();
+    else if (state.view === "practiceSquad") renderPracticeSquad();
     else if (state.view === "depth") renderDepthChart();
     else if (state.view === "contracts") renderContracts();
     else if (state.view === "freeAgency") renderFreeAgency();

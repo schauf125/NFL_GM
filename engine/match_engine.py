@@ -68,7 +68,7 @@ from engine.specialist_behavior import (
 from engine import injury_model
 
 
-ENGINE_VERSION = "0.1.7"
+ENGINE_VERSION = "0.1.8"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
@@ -154,6 +154,8 @@ ROTATION_FATIGUE_THRESHOLDS = {
     "FS": 64,
     "SS": 62,
 }
+
+RB_SEASON_WORKLOAD_SOFT_CAP = 255
 
 SPECIAL_TEAMS_POSITION_PRIOR = {
     "LB": 1.18,
@@ -270,6 +272,26 @@ def sack_credit_weight(player: "PlayerSnapshot") -> float:
         if anchor >= explosive + 10:
             weight *= 0.68
     return max(0.05, weight)
+
+
+def offball_sack_credit_weight(player: "PlayerSnapshot") -> float:
+    base = sack_credit_weight(player)
+    if player.position in LB_POSITIONS:
+        profile = lb_behavior_profile(player)
+        rush_score = weighted_average(player, SACK_CREDIT_WEIGHTS)
+        weight = base * 0.10
+        weight *= 1.0 + clamp((profile.blitz_timing - 62.0) * 0.018, -0.30, 0.45)
+        weight *= 1.0 + clamp((profile.trigger_quickness - 60.0) * 0.010, -0.18, 0.24)
+        if rush_score < 70:
+            weight *= 0.28
+        elif rush_score < 76:
+            weight *= 0.48
+        if player.rating("sack_finish") < 72:
+            weight *= 0.48
+        return max(0.01, weight)
+    if player.position in SECONDARY_POSITIONS:
+        return max(0.01, base * 0.015)
+    return base
 
 
 def special_teams_coverage_weight(player: "PlayerSnapshot") -> float:
@@ -1997,23 +2019,28 @@ class MatchEngine:
             base_rate = max(base_rate, 0.84)
         elif slot == "RB":
             if starter_score >= 86:
-                base_rate = max(base_rate, 0.82)
-            elif starter_score >= 82:
                 base_rate = max(base_rate, 0.78)
-            elif starter_score >= 78:
+            elif starter_score >= 82:
                 base_rate = max(base_rate, 0.74)
+            elif starter_score >= 78:
+                base_rate = max(base_rate, 0.68)
             else:
-                base_rate = max(base_rate, 0.70)
+                base_rate = max(base_rate, 0.62)
         backup_score = team.score_for_slot(candidates[1], slot)
         quality_gap = starter_score - backup_score
         if slot == "RB":
             backup_overall = float(candidates[1].metadata.get("overall") or candidates[1].general_score())
             if quality_gap >= 9.0:
-                base_rate = max(base_rate, 0.82)
+                base_rate = max(base_rate, 0.76)
             elif quality_gap >= 6.0:
-                base_rate = max(base_rate, 0.78)
+                base_rate = max(base_rate, 0.72)
+            elif quality_gap <= 4.0:
+                base_rate = min(base_rate, 0.62)
+            elif quality_gap <= 7.0:
+                base_rate = min(base_rate, 0.68)
             if backup_overall < 70 and quality_gap >= 4.0:
-                base_rate = max(base_rate, 0.80)
+                base_rate = max(base_rate, 0.72)
+            base_rate *= self.rb_workload_availability(starter)
         developmental_pressure = self.developmental_rotation_pressure(
             team,
             slot,
@@ -2026,7 +2053,7 @@ class MatchEngine:
         fatigue_penalty = self.rotation_fatigue_pressure(starter, slot, snap_key)
         evaluation_floor = 0.18 + evaluation_mode * 0.11 if evaluation_mode > 0 else 0.24
         if slot == "RB":
-            evaluation_floor = 0.46 if evaluation_mode > 0 else 0.54
+            evaluation_floor = 0.38 if evaluation_mode > 0 else 0.44
         effective_rate = clamp(
             base_rate + quality_bonus + stamina_bonus - fatigue_penalty - developmental_pressure,
             evaluation_floor,
@@ -2630,7 +2657,7 @@ class MatchEngine:
             return "field_goal"
 
         routine_field_goal_range = field_pos >= 66 and fg_distance <= 54
-        long_field_goal_range = field_pos >= 54 and fg_distance <= 63
+        long_field_goal_range = field_pos >= 52 and fg_distance <= 65 and (fg_distance <= 63 or kick_score >= 82 or late_half)
         extreme_field_goal_range = field_pos >= 49 and fg_distance <= 68
         if routine_field_goal_range and not (late_trailing and distance <= 4 and field_pos >= 55):
             return "field_goal"
@@ -2648,23 +2675,25 @@ class MatchEngine:
             return "field_goal"
         if long_field_goal_range:
             long_try_prob = (
-                0.12
-                + (kick_score - 70) * 0.009
+                0.15
+                + (kick_score - 70) * 0.011
                 + (operation_score - 70) * 0.003
-                - max(0, fg_distance - 55) * 0.045
+                - max(0, fg_distance - 55) * 0.038
             )
             if late_half:
-                long_try_prob += 0.18
+                long_try_prob += 0.22
             if late_trailing:
-                long_try_prob += 0.16
+                long_try_prob += 0.18
             if fg_distance >= 61:
-                long_try_prob += 0.05 if self.clock_tenths <= 45 * TENTHS_PER_SECOND else 0.0
-                long_try_prob -= (fg_distance - 60) * 0.040
+                long_try_prob += 0.10 if self.clock_tenths <= 60 * TENTHS_PER_SECOND else 0.0
+                long_try_prob -= (fg_distance - 60) * 0.022
+            if fg_distance >= 64:
+                long_try_prob -= (fg_distance - 63) * 0.035
             if distance >= 8:
                 long_try_prob += 0.06
             if distance <= 2:
                 long_try_prob -= 0.06
-            if self.rng.random() < clamp(long_try_prob, 0.02, 0.50 if late_half else 0.36):
+            if self.rng.random() < clamp(long_try_prob, 0.03, 0.60 if late_half else 0.44):
                 return "field_goal"
         if extreme_field_goal_range and late_half:
             urgency = 0.0
@@ -2680,20 +2709,20 @@ class MatchEngine:
             must_score = late_trailing and score_diff >= -3
             last_snap = self.clock_tenths <= 6 * TENTHS_PER_SECOND
             desperation_prob = (
-                0.008
+                0.015
                 + urgency
-                + (0.10 if end_half_try else 0.0)
-                + (0.08 if last_snap and kick_score >= 80 else 0.0)
-                + (0.12 if must_score else 0.0)
-                + (kick_score - 78) * 0.008
+                + (0.18 if end_half_try else 0.0)
+                + (0.16 if last_snap and kick_score >= 80 else 0.0)
+                + (0.18 if must_score else 0.0)
+                + (kick_score - 78) * 0.011
                 + (operation_score - 72) * 0.002
-                - max(0, fg_distance - 60) * 0.050
+                - max(0, fg_distance - 60) * 0.038
             )
             if fg_distance >= 65:
-                desperation_prob -= (fg_distance - 64) * 0.035
+                desperation_prob -= (fg_distance - 64) * 0.020
             if distance <= 2 and not (self.clock_tenths <= 12 * TENTHS_PER_SECOND or late_trailing):
                 desperation_prob -= 0.10
-            if self.rng.random() < clamp(desperation_prob, 0.0, 0.42):
+            if self.rng.random() < clamp(desperation_prob, 0.0, 0.54):
                 return "field_goal"
         return "punt"
 
@@ -2805,24 +2834,90 @@ class MatchEngine:
         profile = rb_behavior_profile(player)
         talent = weighted_average(player, RB_RUN_WEIGHTS)
         overall = float(player.metadata.get("overall") or player.general_score())
-        weight = 1.0 / (idx + 1.65)
+        weight = 1.0 / (idx + 1.48)
         weight *= 1.0 + clamp((talent - 70) * 0.015, -0.30, 0.36)
         weight *= 1.0 + clamp((overall - 72) * 0.018, -0.34, 0.26)
         if idx >= 1 and overall < 72:
-            weight *= 0.84
+            weight *= 0.90
         if idx >= 2:
-            weight *= 0.72
+            weight *= 0.78
         game_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
-        if idx == 0 and game_carries > 20:
-            weight *= clamp(1.0 - (game_carries - 20.0) * 0.040, 0.50, 1.0)
+        if idx == 0 and game_carries > 14:
+            weight *= clamp(1.0 - (game_carries - 14.0) * 0.035, 0.42, 1.0)
         elif idx >= 1 and game_carries > 10:
             weight *= clamp(1.0 - (game_carries - 10.0) * 0.035, 0.58, 1.0)
+        if idx == 0:
+            weight *= self.rb_workload_availability(player)
+        else:
+            starter_team = self.team_for_player(player)
+            starter = self.active_starter(starter_team, "RB") if starter_team else None
+            if starter and starter.player_id != player.player_id:
+                starter_score = weighted_average(starter, RB_RUN_WEIGHTS)
+                quality_gap = starter_score - talent
+                if quality_gap <= 4.0:
+                    weight *= 1.30
+                elif quality_gap <= 7.0:
+                    weight *= 1.16
+                if self.rb_workload_availability(starter) < 0.88:
+                    weight *= 1.15
         weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
         if distance <= 3 or field_pos >= 85:
             weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014
         if down >= 3 and distance >= 6:
             weight *= 1.0 + (profile.pass_game_usage - 50) * 0.006
         return max(0.05, weight)
+
+    def team_for_player(self, player: PlayerSnapshot) -> TeamSnapshot | None:
+        player_id = int(player.player_id)
+        if any(teammate.player_id == player_id for teammate in self.home.roster):
+            return self.home
+        if any(teammate.player_id == player_id for teammate in self.away.roster):
+            return self.away
+        return None
+
+    def rb_season_workload_limit(self, player: PlayerSnapshot) -> float:
+        overall = float(player.metadata.get("overall") or player.general_score())
+        age = int(player.metadata.get("age") or 26)
+        injury_prone = float(player.metadata.get("injury_prone") or 50)
+        stamina = float(player.rating("stamina", 65))
+        limit = RB_SEASON_WORKLOAD_SOFT_CAP
+        limit += clamp(overall - 78.0, 0.0, 16.0) * 6.5
+        limit += clamp(stamina - 68.0, -12.0, 18.0) * 1.4
+        if age >= 31:
+            limit -= 48
+        elif age >= 29:
+            limit -= 30
+        elif age <= 23 and overall >= 74:
+            limit += 14
+        if injury_prone >= 62:
+            limit -= 18
+        elif injury_prone <= 44:
+            limit += 10
+        return clamp(limit, 185.0, 350.0)
+
+    def rb_workload_availability(self, player: PlayerSnapshot) -> float:
+        stats = player.metadata.get("season_stats") or {}
+        season_carries = float(stats.get("rush_attempts") or stats.get("carries") or 0.0)
+        season_targets = float(stats.get("targets") or 0.0)
+        touches = season_carries + season_targets * 0.42
+        limit = self.rb_season_workload_limit(player)
+        if touches <= limit * 0.72:
+            availability = 1.0
+        else:
+            over = touches - limit * 0.72
+            availability = 1.0 - over / max(80.0, limit * 0.42) * 0.34
+        age = int(player.metadata.get("age") or 26)
+        if age >= 31:
+            availability -= 0.06
+        elif age >= 29:
+            availability -= 0.035
+        injury_prone = float(player.metadata.get("injury_prone") or 50)
+        if injury_prone >= 62:
+            availability -= 0.035
+        active_injuries = player.metadata.get("active_injuries") or []
+        if active_injuries:
+            availability -= 0.12
+        return clamp(availability, 0.50, 1.0)
 
     def state_snapshot(self) -> tuple[dict[int, int], dict[int, Counter], dict[int, Counter], dict[int, int]]:
         return (
@@ -3726,6 +3821,12 @@ class MatchEngine:
                 weight *= 1.0 + (profile.pass_game_usage - 50) * 0.010 + (profile.space_creation - 50) * 0.006
                 if concept == "screen":
                     weight *= 1.75
+                else:
+                    weight *= 0.88
+                weight *= self.rb_workload_availability(player)
+                overall = float(player.metadata.get("overall") or player.general_score())
+                if overall < 78:
+                    weight *= 0.90
             talent_bonus = 1.0 + clamp((weighted_average(player, RECEIVER_WEIGHTS) - 72) * 0.006, -0.06, 0.14)
             weight *= talent_bonus
             weight *= 1.0 / (idx * 0.10 + 1.0)
@@ -3789,18 +3890,19 @@ class MatchEngine:
 
     def select_pass_rusher(self, defense: TeamSnapshot, rushers: list[PlayerSnapshot] | None = None) -> PlayerSnapshot:
         rushers = rushers or defense.defensive_front() or defense.roster[:5]
-        if self.rng.random() < 0.64:
+        if self.rng.random() < 0.08:
             cleanup_pool = []
             used = set()
             for player in [*defense.linebackers(), *defense.secondary()]:
                 if player.player_id in used:
                     continue
-                cleanup_pool.append(player)
+                if offball_sack_credit_weight(player) >= 0.04:
+                    cleanup_pool.append(player)
                 used.add(player.player_id)
             if cleanup_pool:
                 return weighted_choice(
                     self.rng,
-                    [(p, max(1.0, sack_credit_weight(p)) ** 0.55) for p in cleanup_pool],
+                    [(p, max(0.01, offball_sack_credit_weight(p)) ** 0.65) for p in cleanup_pool],
                 )
         weights = []
         for player in rushers:
@@ -4289,10 +4391,10 @@ class MatchEngine:
         operation_score = self.kicking_operation_score(offense, "field_goal")
         if real_kicker:
             make = 0.985 - max(0, distance - 28) * 0.014 + (kick_score - 65) * 0.0024 + (operation_score - 65) * 0.0012
-            make -= max(0, distance - 54) * 0.035
-            make -= max(0, distance - 60) * 0.055
-            make -= max(0, distance - 65) * 0.050
-            make = clamp(make, 0.025 if distance >= 64 else 0.10 if distance >= 61 else 0.18, 0.985)
+            make -= max(0, distance - 54) * 0.026
+            make -= max(0, distance - 60) * 0.032
+            make -= max(0, distance - 65) * 0.042
+            make = clamp(make, 0.075 if distance >= 64 else 0.16 if distance >= 61 else 0.22, 0.985)
         else:
             make = 0.58 - max(0, distance - 25) * 0.026
             make = clamp(make, 0.01, 0.58)

@@ -2024,10 +2024,27 @@ body[data-view="season"] .row .tag {
 
 .formation-field.defense {
   grid-template-columns: repeat(12, minmax(0, 1fr));
+  grid-template-rows: 40px 40px 24px 40px 48px 36px 48px;
+  gap: 5px 6px;
+  min-height: 318px;
   background:
     linear-gradient(90deg, rgba(222, 233, 246, 0.055) 1px, transparent 1px) 0 0 / 8.333% 100%,
     linear-gradient(180deg, rgba(222, 233, 246, 0.05) 1px, transparent 1px) 0 0 / 100% 14.285%,
     linear-gradient(180deg, rgba(83, 57, 130, 0.2), rgba(35, 44, 71, 0.14));
+}
+
+.formation-field.defense .formation-slot {
+  width: min(100%, 88px);
+  min-height: 34px;
+  padding: 3px 4px;
+}
+
+.formation-field.defense .formation-slot strong {
+  font-size: 0.63rem;
+}
+
+.formation-field.defense .formation-slot small {
+  font-size: 0.54rem;
 }
 
 .formation-slot {
@@ -5449,4 +5466,37 @@ textarea {
   .prospect-attribute-row {
     grid-template-columns: 1fr;
   }
+}
+
+.ps-registration-metrics {
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+}
+
+.ps-filter-tabs {
+  margin-bottom: 10px;
+}
+
+.ps-registration-table {
+  max-height: calc(100vh - 360px);
+  min-height: 360px;
+  overflow: auto;
+}
+
+.ps-registration-table .small-note {
+  min-width: 280px;
+  max-width: 520px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.muted-row {
+  opacity: 0.72;
 }

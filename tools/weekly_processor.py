@@ -35,6 +35,7 @@ CPU_SCOUTING_WEEKS = {2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 17, 18}
 AI_GM_MAJOR_INJURY_GAMES = 5
 ROSTER_MAINTENANCE_WEEKS = {1, 4, 8, 12, 16, 18}
 PRACTICE_SQUAD_SANITY_WEEKS = {1, 8, 16}
+PRACTICE_SQUAD_POACH_WEEKS = {2, 6, 10, 14, 17}
 DEPTH_SANITY_WEEKS = {1, 8, 16, 18}
 CPU_TRADE_MARKET_WEEKS = {4, 8}
 YOUTH_EVALUATION_NEWS_WEEKS = {8, 10, 12, 14, 16, 18}
@@ -307,7 +308,7 @@ def empty_roster_result(reason: str = "cadence_skip") -> dict[str, int | str]:
 
 
 def roster_move_count(*results: dict[str, object]) -> int:
-    move_keys = ("promoted", "signed", "swapped", "swaps", "released", "moved_to_ps")
+    move_keys = ("promoted", "signed", "poached", "swapped", "swaps", "released", "moved_to_ps")
     total = 0
     for result in results:
         for key in move_keys:
@@ -334,6 +335,7 @@ def roster_maintenance_plan(
         "practice_squad": week in PRACTICE_SQUAD_SANITY_WEEKS,
         "injury_replacements": checkpoint or new_unavailable > 0,
         "position_replacements": checkpoint or new_unavailable > 0,
+        "practice_squad_poaching": week in PRACTICE_SQUAD_POACH_WEEKS or new_unavailable > 0,
         "depth_swaps": week in DEPTH_SANITY_WEEKS,
         "active_trim": checkpoint or new_unavailable > 0,
         "validation": checkpoint or new_unavailable > 0,
@@ -645,6 +647,18 @@ def process_week(
     mark_timing("position_replacements", started)
 
     started = time.perf_counter()
+    if roster_plan["practice_squad_poaching"]:
+        practice_squad_poach_result = roster_cutdown.process_cpu_practice_squad_poaching(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        practice_squad_poach_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("practice_squad_poaching", started)
+
+    started = time.perf_counter()
     if roster_plan["depth_swaps"]:
         depth_swap_result = roster_cutdown.optimize_cpu_same_position_depth(
             con,
@@ -674,6 +688,7 @@ def process_week(
         practice_squad_sanity_result,
         injury_replacement_result,
         position_replacement_result,
+        practice_squad_poach_result,
         depth_swap_result,
         active_trim_result,
     )
@@ -818,6 +833,7 @@ def process_week(
     )
     replacement_moves = int(injury_replacement_result.get("promoted", 0)) + int(injury_replacement_result.get("signed", 0))
     position_moves = int(position_replacement_result.get("promoted", 0)) + int(position_replacement_result.get("signed", 0))
+    poach_moves = int(practice_squad_poach_result.get("poached", 0))
     scouting_note += (
         f" CPU injury replacements made {replacement_moves} move(s) "
         f"for {int(injury_replacement_result.get('teams', 0))} team(s)."
@@ -830,6 +846,13 @@ def process_week(
     )
     if position_moves:
         scouting_note += f" CPU position-depth replacements made {position_moves} move(s)."
+    if poach_moves:
+        scouting_note += (
+            f" CPU practice squad poaching signed {poach_moves} player(s) "
+            f"for {int(practice_squad_poach_result.get('teams', 0))} team(s)."
+        )
+    elif practice_squad_poach_result.get("skipped"):
+        scouting_note += " CPU practice squad poaching skipped by cadence."
     if int(depth_swap_result.get("swaps", 0)):
         scouting_note += f" CPU depth sanity swapped {int(depth_swap_result.get('swaps', 0))} same-position stash(es)."
     trim_moves = int(active_trim_result.get("moved_to_ps", 0)) + int(active_trim_result.get("released", 0))

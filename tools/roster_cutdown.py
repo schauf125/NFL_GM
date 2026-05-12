@@ -33,6 +33,7 @@ from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledge
 SOURCE = "roster_cutdown"
 INJURY_REPLACEMENT_SOURCE = "cpu_injury_replacement"
 PRACTICE_SQUAD_SANITY_SOURCE = "cpu_practice_squad_sanity"
+PRACTICE_SQUAD_POACH_SOURCE = "cpu_practice_squad_poach"
 PHASE = "Regular Season"
 ACTIVE_STATUS = "Active"
 PRACTICE_SQUAD_STATUS = "Practice Squad"
@@ -179,6 +180,7 @@ def ensure_cutdown_schema(con: sqlite3.Connection) -> None:
         INSERT INTO transaction_types (transaction_type, category, description)
         VALUES
             ('Practice Squad Signing', 'Roster', 'Player signed to a practice squad.'),
+            ('Practice Squad Poaching', 'Roster', 'Player signed from another team practice squad to the active roster.'),
             ('Release', 'Roster', 'Player released from a roster.'),
             ('Signing', 'Roster', 'Free agent or draft pick signed to a contract.'),
             ('Roster Status Change', 'Status', 'Player status changed.')
@@ -1087,6 +1089,225 @@ def best_free_agent_replacement(
     return None
 
 
+def has_protected_young_depth(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    season: int,
+    group: str,
+) -> bool:
+    rows = con.execute(
+        """
+        SELECT *
+        FROM players
+        WHERE team_id = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Practice Squad')
+        """,
+        (team_id,),
+    ).fetchall()
+    for row in rows:
+        candidate = player_candidate(con, row, season=season, team_id=team_id)
+        if candidate.group != group:
+            continue
+        if candidate.age <= 24 and candidate.potential >= 78 and candidate.overall >= 58:
+            return True
+        if candidate.years_exp <= 2 and candidate.potential >= 80 and candidate.overall >= 60:
+            return True
+        if candidate.depth_rank is not None and candidate.depth_rank <= 3 and candidate.age <= 25 and candidate.potential >= 76:
+            return True
+    return False
+
+
+def practice_squad_poach_score(
+    con: sqlite3.Connection,
+    *,
+    player: sqlite3.Row,
+    target_team_id: int,
+    season: int,
+    group_need: float,
+) -> float:
+    candidate = player_candidate(con, player, season=season, team_id=int(player["team_id"]))
+    target_current = active_group_replacement_level(con, target_team_id, candidate.group, season)
+    improvement = candidate.overall - target_current
+    youth_value = max(0.0, min(8.0, candidate.potential - candidate.overall)) * 0.8
+    return (improvement * 7.0) + group_need + youth_value + (2.0 if candidate.age <= 24 else 0.0)
+
+
+def active_group_replacement_level(con: sqlite3.Connection, team_id: int, group: str, season: int) -> float:
+    positions = POSITION_GROUPS.get(group, ())
+    if not positions:
+        return 50.0
+    placeholders = ",".join("?" for _ in positions)
+    rows = con.execute(
+        f"""
+        SELECT p.*
+        FROM players p
+        WHERE p.team_id = ?
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND p.position IN ({placeholders})
+        """,
+        (team_id, *positions),
+    ).fetchall()
+    if not rows:
+        return 45.0
+    ranked = sorted(
+        (player_candidate(con, row, season=season, team_id=team_id) for row in rows),
+        key=lambda item: (item.overall, item.keep_score),
+    )
+    return float(ranked[0].overall)
+
+
+def external_practice_squad_candidates(
+    con: sqlite3.Connection,
+    *,
+    target_team_id: int,
+    season: int,
+    groups: list[str],
+    max_per_group: int = 8,
+) -> list[sqlite3.Row]:
+    rows: list[tuple[float, sqlite3.Row]] = []
+    target_counts = {group: active_group_count(con, target_team_id, group) for group in groups}
+    for group in groups:
+        positions = POSITION_GROUPS.get(group, ())
+        if not positions:
+            continue
+        placeholders = ",".join("?" for _ in positions)
+        group_need = max(0, DEFAULT_ACTIVE_TARGETS.get(group, 0) - target_counts.get(group, 0)) * 18.0
+        group_rows = con.execute(
+            f"""
+            SELECT p.*, t.abbreviation AS source_team
+            FROM players p
+            JOIN teams t ON t.team_id = p.team_id
+            WHERE p.team_id IS NOT NULL
+              AND p.team_id != ?
+              AND p.status = 'Practice Squad'
+              AND p.position IN ({placeholders})
+              AND (
+                    COALESCE(p.overall, 50) >= 60
+                 OR COALESCE(p.potential, COALESCE(p.overall, 50)) >= 74
+              )
+            ORDER BY COALESCE(p.overall, 50) DESC, COALESCE(p.potential, p.overall, 50) DESC, p.age ASC
+            LIMIT ?
+            """,
+            (target_team_id, *positions, max_per_group),
+        ).fetchall()
+        for row in group_rows:
+            candidate = player_candidate(con, row, season=season, team_id=int(row["team_id"]))
+            if candidate.position in SPECIALIST_POSITIONS:
+                continue
+            if candidate.overall < 58 and candidate.potential < 72:
+                continue
+            score = practice_squad_poach_score(
+                con,
+                player=row,
+                target_team_id=target_team_id,
+                season=season,
+                group_need=group_need,
+            )
+            rows.append((score, row))
+    return [row for score, row in sorted(rows, key=lambda item: item[0], reverse=True)]
+
+
+def sign_practice_squad_poach(
+    con: sqlite3.Connection,
+    *,
+    player: sqlite3.Row,
+    team: sqlite3.Row,
+    season: int,
+    reason: str,
+) -> bool:
+    old_team_id = int(player["team_id"]) if player["team_id"] is not None else None
+    if old_team_id is None or old_team_id == int(team["team_id"]):
+        return False
+    old_status = player["status"] or PRACTICE_SQUAD_STATUS
+    contract_id = roster_rules.transfer_active_contract(con, int(player["player_id"]), int(team["team_id"]))
+    if contract_id is None:
+        aav = minimum_contract_aav(player)
+        cur = con.execute(
+            """
+            INSERT INTO contracts (
+                player_id, team_id, signed_date, start_year, end_year,
+                total_value, total_years, aav, signing_bonus, roster_bonus,
+                workout_bonus, is_guaranteed, dead_cap_current, dead_cap_next,
+                contract_type, is_active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 0, 0, 0, 'Minimum', 1)
+            """,
+            (
+                player["player_id"],
+                team["team_id"],
+                current_date(con),
+                season,
+                season,
+                aav,
+                aav,
+            ),
+        )
+        contract_id = int(cur.lastrowid)
+    con.execute(
+        "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
+        (team["team_id"], player["player_id"]),
+    )
+    delete_depth_rows(con, int(player["player_id"]))
+    status_history(
+        con,
+        player=player,
+        old_status=old_status,
+        new_status=ACTIVE_STATUS,
+        season=season,
+        reason=reason,
+    )
+    roster_rules.record_practice_squad_move(
+        con,
+        player_id=int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        season=season,
+        move_type="Poach",
+        from_status=old_status,
+        to_status=ACTIVE_STATUS,
+        notes=reason,
+    )
+    log_roster_transaction(
+        con,
+        transaction_type="Practice Squad Poaching",
+        player=player,
+        team_id=int(team["team_id"]),
+        from_team_id=old_team_id,
+        to_team_id=int(team["team_id"]),
+        old_status=old_status,
+        new_status=ACTIVE_STATUS,
+        season=season,
+        description=(
+            f"{team['abbreviation']} signed {player['first_name']} {player['last_name']} "
+            "from another team's practice squad to the active roster."
+        ),
+        contract_id=contract_id,
+        source=PRACTICE_SQUAD_POACH_SOURCE,
+    )
+    return True
+
+
+def best_external_practice_squad_replacement(
+    con: sqlite3.Connection,
+    *,
+    target_team_id: int,
+    season: int,
+    groups: list[str],
+) -> sqlite3.Row | None:
+    for row in external_practice_squad_candidates(
+        con,
+        target_team_id=target_team_id,
+        season=season,
+        groups=groups,
+    ):
+        candidate = player_candidate(con, row, season=season, team_id=int(row["team_id"]))
+        if active_group_count(con, target_team_id, candidate.group) >= DEFAULT_ACTIVE_TARGETS.get(candidate.group, 99):
+            if has_protected_young_depth(con, team_id=target_team_id, season=season, group=candidate.group):
+                continue
+        return row
+    return None
+
+
 def best_practice_squad_position_promotion(
     con: sqlite3.Connection,
     *,
@@ -1456,10 +1677,14 @@ def trim_cpu_active_roster_overages(
     game_id: str | None = None,
     active_limit: int = 53,
     include_user_team: bool = False,
+    team_id: int | None = None,
 ) -> dict[str, int]:
     ensure_cutdown_schema(con)
     user_team_id = active_user_team_id(con, game_id)
-    teams = con.execute("SELECT * FROM teams ORDER BY abbreviation").fetchall()
+    if team_id is not None:
+        teams = con.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchall()
+    else:
+        teams = con.execute("SELECT * FROM teams ORDER BY abbreviation").fetchall()
     teams_touched = 0
     moved_to_ps = 0
     released = 0
@@ -1568,17 +1793,32 @@ def process_cpu_position_depth_replacements(
                     promoted += 1
                     touched = True
                 else:
-                    player = best_free_agent_position_replacement(con, position=position)
+                    player = best_external_practice_squad_replacement(
+                        con,
+                        target_team_id=team_id,
+                        season=season,
+                        groups=[POSITION_TO_GROUP.get(position, position)],
+                    )
+                    if player:
+                        if sign_practice_squad_poach(con, player=player, team=team, season=season, reason=reason):
+                            signed += 1
+                            touched = True
+                        else:
+                            player = None
+                    if not player:
+                        player = best_free_agent_position_replacement(con, position=position)
                     if not player:
                         break
-                    sign_free_agent_replacement(con, player=player, team=team, season=season, reason=reason)
-                    signed += 1
-                    touched = True
+                    if player["status"] == FREE_AGENT_STATUS:
+                        sign_free_agent_replacement(con, player=player, team=team, season=season, reason=reason)
+                        signed += 1
+                        touched = True
                 trim_cpu_active_roster_overages(
                     con,
                     season=season,
                     game_id=game_id,
                     include_user_team=include_user_team,
+                    team_id=team_id,
                 )
                 if not player:
                     break
@@ -1599,17 +1839,32 @@ def process_cpu_position_depth_replacements(
                     promoted += 1
                     touched = True
                 else:
-                    player = best_free_agent_group_replacement(con, group=group)
+                    player = best_external_practice_squad_replacement(
+                        con,
+                        target_team_id=team_id,
+                        season=season,
+                        groups=[group],
+                    )
+                    if player:
+                        if sign_practice_squad_poach(con, player=player, team=team, season=season, reason=reason):
+                            signed += 1
+                            touched = True
+                        else:
+                            player = None
+                    if not player:
+                        player = best_free_agent_group_replacement(con, group=group)
                     if not player:
                         break
-                    sign_free_agent_replacement(con, player=player, team=team, season=season, reason=reason)
-                    signed += 1
-                    touched = True
+                    if player["status"] == FREE_AGENT_STATUS:
+                        sign_free_agent_replacement(con, player=player, team=team, season=season, reason=reason)
+                        signed += 1
+                        touched = True
                 trim_cpu_active_roster_overages(
                     con,
                     season=season,
                     game_id=game_id,
                     include_user_team=include_user_team,
+                    team_id=team_id,
                 )
                 if active_group_count(con, team_id, group) <= before_group_count:
                     break
@@ -1618,6 +1873,78 @@ def process_cpu_position_depth_replacements(
     if promoted or signed:
         sync_team_cap_space(con)
     return {"teams": teams_touched, "promoted": promoted, "signed": signed}
+
+
+def process_cpu_practice_squad_poaching(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    game_id: str | None = None,
+    include_user_team: bool = False,
+    max_teams: int = 8,
+    max_poaches_per_team: int = 1,
+) -> dict[str, int]:
+    ensure_cutdown_schema(con)
+    user_team_id = active_user_team_id(con, game_id)
+    teams = con.execute("SELECT * FROM teams ORDER BY abbreviation").fetchall()
+    teams_touched = 0
+    poached = 0
+    skipped_prospect_protection = 0
+    for team in teams:
+        if teams_touched >= max_teams:
+            break
+        team_id = int(team["team_id"])
+        if not include_user_team and user_team_id is not None and team_id == user_team_id:
+            continue
+        if active_roster_count(con, team_id) > 53:
+            continue
+        need_groups = [
+            group
+            for group in DEFAULT_ACTIVE_TARGETS
+            if group not in SPECIALIST_POSITIONS
+            and active_group_count(con, team_id, group) < DEFAULT_ACTIVE_TARGETS[group]
+        ]
+        if not need_groups:
+            continue
+        team_poaches = 0
+        for player in external_practice_squad_candidates(
+            con,
+            target_team_id=team_id,
+            season=season,
+            groups=need_groups,
+            max_per_group=5,
+        ):
+            if team_poaches >= max_poaches_per_team:
+                break
+            candidate = player_candidate(con, player, season=season, team_id=int(player["team_id"]))
+            if has_protected_young_depth(con, team_id=team_id, season=season, group=candidate.group):
+                if active_group_count(con, team_id, candidate.group) >= MIN_ACTIVE_BY_GROUP.get(candidate.group, 0):
+                    skipped_prospect_protection += 1
+                    continue
+            reason = (
+                f"CPU practice squad poach: {team['abbreviation']} needed {candidate.group} depth "
+                "and signed an outside practice squad player to the active roster."
+            )
+            if not sign_practice_squad_poach(con, player=player, team=team, season=season, reason=reason):
+                continue
+            poached += 1
+            team_poaches += 1
+            trim_cpu_active_roster_overages(
+                con,
+                season=season,
+                game_id=game_id,
+                include_user_team=include_user_team,
+                team_id=team_id,
+            )
+        if team_poaches:
+            teams_touched += 1
+    if poached:
+        sync_team_cap_space(con)
+    return {
+        "teams": teams_touched,
+        "poached": poached,
+        "skipped_prospect_protection": skipped_prospect_protection,
+    }
 
 
 def optimize_cpu_same_position_depth(
