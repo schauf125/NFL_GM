@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>NFL GM Player Card</title>
-    <link rel="stylesheet" href="./styles.css?v=20260506-permanent">
+    <link rel="stylesheet" href="./styles.css?v=20260512-rating-bars-headroom">
   </head>
   <body>
     <main class="app-shell">
@@ -13,6 +13,7 @@
           <span>Scouting Cards</span>
           <small id="playerCount"></small>
         </div>
+        <button id="railBackButton" class="rail-back-button" type="button">Back</button>
         <div class="filters">
           <input id="searchInput" type="search" autocomplete="off" placeholder="Search player, team, position">
           <select id="teamFilter" aria-label="Team filter"></select>
@@ -22,6 +23,7 @@
 
       <section class="card-stage" aria-live="polite">
         <nav class="module-links" aria-label="Workspace links">
+          <button id="backButton" class="module-back-link" type="button">Back</button>
           <a href="../app_shell/index.html">Main Menu</a>
           <a href="../game_center/index.html">Game Center</a>
           <a href="../front_office/index.html">Front Office</a>
@@ -138,6 +140,6 @@
       </section>
     </main>
 
-    <script src="./app.js?v=20260507-player-hints"></script>
+    <script src="./app.js?v=20260512-rating-bars-headroom"></script>
   </body>
 </html>

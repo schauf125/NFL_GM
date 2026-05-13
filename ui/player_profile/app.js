@@ -27,6 +27,8 @@
     tabs: Array.from(document.querySelectorAll(".profile-tabs button")),
     view: document.getElementById("profileView"),
     cardViewLink: document.getElementById("cardViewLink"),
+    backButton: document.getElementById("backButton"),
+    railBackButton: document.getElementById("railBackButton"),
   };
 
   function node(tag, className, text) {
@@ -193,10 +195,34 @@
   }
 
   function roleBar(value, scale) {
+    const raw = Number(value || 0);
+    const normalized = scale ? (raw / scale) * 100 : raw;
     const bar = node("div", "skill-bar");
-    const width = Math.max(0, Math.min(100, (Number(value || 0) / scale) * 100));
+    bar.classList.add(ratingTierClass(normalized));
+    const width = ratingScalePercent(normalized);
     bar.style.setProperty("--rating", `${width}%`);
     return bar;
+  }
+
+  function ratingScalePercent(value) {
+    const rating = Number(value);
+    if (!Number.isFinite(rating)) return 6;
+    const floor = 45;
+    const ceiling = 99;
+    const zoomed = ((rating - floor) / (ceiling - floor)) * 100;
+    return Math.max(6, Math.min(100, zoomed));
+  }
+
+  function ratingTierClass(value) {
+    const rating = Number(value);
+    if (!Number.isFinite(rating)) return "rating-unknown";
+    if (rating >= 90) return "rating-elite";
+    if (rating >= 82) return "rating-great";
+    if (rating >= 74) return "rating-good";
+    if (rating >= 66) return "rating-solid";
+    if (rating >= 58) return "rating-developing";
+    if (rating >= 50) return "rating-raw";
+    return "rating-concern";
   }
 
   function metric(label, value, note, tone) {
@@ -768,6 +794,15 @@
   }
 
   function bindEvents() {
+    const goBack = () => {
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.href = "../game_center/index.html";
+      }
+    };
+    refs.backButton?.addEventListener("click", goBack);
+    refs.railBackButton?.addEventListener("click", goBack);
     refs.searchInput.addEventListener("input", () => {
       state.query = refs.searchInput.value;
       render();

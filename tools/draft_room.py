@@ -423,6 +423,11 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
 def start_draft(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     ensure_schema(con)
     validate_final_draft_order(con, args.draft_year)
+    scouting_tools.run_pre_draft_public_scouting_sweep(
+        con,
+        draft_year=args.draft_year,
+        seed=f"draft-room-start:{args.draft_year}",
+    )
     user_team = team_by_abbr(con, args.user_team)
     pick = next_open_pick(con, args.draft_year)
     if not pick:

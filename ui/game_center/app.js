@@ -70,6 +70,7 @@
     liveErrors: {},
     lastLiveRefreshAt: null,
     lastRenderedView: null,
+    viewHistory: [],
   };
 
   const liveApi = {
@@ -89,6 +90,7 @@
     content: document.getElementById("content"),
     toast: document.getElementById("runnerToast"),
     railToggle: document.getElementById("railToggle"),
+    backButton: document.getElementById("backButton"),
     buttons: Array.from(document.querySelectorAll(".nav button")),
   };
 
@@ -98,6 +100,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_event",
     "advance_to_date",
@@ -109,6 +112,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_league_year",
   ]);
@@ -118,6 +122,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_event",
     "advance_to_date",
@@ -136,6 +141,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_event",
     "advance_to_date",
@@ -149,6 +155,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_event",
     "advance_to_date",
@@ -166,6 +173,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "free_agency_start",
     "free_agency_cpu_seed",
@@ -192,6 +200,7 @@
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_next_event",
     "advance_to_date",
@@ -767,8 +776,34 @@
     refs.subhead.textContent = subhead;
     refs.dateText.textContent = currentDateDisplay();
     refs.saveText.textContent = data.activeSave?.display_name || data.registry?.activeGameId || "Master DB";
+    if (refs.backButton) {
+      refs.backButton.disabled = state.viewHistory.length === 0;
+      refs.backButton.title = state.viewHistory.length ? `Back to ${viewLabel(state.viewHistory[state.viewHistory.length - 1])}` : "No previous screen";
+    }
+    updateConditionalNav();
     refs.buttons.forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
     updateLiveStatus();
+  }
+
+  function viewLabel(view) {
+    const button = refs.buttons.find((item) => item.dataset.view === view);
+    return button?.dataset.fullLabel || button?.textContent || view || "previous screen";
+  }
+
+  function playoffTreeVisible() {
+    const season = data.season || {};
+    const postseason = season.postseason || {};
+    const regularGames = Number(season.totals?.games || 0);
+    const regularRemaining = Number(season.totals?.remaining || 0);
+    return Boolean(postseason.visible || Number(postseason.games || 0) > 0 || (regularGames > 0 && regularRemaining === 0));
+  }
+
+  function updateConditionalNav() {
+    refs.buttons.forEach((button) => {
+      if (button.dataset.view === "playoffTree") {
+        button.hidden = !playoffTreeVisible();
+      }
+    });
   }
 
   function setLiveError(scope, message) {
@@ -856,6 +891,16 @@
     return `../player_profile/index.html${query ? `?${query}` : ""}`;
   }
 
+  function playerCardHref({ playerId, name, team, position }) {
+    const params = new URLSearchParams();
+    if (playerId) params.set("player", playerId);
+    if (name) params.set("name", name);
+    if (team) params.set("team", team);
+    if (position) params.set("position", position);
+    const query = params.toString();
+    return `../player_card/index.html${query ? `?${query}` : ""}`;
+  }
+
   function playerLink(playerId, name, className, hints) {
     if (!playerId) return node("span", className || "", name || "-");
     const link = node("a", className || "player-link", name || "-");
@@ -887,9 +932,9 @@
     state.draftProspectPopoverOpen = true;
     const scoutingHasProspect = (data.scouting?.board || []).some((prospect) => String(prospect.prospect_id) === id);
     const draftHasProspect = (data.draft?.board || []).some((prospect) => String(prospect.prospect_id) === id);
-    state.view = scoutingHasProspect || !draftHasProspect ? "scouting" : "draft";
+    const targetView = scoutingHasProspect || !draftHasProspect ? "scouting" : "draft";
     if (!scoutingHasProspect && !draftHasProspect && runnerMode()) {
-      render();
+      switchView(targetView);
       loadLiveScouting({ limit: 500, quiet: true }).then(() => {
         state.selectedDraftProspectId = prospectId;
         state.draftProspectPopoverOpen = true;
@@ -897,7 +942,7 @@
       });
       return;
     }
-    render();
+    switchView(targetView);
   }
 
   function teamLogo(src, team, className) {
@@ -941,12 +986,27 @@
   }
 
   function switchView(view, options = {}) {
+    if (view !== state.view && options.record !== false) {
+      state.viewHistory.push(state.view);
+      if (state.viewHistory.length > 30) state.viewHistory.shift();
+    }
     state.view = view;
     render();
     if (options.scroll !== false) {
       refs.content?.scrollIntoView({ block: "start" });
     }
     if (options.refresh) refreshCurrentView();
+  }
+
+  function goBackView() {
+    while (state.viewHistory.length) {
+      const previous = state.viewHistory.pop();
+      if (previous && previous !== state.view) {
+        switchView(previous, { record: false, refresh: true });
+        return;
+      }
+    }
+    render();
   }
 
   function isDraftAction(action) {
@@ -1551,7 +1611,7 @@
   }
 
   function activeViewRefreshers() {
-    if (state.view === "season") return [loadLiveSeason, loadLiveCalendar];
+    if (state.view === "season" || state.view === "playoffTree") return [loadLiveSeason, loadLiveCalendar];
     if (state.view === "stats") return [loadLiveLeaders];
     if (state.view === "inbox") return [loadLiveInbox];
     if (state.view === "leagueNews") return [loadLiveLeagueNews];
@@ -1628,7 +1688,7 @@
       if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
       }
-      if (payload.rosterGate) {
+      if (payload.rosterGate && rosterGateStillRelevant()) {
         payload.returncode = 1;
         state.rosterCutdownPrompt = payload.rosterGate;
         state.lastResult = {
@@ -1647,6 +1707,9 @@
         await refreshLiveAfterAction(action);
       } else if (isDraftAction(action) || action.startsWith("ai_gm_")) {
         await refreshLiveAfterAction(action);
+      }
+    if (payload.returncode === 0 && action === "sim_season" && playoffTreeVisible() && Number(data.season?.postseason?.games || 0) > 0) {
+        switchView("playoffTree", { refresh: false });
       }
       showToast(payload.summary?.message || (payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} needs attention`));
     } catch (error) {
@@ -1778,6 +1841,7 @@
       depth_chart_set: "Set Depth Chart",
       depth_chart_move: "Move Depth Chart",
       postseason: "Run Postseason",
+      postseason_round: "Sim Playoff Round",
       validate_rosters: "Validate Rosters",
       advance_next_event: "Advance To Next Date",
       advance_to_date: "Advance To Date",
@@ -1887,7 +1951,6 @@
     if (action === "advance_to_draft") {
       if (draftState) return { disabledReason: "Draft room is already active." };
       if (!draft?.draftDate) return { disabledReason: "No draft date is available." };
-      if (dateReached(draft?.draftDate)) return { disabledReason: "Draft day has arrived. Start the draft room." };
       return {};
     }
     if (action === "draft_start") {
@@ -1994,7 +2057,7 @@
     ]);
     const controls = node("div", "control-bar draft-control-bar");
     const controlEntries = [
-      [dateReached(draft?.draftDate) ? "At Draft Day" : "Sim To Draft", "advance_to_draft", {}, "good"],
+      [dateReached(draft?.draftDate) ? "Start Draft" : "Sim To Draft", "advance_to_draft", {}, "good"],
       ["Start Room", "draft_start", {}, "good"],
       ["Skip Pick", "draft_skip", { count: 1 }, ""],
       [`Skip To ${userTeam}`, "draft_skip_to_user", {}, ""],
@@ -2414,6 +2477,7 @@
     const regularDone = regularStarted && remaining === 0;
     const playoffsDone = regularDone && postseasonGames > 0 && postseasonRemaining === 0;
     if (nextWeek > 0 || remaining > 0) return "regular";
+    if (regularDone && postseasonGames === 0) return "postseason_setup";
     if (regularDone && postseasonRemaining > 0) return "postseason";
     if (playoffsDone && !season?.completion) return "completion";
     if (season?.completion) return "completed";
@@ -2427,7 +2491,7 @@
       return {};
     }
     if (action === "sim_season") {
-      if (phase !== "regular") return { disabledReason: "Regular season is already complete." };
+      if (phase !== "regular" && phase !== "postseason_setup") return { disabledReason: "Regular season is already complete." };
       return {};
     }
     if (action === "postseason") {
@@ -2459,6 +2523,7 @@
     const postseasonRemaining = Number(season?.postseason?.remaining || 0);
     const title = {
       regular: nextWeek ? `Week ${nextWeek} Ready` : "Regular Season",
+      postseason_setup: "Playoff Tree Ready",
       postseason: "Postseason Ready",
       completion: "Season Completion Ready",
       completed: "Season Complete",
@@ -2466,6 +2531,7 @@
     }[phase] || "Season";
     const detail = {
       regular: `${remaining} regular-season game(s) remaining.`,
+      postseason_setup: "Generate playoff seedings and Wild Card matchups.",
       postseason: `${postseasonRemaining} postseason game(s) remaining.`,
       completion: "Progression, draft order, and offseason rollover are ready.",
       completed: "The season has already been rolled forward.",
@@ -2566,7 +2632,16 @@
       ["Advance Date", "advance_next_event", {}, "good"],
       ["Sim Rest Season", "sim_season", {}, "warn"],
       [nextWeek ? `Sim Week ${nextWeek}` : "Sim Week", "sim_week", { week: nextWeek }, "good"],
-    ].map(([label, action, params, tone]) => ({
+    ];
+    if (data.draft?.draftDate && !data.draft?.state && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
+      controlEntries.push([
+        dateReached(data.draft.draftDate) ? "Start Draft" : "Sim To Draft",
+        "advance_to_draft",
+        {},
+        "good",
+      ]);
+    }
+    const mappedControlEntries = controlEntries.map(([label, action, params, tone]) => ({
       label,
       action,
       params,
@@ -2574,7 +2649,7 @@
       availability: calendarActionAvailability(action, calendar, nextWeek),
     }));
     append(controls, [
-      ...controlEntries.map((entry) => controlButton({ ...entry, className: "calendar-control-button" })),
+      ...mappedControlEntries.map((entry) => controlButton({ ...entry, className: "calendar-control-button" })),
     ]);
     const upcoming = (calendar?.upcomingEvents || []).slice(0, 12);
     const milestoneStrip = node("div", "calendar-milestone-strip");
@@ -2598,7 +2673,7 @@
       milestoneStrip,
       controlMetaLine({
         generatedAt: data.calendarGeneratedAt,
-        reasons: controlDisabledReasons(controlEntries),
+        reasons: controlDisabledReasons(mappedControlEntries),
       }),
     ]);
     return p;
@@ -2904,6 +2979,11 @@
   function rosterCutdownModal() {
     const prompt = state.rosterCutdownPrompt;
     if (!prompt) return null;
+    if (!rosterGateStillRelevant()) {
+      state.rosterCutdownPrompt = null;
+      state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
+      return null;
+    }
     const overlay = node("div", "box-score-modal-overlay injury-alert-overlay");
     const modal = node("section", "box-score-modal injury-alert-modal roster-cutdown-modal");
     const top = node("div", "box-score-modal-top");
@@ -2970,6 +3050,13 @@
     return { activeCount, practiceSquadCount };
   }
 
+  function rosterGateStillRelevant() {
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "");
+    const season = Number(data.currentSeason || data.season?.season || data.activeSave?.current_league_year || 0);
+    if (!currentDate || !season) return true;
+    return currentDate <= `${season}-09-15`;
+  }
+
   function currentRosterGateKey() {
     const counts = rosterGateCountsFromState();
     if (!counts) return "";
@@ -2985,6 +3072,7 @@
     if (state.rosterCutdownPrompt || state.runnerBusy) return;
     const phase = String(data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "").toLowerCase();
     if (!phase.includes("cutdown") && !phase.includes("practice squad")) return;
+    if (!rosterGateStillRelevant()) return;
     const counts = rosterGateCountsFromState();
     if (!counts) return;
     const activeLimit = 53;
@@ -3106,8 +3194,7 @@
       const button = node("button", `activity-item ${item.tone ? `tone-${item.tone}` : ""}`.trim());
       button.type = "button";
       button.addEventListener("click", () => {
-        state.view = item.view || "leagueNews";
-        render();
+        switchView(item.view || "leagueNews");
       });
       append(button, [
         append(node("div", "activity-copy"), [
@@ -3148,8 +3235,7 @@
     const card = node("button", `workflow-step ${complete ? "complete" : ""} ${current === key ? "active" : ""}`.trim());
     card.type = "button";
     card.addEventListener("click", () => {
-      state.view = view;
-      render();
+      switchView(view);
     });
     append(card, [
       node("span", "workflow-state", complete ? "Done" : current === key ? "Now" : "Next"),
@@ -3367,6 +3453,130 @@
     append(scheduleGrid, [userSchedule, resultsPanel]);
     root.append(scheduleGrid);
 
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
+  }
+
+  function playoffRoundOrder(code) {
+    return { WC: 1, DIV: 2, CONF: 3, SB: 4 }[String(code || "").toUpperCase()] || 9;
+  }
+
+  function playoffRoundShortName(code, name) {
+    return {
+      WC: "Wild Card",
+      DIV: "Divisional",
+      CONF: "Conference",
+      SB: "Super Bowl",
+    }[String(code || "").toUpperCase()] || name || "Round";
+  }
+
+  function playoffTeamLine(game, side) {
+    const prefix = side === "away" ? "away" : "home";
+    const team = game[`${prefix}_team`] || "-";
+    const score = game[`${prefix}_score`];
+    const winner = game.winner_team && game.winner_team === team;
+    const line = node("div", `playoff-team-line ${winner ? "winner" : ""}`.trim());
+    append(line, [
+      teamLogo(game[`${prefix}Logo`], team, "playoff-team-logo"),
+      node("strong", null, team),
+      node("span", "playoff-seed", side === "away" ? seedLabel(game.low_seed) : seedLabel(game.high_seed)),
+      node("span", "playoff-score", score ?? "-"),
+    ]);
+    return line;
+  }
+
+  function seedLabel(seed) {
+    const value = Number(seed || 0);
+    return value ? `#${value}` : "";
+  }
+
+  function playoffGameCard(game) {
+    const played = Number(game.played || 0) === 1 || Boolean(game.winner_team);
+    const card = node("article", `playoff-game-card ${played ? "final" : "pending"}`.trim());
+    const meta = node("div", "playoff-game-meta");
+    append(meta, [
+      tag(game.conference || "NFL", game.conference === "AFC" ? "warn" : game.conference === "NFC" ? "good" : ""),
+      node("span", null, game.game_date ? shortDate(game.game_date) : "TBD"),
+    ]);
+    append(card, [
+      meta,
+      playoffTeamLine(game, "away"),
+      playoffTeamLine(game, "home"),
+    ]);
+    if (played && runnerMode() && game.game_id) {
+      const button = node("button", "copy-button playoff-box-score", "Box Score");
+      button.type = "button";
+      button.addEventListener("click", () => loadCalendarBoxScore(game.game_id));
+      card.append(button);
+      card.classList.add("clickable-card");
+      card.addEventListener("dblclick", () => loadCalendarBoxScore(game.game_id));
+    } else {
+      card.append(node("small", "muted", "Awaiting result"));
+    }
+    return card;
+  }
+
+  function renderPlayoffTree() {
+    setHeader("Playoffs Tree", "Bracket view with box scores as each playoff round finishes.");
+    const root = document.createDocumentFragment();
+    const season = data.season || { postseason: {}, totals: {} };
+    const postseason = season.postseason || {};
+    const currentSeason = season.season || data.currentSeason || "";
+    if (runnerMode() && String(state.seasonLiveSeason || "") !== String(currentSeason || "") && !state.seasonLoading) {
+      loadLiveSeason().then(render);
+    }
+
+    const summary = node("section", "league-table-summary playoff-summary");
+    append(summary, [
+      metric("Regular Season", Number(season.totals?.remaining || 0) ? "In Progress" : "Complete", `${season.totals?.played || 0}/${season.totals?.games || 0}`),
+      metric("Playoff Games", `${postseason.played || 0}/${postseason.games || 0}`, `${postseason.remaining || 0} remaining`, Number(postseason.remaining || 0) ? "warn" : Number(postseason.games || 0) ? "good" : ""),
+      metric("Rounds", String((postseason.rounds || []).length || "-"), "Bracket stages"),
+    ]);
+    const controls = node("div", "control-bar playoff-tree-actions");
+    const simRound = node("button", "control-button good", "Sim Playoff Round");
+    simRound.type = "button";
+    simRound.disabled = !runnerMode() || state.runnerBusy || Number(postseason.remaining || 0) <= 0;
+    simRound.title = Number(postseason.remaining || 0) > 0 ? "Sim the next unplayed playoff round." : "No unplayed playoff games remain.";
+    simRound.addEventListener("click", () => runAction("postseason_round", {}));
+    controls.append(simRound);
+    summary.append(controls);
+    if (state.seasonLoading) summary.append(node("div", "empty-state", "Refreshing playoff tree..."));
+    root.append(summary);
+
+    const matchups = postseason.matchups || [];
+    if (!playoffTreeVisible()) {
+      root.append(node("div", "empty-state", "The playoff tree appears after the regular season is complete."));
+      finishRender(root);
+      return;
+    }
+    if (!matchups.length) {
+      const waiting = panel("Bracket Pending", "Regular season complete");
+      panelBody(waiting).append(node("div", "empty-state", "No playoff matchups are generated yet. Run postseason setup or advance to the playoff round."));
+      root.append(waiting);
+      const output = runnerOutputPanel();
+      if (output) root.append(output);
+      finishRender(root);
+      return;
+    }
+
+    const bracket = panel("Bracket", `${shortDateTime((data.seasonGeneratedAt || "").replace("T", " ")) || "Live"}`);
+    bracket.classList.add("playoff-tree-panel");
+    const grid = node("div", "playoff-tree-grid");
+    const roundKeys = [...new Set(matchups.map((game) => `${playoffRoundOrder(game.round_code)}:${game.round_code}:${game.round_name}`))]
+      .sort((a, b) => Number(a.split(":")[0]) - Number(b.split(":")[0]));
+    roundKeys.forEach((key) => {
+      const [, code, ...nameParts] = key.split(":");
+      const roundName = nameParts.join(":");
+      const column = node("section", "playoff-round-column");
+      column.append(node("h3", null, playoffRoundShortName(code, roundName)));
+      matchups
+        .filter((game) => String(game.round_code || "") === code)
+        .forEach((game) => column.append(playoffGameCard(game)));
+      grid.append(column);
+    });
+    panelBody(bracket).append(grid);
+    root.append(bracket);
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
@@ -4593,15 +4803,17 @@
     const actions = node("div", "roster-action-grid");
     const profile = node("a", "run-button compact", "View Profile");
     profile.href = playerProfileHref({ playerId: player.player_id, name: player.player_name, team: depth.team, position: player.position });
+    const cardLink = node("a", "run-button compact", "View Card");
+    cardLink.href = playerCardHref({ playerId: player.player_id, name: player.player_name, team: depth.team, position: player.position });
     const depthButton = node("button", "run-button compact", "Depth Chart");
     depthButton.type = "button";
     depthButton.addEventListener("click", () => {
-      state.view = "depth";
       state.selectedDepthSlot = assignment?.slot || null;
-      render();
+      switchView("depth");
     });
     append(actions, [
       profile,
+      cardLink,
       depthButton,
       rosterActionButton("Extend", "contract_extend", {
         player_id: player.player_id,
@@ -4845,8 +5057,7 @@
     const depthLink = node("button", "run-button compact", "Open Depth Chart");
     depthLink.type = "button";
     depthLink.addEventListener("click", () => {
-      state.view = "depth";
-      render();
+      switchView("depth");
     });
     append(toolbar, [
       rosterGroupTabs(rows),
@@ -7005,8 +7216,7 @@
       draftLink.addEventListener("click", (event) => {
         event.stopPropagation();
         state.selectedDraftProspectId = prospect.prospect_id;
-        state.view = "draft";
-        render();
+        switchView("draft");
       });
       actions.append(draftLink);
     }
@@ -7903,8 +8113,7 @@
       open.type = "button";
       open.addEventListener("click", () => {
         state.newsFilter = item.category || "all";
-        state.view = "leagueNews";
-        render();
+        switchView("leagueNews");
       });
       const openProspectButton = item.prospect_id ? node("button", "copy-button", "Open Prospect") : null;
       if (openProspectButton) {
@@ -7967,6 +8176,7 @@
       simSeason: "sim_season",
       boxScore: null,
       postseason: "postseason",
+      postseasonRound: "postseason_round",
       completeSeason: "complete_season",
       contractList: null,
       contractRelease: null,
@@ -8093,6 +8303,7 @@
     const scrollLeft = scrollElement ? scrollElement.scrollLeft : window.scrollX;
     const nestedScroll = shouldRestoreScroll ? scrollableSnapshot() : [];
     if (state.view === "season") renderSeason();
+    else if (state.view === "playoffTree") renderPlayoffTree();
     else if (state.view === "stats") renderStats();
     else if (state.view === "inbox") renderInbox();
     else if (state.view === "leagueNews") renderLeagueNews();
@@ -8125,11 +8336,13 @@
 
   refs.buttons.forEach((button) => {
     button.addEventListener("click", () => {
-      state.view = button.dataset.view;
-      render();
+      if (button.hidden) return;
+      switchView(button.dataset.view, { refresh: false });
       refreshCurrentView();
     });
   });
+
+  refs.backButton?.addEventListener("click", goBackView);
 
   setupRailToggle();
 

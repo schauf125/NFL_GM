@@ -572,6 +572,8 @@ def simulate_playoff_game(
         schedule_game_id=int(row["game_id"]),
         seed=seed,
     )
+    if result.away_score == result.home_score:
+        result.home_score += 3
     winner_id = int(row["away_team_id"]) if result.away_score > result.home_score else int(row["home_team_id"])
     loser_id = int(row["home_team_id"]) if winner_id == int(row["away_team_id"]) else int(row["away_team_id"])
     print(f"{row['game_id']}: {match_engine.scoreline(result)}")
@@ -733,6 +735,240 @@ def run_postseason(
     if apply:
         build_draft_order(con, season=season, apply=True)
     return champion
+
+
+def generate_playoff_tree(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    force: bool,
+) -> None:
+    ensure_schema(con)
+    require_regular_season_complete(con, season)
+    clear_postseason(con, season, force=force)
+    seeds = build_playoff_seeds(con, season)
+    store_playoff_seeds(con, season, seeds)
+    seed_lookup = playoff_seeds(con, season)
+
+    game_number = 1
+    for conference in ("AFC", "NFC"):
+        for high_seed, low_seed in ((2, 7), (3, 6), (4, 5)):
+            high = seed_lookup[conference][high_seed].standing.team_id
+            low = seed_lookup[conference][low_seed].standing.team_id
+            insert_playoff_game(
+                con,
+                season=season,
+                round_code="WC",
+                game_number=game_number,
+                conference=conference,
+                high_seed=high_seed,
+                low_seed=low_seed,
+                home_team_id=high,
+                away_team_id=low,
+            )
+            game_number += 1
+
+
+def original_seed_lookup(con: sqlite3.Connection, season: int) -> dict[int, int]:
+    rows = con.execute(
+        "SELECT team_id, seed FROM playoff_seedings WHERE season = ?",
+        (season,),
+    ).fetchall()
+    if len(rows) != 14:
+        seeds = build_playoff_seeds(con, season)
+        store_playoff_seeds(con, season, seeds)
+        rows = con.execute(
+            "SELECT team_id, seed FROM playoff_seedings WHERE season = ?",
+            (season,),
+        ).fetchall()
+    return {int(row["team_id"]): int(row["seed"]) for row in rows}
+
+
+def completed_round_winners(con: sqlite3.Connection, season: int, round_code: str) -> dict[str, list[int]]:
+    rows = con.execute(
+        """
+        SELECT conference, winner_team_id
+        FROM playoff_games
+        WHERE season = ?
+          AND round_code = ?
+          AND winner_team_id IS NOT NULL
+        ORDER BY game_number
+        """,
+        (season, round_code),
+    ).fetchall()
+    winners: dict[str, list[int]] = {"AFC": [], "NFC": []}
+    for row in rows:
+        winner = int(row["winner_team_id"])
+        conference = row["conference"] or team_conference(con, winner)
+        winners[conference].append(winner)
+    return winners
+
+
+def round_has_games(con: sqlite3.Connection, season: int, round_code: str) -> bool:
+    row = con.execute(
+        "SELECT COUNT(*) AS count FROM playoff_games WHERE season = ? AND round_code = ?",
+        (season, round_code),
+    ).fetchone()
+    return int(row["count"] or 0) > 0
+
+
+def round_complete(con: sqlite3.Connection, season: int, round_code: str) -> bool:
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS games,
+               SUM(CASE WHEN winner_team_id IS NOT NULL THEN 1 ELSE 0 END) AS decided
+        FROM playoff_games
+        WHERE season = ? AND round_code = ?
+        """,
+        (season, round_code),
+    ).fetchone()
+    games = int(row["games"] or 0)
+    decided = int(row["decided"] or 0)
+    return games > 0 and games == decided
+
+
+def insert_next_round(con: sqlite3.Connection, *, season: int, completed_round: str) -> str | None:
+    team_seed = original_seed_lookup(con, season)
+
+    if completed_round == "WC":
+        next_round = "DIV"
+        if round_has_games(con, season, next_round):
+            return next_round
+        seed_lookup = playoff_seeds(con, season)
+        wc_winners = completed_round_winners(con, season, "WC")
+        game_number = 1
+        for conference in ("AFC", "NFC"):
+            alive = [seed_lookup[conference][1].standing.team_id, *wc_winners[conference]]
+            if len(alive) != 4:
+                raise ValueError(f"{conference} Wild Card winners are incomplete.")
+            ordered = sorted(alive, key=lambda team_id: team_seed[team_id])
+            one_seed = ordered[0]
+            lowest = ordered[-1]
+            middle = ordered[1:-1]
+            for home, away in ((one_seed, lowest), (middle[0], middle[1])):
+                insert_playoff_game(
+                    con,
+                    season=season,
+                    round_code=next_round,
+                    game_number=game_number,
+                    conference=conference,
+                    high_seed=team_seed[home],
+                    low_seed=team_seed[away],
+                    home_team_id=home,
+                    away_team_id=away,
+                )
+                game_number += 1
+        return next_round
+
+    if completed_round == "DIV":
+        next_round = "CONF"
+        if round_has_games(con, season, next_round):
+            return next_round
+        div_winners = completed_round_winners(con, season, "DIV")
+        game_number = 1
+        for conference in ("AFC", "NFC"):
+            ordered = sorted(div_winners[conference], key=lambda team_id: team_seed[team_id])
+            if len(ordered) != 2:
+                raise ValueError(f"{conference} Divisional winners are incomplete.")
+            insert_playoff_game(
+                con,
+                season=season,
+                round_code=next_round,
+                game_number=game_number,
+                conference=conference,
+                high_seed=team_seed[ordered[0]],
+                low_seed=team_seed[ordered[1]],
+                home_team_id=ordered[0],
+                away_team_id=ordered[1],
+            )
+            game_number += 1
+        return next_round
+
+    if completed_round == "CONF":
+        next_round = "SB"
+        if round_has_games(con, season, next_round):
+            return next_round
+        conf_winners = completed_round_winners(con, season, "CONF")
+        if len(conf_winners["AFC"]) != 1 or len(conf_winners["NFC"]) != 1:
+            raise ValueError("Conference Championship winners are incomplete.")
+        afc_champ = conf_winners["AFC"][0]
+        nfc_champ = conf_winners["NFC"][0]
+        afc_nominal_home = season % 2 == 0
+        home = afc_champ if afc_nominal_home else nfc_champ
+        away = nfc_champ if afc_nominal_home else afc_champ
+        insert_playoff_game(
+            con,
+            season=season,
+            round_code=next_round,
+            game_number=1,
+            conference=None,
+            high_seed=team_seed.get(home),
+            low_seed=team_seed.get(away),
+            home_team_id=home,
+            away_team_id=away,
+            neutral_site=True,
+        )
+        return next_round
+
+    if completed_round == "SB":
+        build_draft_order(con, season=season, apply=True)
+        return None
+
+    return None
+
+
+def simulate_next_playoff_round(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    seed: int | None,
+    apply: bool,
+    force: bool,
+) -> str:
+    ensure_schema(con)
+    require_regular_season_complete(con, season)
+    if not round_has_games(con, season, "WC"):
+        generate_playoff_tree(con, season=season, force=force)
+
+    for round_code in ("WC", "DIV", "CONF", "SB"):
+        if not round_has_games(con, season, round_code):
+            previous = {"DIV": "WC", "CONF": "DIV", "SB": "CONF"}.get(round_code)
+            if previous and round_complete(con, season, previous):
+                insert_next_round(con, season=season, completed_round=previous)
+            else:
+                continue
+        rows = con.execute(
+            """
+            SELECT schedule_game_id, game_number
+            FROM playoff_games
+            WHERE season = ?
+              AND round_code = ?
+              AND winner_team_id IS NULL
+            ORDER BY game_number
+            """,
+            (season, round_code),
+        ).fetchall()
+        if not rows:
+            if round_complete(con, season, round_code):
+                insert_next_round(con, season=season, completed_round=round_code)
+            continue
+        seed_base = None
+        if seed is not None:
+            seed_base = seed + ({"WC": 0, "DIV": 100, "CONF": 200, "SB": 300}[round_code])
+        for row in rows:
+            game_seed = seed_base + int(row["game_number"]) if seed_base is not None else None
+            simulate_playoff_game(
+                con,
+                schedule_game_id=int(row["schedule_game_id"]),
+                seed=game_seed,
+                apply=apply,
+                force=force,
+            )
+        if apply:
+            insert_next_round(con, season=season, completed_round=round_code)
+        return round_code
+
+    raise ValueError(f"{season} postseason is already complete.")
 
 
 def elimination_rounds(con: sqlite3.Connection, season: int) -> tuple[dict[int, str], int | None, int | None]:
@@ -961,6 +1197,27 @@ def action_seed(args: argparse.Namespace) -> None:
         con.close()
 
 
+def action_tree(args: argparse.Namespace) -> None:
+    con = connect(args.db)
+    try:
+        generate_playoff_tree(
+            con,
+            season=args.season,
+            force=args.force,
+        )
+        print_seeds(con, args.season)
+        print("")
+        print_bracket(con, args.season)
+        if args.apply:
+            con.commit()
+            print(f"Saved {args.season} playoff tree.")
+        else:
+            con.rollback()
+            print("Dry run only. Add --apply to save the playoff tree.")
+    finally:
+        con.close()
+
+
 def action_run(args: argparse.Namespace) -> None:
     con = connect(args.db)
     try:
@@ -977,6 +1234,28 @@ def action_run(args: argparse.Namespace) -> None:
         else:
             con.rollback()
             print("Dry run only. Add --apply to save postseason results.")
+    finally:
+        con.close()
+
+
+def action_round(args: argparse.Namespace) -> None:
+    con = connect(args.db)
+    try:
+        round_code = simulate_next_playoff_round(
+            con,
+            season=args.season,
+            seed=args.seed,
+            apply=args.apply,
+            force=args.force,
+        )
+        print("")
+        print_bracket(con, args.season)
+        if args.apply:
+            con.commit()
+            print(f"Saved {args.season} {ROUND_INFO[round_code][0]} playoff round.")
+        else:
+            con.rollback()
+            print("Dry run only. Add --apply to save playoff round results.")
     finally:
         con.close()
 
@@ -1043,12 +1322,25 @@ def build_parser() -> argparse.ArgumentParser:
     seed_parser.add_argument("--apply", action="store_true")
     seed_parser.set_defaults(func=action_seed)
 
+    tree_parser = subparsers.add_parser("tree", help="Generate playoff seedings and Wild Card matchups.")
+    tree_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)
+    tree_parser.add_argument("--apply", action="store_true")
+    tree_parser.add_argument("--force", action="store_true", help="Replace existing unplayed postseason games.")
+    tree_parser.set_defaults(func=action_tree)
+
     run_parser = subparsers.add_parser("run", help="Simulate full postseason and set draft order.")
     run_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)
     run_parser.add_argument("--seed", type=int)
     run_parser.add_argument("--apply", action="store_true")
     run_parser.add_argument("--force", action="store_true", help="Replace existing postseason games.")
     run_parser.set_defaults(func=action_run)
+
+    round_parser = subparsers.add_parser("round", help="Simulate the next unplayed playoff round.")
+    round_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)
+    round_parser.add_argument("--seed", type=int)
+    round_parser.add_argument("--apply", action="store_true")
+    round_parser.add_argument("--force", action="store_true")
+    round_parser.set_defaults(func=action_round)
 
     draft_parser = subparsers.add_parser("draft-order", help="Build draft order from completed postseason.")
     draft_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)

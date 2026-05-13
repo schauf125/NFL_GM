@@ -260,6 +260,33 @@ body.rail-collapsed .links {
   box-shadow: var(--shadow);
 }
 
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin-bottom: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.back-button::before {
+  content: "<";
+  margin-right: 6px;
+  color: var(--accent);
+}
+
+.back-button:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
 h1,
 h2,
 h3,
@@ -3498,8 +3525,10 @@ body[data-view="draft"] .draft-side-rail .control-secondary .action-card {
 }
 
 .icon-button.close-button {
-  width: 34px;
+  min-width: 34px;
+  width: auto;
   height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.04);
@@ -5499,4 +5528,92 @@ textarea {
 
 .muted-row {
   opacity: 0.72;
+}
+
+.playoff-summary {
+  margin-bottom: 14px;
+}
+
+.playoff-tree-panel .panel-body {
+  overflow-x: auto;
+}
+
+.playoff-tree-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(210px, 1fr));
+  gap: 12px;
+  min-width: 880px;
+}
+
+.playoff-round-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.playoff-round-column h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.playoff-game-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 10px;
+}
+
+.playoff-game-card.final {
+  border-color: rgba(120, 190, 140, 0.45);
+}
+
+.playoff-game-meta,
+.playoff-team-line {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+}
+
+.playoff-game-meta {
+  grid-template-columns: auto 1fr;
+  margin-bottom: 8px;
+}
+
+.playoff-team-line {
+  grid-template-columns: 24px minmax(0, 1fr) auto auto;
+  min-height: 30px;
+}
+
+.playoff-team-line.winner strong {
+  color: var(--text);
+}
+
+.playoff-team-line:not(.winner) {
+  color: var(--muted);
+}
+
+.playoff-team-logo {
+  height: 22px;
+  width: 22px;
+}
+
+.playoff-seed,
+.playoff-score {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.playoff-score {
+  color: var(--text);
+  min-width: 22px;
+  text-align: right;
+}
+
+.playoff-box-score {
+  margin-top: 8px;
+  width: 100%;
 }

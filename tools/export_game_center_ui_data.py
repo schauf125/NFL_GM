@@ -1106,7 +1106,60 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
 
 def postseason_summary(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
     if not table_exists(conn, "playoff_games"):
-        return {"games": 0, "played": 0, "remaining": 0, "rounds": []}
+        return {"games": 0, "played": 0, "remaining": 0, "rounds": [], "matchups": [], "visible": False}
+    logos = team_logo_map(conn)
+    matchups = rows_as_dicts(
+        conn.execute(
+            """
+            SELECT
+                pg.season,
+                pg.round_code,
+                pg.round_name,
+                pg.game_number,
+                pg.conference,
+                pg.high_seed,
+                pg.low_seed,
+                pg.schedule_game_id AS game_id,
+                pg.winner_team_id,
+                pg.loser_team_id,
+                away.abbreviation AS away_team,
+                away.city || ' ' || away.nickname AS away_team_name,
+                home.abbreviation AS home_team,
+                home.city || ' ' || home.nickname AS home_team_name,
+                winner.abbreviation AS winner_team,
+                sg.game_date,
+                sg.game_time_et,
+                COALESCE(sg.played, CASE WHEN pg.winner_team_id IS NOT NULL THEN 1 ELSE 0 END) AS played,
+                sg.away_score,
+                sg.home_score
+            FROM playoff_games pg
+            JOIN teams away ON away.team_id = pg.away_team_id
+            JOIN teams home ON home.team_id = pg.home_team_id
+            LEFT JOIN teams winner ON winner.team_id = pg.winner_team_id
+            LEFT JOIN season_games sg ON sg.game_id = pg.schedule_game_id
+            WHERE pg.season = ?
+            ORDER BY
+                CASE pg.round_code
+                    WHEN 'WC' THEN 1
+                    WHEN 'DIV' THEN 2
+                    WHEN 'CONF' THEN 3
+                    WHEN 'SB' THEN 4
+                    ELSE 9
+                END,
+                CASE COALESCE(pg.conference, '')
+                    WHEN 'AFC' THEN 1
+                    WHEN 'NFC' THEN 2
+                    ELSE 3
+                END,
+                pg.game_number
+            """,
+            (season,),
+        ).fetchall()
+    )
+    for matchup in matchups:
+        matchup["awayLogo"] = logos.get(str(matchup.get("away_team")))
+        matchup["homeLogo"] = logos.get(str(matchup.get("home_team")))
+        matchup["winnerLogo"] = logos.get(str(matchup.get("winner_team")))
     rows = conn.execute(
         """
         SELECT
@@ -1139,7 +1192,27 @@ def postseason_summary(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
         rounds.append(item)
         games += item["games"]
         played += item["played"]
-    return {"games": games, "played": played, "remaining": games - played, "rounds": rounds}
+    regular_done = False
+    if table_exists(conn, "season_games"):
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS games, SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+            FROM season_games
+            WHERE season = ? AND game_type = 'REG'
+            """,
+            (season,),
+        ).fetchone()
+        regular_games = int(row["games"] or 0) if row else 0
+        regular_played = int(row["played"] or 0) if row else 0
+        regular_done = regular_games > 0 and regular_played >= regular_games
+    return {
+        "games": games,
+        "played": played,
+        "remaining": games - played,
+        "rounds": rounds,
+        "matchups": matchups,
+        "visible": regular_done or games > 0,
+    }
 
 
 def draft_year(conn: sqlite3.Connection, season: int) -> int:

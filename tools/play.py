@@ -41,6 +41,43 @@ def open_save_db(game_id: str | None = None):
     return target_game_id, db_path, game_flow.connect(db_path)
 
 
+def sync_active_game_row_to_settings(game_id: str | None = None) -> str:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        active_setting = con.execute(
+            "SELECT setting_value FROM game_settings WHERE setting_key = 'active_game_id'"
+        ).fetchone()
+        active_game_id = str(active_setting["setting_value"]) if active_setting and active_setting["setting_value"] else target_game_id
+        row = con.execute("SELECT * FROM game_saves WHERE game_id = ?", (active_game_id,)).fetchone()
+        if row is None:
+            return target_game_id
+        setting = con.execute(
+            "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
+        ).fetchone()
+        if not setting or not setting["setting_value"]:
+            return target_game_id
+        settings_date = str(setting["setting_value"])
+        if date.fromisoformat(settings_date) <= date.fromisoformat(str(row["current_date"])):
+            return target_game_id
+        phase = game_flow.phase_for_date(con, settings_date)
+        con.execute(
+            """
+            UPDATE game_saves
+            SET current_date = ?,
+                current_league_year = ?,
+                current_phase_code = ?,
+                updated_at = datetime('now')
+            WHERE game_id = ?
+            """,
+            (settings_date, int(phase["league_year"]), phase["phase_code"], row["game_id"]),
+        )
+        refreshed = con.execute("SELECT * FROM game_saves WHERE game_id = ?", (row["game_id"],)).fetchone()
+        game_flow.sync_game_settings(con, refreshed)
+        con.commit()
+    sync_save(target_game_id)
+    return target_game_id
+
+
 def sync_save(game_id: str) -> None:
     manifest = save_manager.sync_manifest_from_db(game_id)
     if manifest:
@@ -289,6 +326,53 @@ def postseason_result_count(con, season: int) -> int:
         (season,),
     ).fetchone()
     return int(row["count"] or 0)
+
+
+def regular_season_status(con, season: int) -> tuple[int, int]:
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS games,
+               SUM(CASE WHEN COALESCE(played, 0) = 1 THEN 1 ELSE 0 END) AS played
+        FROM season_games
+        WHERE season = ? AND game_type = 'REG'
+        """,
+        (season,),
+    ).fetchone()
+    return int(row["games"] or 0), int(row["played"] or 0)
+
+
+def postseason_game_count(con, season: int) -> int:
+    table = con.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type IN ('table', 'view') AND name = 'playoff_games'
+        """
+    ).fetchone()
+    if not table:
+        return 0
+    row = con.execute(
+        "SELECT COUNT(*) AS count FROM playoff_games WHERE season = ?",
+        (season,),
+    ).fetchone()
+    return int(row["count"] or 0)
+
+
+def ensure_playoff_tree_if_ready(game_id: str | None, season: int) -> None:
+    target_game_id, _db_path, con = open_save_db(game_id)
+    try:
+        regular_games, regular_played = regular_season_status(con, season)
+        playoff_games = postseason_game_count(con, season)
+    finally:
+        con.close()
+
+    if regular_games != 272 or regular_played != 272 or playoff_games > 0:
+        return
+    run_tool_script(
+        target_game_id,
+        "postseason.py",
+        ["tree", "--season", str(season), "--apply"],
+    )
 
 
 def ensure_final_draft_order(game_id: str | None, *, season: int, draft_year: int) -> None:
@@ -753,6 +837,167 @@ def free_agency_days_to_draft(con, draft_year: int, draft_date: str) -> int | No
     return max(1, (date.fromisoformat(draft_date) - date.fromisoformat(current_date)).days)
 
 
+def free_agency_start_date(con, league_year: int) -> str:
+    if table_exists(con, "league_calendar_events"):
+        row = con.execute(
+            """
+            SELECT event_start_date
+            FROM league_calendar_events
+            WHERE event_code = 'NEXT_NFL_LEAGUE_YEAR_START'
+              AND strftime('%Y', event_start_date) = ?
+            ORDER BY event_start_date
+            LIMIT 1
+            """,
+            (str(league_year),),
+        ).fetchone()
+        if row and row["event_start_date"]:
+            return str(row["event_start_date"])
+    return f"{league_year}-03-10"
+
+
+def active_free_agency_period_date(con, league_year: int) -> str | None:
+    if not table_exists(con, "free_agency_periods"):
+        return None
+    row = con.execute(
+        """
+        SELECT "current_date"
+        FROM free_agency_periods
+        WHERE league_year = ?
+          AND status = 'active'
+        """,
+        (league_year,),
+    ).fetchone()
+    return str(row["current_date"]) if row and row["current_date"] else None
+
+
+def ensure_offseason_free_agency_started(game_id: str | None, draft_year: int, draft_date: str) -> bool:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        current_date = active_game_current_date(con)
+        if date.fromisoformat(current_date) >= date.fromisoformat(draft_date):
+            return False
+        if active_free_agency_period_date(con, draft_year):
+            return False
+        start_date = free_agency_start_date(con, draft_year)
+        if date.fromisoformat(start_date) >= date.fromisoformat(draft_date):
+            return False
+    run_tool_script(
+        target_game_id,
+        "free_agency_processor.py",
+        [
+            "start",
+            "--league-year",
+            str(draft_year),
+            "--start-date",
+            start_date,
+            "--cpu-resign-per-team",
+            "1",
+            "--cpu-retention-per-team",
+            "1",
+            "--opening-cpu-offers",
+            "112",
+            "--no-cap-snapshot",
+            "--apply",
+        ],
+    )
+    return True
+
+
+def process_offseason_free_agency_to_draft(game_id: str | None, draft_year: int, draft_date: str, base_cpu_offers: int) -> None:
+    target_game_id, db_path = save_db(game_id)
+    while True:
+        with game_flow.connect(db_path) as con:
+            if not table_exists(con, "free_agency_periods"):
+                return
+            period = con.execute(
+                """
+                SELECT *
+                FROM free_agency_periods
+                WHERE league_year = ?
+                  AND status = 'active'
+                """,
+                (draft_year,),
+            ).fetchone()
+            if not period:
+                return
+            current_date = str(period["current_date"])
+            if current_date >= draft_date:
+                return
+            current_stage = str(period["current_stage"] or "")
+            current_hour = int(period["current_hour"] or 12)
+            end_hour = int(period["first_day_end_hour"] or 20)
+            remaining_days = max(0, (date.fromisoformat(draft_date) - date.fromisoformat(current_date)).days)
+
+        if current_stage == "day_one_hourly" and current_hour < end_hour:
+            run_tool_script(
+                target_game_id,
+                "free_agency_processor.py",
+                [
+                    "advance-hour",
+                    "--league-year",
+                    str(draft_year),
+                    "--cpu-offers",
+                    str(max(32, min(64, base_cpu_offers))),
+                    "--signing-limit",
+                    "24",
+                    "--no-cap-snapshot",
+                    "--apply",
+                ],
+            )
+            continue
+
+        if remaining_days <= 0:
+            return
+        if remaining_days <= 3:
+            step_days = remaining_days
+            cpu_offers = 24
+            signing_limit = 32
+        elif remaining_days <= 10:
+            step_days = min(3, remaining_days)
+            cpu_offers = 36
+            signing_limit = 40
+        elif remaining_days <= 24:
+            step_days = min(7, remaining_days)
+            cpu_offers = 30
+            signing_limit = 40
+        else:
+            step_days = min(7, remaining_days)
+            cpu_offers = 44 if remaining_days > 35 else 34
+            signing_limit = 48
+        run_tool_script(
+            target_game_id,
+            "free_agency_processor.py",
+            [
+                "advance-day",
+                "--league-year",
+                str(draft_year),
+                "--days",
+                str(step_days),
+                "--cpu-offers",
+                str(cpu_offers),
+                "--signing-limit",
+                str(signing_limit),
+                "--force",
+                "--no-cap-snapshot",
+                "--apply",
+            ],
+        )
+
+
+def draft_room_already_started(con, draft_year: int) -> bool:
+    if not table_exists(con, "draft_room_state"):
+        return False
+    row = con.execute(
+        """
+        SELECT status
+        FROM draft_room_state
+        WHERE draft_year = ?
+        """,
+        (draft_year,),
+    ).fetchone()
+    return bool(row and str(row["status"] or "").lower() in {"active", "paused", "complete"})
+
+
 def action_new(args: argparse.Namespace) -> None:
     create_args = SimpleNamespace(
         master_db=args.master_db,
@@ -820,6 +1065,7 @@ def action_log(args: argparse.Namespace) -> None:
 
 
 def action_advance_day(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     game_id, db_path = save_db(args.game_id)
     with game_flow.connect(db_path) as con:
         game = game_flow.active_game(con)
@@ -841,6 +1087,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
 
 
 def action_advance_to_next_event(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     game_id, db_path = save_db(args.game_id)
     with game_flow.connect(db_path) as con:
         game = game_flow.active_game(con)
@@ -865,6 +1112,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
 
 
 def action_advance_to_date(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     game_id, db_path = save_db(args.game_id)
     with game_flow.connect(db_path) as con:
         game = game_flow.active_game(con)
@@ -885,6 +1133,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
 
 
 def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     target_game_id, db_path = save_db(args.game_id)
     with game_flow.connect(db_path) as con:
         game = game_flow.active_game(con)
@@ -927,6 +1176,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
 
 
 def action_advance_to_draft(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     target_game_id, db_path = save_db(args.game_id)
     with game_flow.connect(db_path) as con:
         settings_row = con.execute(
@@ -936,29 +1186,36 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         draft_year = int(args.draft_year or next_draft_year(con, current_season))
         draft_date = draft_event_date(con, draft_year)
         user_team = (args.user_team or active_user_team(con) or "MIN").upper()
-        fa_days = None if args.no_resolve_free_agency else free_agency_days_to_draft(con, draft_year, draft_date)
 
     ensure_final_draft_order(args.game_id, season=draft_year - 1, draft_year=draft_year)
 
-    if fa_days:
-        run_tool_script(
+    if not args.no_resolve_free_agency:
+        opened_fa = ensure_offseason_free_agency_started(args.game_id, draft_year, draft_date)
+        if opened_fa:
+            print(f"Opened {draft_year} offseason free agency before advancing to the draft.")
+        process_offseason_free_agency_to_draft(
             args.game_id,
-            "free_agency_processor.py",
-            [
-                "advance-day",
-                "--league-year",
-                str(draft_year),
-                "--days",
-                str(fa_days),
-                "--cpu-offers",
-                str(args.cpu_offers),
-                "--force",
-                "--no-cap-snapshot",
-                "--apply",
-            ],
+            draft_year,
+            draft_date,
+            max(28, int(args.cpu_offers or 40)),
         )
 
     auto_top30_before_calendar_advance(target_game_id, draft_date, draft_year)
+    with game_flow.connect(db_path) as con:
+        result = scouting.run_pre_draft_public_scouting_sweep(
+            con,
+            game_id=target_game_id,
+            draft_year=draft_year,
+            seed=f"{target_game_id}:{draft_year}:advance-to-draft",
+        )
+        con.commit()
+    if result.get("already_run"):
+        print(f"Pre-draft scouting sweep already completed for {draft_year}.")
+    else:
+        print(
+            f"Pre-draft scouting sweep: {result['user_updates']} user file(s), "
+            f"{result['cpu_updates']} CPU-team file(s) moved from Low to Medium."
+        )
 
     game_id, _db_path, con = open_save_db(args.game_id)
     try:
@@ -971,7 +1228,11 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         con.close()
     sync_save(game_id)
 
-    if not args.no_start_room:
+    room_started = False
+    with game_flow.connect(db_path) as con:
+        room_started = draft_room_already_started(con, draft_year)
+
+    if not args.no_start_room and not room_started:
         run_tool_script(
             args.game_id,
             "draft_room.py",
@@ -985,10 +1246,13 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
                 "--apply",
             ],
         )
+    elif room_started:
+        print(f"Draft room already started for {draft_year}.")
     print(f"Advanced {target_game_id} to the {draft_year} NFL Draft ({draft_date}).")
 
 
 def action_validate_rosters(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     game_id, _db_path, con = open_save_db(args.game_id)
     try:
         game_flow.action_validate_rosters(
@@ -1282,8 +1546,9 @@ def action_playtest_logs(args: argparse.Namespace) -> None:
 
 
 def action_sim_week(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     if args.apply:
-        if stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
+        if not args.skip_roster_gate and stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
             return
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
@@ -1302,11 +1567,14 @@ def action_sim_week(args: argparse.Namespace) -> None:
     if not args.weekly_hooks:
         script_args.append("--no-weekly-hooks")
     run_tool_script(args.game_id, "sim_game.py", script_args)
+    if args.apply and args.limit is None:
+        ensure_playoff_tree_if_ready(args.game_id, args.season)
 
 
 def action_sim_season(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     if args.apply:
-        if stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
+        if not args.skip_roster_gate and stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
             return
         ensure_regular_season_rosters(args.game_id, args.season)
         ensure_regular_season_specialists(args.game_id, args.season)
@@ -1329,6 +1597,8 @@ def action_sim_season(args: argparse.Namespace) -> None:
     if not args.weekly_hooks:
         script_args.append("--no-weekly-hooks")
     run_tool_script(args.game_id, "sim_game.py", script_args)
+    if args.apply and args.limit is None:
+        ensure_playoff_tree_if_ready(args.game_id, args.season)
 
 
 def action_trade(args: argparse.Namespace) -> None:
@@ -1487,6 +1757,7 @@ def action_postseason(args: argparse.Namespace) -> None:
 
 
 def action_complete_season(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
     target_game_id, db_path = save_db(args.game_id)
     script_args = ["complete", "--season", str(args.season)]
     if args.seed is not None:
@@ -1809,6 +2080,11 @@ def build_parser() -> argparse.ArgumentParser:
     sim_week_parser.add_argument("--force", action="store_true")
     sim_week_parser.add_argument("--notes")
     sim_week_parser.add_argument(
+        "--skip-roster-gate",
+        action="store_true",
+        help="Continue after an explicit user-approved automatic roster cutdown.",
+    )
+    sim_week_parser.add_argument(
         "--weekly-hooks",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1826,6 +2102,11 @@ def build_parser() -> argparse.ArgumentParser:
     sim_season_parser.add_argument("--apply", action="store_true")
     sim_season_parser.add_argument("--force", action="store_true")
     sim_season_parser.add_argument("--notes")
+    sim_season_parser.add_argument(
+        "--skip-roster-gate",
+        action="store_true",
+        help="Continue after an explicit user-approved automatic roster cutdown.",
+    )
     sim_season_parser.add_argument(
         "--weekly-hooks",
         action=argparse.BooleanOptionalAction,

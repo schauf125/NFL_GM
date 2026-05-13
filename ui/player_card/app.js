@@ -40,6 +40,8 @@
     statsRecent: document.getElementById("statsRecent"),
     attributeBoard: document.getElementById("attributeBoard"),
     profileLink: document.querySelector('.module-links a[href*="player_profile"]'),
+    backButton: document.getElementById("backButton"),
+    railBackButton: document.getElementById("railBackButton"),
   };
 
   function playerId(player) {
@@ -135,7 +137,7 @@
 
   function metricRow(metric) {
     const row = document.createElement("div");
-    row.className = "metric-row";
+    row.className = `metric-row ${ratingTierClass(metric.value)}`;
 
     const name = document.createElement("div");
     name.className = "metric-name";
@@ -143,7 +145,7 @@
 
     const bar = document.createElement("div");
     bar.className = "skill-bar";
-    bar.style.setProperty("--rating", `${Math.max(0, Math.min(100, metric.value))}%`);
+    bar.style.setProperty("--rating", `${ratingScalePercent(metric.value)}%`);
     bar.setAttribute("aria-label", `${metric.label}: ${metric.grade}`);
 
     const grade = document.createElement("div");
@@ -156,7 +158,7 @@
 
   function roleRow(role, label) {
     const row = document.createElement("div");
-    row.className = "role-row";
+    row.className = `role-row ${ratingTierClass(role.value)}`;
 
     const name = document.createElement("div");
     name.className = "role-name";
@@ -164,7 +166,7 @@
 
     const bar = document.createElement("div");
     bar.className = "skill-bar";
-    bar.style.setProperty("--rating", `${Math.max(0, Math.min(100, role.value))}%`);
+    bar.style.setProperty("--rating", `${ratingScalePercent(role.value)}%`);
     bar.setAttribute("aria-label", `${role.label}: ${role.grade}`);
 
     const grade = document.createElement("div");
@@ -173,6 +175,27 @@
 
     row.append(name, bar, grade);
     return row;
+  }
+
+  function ratingScalePercent(value) {
+    const rating = Number(value);
+    if (!Number.isFinite(rating)) return 6;
+    const floor = 45;
+    const ceiling = 99;
+    const zoomed = ((rating - floor) / (ceiling - floor)) * 100;
+    return Math.max(6, Math.min(100, zoomed));
+  }
+
+  function ratingTierClass(value) {
+    const rating = Number(value);
+    if (!Number.isFinite(rating)) return "rating-unknown";
+    if (rating >= 90) return "rating-elite";
+    if (rating >= 82) return "rating-great";
+    if (rating >= 74) return "rating-good";
+    if (rating >= 66) return "rating-solid";
+    if (rating >= 58) return "rating-developing";
+    if (rating >= 50) return "rating-raw";
+    return "rating-concern";
   }
 
   function renderMetricList(container, metrics, emptyText) {
@@ -448,6 +471,15 @@
   }
 
   function bindEvents() {
+    const goBack = () => {
+      if (window.history.length > 1) {
+        window.history.back();
+      } else {
+        window.location.href = "../game_center/index.html";
+      }
+    };
+    elements.backButton?.addEventListener("click", goBack);
+    elements.railBackButton?.addEventListener("click", goBack);
     elements.searchInput.addEventListener("input", renderList);
     elements.teamFilter.addEventListener("change", renderList);
   }
@@ -463,6 +495,8 @@
     if (resolved) {
       selectedId = playerId(resolved);
       replacePlayerUrl(resolved);
+    } else if (requested) {
+      selectedId = requested;
     }
     const preferred = resolved
       || players.find((player) => player.name === "Patrick Mahomes" && player.team.abbr === "KC")
@@ -470,7 +504,7 @@
       || players.find((player) => (player.role.value || 0) >= 90)
       || players.find((player) => player.position === "QB")
       || players[0];
-    if (!resolved && preferred) {
+    if (!resolved && !requested && preferred) {
       selectedId = playerId(preferred);
       replacePlayerUrl(preferred);
     }

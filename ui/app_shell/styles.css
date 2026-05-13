@@ -140,17 +140,24 @@ button {
 .quick-links a,
 .copy-button,
 .primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  min-height: 38px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.035);
-  padding: 11px 12px;
+  padding: 9px 12px;
   color: var(--muted);
   text-align: left;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   font-weight: 900;
+  line-height: 1.15;
   cursor: pointer;
   text-decoration: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .menu-buttons button:hover,
@@ -165,6 +172,7 @@ button {
 }
 
 .primary-button {
+  justify-content: center;
   color: var(--text);
   background: linear-gradient(135deg, color-mix(in srgb, var(--team-primary) 62%, #0d141c), #172330);
   border-color: color-mix(in srgb, var(--team-secondary) 50%, var(--line));
@@ -394,10 +402,15 @@ h1 {
 }
 
 .save-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(88px, auto));
   justify-content: flex-end;
   gap: 8px;
+}
+
+.save-actions .copy-button {
+  justify-content: center;
+  text-align: center;
 }
 
 .event-row strong,
@@ -460,7 +473,8 @@ h1 {
 }
 
 .mini-button {
-  padding: 8px 9px;
+  min-height: 32px;
+  padding: 7px 9px;
   font-size: 0.68rem;
 }
 

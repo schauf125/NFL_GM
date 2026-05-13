@@ -15,6 +15,7 @@ import mimetypes
 import sqlite3
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from time import perf_counter
 from http import HTTPStatus
@@ -43,6 +44,8 @@ APP_SHELL_OUTPUT = ROOT / "ui" / "app_shell" / "app-shell-data.js"
 FRONT_OFFICE_OUTPUT = ROOT / "ui" / "front_office" / "front-office-data.js"
 PLAYER_CARD_OUTPUT = ROOT / "ui" / "player_card" / "player-data.js"
 PLAYER_PROFILE_OUTPUT = ROOT / "ui" / "player_profile" / "player-profile-data.js"
+RUN_ACTION_LOCK = threading.Lock()
+RUNNING_ACTION: str | None = None
 PLAYER_EXPORT_ACTIONS = {
     "new_june1_save",
     "load_game",
@@ -57,6 +60,7 @@ PLAYER_EXPORT_ACTIONS = {
     "sim_week",
     "sim_season",
     "postseason",
+    "postseason_round",
     "complete_season",
     "advance_to_date",
     "advance_next_league_year",
@@ -376,11 +380,14 @@ def lightweight_action_state() -> dict[str, Any]:
 
 def player_export_season(payload: dict[str, Any]) -> int:
     settings = payload.get("settings") or {}
+    candidates: list[int] = []
     for key in ("current_contract_year", "current_league_year", "current_season"):
         value = settings.get(key)
         if value:
-            return int(value)
-    return int(payload.get("currentSeason") or 2026)
+            candidates.append(int(value))
+    if payload.get("currentSeason"):
+        candidates.append(int(payload["currentSeason"]))
+    return max(candidates) if candidates else 2026
 
 
 def active_export_season(db_path: Path) -> int:
@@ -397,6 +404,7 @@ def active_export_season(db_path: Path) -> int:
             row = con.execute("SELECT * FROM active_game_save_view LIMIT 1").fetchone()
             if row:
                 active = dict(row)
+    candidates: list[int] = []
     for value in (
         active.get("current_league_year"),
         settings.get("current_contract_year"),
@@ -404,8 +412,8 @@ def active_export_season(db_path: Path) -> int:
         settings.get("current_season"),
     ):
         if value:
-            return int(value)
-    return 2026
+            candidates.append(int(value))
+    return max(candidates) if candidates else 2026
 
 
 def write_exports(*, include_players: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1351,11 +1359,19 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         week = params.get("week") or state.get("season", {}).get("nextWeek")
         if not week:
             raise ValueError("No next regular-season week is available.")
-        return play("sim-week", str(int(week)), "--season", str(season), "--apply")
+        command = play("sim-week", str(int(week)), "--season", str(season), "--apply")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
+        return command
     if action == "sim_season":
-        return play("sim-season", "--season", str(season), "--apply", "--seed", f"{season}00")
+        command = play("sim-season", "--season", str(season), "--apply", "--seed", f"{season}00")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
+        return command
     if action == "postseason":
         return play("postseason", "run", "--season", str(season), "--apply", "--seed", f"{season}99")
+    if action == "postseason_round":
+        return play("postseason", "round", "--season", str(season), "--apply", "--seed", f"{season}99")
     if action == "complete_season":
         return play("complete-season", "--season", str(season), "--apply", "--seed", f"{season}99")
     if action == "contract_extend":
@@ -1546,7 +1562,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--start-date",
             str(start_date),
             "--opening-cpu-offers",
-            str(int(params.get("opening_cpu_offers") or 64)),
+            str(int(params.get("opening_cpu_offers") or 112)),
+            "--cpu-retention-per-team",
+            str(int(params.get("cpu_retention_per_team") or 1)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1557,7 +1575,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--league-year",
             str(free_agency_year),
             "--cpu-offers",
-            str(int(params.get("cpu_offers") or 28)),
+            str(int(params.get("cpu_offers") or 44)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -1571,7 +1589,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--days",
             str(days),
             "--cpu-offers",
-            str(int(params.get("cpu_offers") or 40)),
+            str(int(params.get("cpu_offers") or 36)),
             "--no-cap-snapshot",
             "--apply",
         )
@@ -2230,6 +2248,11 @@ def roster_gate_payload(action: str, params: dict[str, Any], stdout: str, stderr
     combined = f"{stdout or ''}\n{stderr or ''}"
     if not any(marker in combined for marker in ROSTER_GATE_MARKERS):
         return None
+    state = payload_for_active_db()
+    current_date = str(state.get("currentDate") or state.get("activeSave", {}).get("current_date") or "")
+    season = int(state.get("currentSeason") or state.get("activeSave", {}).get("current_league_year") or 0)
+    if current_date and season and current_date > f"{season}-09-15":
+        return None
     return {
         "title": "Roster Cutdown Needed",
         "message": first_output_line(stdout, stderr)
@@ -2270,6 +2293,7 @@ def run_auto_cutdown_continue_action(params: dict[str, Any]) -> dict[str, Any]:
     returncode = cutdown.returncode
     if returncode == 0:
         after_cutdown = payload_for_active_db()
+        continue_params = {**continue_params, "skip_roster_gate": True}
         continue_command = action_command(continue_action, continue_params, after_cutdown)
         command_parts.append(continue_command)
         if continue_action in SIM_CANCEL_ACTIONS:
@@ -2312,7 +2336,43 @@ def run_auto_cutdown_continue_action(params: dict[str, Any]) -> dict[str, Any]:
     return response
 
 
+def busy_action_response(action: str) -> dict[str, Any]:
+    running = RUNNING_ACTION or "another action"
+    state: dict[str, Any] | None = None
+    try:
+        state = payload_for_active_db()
+    except Exception:
+        state = None
+    return {
+        "action": action,
+        "returncode": 1,
+        "duration_seconds": 0,
+        "stdout": "",
+        "stderr": "",
+        "summary": {
+            "title": "Action Already Running",
+            "message": f"{running.replace('_', ' ').title()} is already running. Wait for it to finish before starting another action.",
+            "status": "warning",
+            "durationSeconds": 0,
+            "affectedPanels": [],
+        },
+        "state": state,
+    }
+
+
 def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    global RUNNING_ACTION
+    if not RUN_ACTION_LOCK.acquire(blocking=False):
+        return busy_action_response(action)
+    RUNNING_ACTION = action
+    try:
+        return run_action_locked(action, params)
+    finally:
+        RUNNING_ACTION = None
+        RUN_ACTION_LOCK.release()
+
+
+def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
     if action == "box_score":
         return run_box_score_action(params)
     if action == "auto_cutdown_continue":

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>NFL GM Game Center</title>
-    <link rel="stylesheet" href="./styles.css?v=20260511-squad-registration">
+    <link rel="stylesheet" href="./styles.css?v=20260512-back-card-fix">
   </head>
   <body>
     <main class="shell">
@@ -24,6 +24,7 @@
 
           <span class="nav-label">League</span>
           <button type="button" data-view="season">League Table</button>
+          <button type="button" data-view="playoffTree" hidden>Playoffs Tree</button>
           <button type="button" data-view="stats">Stats</button>
           <button type="button" data-view="leagueNews">League News</button>
           <button type="button" data-view="transactions">Transactions</button>
@@ -56,6 +57,7 @@
       <section class="workspace">
         <header class="hero">
           <div>
+            <button id="backButton" class="back-button" type="button" disabled>Back</button>
             <p id="phaseText" class="eyebrow"></p>
             <h1 id="title">Game Center</h1>
             <p id="subhead" class="subhead"></p>
@@ -79,7 +81,7 @@
 
     <div id="runnerToast" class="runner-toast" hidden></div>
 
-    <script src="./game-center-data.js?v=20260511-squad-registration"></script>
-    <script src="./app.js?v=20260511-squad-registration"></script>
+    <script src="./game-center-data.js?v=20260512-playoff-tree"></script>
+    <script src="./app.js?v=20260512-back-card-fix"></script>
   </body>
 </html>

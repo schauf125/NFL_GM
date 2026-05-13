@@ -120,6 +120,8 @@ CPU_SCOUTING_BUCKETS = {
     "day2": (33, 112),
     "day3": (97, 240),
 }
+PRE_DRAFT_PUBLIC_EARLY_COUNT = 10
+PRE_DRAFT_PUBLIC_LATE_COUNT = 15
 PREMIUM_POSITION_SCOUTING_BONUS = 4.0
 
 
@@ -356,6 +358,19 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_cpu_scouting_progress_prospect
             ON cpu_scouting_prospect_progress(game_id, draft_year, prospect_id);
+
+        CREATE TABLE IF NOT EXISTS scouting_pre_draft_sweeps (
+            game_id TEXT NOT NULL,
+            draft_year INTEGER NOT NULL,
+            user_team_id INTEGER,
+            early_per_team INTEGER NOT NULL DEFAULT 10,
+            late_per_team INTEGER NOT NULL DEFAULT 15,
+            user_updates INTEGER NOT NULL DEFAULT 0,
+            cpu_updates INTEGER NOT NULL DEFAULT 0,
+            seed TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (game_id, draft_year)
+        );
         """
     )
     ensure_draft_prospect_scouting_columns(con)
@@ -917,6 +932,301 @@ def add_inbox_message(
             related_id,
         ),
     )
+
+
+def public_pre_draft_candidate_rows(
+    con: sqlite3.Connection,
+    *,
+    draft_class_id: int,
+    early: bool,
+    game_id: str,
+    team_id: int | None = None,
+) -> list[sqlite3.Row]:
+    progress_filter = "COALESCE(progress.scouting_confidence, 'Low') = 'Low'"
+    params: list[Any] = []
+    if team_id is None:
+        progress_join = """
+            LEFT JOIN scouting_prospect_progress progress
+              ON progress.game_id = ?
+             AND progress.draft_year = dc.draft_year
+             AND progress.prospect_id = dp.prospect_id
+        """
+        params.append(game_id)
+    else:
+        progress_join = """
+            LEFT JOIN cpu_scouting_prospect_progress progress
+              ON progress.game_id = ?
+             AND progress.draft_year = dc.draft_year
+             AND progress.team_id = ?
+             AND progress.prospect_id = dp.prospect_id
+        """
+        params.extend([game_id, team_id])
+    board_filter = "dp.public_board_rank BETWEEN 1 AND 64" if early else "dp.public_board_rank > 64"
+    params.append(draft_class_id)
+    return con.execute(
+        f"""
+        SELECT dp.*, dc.draft_year
+        FROM draft_prospects dp
+        JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id
+        {progress_join}
+        WHERE dp.draft_class_id = ?
+          AND dp.public_board_rank IS NOT NULL
+          AND COALESCE(dp.public_board_status, 'public_board') <> 'off_public_board'
+          AND {board_filter}
+          AND {progress_filter}
+        ORDER BY dp.public_board_rank, dp.prospect_id
+        """,
+        tuple(params),
+    ).fetchall()
+
+
+def choose_pre_draft_public_rows(
+    rows: list[sqlite3.Row],
+    *,
+    count: int,
+    rng: random.Random,
+) -> list[sqlite3.Row]:
+    if count <= 0 or not rows:
+        return []
+    pool = list(rows)
+    rng.shuffle(pool)
+    return pool[: min(count, len(pool))]
+
+
+def upsert_user_pre_draft_medium(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    draft_year: int,
+    prospect: sqlite3.Row,
+    sweep_date: str,
+) -> None:
+    report = "Pre-draft meetings and late-cycle film work moved this public-board file from Low to Medium confidence."
+    con.execute(
+        """
+        INSERT INTO scouting_prospect_progress (
+            game_id, draft_year, prospect_id, visibility_status, scouting_level,
+            scouting_confidence, times_scouted, last_scouted_date, last_report, updated_at
+        )
+        VALUES (?, ?, ?, 'known', ?, 'Medium', 1, ?, ?, datetime('now'))
+        ON CONFLICT(game_id, draft_year, prospect_id) DO UPDATE SET
+            visibility_status = CASE
+                WHEN scouting_prospect_progress.visibility_status = 'hidden' THEN 'known'
+                ELSE scouting_prospect_progress.visibility_status
+            END,
+            scouting_level = MAX(scouting_prospect_progress.scouting_level, excluded.scouting_level),
+            scouting_confidence = CASE
+                WHEN scouting_prospect_progress.scouting_confidence = 'Low' THEN 'Medium'
+                ELSE scouting_prospect_progress.scouting_confidence
+            END,
+            times_scouted = scouting_prospect_progress.times_scouted + 1,
+            last_scouted_date = excluded.last_scouted_date,
+            last_report = excluded.last_report,
+            updated_at = datetime('now')
+        """,
+        (
+            game_id,
+            draft_year,
+            int(prospect["prospect_id"]),
+            CONFIDENCE_TARGET_LEVELS["Medium"],
+            sweep_date,
+            report,
+        ),
+    )
+    con.execute(
+        """
+        UPDATE draft_prospects
+        SET scout_confidence = CASE
+                WHEN COALESCE(scout_confidence, 'Low') = 'Low' THEN 'Medium'
+                ELSE scout_confidence
+            END,
+            scout_grade = CASE
+                WHEN COALESCE(scout_confidence, 'Low') = 'Low' THEN ?
+                ELSE scout_grade
+            END,
+            scout_ceiling = CASE
+                WHEN COALESCE(scout_confidence, 'Low') = 'Low' THEN ?
+                ELSE scout_ceiling
+            END,
+            updated_at = datetime('now')
+        WHERE prospect_id = ?
+        """,
+        (
+            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], "Medium"),
+            tighten_displayed_scout_read(prospect["scout_ceiling"], prospect["ceiling_grade"], "Medium", ceiling=True),
+            int(prospect["prospect_id"]),
+        ),
+    )
+
+
+def upsert_cpu_pre_draft_medium(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    draft_year: int,
+    team_id: int,
+    prospect: sqlite3.Row,
+    sweep_date: str,
+) -> None:
+    report = "Late pre-draft cross-check moved this public-board file from Low to Medium confidence."
+    con.execute(
+        """
+        INSERT INTO cpu_scouting_prospect_progress (
+            game_id, draft_year, team_id, prospect_id, visibility_status,
+            scouting_level, scouting_confidence, times_scouted, last_scouted_date,
+            last_report, updated_at
+        )
+        VALUES (?, ?, ?, ?, 'known', ?, 'Medium', 1, ?, ?, datetime('now'))
+        ON CONFLICT(game_id, draft_year, team_id, prospect_id) DO UPDATE SET
+            visibility_status = CASE
+                WHEN cpu_scouting_prospect_progress.visibility_status = 'hidden' THEN 'known'
+                ELSE cpu_scouting_prospect_progress.visibility_status
+            END,
+            scouting_level = MAX(cpu_scouting_prospect_progress.scouting_level, excluded.scouting_level),
+            scouting_confidence = CASE
+                WHEN cpu_scouting_prospect_progress.scouting_confidence = 'Low' THEN 'Medium'
+                ELSE cpu_scouting_prospect_progress.scouting_confidence
+            END,
+            times_scouted = cpu_scouting_prospect_progress.times_scouted + 1,
+            last_scouted_date = excluded.last_scouted_date,
+            last_report = excluded.last_report,
+            updated_at = datetime('now')
+        """,
+        (
+            game_id,
+            draft_year,
+            team_id,
+            int(prospect["prospect_id"]),
+            CONFIDENCE_TARGET_LEVELS["Medium"],
+            sweep_date,
+            report,
+        ),
+    )
+
+
+def run_pre_draft_public_scouting_sweep(
+    con: sqlite3.Connection,
+    *,
+    game_id: str | None = None,
+    draft_year: int | None = None,
+    seed: str | None = None,
+) -> dict[str, int]:
+    ensure_schema(con)
+    target_game_id = active_game_id(con, game_id)
+    class_row = draft_class_row(con, draft_year)
+    if not class_row:
+        return {"user_updates": 0, "cpu_updates": 0, "teams": 0, "already_run": 0}
+    target_year = int(class_row["draft_year"])
+    draft_class_id = int(class_row["draft_class_id"])
+    existing = con.execute(
+        """
+        SELECT user_updates, cpu_updates
+        FROM scouting_pre_draft_sweeps
+        WHERE game_id = ? AND draft_year = ?
+        """,
+        (target_game_id, target_year),
+    ).fetchone()
+    if existing:
+        return {
+            "user_updates": int(existing["user_updates"] or 0),
+            "cpu_updates": int(existing["cpu_updates"] or 0),
+            "teams": 0,
+            "already_run": 1,
+        }
+
+    sweep_date = current_date(con)
+    active_user_team_id = user_team_id(con)
+    base_seed = seed or f"{target_game_id}:{target_year}:pre-draft-public-sweep"
+    user_rng = random.Random(f"{base_seed}:user")
+
+    user_updates = 0
+    user_rows = [
+        *choose_pre_draft_public_rows(
+            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, early=True, game_id=target_game_id),
+            count=PRE_DRAFT_PUBLIC_EARLY_COUNT,
+            rng=user_rng,
+        ),
+        *choose_pre_draft_public_rows(
+            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, early=False, game_id=target_game_id),
+            count=PRE_DRAFT_PUBLIC_LATE_COUNT,
+            rng=user_rng,
+        ),
+    ]
+    for prospect in user_rows:
+        upsert_user_pre_draft_medium(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            prospect=prospect,
+            sweep_date=sweep_date,
+        )
+        user_updates += 1
+
+    cpu_updates = 0
+    teams = con.execute("SELECT team_id FROM teams ORDER BY team_id").fetchall()
+    for team in teams:
+        team_id_value = int(team["team_id"])
+        team_rng = random.Random(f"{base_seed}:team:{team_id_value}")
+        team_rows = [
+            *choose_pre_draft_public_rows(
+                public_pre_draft_candidate_rows(
+                    con,
+                    draft_class_id=draft_class_id,
+                    early=True,
+                    game_id=target_game_id,
+                    team_id=team_id_value,
+                ),
+                count=PRE_DRAFT_PUBLIC_EARLY_COUNT,
+                rng=team_rng,
+            ),
+            *choose_pre_draft_public_rows(
+                public_pre_draft_candidate_rows(
+                    con,
+                    draft_class_id=draft_class_id,
+                    early=False,
+                    game_id=target_game_id,
+                    team_id=team_id_value,
+                ),
+                count=PRE_DRAFT_PUBLIC_LATE_COUNT,
+                rng=team_rng,
+            ),
+        ]
+        for prospect in team_rows:
+            upsert_cpu_pre_draft_medium(
+                con,
+                game_id=target_game_id,
+                draft_year=target_year,
+                team_id=team_id_value,
+                prospect=prospect,
+                sweep_date=sweep_date,
+            )
+            cpu_updates += 1
+
+    con.execute(
+        """
+        INSERT INTO scouting_pre_draft_sweeps (
+            game_id, draft_year, user_team_id, early_per_team, late_per_team,
+            user_updates, cpu_updates, seed
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            target_game_id,
+            target_year,
+            active_user_team_id,
+            PRE_DRAFT_PUBLIC_EARLY_COUNT,
+            PRE_DRAFT_PUBLIC_LATE_COUNT,
+            user_updates,
+            cpu_updates,
+            base_seed,
+        ),
+    )
+    return {
+        "user_updates": user_updates,
+        "cpu_updates": cpu_updates,
+        "teams": len(teams),
+        "already_run": 0,
+    }
 
 
 def initialize_for_game(
