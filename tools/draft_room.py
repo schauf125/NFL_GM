@@ -56,6 +56,7 @@ EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
 EARLY_DRAFT_STRONG_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_ELITE_CONFIDENCE = {"very high"}
 QB_DUPLICATE_PICK_PENALTY_BY_ROUND = {1: 95.0, 2: 95.0, 3: 90.0, 4: 72.0, 5: 42.0, 6: 20.0, 7: 8.0}
+QB_ROOM_PICK_PENALTY_BY_ROUND = {1: 125.0, 2: 105.0, 3: 46.0, 4: 22.0, 5: 10.0, 6: 4.0, 7: 0.0}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -717,6 +718,22 @@ def cpu_early_round_value_penalty(
         elif round_number == 3:
             penalty += 12.0 if position == "FB" else 24.0
 
+    if position == "QB":
+        if round_number == 1:
+            if perceived_ceiling < 82:
+                penalty += 58.0
+            if perceived_grade < 68:
+                penalty += 26.0
+            if base_rank > 40 and confidence not in EARLY_DRAFT_STRONG_CONFIDENCE:
+                penalty += 20.0
+        elif round_number == 2:
+            if perceived_ceiling < 80:
+                penalty += 32.0
+            if perceived_grade < 64:
+                penalty += 16.0
+        elif round_number == 3 and perceived_ceiling < 76 and perceived_grade < 62:
+            penalty += 10.0
+
     if round_number == 1:
         early = pick_number <= 16
         late = pick_number >= 25
@@ -816,6 +833,81 @@ def cpu_duplicate_position_penalty(
     )
     if exceptional_value:
         penalty *= 0.35
+    return penalty
+
+
+def cpu_qb_room_pick_penalty(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    round_number: int,
+    overall_pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+) -> float:
+    if str(row["position"] or "").upper() != "QB":
+        return 0.0
+    qbs = con.execute(
+        """
+        SELECT
+            player_id,
+            first_name,
+            last_name,
+            age,
+            years_exp,
+            overall,
+            potential,
+            COALESCE(dev_trait, '') AS trait
+        FROM players
+        WHERE team_id = ?
+          AND position = 'QB'
+          AND status IN ('Active', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+        ORDER BY
+            COALESCE(overall, 0) DESC,
+            COALESCE(potential, 0) DESC,
+            player_id
+        LIMIT 4
+        """,
+        (team_id,),
+    ).fetchall()
+    if not qbs:
+        return 0.0
+
+    best_overall = max(int(qb["overall"] or 0) for qb in qbs)
+    best_potential = max(int(qb["potential"] or 0) for qb in qbs)
+    best_young_potential = max(
+        (int(qb["potential"] or 0) for qb in qbs if int(qb["age"] or 99) <= 26 or int(qb["years_exp"] or 99) <= 2),
+        default=0,
+    )
+    recent_high_investment = any(
+        int(qb["years_exp"] or 99) <= 2 and int(qb["potential"] or 0) >= 82
+        for qb in qbs
+    )
+    franchise_qb = best_overall >= 86 or (best_overall >= 82 and best_potential >= 88)
+    young_franchise_qb = best_young_potential >= 88
+
+    if not franchise_qb and not young_franchise_qb and not recent_high_investment:
+        return 0.0
+
+    penalty = QB_ROOM_PICK_PENALTY_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
+    if young_franchise_qb:
+        penalty *= 1.10
+    elif recent_high_investment:
+        penalty *= 0.82
+    if franchise_qb and best_overall >= 90:
+        penalty *= 1.18
+
+    exceptional_value = (
+        perceived_grade >= 78
+        and perceived_ceiling >= 92
+        and base_rank <= max(1, overall_pick_number - 28)
+    )
+    if exceptional_value and round_number >= 3:
+        penalty *= 0.25
+    elif exceptional_value:
+        penalty *= 0.55
     return penalty
 
 
@@ -980,6 +1072,16 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_ceiling=perceived_ceiling,
             selected_counts=selected_counts,
         )
+        qb_room_penalty = cpu_qb_room_pick_penalty(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
         adjusted = (
             base_rank
             - bonus
@@ -989,6 +1091,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             + confidence_penalty
             + early_value_penalty
             + duplicate_position_penalty
+            + qb_room_penalty
         )
         scored.append((adjusted, base_rank, row))
     if round_number == 1 and plan_tier_ids:

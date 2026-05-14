@@ -179,6 +179,8 @@ MARKET_GROUP_TIER_FLOORS = {
     ("Starter", "ST"): 2_500_000,
 }
 
+CPU_FA_CAP_RESERVE = 12_000_000
+
 MINIMUM_AAV_RATIO_BY_TIER = {
     "Premium": 0.70,
     "Starter": 0.68,
@@ -705,8 +707,74 @@ def normalized_group(row: sqlite3.Row | dict[str, Any]) -> str:
 def normalized_tier(row: sqlite3.Row | dict[str, Any]) -> str:
     tier = str(row_value(row, "market_tier", "Depth") or "Depth").title()
     if tier in {"Core", "Franchise"}:
-        return "Premium"
-    return tier
+        tier = "Premium"
+    if tier not in {"Premium", "Starter", "Rotation", "Depth", "Camp"}:
+        tier = "Depth"
+
+    group = normalized_group(row)
+    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    if group == "QB":
+        score_tier = "Premium" if score >= 80 else "Starter" if score >= 72 else "Rotation" if score >= 65 else "Depth" if score >= 58 else "Camp"
+    elif group in {"WR", "OT", "EDGE", "CB", "IDL", "IOL"}:
+        score_tier = "Premium" if score >= 78 else "Starter" if score >= 72 else "Rotation" if score >= 66 else "Depth" if score >= 60 else "Camp"
+    elif group in {"RB", "TE", "LB", "S"}:
+        score_tier = "Premium" if score >= 76 else "Starter" if score >= 70 else "Rotation" if score >= 64 else "Depth" if score >= 58 else "Camp"
+    elif group == "ST":
+        score_tier = "Premium" if score >= 78 else "Starter" if score >= 70 else "Rotation" if score >= 62 else "Depth"
+    else:
+        score_tier = "Starter" if score >= 72 else "Rotation" if score >= 65 else "Depth" if score >= 58 else "Camp"
+
+    order = {"Camp": 0, "Depth": 1, "Rotation": 2, "Starter": 3, "Premium": 4}
+    return tier if order[tier] <= order[score_tier] else score_tier
+
+
+def market_price_ceiling(row: sqlite3.Row | dict[str, Any], tier: str, *, post_draft: bool) -> int:
+    group = normalized_group(row)
+    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    if group == "QB":
+        if score < 64:
+            base = 5_000_000
+        elif score < 68:
+            base = 8_000_000
+        elif score < 72:
+            base = 12_000_000
+        elif score < 76:
+            base = 18_000_000
+        elif score < 80:
+            base = 28_000_000
+        else:
+            base = 55_000_000
+    else:
+        if score < 64:
+            base = 3_500_000
+        elif score < 68:
+            base = 6_000_000
+        elif score < 72:
+            base = 9_500_000
+        elif score < 76:
+            base = 15_000_000
+        elif score < 80:
+            base = 23_000_000
+        else:
+            base = 38_000_000
+    group_multiplier = {
+        "WR": 1.18,
+        "OT": 1.18,
+        "EDGE": 1.18,
+        "CB": 1.10,
+        "IDL": 1.08,
+        "IOL": 1.05,
+        "TE": 0.98,
+        "S": 0.92,
+        "LB": 0.88,
+        "RB": 0.78,
+        "ST": 0.42,
+    }.get(group, 1.0)
+    tier_multiplier = {"Premium": 1.08, "Starter": 1.0, "Rotation": 0.88, "Depth": 0.72, "Camp": 0.60}.get(tier, 0.85)
+    ceiling = base * group_multiplier * tier_multiplier
+    if post_draft:
+        ceiling *= 0.90
+    return max(915_000, round_to(ceiling, 100_000))
 
 
 def is_post_draft_market_context(con: sqlite3.Connection, league_year: int) -> bool:
@@ -769,8 +837,9 @@ def adjusted_market_prices(row: sqlite3.Row, league_year: int, *, post_draft: bo
     group = normalized_group(row)
     age = int(row["age"]) if row["age"] is not None else None
     score = int(row_value(row, "market_score", 60) or 60)
-    profile_ask = max(915_000, int(row_value(row, "asking_aav", 1_500_000) or 1_500_000))
-    profile_min = max(840_000, int(row_value(row, "minimum_aav", 915_000) or 915_000))
+    ceiling = market_price_ceiling(row, tier, post_draft=post_draft)
+    profile_ask = min(ceiling, max(915_000, int(row_value(row, "asking_aav", 1_500_000) or 1_500_000)))
+    profile_min = min(int(ceiling * 0.72), max(840_000, int(row_value(row, "minimum_aav", 915_000) or 915_000)))
 
     tier_multiplier = MARKET_TIER_MULTIPLIERS.get(tier, 1.05)
     group_multiplier = MARKET_GROUP_MULTIPLIERS.get(group, 1.03)
@@ -783,17 +852,19 @@ def adjusted_market_prices(row: sqlite3.Row, league_year: int, *, post_draft: bo
         MARKET_TIER_FLOORS.get(tier, 1_500_000),
     )
     floor = int(floor * age_factor)
+    floor = min(floor, ceiling)
     adjusted_ask = profile_ask * tier_multiplier * group_multiplier * score_multiplier * age_factor * jitter
     if post_draft:
         discount = POST_DRAFT_ASK_DISCOUNT_BY_TIER.get(tier, 0.74)
         discount *= clamp(random.Random(f"fa-street:{league_year}:{player_id}").gauss(1.0, 0.045), 0.90, 1.08)
         floor = round_to(max(veteran_floor_aav(row, post_draft=True), int(floor * 0.82)), 100_000)
-        asking = round_to(max(floor, adjusted_ask * discount), 100_000)
+        floor = min(floor, ceiling)
+        asking = min(ceiling, round_to(max(floor, adjusted_ask * discount), 100_000))
         minimum_ratio = POST_DRAFT_MINIMUM_RATIO_BY_TIER.get(tier, 0.50)
         minimum_floor = max(840_000, veteran_floor_aav(row, post_draft=True), int(profile_min * 0.72))
         minimum = max(minimum_floor, round_to(asking * minimum_ratio, 100_000))
     else:
-        asking = max(profile_ask, floor, round_to(adjusted_ask, 100_000))
+        asking = min(ceiling, max(profile_ask, floor, round_to(adjusted_ask, 100_000)))
         minimum_ratio = MINIMUM_AAV_RATIO_BY_TIER.get(tier, 0.60)
         minimum = max(profile_min, round_to(asking * minimum_ratio, 100_000), 840_000)
     return int(asking), int(min(minimum, asking))
@@ -853,9 +924,10 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
     post_draft_market = is_post_draft_market_context(con, league_year)
     inserted = 0
     for row in rows:
+        tier = normalized_tier(row)
         asking_aav, minimum_aav = adjusted_market_prices(row, league_year, post_draft=post_draft_market)
         heat = market_heat_for(
-            str(row["market_tier"]),
+            tier,
             asking_aav,
             int(row["market_score"] or 60),
             int(row["age"]) if row["age"] is not None else None,
@@ -887,7 +959,7 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
                 league_year,
                 row["player_id"],
                 row["position_group"],
-                row["market_tier"],
+                tier,
                 asking_aav,
                 minimum_aav,
                 int(row["preferred_years"]),
@@ -2581,15 +2653,23 @@ def create_cpu_offers(con: sqlite3.Connection, period: sqlite3.Row, count: int, 
     ).fetchall()
     if not teams:
         return 0
-    user_team = contract_negotiations.active_user_team(con)
-    if user_team:
-        teams = [team for team in teams if str(team["abbreviation"]).upper() != str(user_team).upper()]
-    if not teams:
-        return 0
 
     created = 0
     offers_by_team: dict[int, int] = {}
-    max_offers_per_team = max(2, min(6, int(count / 8) + 2))
+    team_spend: dict[int, int] = {
+        int(row["team_id"]): int(row["pending_aav"] or 0)
+        for row in con.execute(
+            """
+            SELECT team_id, SUM(aav) AS pending_aav
+            FROM free_agency_offers
+            WHERE league_year = ?
+              AND status = 'pending'
+            GROUP BY team_id
+            """,
+            (period["league_year"],),
+        ).fetchall()
+    }
+    max_offers_per_team = max(2, min(5, int(count / 14) + 2))
     event_date, event_hour = event_time(period)
     candidates = cpu_offer_candidates(con, int(period["league_year"]), count)
     rng.shuffle(candidates)
@@ -2604,7 +2684,7 @@ def create_cpu_offers(con: sqlite3.Connection, period: sqlite3.Row, count: int, 
         )
         affordable_teams = [
             team for team in teams
-            if int(team["cap_space"] or 0) > practical_floor + 1_000_000
+            if int(team["cap_space"] or 0) - CPU_FA_CAP_RESERVE - team_spend.get(int(team["team_id"]), 0) > practical_floor
             and offers_by_team.get(int(team["team_id"]), 0) < max_offers_per_team
         ]
         if not affordable_teams:
@@ -2615,7 +2695,7 @@ def create_cpu_offers(con: sqlite3.Connection, period: sqlite3.Row, count: int, 
                 key=lambda team: (
                     -need_scores.get((int(team["team_id"]), player_group), 0.0),
                     offers_by_team.get(int(team["team_id"]), 0),
-                    -int(team["cap_space"] or 0),
+                    -(int(team["cap_space"] or 0) - team_spend.get(int(team["team_id"]), 0)),
                     rng.random(),
                 )
             )
@@ -2643,7 +2723,7 @@ def create_cpu_offers(con: sqlite3.Connection, period: sqlite3.Row, count: int, 
                 continue
 
             low, high = cpu_aav_bounds(player)
-            max_room = max(0, int(team["cap_space"] or 0) - 1_000_000)
+            max_room = max(0, int(team["cap_space"] or 0) - CPU_FA_CAP_RESERVE - team_spend.get(int(team["team_id"]), 0))
             if low > max_room:
                 continue
             high = min(high, max_room)
@@ -2665,6 +2745,7 @@ def create_cpu_offers(con: sqlite3.Connection, period: sqlite3.Row, count: int, 
                 notes="CPU market offer",
             )
             offers_by_team[int(team["team_id"])] = offers_by_team.get(int(team["team_id"]), 0) + 1
+            team_spend[int(team["team_id"])] = team_spend.get(int(team["team_id"]), 0) + aav
             log_event(
                 con,
                 league_year=int(period["league_year"]),
