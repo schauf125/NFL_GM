@@ -468,38 +468,38 @@ h1 {
 }
 
 .rating-concern {
-  --skill-color: #b84a50;
-  --skill-glow: rgba(184, 74, 80, 0.24);
+  --skill-color: #d44d5c;
+  --skill-glow: rgba(212, 77, 92, 0.26);
 }
 
 .rating-raw {
-  --skill-color: #c76f34;
-  --skill-glow: rgba(199, 111, 52, 0.22);
+  --skill-color: #e06c2f;
+  --skill-glow: rgba(224, 108, 47, 0.24);
 }
 
 .rating-developing {
-  --skill-color: #c4a33f;
-  --skill-glow: rgba(196, 163, 63, 0.22);
+  --skill-color: #e0a934;
+  --skill-glow: rgba(224, 169, 52, 0.24);
 }
 
 .rating-solid {
-  --skill-color: #8da35a;
-  --skill-glow: rgba(141, 163, 90, 0.22);
+  --skill-color: #d4c64a;
+  --skill-glow: rgba(212, 198, 74, 0.24);
 }
 
 .rating-good {
-  --skill-color: #4ca873;
-  --skill-glow: rgba(76, 168, 115, 0.24);
+  --skill-color: #50b96f;
+  --skill-glow: rgba(80, 185, 111, 0.26);
 }
 
 .rating-great {
-  --skill-color: #2e9bbd;
-  --skill-glow: rgba(46, 155, 189, 0.24);
+  --skill-color: #1fb7a6;
+  --skill-glow: rgba(31, 183, 166, 0.26);
 }
 
 .rating-elite {
-  --skill-color: #b9ce58;
-  --skill-glow: rgba(185, 206, 88, 0.26);
+  --skill-color: #4f8df7;
+  --skill-glow: rgba(79, 141, 247, 0.30);
 }
 
 .skill-bar {

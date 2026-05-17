@@ -6,7 +6,7 @@ Rules:
 - Every player gets one Gaussian rating multiplier applied to every row in
   player_ratings for the selected season.
 - Rating movement is centered on no change and clipped to +/-10% by default.
-- Rookie potential moves separately by a clipped Gaussian up to +/-25%.
+- Rookie potential moves separately by a clipped Gaussian up to +/-20%.
 - Non-rookies under age 25 move potential separately up to +/-15%.
 
 The script defaults to a dry run. Use --apply to write to the database.
@@ -21,6 +21,8 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+import rating_profile_caps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -169,7 +171,10 @@ def load_players(conn: sqlite3.Connection, season: int) -> list[sqlite3.Row]:
                    p.age,
                    p.years_exp,
                    COALESCE(p.is_rookie, 0) AS is_rookie,
-                   p.potential
+                   p.potential,
+                   p.overall,
+                   p.height_in,
+                   p.weight_lbs
             FROM players p
             LEFT JOIN teams t ON t.team_id = p.team_id
             WHERE EXISTS (
@@ -240,7 +245,21 @@ def build_variance(
         rating_delta_pct = clipped_gaussian(rng, rating_max_delta)
         rating_multiplier = 1.0 + rating_delta_pct
         old_values = [int(row["rating_value"]) for row in ratings]
-        new_values = [clamp_rating(value * rating_multiplier) for value in old_values]
+        new_by_key = {
+            str(row["rating_key"]): clamp_rating(value * rating_multiplier)
+            for row, value in zip(ratings, old_values)
+        }
+        new_by_key = rating_profile_caps.apply_caps_to_ratings(
+            new_by_key,
+            name=str(player["player_name"]),
+            position=str(player["position"]),
+            age=player["age"],
+            height_in=player["height_in"],
+            weight_lbs=player["weight_lbs"],
+            overall=player["overall"],
+            potential=player["potential"],
+        )
+        new_values = [int(new_by_key[str(row["rating_key"])]) for row in ratings]
 
         for row, old_value, new_value in zip(ratings, old_values, new_values):
             rating_details.append(
@@ -612,7 +631,7 @@ def main() -> None:
     parser.add_argument("--game-id", default=f"new_game_{timestamp}")
     parser.add_argument("--seed", type=int, default=None, help="RNG seed. Omit to generate one.")
     parser.add_argument("--rating-max-delta", type=float, default=0.10)
-    parser.add_argument("--rookie-potential-max-delta", type=float, default=0.25)
+    parser.add_argument("--rookie-potential-max-delta", type=float, default=0.20)
     parser.add_argument("--young-potential-max-delta", type=float, default=0.15)
     parser.add_argument("--young-age-cutoff", type=int, default=25)
     parser.add_argument("--notes", default="New game start rating variance.")

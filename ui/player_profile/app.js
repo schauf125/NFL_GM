@@ -218,9 +218,44 @@
     const normalized = scale ? (raw / scale) * 100 : raw;
     const bar = node("div", "skill-bar");
     bar.classList.add(ratingTierClass(normalized));
+    applyRatingColor(bar, normalized, "--skill-color", "--skill-glow");
     const width = ratingScalePercent(normalized);
     bar.style.setProperty("--rating", `${width}%`);
     return bar;
+  }
+
+  const RATING_COLOR_STOPS = [
+    { value: 0, color: [194, 57, 70] },
+    { value: 50, color: [224, 108, 47] },
+    { value: 62, color: [224, 169, 52] },
+    { value: 72, color: [212, 198, 74] },
+    { value: 82, color: [80, 185, 111] },
+    { value: 90, color: [31, 183, 166] },
+    { value: 97, color: [79, 141, 247] },
+    { value: 100, color: [96, 166, 255] },
+  ];
+
+  function ratingColor(value) {
+    const rating = Math.max(0, Math.min(100, Number(value) || 0));
+    let lower = RATING_COLOR_STOPS[0];
+    let upper = RATING_COLOR_STOPS[RATING_COLOR_STOPS.length - 1];
+    for (let index = 1; index < RATING_COLOR_STOPS.length; index += 1) {
+      if (rating <= RATING_COLOR_STOPS[index].value) {
+        lower = RATING_COLOR_STOPS[index - 1];
+        upper = RATING_COLOR_STOPS[index];
+        break;
+      }
+    }
+    const span = Math.max(1, upper.value - lower.value);
+    const mix = (rating - lower.value) / span;
+    const rgb = lower.color.map((channel, index) => Math.round(channel + (upper.color[index] - channel) * mix));
+    return { solid: `rgb(${rgb.join(", ")})`, glow: `rgba(${rgb.join(", ")}, 0.28)` };
+  }
+
+  function applyRatingColor(element, value, colorVar, glowVar) {
+    const color = ratingColor(value);
+    element.style.setProperty(colorVar, color.solid);
+    element.style.setProperty(glowVar, color.glow);
   }
 
   function ratingScalePercent(value) {

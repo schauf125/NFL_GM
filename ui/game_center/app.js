@@ -8934,10 +8934,9 @@
       node("span", null, day.weekday || ""),
     ]);
     const items = node("div", "calendar-items");
-    const hasPreseasonGame = (day.games || []).some((game) => String(game.game_type || "").toUpperCase() === "PRE");
     const visibleEvents = (day.events || []).filter((event) => {
       const code = String(event.event_code || "");
-      return !(hasPreseasonGame && code.startsWith("PRESEASON_WEEK_"));
+      return !code.startsWith("PRESEASON_WEEK_");
     });
     visibleEvents.slice(0, 3).forEach((event) => items.append(calendarEventChip(event)));
     (day.games || []).slice(0, 4).forEach((game) => items.append(calendarGameChip(game)));

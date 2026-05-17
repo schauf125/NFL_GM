@@ -14,7 +14,7 @@
   --warn: #d68b31;
   --good: #64a548;
   --great: #1f9a63;
-  --skill-gradient: linear-gradient(90deg, #a93535 0%, #c86a2e 34%, #c6b93f 55%, #72a947 74%, #1f9a63 100%);
+  --skill-gradient: linear-gradient(90deg, #d44d5c 0%, #e06c2f 22%, #e0a934 40%, #d4c64a 55%, #50b96f 72%, #1fb7a6 86%, #4f8df7 100%);
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.38);
   font-family: "Bahnschrift", "Arial Narrow", "Roboto Condensed", "Segoe UI", sans-serif;
 }

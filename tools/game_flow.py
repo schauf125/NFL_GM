@@ -871,7 +871,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--no-hidden-draft-prospects", action="store_true", help="Generate only the public draft board.")
     start_parser.add_argument("--draft-class-strength", type=int, default=draft_class_bootstrap.DEFAULT_CLASS_STRENGTH)
     start_parser.add_argument("--rating-max-delta", type=float, default=0.10)
-    start_parser.add_argument("--rookie-potential-max-delta", type=float, default=0.25)
+    start_parser.add_argument("--rookie-potential-max-delta", type=float, default=0.20)
     start_parser.add_argument("--young-potential-max-delta", type=float, default=0.15)
     start_parser.add_argument("--young-age-cutoff", type=int, default=25)
 

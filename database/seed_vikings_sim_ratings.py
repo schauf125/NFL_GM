@@ -3,6 +3,10 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import rating_profile_caps
 
 from setup_sim_ratings import DB_PATH, RATING_DEFINITIONS, ROLE_WEIGHTS
 
@@ -512,7 +516,18 @@ def generate_ratings(player, roles):
 
     ratings = apply_relevance_caps(player, ratings, roles)
     ratings.update(RATING_OVERRIDES.get((player["first_name"], player["last_name"]), {}))
-    return {key: clamp(value) for key, value in ratings.items()}
+    capped = rating_profile_caps.apply_caps_to_ratings(
+        {key: clamp(value) for key, value in ratings.items()},
+        name=f"{player['first_name']} {player['last_name']}",
+        position=pos,
+        age=player["age"],
+        height_in=player["height_in"],
+        weight_lbs=player["weight_lbs"],
+        overall=overall,
+        potential=player["potential"],
+    )
+    capped.update(RATING_OVERRIDES.get((player["first_name"], player["last_name"]), {}))
+    return {key: clamp(value) for key, value in capped.items()}
 
 
 def group_confidence(player, rating_key, roles):

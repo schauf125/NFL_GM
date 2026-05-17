@@ -13,7 +13,7 @@
   --bad: #b23b3b;
   --accent: #d4af37;
   --accent-soft: rgba(212, 175, 55, 0.16);
-  --skill-gradient: linear-gradient(90deg, #a93535 0%, #c86a2e 34%, #c6b93f 55%, #72a947 74%, #1f9a63 100%);
+  --skill-gradient: linear-gradient(90deg, #d44d5c 0%, #e06c2f 22%, #e0a934 40%, #d4c64a 55%, #50b96f 72%, #1fb7a6 86%, #4f8df7 100%);
   --shadow: 0 24px 70px rgba(0, 0, 0, 0.36);
   font-family: "Bahnschrift", "Arial Narrow", "Roboto Condensed", "Segoe UI", sans-serif;
 }
@@ -4079,7 +4079,7 @@ body[data-view="draft"] .draft-side-rail .control-secondary .action-card {
   border-radius: 999px;
   overflow: hidden;
   background:
-    linear-gradient(90deg, rgba(169, 53, 53, 0.10), rgba(198, 185, 63, 0.10), rgba(31, 154, 99, 0.10)),
+    linear-gradient(90deg, rgba(212, 77, 92, 0.10), rgba(224, 108, 47, 0.10), rgba(224, 169, 52, 0.10), rgba(80, 185, 111, 0.10), rgba(79, 141, 247, 0.10)),
     rgba(255, 255, 255, 0.055);
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.15);
 }

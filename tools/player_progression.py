@@ -28,6 +28,7 @@ if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
 
 import apply_new_game_variance  # noqa: E402
+import rating_profile_caps  # noqa: E402
 import league_news  # noqa: E402
 import player_development_modifiers  # noqa: E402
 import scheme_fits  # noqa: E402
@@ -169,6 +170,8 @@ class PlayerContext:
     age: int
     years_exp: int
     status: str
+    height_in: int | None
+    weight_lbs: int | None
     old_overall: int
     old_potential: int
     age_band: str
@@ -435,7 +438,9 @@ def load_players(con: sqlite3.Connection, from_season: int) -> list[sqlite3.Row]
             COALESCE(p.overall, 50) AS overall,
             COALESCE(p.potential, COALESCE(p.overall, 50)) AS potential,
             COALESCE(p.dev_trait, 'Normal') AS dev_trait,
-            COALESCE(p.status, 'Active') AS status
+            COALESCE(p.status, 'Active') AS status,
+            p.height_in,
+            p.weight_lbs
         FROM players p
         LEFT JOIN teams t ON t.team_id = p.team_id
         WHERE EXISTS (
@@ -2673,6 +2678,8 @@ def build_contexts(
                 age=age,
                 years_exp=years_exp,
                 status=str(player["status"]),
+                height_in=int(player["height_in"]) if player["height_in"] is not None else None,
+                weight_lbs=int(player["weight_lbs"]) if player["weight_lbs"] is not None else None,
                 old_overall=old_overall,
                 old_potential=old_potential,
                 age_band=band,
@@ -2981,6 +2988,20 @@ def build_progression(
             if context.age_band in {"rookie", "young"} and context.old_potential > context.old_overall:
                 new_rating = min(100, new_rating)
             new_values[rating_key] = new_rating
+        new_values = rating_profile_caps.apply_caps_to_ratings(
+            new_values,
+            name=context.name,
+            position=context.position,
+            age=context.age,
+            height_in=context.height_in,
+            weight_lbs=context.weight_lbs,
+            overall=context.old_overall,
+            potential=context.old_potential,
+        )
+        for rating_key, old_rating in ratings.items():
+            new_rating = new_values[rating_key]
+            rating_group = rating_groups.get(rating_key, "universal")
+            relevant = rating_group_is_relevant(context.position, rating_group)
             if relevant:
                 old_relevant_values.append(old_rating)
                 new_relevant_values.append(new_rating)

@@ -1973,7 +1973,7 @@ def add_new_save_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--draft-class-strength", type=int, default=50)
     parser.add_argument("--no-activate", action="store_true")
     parser.add_argument("--rating-max-delta", type=float, default=0.10)
-    parser.add_argument("--rookie-potential-max-delta", type=float, default=0.25)
+    parser.add_argument("--rookie-potential-max-delta", type=float, default=0.20)
     parser.add_argument("--young-potential-max-delta", type=float, default=0.15)
     parser.add_argument("--young-age-cutoff", type=int, default=25)
 

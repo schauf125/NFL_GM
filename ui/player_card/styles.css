@@ -373,38 +373,38 @@ h2 {
 }
 
 .rating-concern {
-  --bar-color: #b84a50;
-  --bar-glow: rgba(184, 74, 80, 0.24);
+  --bar-color: #d44d5c;
+  --bar-glow: rgba(212, 77, 92, 0.26);
 }
 
 .rating-raw {
-  --bar-color: #c76f34;
-  --bar-glow: rgba(199, 111, 52, 0.22);
+  --bar-color: #e06c2f;
+  --bar-glow: rgba(224, 108, 47, 0.24);
 }
 
 .rating-developing {
-  --bar-color: #c4a33f;
-  --bar-glow: rgba(196, 163, 63, 0.22);
+  --bar-color: #e0a934;
+  --bar-glow: rgba(224, 169, 52, 0.24);
 }
 
 .rating-solid {
-  --bar-color: #8da35a;
-  --bar-glow: rgba(141, 163, 90, 0.22);
+  --bar-color: #d4c64a;
+  --bar-glow: rgba(212, 198, 74, 0.24);
 }
 
 .rating-good {
-  --bar-color: #4ca873;
-  --bar-glow: rgba(76, 168, 115, 0.24);
+  --bar-color: #50b96f;
+  --bar-glow: rgba(80, 185, 111, 0.26);
 }
 
 .rating-great {
-  --bar-color: #2e9bbd;
-  --bar-glow: rgba(46, 155, 189, 0.24);
+  --bar-color: #1fb7a6;
+  --bar-glow: rgba(31, 183, 166, 0.26);
 }
 
 .rating-elite {
-  --bar-color: #b9ce58;
-  --bar-glow: rgba(185, 206, 88, 0.26);
+  --bar-color: #4f8df7;
+  --bar-glow: rgba(79, 141, 247, 0.30);
 }
 
 .role-name,
