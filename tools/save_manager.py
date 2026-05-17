@@ -417,16 +417,22 @@ def delete_save(args: argparse.Namespace) -> None:
     game_id = validate_game_id(args.game_id)
     saves = registry.setdefault("saves", {})
     record = saves.pop(game_id, None)
+    if registry.get("active_game_id") == game_id:
+        registry["active_game_id"] = None
+    save_registry(registry)
     target_dir = save_dir(game_id).resolve()
     saves_root = SAVES_DIR.resolve()
     if target_dir == saves_root or saves_root not in target_dir.parents:
         raise ValueError(f"Refusing to delete path outside saves directory: {target_dir}")
     existed = target_dir.exists()
     if existed:
-        remove_tree_with_retries(target_dir)
-    if registry.get("active_game_id") == game_id:
-        registry["active_game_id"] = None
-    save_registry(registry)
+        try:
+            remove_tree_with_retries(target_dir)
+        except RuntimeError as exc:
+            print(f"Deleted save registry entry: {game_id}")
+            print(f"Save folder is still locked and will need cleanup after the runner releases it: {target_dir}")
+            print(str(exc))
+            return
     if record or existed:
         print(f"Deleted save: {game_id}")
     else:

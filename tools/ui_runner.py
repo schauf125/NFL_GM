@@ -265,6 +265,11 @@ def app_shell_payload_for_active_db() -> dict[str, Any]:
     return export_app_shell_ui_data.build_payload(active_db_path())
 
 
+def export_app_shell_default() -> dict[str, Any]:
+    db_path = export_app_shell_ui_data.default_export_db()
+    return export_app_shell_ui_data.export(db_path, APP_SHELL_OUTPUT)
+
+
 def game_context(db_path: Path) -> dict[str, Any]:
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
@@ -558,9 +563,9 @@ def free_agency_state_patch(db_path: Path) -> dict[str, Any]:
 
 
 def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    db_path = active_db_path()
     if action in {"new_june1_save", "load_game", "delete_save"}:
-        return {}, export_app_shell_ui_data.export(db_path, APP_SHELL_OUTPUT)
+        return {}, export_app_shell_default()
+    db_path = active_db_path()
     if action in DRAFT_RUN_ACTIONS:
         patch = draft_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
@@ -3073,7 +3078,7 @@ class UiHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/app-shell-state":
             try:
-                self.write_json(HTTPStatus.OK, app_shell_payload_for_active_db())
+                self.write_json(HTTPStatus.OK, export_app_shell_ui_data.build_payload(export_app_shell_ui_data.default_export_db()))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
