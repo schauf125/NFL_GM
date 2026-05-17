@@ -9,6 +9,7 @@
     lastResult: null,
     selectedDraftProspectId: null,
     draftProspectPopoverOpen: false,
+    draftTradeModal: null,
     draftBoardSort: { key: "rank", direction: "asc" },
     draftBoardPositionFilter: "all",
     scoutingBoardSort: { key: "rank", direction: "asc" },
@@ -25,6 +26,8 @@
     injuryModal: null,
     rosterCutdownPrompt: null,
     rosterCutdownPromptDismissedKey: null,
+    pendingRosterCutdownAction: null,
+    pendingSimAdvancePrompt: null,
     selectedAiGmReviewId: null,
     newsFilter: "all",
     statsLiveSeason: null,
@@ -54,6 +57,11 @@
     freeAgencyLoading: false,
     freeAgencyPositionFilter: "all",
     freeAgencyTierFilter: "all",
+    tradeLiveKey: null,
+    tradeLoading: false,
+    tradePartnerTeam: "",
+    tradeUserSlots: Array(5).fill(""),
+    tradePartnerSlots: Array(5).fill(""),
     rosterPositionFilter: "all",
     rosterGroupFilter: "all",
     rosterStatusFilter: "all",
@@ -77,6 +85,7 @@
     inflight: new Map(),
     lastLoaded: new Map(),
   };
+  const DRAFT_TRADE_MAX_OFFER_PICKS = 4;
   let viewRefreshInFlight = null;
 
   const refs = {
@@ -180,11 +189,15 @@
     "free_agency_advance_hour",
     "free_agency_advance_day",
     "free_agency_offer",
+    "trade_submit",
+    "trade_cpu_market",
     "draft_pick",
+    "draft_user_trade",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
     "contract_extend",
+    "contract_tag",
     "contract_release",
     "contract_restructure",
     "roster_release_player",
@@ -211,6 +224,7 @@
     "auto_cutdown_continue",
     "draft_start",
     "draft_pick",
+    "draft_user_trade",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
@@ -260,6 +274,8 @@
     "free_agency_advance_hour",
     "free_agency_advance_day",
     "free_agency_offer",
+    "trade_submit",
+    "trade_cpu_market",
     "ai_gm_free_agent_plan",
     "ai_gm_free_agent_plan_persist",
     "ai_gm_apply_free_agent_plan",
@@ -275,7 +291,9 @@
     "free_agency_advance_hour",
     "free_agency_advance_day",
     "free_agency_offer",
+    "trade_submit",
     "contract_extend",
+    "contract_tag",
     "contract_release",
     "contract_restructure",
     "ai_gm_contract_plan",
@@ -296,6 +314,7 @@
     "free_agency_advance_hour",
     "free_agency_advance_day",
     "free_agency_offer",
+    "trade_submit",
     "draft_finish",
     "depth_chart_set",
     "depth_chart_move",
@@ -314,11 +333,21 @@
     "advance_to_draft",
     "draft_start",
     "draft_pick",
+    "draft_user_trade",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
     "draft_pause",
     "draft_resume",
+  ]);
+  const TRADE_REFRESH_ACTIONS = new Set([
+    "new_june1_save",
+    "load_game",
+    "trade_submit",
+    "trade_cpu_market",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_next_league_year",
   ]);
 
   function node(tag, className, text) {
@@ -420,6 +449,21 @@
   function dateReached(value) {
     if (!value || !data.currentDate) return false;
     return new Date(`${data.currentDate}T00:00:00`) >= new Date(`${value}T00:00:00`);
+  }
+
+  function activeSeasonYear() {
+    return Number(
+      data.currentSeason ||
+      data.season?.season ||
+      data.activeSave?.current_league_year ||
+      data.draft?.year - 1 ||
+      2026,
+    );
+  }
+
+  function seasonDate(monthDay) {
+    const season = activeSeasonYear();
+    return season && monthDay ? `${season}-${monthDay}` : "";
   }
 
   function money(value) {
@@ -746,6 +790,10 @@
   function currentSeasonSectionLabel() {
     const phase = String(data.currentPhase || "").toLowerCase();
     const scoutingPeriod = data.scouting?.period?.label;
+    if (phase.includes("preseason")) {
+      if (data.season?.nextGameType === "PRE" && data.season?.nextWeek) return `Preseason Week ${data.season.nextWeek}`;
+      return "Preseason";
+    }
     if (phase.includes("regular")) {
       if (scoutingPeriod && /^Week \d+/i.test(String(scoutingPeriod))) return String(scoutingPeriod).replace(" Scouting", "");
       if (data.season?.nextWeek) return `Week ${data.season.nextWeek}`;
@@ -1011,6 +1059,16 @@
 
   function isDraftAction(action) {
     return DRAFT_ACTIONS.has(action);
+  }
+
+  function tradeLiveKey() {
+    return [
+      data.activeSave?.game_id || "",
+      data.currentDate || "",
+      data.currentSeason || "",
+      state.tradePartnerTeam || data.tradeCenter?.partnerTeam?.abbr || "",
+      data.tradeGeneratedAt || "",
+    ].join("|");
   }
 
   function apiUrl(path, params) {
@@ -1448,6 +1506,24 @@
     return true;
   }
 
+  async function loadLiveTrades() {
+    if (!location.protocol.startsWith("http") || state.tradeLoading) return false;
+    const partner = state.tradePartnerTeam || data.tradeCenter?.partnerTeam?.abbr || "";
+    const payload = await apiGet("trade center", "/api/trade-center", {
+      params: { partner },
+      loadingKey: "tradeLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      tradeCenter: payload,
+      tradeGeneratedAt: payload.generatedAt,
+    };
+    if (!state.tradePartnerTeam && payload.partnerTeam?.abbr) state.tradePartnerTeam = payload.partnerTeam.abbr;
+    state.tradeLiveKey = tradeLiveKey();
+    return true;
+  }
+
   async function loadLiveContracts() {
     if (!location.protocol.startsWith("http") || state.contractsLoading) return false;
     const season = data.currentSeason || data.season?.season || "";
@@ -1524,6 +1600,7 @@
     state.draftLiveKey = null;
     state.scoutingLiveKey = null;
     state.freeAgencyLiveKey = null;
+    state.tradeLiveKey = null;
     state.contractsLiveKey = null;
     state.depthChartLiveKey = null;
     state.practiceSquadLiveKey = null;
@@ -1560,6 +1637,9 @@
     }
     if (FREE_AGENCY_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveFreeAgency());
+    }
+    if (TRADE_REFRESH_ACTIONS.has(action)) {
+      refreshes.push(loadLiveTrades());
     }
     if (CONTRACTS_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveContracts());
@@ -1623,6 +1703,7 @@
     if (state.view === "depth") return [loadLiveDepthChart];
     if (state.view === "contracts") return [loadLiveContracts];
     if (state.view === "freeAgency") return [loadLiveFreeAgency];
+    if (state.view === "trades") return [loadLiveTrades];
     if (state.view === "draft") return [loadLiveDraft, loadLiveScouting];
     if (state.view === "aiGm") return [loadLiveAiGm, loadLiveInbox, loadLiveLeagueNews];
     if (state.view === "calendar") return [loadLiveCalendar, loadLiveLeagueNews];
@@ -1657,9 +1738,34 @@
     };
   }
 
+  function handleDraftTradeResult(payload, params = {}) {
+    const summary = payload?.summary || {};
+    const status = String(summary.status || "").toLowerCase();
+    const rejected = status === "warning" || /rejected/i.test(`${summary.title || ""} ${summary.message || ""} ${payload?.stdout || ""}`);
+    const accepted = status === "success" || /accepted/i.test(`${summary.title || ""} ${summary.message || ""} ${payload?.stdout || ""}`);
+    if (accepted) {
+      state.draftTradeModal = null;
+      return;
+    }
+    if (!rejected) return;
+    const targetPickId = Number(params.target_pick_id || state.draftTradeModal?.targetPickId || 0);
+    const existing = state.draftTradeModal || {};
+    state.draftTradeModal = {
+      ...existing,
+      targetPickId,
+      offerPickIds: (params.offer_pick_ids || existing.offerPickIds || []).map(Number).filter(Boolean),
+      addPickId: "",
+      status: "rejected",
+      message: summary.message || "The other GM rejected that package. Add more draft capital and send it back.",
+    };
+  }
+
   async function runAction(action, params) {
     if (!runnerMode() || state.runnerBusy) return;
-    if (!confirmBeforeAction(action, params || {})) return;
+    params = { ...(params || {}) };
+    if (!confirmBeforeAction(action, params)) return;
+    if (queueSimAdvancePrompt(action, params)) return;
+    if (queueRosterCutdownModePrompt(action, params)) return;
     const calendarProgressAction = action === "sim_week" || action === "sim_season" || action === "advance_to_draft" || action === "auto_cutdown_continue";
     if (calendarProgressAction) {
       state.calendarLiveFocus = true;
@@ -1675,9 +1781,9 @@
     const stopSimProgressPolling = startSimProgressPolling(action);
     try {
       await flushLocalScoutingSelections(action);
-      const payload = await apiPost("runner", "/api/run", { action, params: params || {} });
+      const payload = await apiPost("runner", "/api/run", { action, params });
       if (!payload) throw new Error("Runner request failed");
-      payload.params = params || {};
+      payload.params = params;
       if (payload.state) {
         data = payload.state;
       }
@@ -1685,6 +1791,9 @@
         applyStatePatch(payload.statePatch);
       }
       state.lastResult = payload;
+      if (action === "draft_user_trade") {
+        handleDraftTradeResult(payload, params);
+      }
       if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
       }
@@ -1727,7 +1836,7 @@
   }
 
   function cancellableRunnerAction(action) {
-    return action === "sim_week" || action === "sim_season";
+    return action === "sim_week" || action === "sim_season" || action === "advance_to_draft";
   }
 
   async function requestRunnerCancel() {
@@ -1805,14 +1914,170 @@
     return Boolean(draftDate && currentDate && currentDate === draftDate);
   }
 
-  function confirmBeforeAction(action, params = {}) {
-    if (draftNeedsAdvanceWarning(action)) {
-      const remaining = Number(data.draft?.pickTotals?.remaining || 0);
-      return window.confirm(
-        `The ${data.draft?.year || ""} draft still has ${remaining} pick(s) remaining. ` +
-        "Advancing the calendar will auto-sim the rest of the draft, including any user-team picks that are still open.\n\nContinue?",
-      );
+  function calendarEventDateByCode(code) {
+    const targetCode = String(code || "").toUpperCase();
+    const calendar = data.calendar || {};
+    const buckets = [
+      calendar.upcomingEvents || [],
+      calendar.eventsInView || [],
+      data.events || [],
+    ];
+    for (const events of buckets) {
+      const match = (events || []).find((event) => String(event.event_code || "").toUpperCase() === targetCode);
+      if (match?.event_start_date) return String(match.event_start_date).slice(0, 10);
     }
+    const fallbackDates = {
+      FINAL_ROSTER_CUTDOWN_53: seasonDate("09-01"),
+      PRACTICE_SQUADS_ESTABLISHED: seasonDate("09-02"),
+      REGULAR_SEASON_KICKOFF: seasonDate("09-09"),
+    };
+    if (fallbackDates[targetCode]) return fallbackDates[targetCode];
+    return "";
+  }
+
+  function firstUpcomingEventDate() {
+    const events = data.calendar?.upcomingEvents || [];
+    const match = events.find((event) => event?.event_start_date);
+    return match ? String(match.event_start_date).slice(0, 10) : "";
+  }
+
+  function actionCrossesRosterCutdown(action, params = {}) {
+    if (
+      params.auto_roster_cutdown ||
+      params.skip_roster_gate ||
+      params.roster_cutdown_choice ||
+      action === "auto_cutdown_continue"
+    ) return false;
+    const cutdownDate = calendarEventDateByCode("FINAL_ROSTER_CUTDOWN_53");
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "").slice(0, 10);
+    if (!cutdownDate || !currentDate || currentDate >= cutdownDate) return false;
+    const gameType = String(params.game_type || data.season?.nextGameType || "REG").toUpperCase();
+    if ((action === "sim_week" || action === "sim_season") && gameType === "REG") return true;
+    if (action === "advance_to_draft" || action === "advance_next_league_year") return true;
+    if (action === "advance_to_date") {
+      const targetDate = String(params.date || "").slice(0, 10);
+      return Boolean(targetDate && targetDate >= cutdownDate);
+    }
+    if (action === "advance_next_event") {
+      const targetDate = firstUpcomingEventDate();
+      return Boolean(targetDate && targetDate >= cutdownDate);
+    }
+    return false;
+  }
+
+  function queueRosterCutdownModePrompt(action, params = {}) {
+    if (!actionCrossesRosterCutdown(action, params)) return false;
+    state.pendingRosterCutdownAction = {
+      action,
+      params: { ...params },
+      cutdownDate: calendarEventDateByCode("FINAL_ROSTER_CUTDOWN_53"),
+      practiceSquadDate: calendarEventDateByCode("PRACTICE_SQUADS_ESTABLISHED"),
+    };
+    render();
+    return true;
+  }
+
+  function simAdvancePromptDetails(action, params = {}) {
+    if (params.advance_preflight_confirmed) return null;
+    const season = data.season || {};
+    const draft = data.draft || {};
+    const gameType = String(params.game_type || season.nextGameType || "REG").toUpperCase();
+    const draftRemaining = Number(draft.pickTotals?.remaining || 0);
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "").slice(0, 10);
+    const warnings = [];
+    const checkpoints = [];
+    let title = "";
+    let detail = "";
+    let primaryLabel = "Continue";
+    let tone = "warn";
+
+    if (draftNeedsAdvanceWarning(action)) {
+      title = "Draft Still In Progress";
+      detail = `The ${draft.year || ""} draft still has ${draftRemaining} pick(s) remaining. Continuing will auto-sim the rest of the draft, including any user-team picks still open.`;
+      primaryLabel = "Auto Finish Draft And Continue";
+      warnings.push("Remaining draft picks will be selected automatically.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    if (action === "advance_to_draft") {
+      title = "Sim To Draft";
+      detail = `This will fast-forward from ${shortDate(currentDate)} to the ${draft.year || activeSeasonYear() + 1} NFL Draft${draft.draftDate ? ` on ${shortDate(draft.draftDate)}` : ""}.`;
+      primaryLabel = "Sim To Draft";
+      const regularRemaining = Number(season.totals?.remaining || 0);
+      const postseasonRemaining = Number(season.postseason?.remaining || 0);
+      if (regularRemaining > 0) checkpoints.push(`Complete ${regularRemaining} regular-season game(s).`);
+      if (postseasonRemaining > 0 || Number(season.postseason?.games || 0) === 0) checkpoints.push("Finalize playoff results and draft order if needed.");
+      checkpoints.push("Resolve offseason free agency movement up to draft day.");
+      checkpoints.push("Run pre-draft scouting sweep and open the draft room paused.");
+      if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before the sim starts.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    if (action === "sim_season") {
+      title = gameType === "PRE" ? "Sim Rest Of Preseason" : "Sim Rest Of Season";
+      detail = gameType === "PRE"
+        ? "This will play all remaining preseason games and keep regular-season roster deadlines intact."
+        : "This will play the remaining regular-season schedule and run weekly hooks, stats, scouting, injuries, and CPU front-office activity.";
+      primaryLabel = gameType === "PRE" ? "Sim Preseason" : "Sim Season";
+      if (gameType === "REG" && actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before games begin.");
+      if (gameType === "REG") checkpoints.push("Stop at roster cutdown unless you choose automatic cutdown.");
+      checkpoints.push("Update calendar, standings, stats, injuries, inbox, and league news as games finish.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    if (action === "advance_next_league_year") {
+      title = "Advance To Next League Year";
+      detail = "This rolls the save to the next June 1 league year and can process post-draft/offseason calendar hooks.";
+      primaryLabel = "Advance League Year";
+      if (draftRemaining > 0) warnings.push(`The draft still has ${draftRemaining} remaining pick(s); advancing may auto-finish them.`);
+      checkpoints.push("Sync calendar phase, league year, rosters, contracts, and generated offseason setup.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    if (action === "postseason") {
+      const remaining = Number(season.postseason?.remaining || 0);
+      title = "Run Postseason";
+      detail = remaining
+        ? `This will sim the remaining ${remaining} playoff game(s).`
+        : "This will generate and sim the playoff bracket from the completed regular season.";
+      primaryLabel = "Run Postseason";
+      checkpoints.push("Update playoff bracket, box scores, league news, stats, and season state.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone: "good" };
+    }
+
+    if (action === "complete_season") {
+      title = "Complete Season";
+      detail = "This finalizes the season and moves the league into the next offseason flow.";
+      primaryLabel = "Complete Season";
+      checkpoints.push("Finalize draft order and playoff results.");
+      checkpoints.push("Apply progression/regression when eligible.");
+      checkpoints.push("Prepare contracts, free agency, calendar state, and next offseason checkpoints.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone: "good" };
+    }
+
+    if (action === "advance_to_date" || action === "advance_next_event") {
+      const targetDate = action === "advance_to_date" ? String(params.date || "").slice(0, 10) : firstUpcomingEventDate();
+      const targetLabel = action === "advance_next_event" ? (data.calendar?.nextEvent?.event_name || "next calendar event") : shortDate(targetDate);
+      if (!actionCrossesRosterCutdown(action, params) && !draftNeedsAdvanceWarning(action)) return null;
+      title = action === "advance_next_event" ? "Advance To Next Event" : "Advance Calendar";
+      detail = `This will advance from ${shortDate(currentDate)} to ${targetLabel}.`;
+      primaryLabel = "Advance";
+      if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before advancing.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    return null;
+  }
+
+  function queueSimAdvancePrompt(action, params = {}) {
+    const prompt = simAdvancePromptDetails(action, params);
+    if (!prompt) return false;
+    state.pendingSimAdvancePrompt = prompt;
+    render();
+    return true;
+  }
+
+  function confirmBeforeAction(action, params = {}) {
     if (action === "ai_gm_review_apply" && params.apply) {
       return window.confirm(
         "This will apply approved AI GM review item(s) and may change rosters, contracts, offers, cap, or transactions.\n\nContinue?",
@@ -1830,6 +2095,7 @@
       sim_week: "Sim Week",
       complete_season: "Complete Season",
       contract_extend: "Extend Player",
+      contract_tag: "Apply Tag",
       contract_release: "Release Player",
       contract_restructure: "Restructure Contract",
       roster_release_player: "Release Player",
@@ -1852,10 +2118,13 @@
       free_agency_cpu_seed: "Seed CPU Offers",
       free_agency_advance_hour: "Advance FA Hour",
       free_agency_advance_day: "Advance FA Day",
+      trade_submit: "Submit Trade",
+      trade_cpu_market: "Run CPU Trade Market",
       draft_skip: "Skip Draft Pick",
       draft_skip_to_user: "Skip To User Pick",
       draft_finish: "Finish Draft",
       draft_pick: "Make Draft Pick",
+      draft_user_trade: "Trade For Draft Pick",
       draft_start: "Start Draft Room",
       ai_gm_setup: "Prepare AI GMs",
       ai_gm_enable_ollama: "Enable Ollama",
@@ -1969,6 +2238,11 @@
       if (!draftState) return { disabledReason: "Start the draft room first." };
       if (!isUserOnClock()) return { disabledReason: "Only enabled when your team is on the clock." };
       if (!selected?.prospect_id) return { disabledReason: "Select a draft prospect first." };
+      return {};
+    }
+    if (action === "draft_user_trade") {
+      if (!draftState) return { disabledReason: "Start the draft room first." };
+      if (remaining <= 0) return { disabledReason: "Draft is complete." };
       return {};
     }
     if (action === "advance_next_league_year" && remaining > 0) {
@@ -2468,6 +2742,7 @@
   }
 
   function seasonPhaseState(season) {
+    const preseasonRemaining = Number(season?.preseasonTotals?.remaining || 0);
     const totalGames = Number(season?.totals?.games || 0);
     const remaining = Number(season?.totals?.remaining || 0);
     const nextWeek = Number(season?.nextWeek || 0);
@@ -2476,6 +2751,7 @@
     const regularStarted = totalGames > 0;
     const regularDone = regularStarted && remaining === 0;
     const playoffsDone = regularDone && postseasonGames > 0 && postseasonRemaining === 0;
+    if (preseasonRemaining > 0 && String(season?.nextGameType || "").toUpperCase() === "PRE") return "preseason";
     if (nextWeek > 0 || remaining > 0) return "regular";
     if (regularDone && postseasonGames === 0) return "postseason_setup";
     if (regularDone && postseasonRemaining > 0) return "postseason";
@@ -2487,11 +2763,11 @@
   function seasonActionAvailability(action, season) {
     const phase = seasonPhaseState(season);
     if (action === "sim_week") {
-      if (!Number(season?.nextWeek || 0)) return { disabledReason: "No regular-season week is queued." };
+      if (!Number(season?.nextWeek || 0)) return { disabledReason: "No scheduled week is queued." };
       return {};
     }
     if (action === "sim_season") {
-      if (phase !== "regular" && phase !== "postseason_setup") return { disabledReason: "Regular season is already complete." };
+      if (phase !== "preseason" && phase !== "regular" && phase !== "postseason_setup") return { disabledReason: "Season schedule is already complete." };
       return {};
     }
     if (action === "postseason") {
@@ -2519,9 +2795,13 @@
   function seasonControlPanel(season) {
     const phase = seasonPhaseState(season);
     const nextWeek = Number(season?.nextWeek || 0);
+    const nextGameType = String(season?.nextGameType || "REG").toUpperCase();
+    const nextWeekLabel = nextGameType === "PRE" ? `Preseason Week ${nextWeek}` : `Week ${nextWeek}`;
     const remaining = Number(season?.totals?.remaining || 0);
+    const preseasonRemaining = Number(season?.preseasonTotals?.remaining || 0);
     const postseasonRemaining = Number(season?.postseason?.remaining || 0);
     const title = {
+      preseason: nextWeek ? `${nextWeekLabel} Ready` : "Preseason",
       regular: nextWeek ? `Week ${nextWeek} Ready` : "Regular Season",
       postseason_setup: "Playoff Tree Ready",
       postseason: "Postseason Ready",
@@ -2530,6 +2810,7 @@
       idle: "Season Idle",
     }[phase] || "Season";
     const detail = {
+      preseason: `${preseasonRemaining} preseason game(s) remaining.`,
       regular: `${remaining} regular-season game(s) remaining.`,
       postseason_setup: "Generate playoff seedings and Wild Card matchups.",
       postseason: `${postseasonRemaining} postseason game(s) remaining.`,
@@ -2550,8 +2831,8 @@
     ]);
     const controls = node("div", "control-bar season-control-bar");
     const controlEntries = [
-      ["Sim Next Week", "sim_week", { week: nextWeek }, "good"],
-      ["Sim Regular Season", "sim_season", {}, "warn"],
+      [nextGameType === "PRE" ? "Sim Preseason Week" : "Sim Next Week", "sim_week", { week: nextWeek, game_type: nextGameType }, "good"],
+      [nextGameType === "PRE" ? "Sim Rest Preseason" : "Sim Regular Season", "sim_season", { game_type: nextGameType }, "warn"],
       ["Run Postseason", "postseason", {}, "good"],
       ["Complete Season", "complete_season", {}, "good"],
     ].map(([label, action, params, tone]) => ({
@@ -2589,7 +2870,7 @@
       return {};
     }
     if (action === "sim_week" && !nextWeek) {
-      return { disabledReason: "No regular-season week is queued." };
+      return { disabledReason: "No scheduled week is queued." };
     }
     if (action === "sim_season") {
       return seasonActionAvailability(action, data.season || {});
@@ -2613,6 +2894,8 @@
   }
 
   function calendarControlPanel(calendar, nextEvent, nextWeek) {
+    const nextGameType = String(data.season?.nextGameType || "REG").toUpperCase();
+    const nextWeekLabel = nextWeek ? (nextGameType === "PRE" ? `Preseason Week ${nextWeek}` : `Week ${nextWeek}`) : "";
     const eventDate = nextEvent?.event_start_date ? shortDate(nextEvent.event_start_date) : "No date";
     const p = panel("Calendar Control", nextEvent ? eventDate : "No Advance Target");
     const body = panelBody(p);
@@ -2620,18 +2903,18 @@
     append(hero, [
       append(node("div", "control-copy calendar-control-copy"), [
         node("span", "tag", data.currentDate ? `Current ${shortDate(data.currentDate)}` : "Calendar"),
-        node("strong", null, nextEvent?.event_name || (nextWeek ? `Week ${nextWeek} Ready` : "No immediate calendar action")),
+        node("strong", null, nextEvent?.event_name || (nextWeek ? `${nextWeekLabel} Ready` : "No immediate calendar action")),
         node("small", null, nextEvent
           ? `${eventDate}${nextEvent.phase_name ? ` | ${nextEvent.phase_name}` : ""}${nextEvent.notes ? ` | ${nextEvent.notes}` : ""}`
-          : nextWeek ? "Sim the next unfinished regular-season week." : "The active save has no exported next event or week."),
+          : nextWeek ? `Sim the next unfinished ${nextGameType === "PRE" ? "preseason" : "regular-season"} week.` : "The active save has no exported next event or week."),
       ]),
       tag("Calendar", "good"),
     ]);
     const controls = node("div", "control-bar calendar-control-bar");
     const controlEntries = [
       ["Advance Date", "advance_next_event", {}, "good"],
-      ["Sim Rest Season", "sim_season", {}, "warn"],
-      [nextWeek ? `Sim Week ${nextWeek}` : "Sim Week", "sim_week", { week: nextWeek }, "good"],
+      [nextGameType === "PRE" ? "Sim Rest Preseason" : "Sim Rest Season", "sim_season", { game_type: nextGameType }, "warn"],
+      [nextWeek ? `Sim ${nextWeekLabel}` : "Sim Week", "sim_week", { week: nextWeek, game_type: nextGameType }, "good"],
     ];
     if (data.draft?.draftDate && !data.draft?.state && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
       controlEntries.push([
@@ -2656,15 +2939,7 @@
     if (upcoming.length) {
       milestoneStrip.append(node("span", "muted", "Advance to"));
       upcoming.forEach((event) => {
-        const label = `${shortDate(event.event_start_date)} ${event.event_name || "Calendar Event"}`;
-        milestoneStrip.append(controlButton({
-          label,
-          action: "advance_to_date",
-          params: { date: event.event_start_date },
-          availability: {},
-          tone: String(event.event_code || "").includes("PRESEASON") || String(event.event_code || "").includes("CAMP") ? "good" : "",
-          className: "calendar-milestone-button",
-        }));
+        milestoneStrip.append(calendarMilestoneButton(event));
       });
     }
     append(body, [
@@ -3040,6 +3315,147 @@
     return overlay;
   }
 
+  function rosterCutdownModeModal() {
+    const pending = state.pendingRosterCutdownAction;
+    if (!pending) return null;
+    const action = pending.action;
+    const params = pending.params || {};
+    const overlay = node("div", "box-score-modal-overlay roster-cutdown-choice-overlay");
+    const modal = node("section", "box-score-modal roster-cutdown-choice-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("strong", null, "Roster Cutdown Decision"),
+      node("small", null, `${actionLabel(action)} will advance past preseason roster deadlines`),
+    ]);
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.pendingRosterCutdownAction = null;
+      render();
+    });
+    append(top, [title, close]);
+
+    const deadlineLines = [];
+    if (pending.cutdownDate) deadlineLines.push(`Final roster cutdown: ${shortDate(pending.cutdownDate)}`);
+    if (pending.practiceSquadDate) deadlineLines.push(`Practice squad opens: ${shortDate(pending.practiceSquadDate)}`);
+
+    const body = node("div", "box-score-modal-body roster-cutdown-choice-body");
+    const choices = node("div", "roster-cutdown-choice-grid");
+    const auto = node("button", "roster-cutdown-choice-card good");
+    auto.type = "button";
+    append(auto, [
+      node("strong", null, "Auto Cutdown & Continue"),
+      node("span", null, "Let the CPU trim the user roster, assign the practice squad, and keep simming."),
+    ]);
+    auto.addEventListener("click", () => {
+      const nextParams = {
+        ...params,
+        auto_roster_cutdown: true,
+        roster_cutdown_choice: "auto",
+      };
+      if (action === "sim_week" || action === "sim_season") {
+        nextParams.skip_roster_gate = true;
+      }
+      state.pendingRosterCutdownAction = null;
+      runAction(action, nextParams);
+    });
+
+    const pause = node("button", "roster-cutdown-choice-card warn");
+    pause.type = "button";
+    append(pause, [
+      node("strong", null, "Pause At Cutdown"),
+      node("span", null, "Stop on cutdown day so you can make final cuts and practice squad decisions yourself."),
+    ]);
+    pause.addEventListener("click", () => {
+      state.pendingRosterCutdownAction = null;
+      runAction(action, {
+        ...params,
+        roster_cutdown_choice: "pause",
+      });
+    });
+    append(choices, [auto, pause]);
+    append(body, [
+      node("p", null, "This action can move the save beyond preseason roster deadlines. Choose how the user-controlled team should handle roster cutdown before the sim starts."),
+      deadlineLines.length ? node("p", "muted", deadlineLines.join(" | ")) : null,
+      choices,
+    ]);
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.pendingRosterCutdownAction = null;
+        render();
+      }
+    });
+    return overlay;
+  }
+
+  function simAdvancePromptModal() {
+    const prompt = state.pendingSimAdvancePrompt;
+    if (!prompt) return null;
+    const overlay = node("div", "box-score-modal-overlay sim-advance-prompt-overlay");
+    const modal = node("section", "box-score-modal sim-advance-prompt-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("strong", null, prompt.title || actionLabel(prompt.action)),
+      node("small", null, "Review what this sim-to action will process"),
+    ]);
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.pendingSimAdvancePrompt = null;
+      render();
+    });
+    append(top, [title, close]);
+
+    const body = node("div", "box-score-modal-body sim-advance-prompt-body");
+    const warningList = node("div", "sim-advance-warning-list");
+    (prompt.warnings || []).forEach((warning) => warningList.append(node("span", "sim-advance-warning", warning)));
+    const checkpointList = node("ul", "sim-advance-checkpoints");
+    (prompt.checkpoints || []).forEach((checkpoint) => {
+      const item = document.createElement("li");
+      item.textContent = checkpoint;
+      checkpointList.append(item);
+    });
+    const actions = node("div", "sim-advance-actions");
+    const cancel = node("button", "control-button secondary", "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => {
+      state.pendingSimAdvancePrompt = null;
+      render();
+    });
+    const run = node("button", `control-button ${prompt.tone || "warn"}`.trim(), prompt.primaryLabel || "Continue");
+    run.type = "button";
+    run.disabled = state.runnerBusy || !runnerMode();
+    run.addEventListener("click", () => {
+      const nextAction = prompt.action;
+      const nextParams = {
+        ...(prompt.params || {}),
+        advance_preflight_confirmed: true,
+      };
+      state.pendingSimAdvancePrompt = null;
+      runAction(nextAction, nextParams);
+    });
+    append(actions, [cancel, run]);
+    append(body, [
+      node("p", null, prompt.detail || "This action will advance the save and process any required league events on the way."),
+      warningList.children.length ? warningList : null,
+      checkpointList.children.length ? checkpointList : null,
+      actions,
+    ]);
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.pendingSimAdvancePrompt = null;
+        render();
+      }
+    });
+    return overlay;
+  }
+
   function rosterGateCountsFromState() {
     const depth = data.depthChart || {};
     const rows = rosterRows(depth);
@@ -3102,6 +3518,10 @@
     if (injuryAlerts) root.append(injuryAlerts);
     const cutdownPrompt = rosterCutdownModal();
     if (cutdownPrompt) root.append(cutdownPrompt);
+    const simPrompt = simAdvancePromptModal();
+    if (simPrompt) root.append(simPrompt);
+    const cutdownMode = rosterCutdownModeModal();
+    if (cutdownMode) root.append(cutdownMode);
     refs.content.replaceChildren(root);
   }
 
@@ -4008,6 +4428,7 @@
     append(metrics, [
       metric("Expiring", String(counts.total || 0), `${contractYear} contract decisions`),
       metric("Priority", String(counts.priority || 0), "Core retain targets", counts.priority ? "warn" : ""),
+      metric("Tag Options", String(counts.tagCandidates || 0), "One franchise/transition tag"),
       metric("Cap Casualties", String(counts.capCasualties || 0), "Release candidates"),
       metric("Restructures", String(counts.restructures || 0), "Move cap forward"),
       metric("Projected Cap", money(cap.cap_space), `Top 51 ${cap.season || contractYear}`, Number(cap.cap_space || 0) < 0 ? "bad" : ""),
@@ -4034,14 +4455,14 @@
 
     const expiringPanel = panel("Expiring Players", `${(talks.expiring || []).length} shown`);
     const expiringBody = panelBody(expiringPanel);
-    expiringBody.append(table(["Player", "Pos", "Age", "Role", "Current", "Ask", "Years", "Priority", "Action"], (talks.expiring || []).map((player) => [
+    expiringBody.append(table(["Player", "Pos", "Age", "Role", "Current", "Ask", "Tag", "Priority", "Action"], (talks.expiring || []).map((player) => [
       playerLink(player.player_id, player.player_name, undefined, { team: talks.team, position: player.position }),
       player.position,
       whole(player.age),
       player.market_tier || "-",
       money(player.aav),
       money(player.asking_aav),
-      `${player.suggested_years || 1}`,
+      contractTagCell(player),
       player.priority || "-",
       contractExtendButton(player),
     ])));
@@ -4100,6 +4521,48 @@
       run.disabled = true;
       run.title = "Live actions are unavailable.";
       wrap.append(run);
+    }
+    return wrap;
+  }
+
+  function contractTagCell(player) {
+    const wrap = node("span", "action-cell");
+    const score = Number(player.market_score || 0);
+    const tagText = score >= 82 ? `F ${money(player.franchise_tag_aav)}` : score >= 76 ? `T ${money(player.transition_tag_aav)}` : "-";
+    wrap.append(node("span", "quiet", tagText));
+    if (runnerMode() && score >= 76) {
+      const type = score >= 82 ? "franchise" : "transition";
+      const run = node("button", "run-button", type === "franchise" ? "Franchise" : "Transition");
+      run.type = "button";
+      run.disabled = state.runnerBusy;
+      run.title = "A team can use only one franchise or transition tag per league year.";
+      run.addEventListener("click", () => runAction("contract_tag", {
+        player_id: player.player_id,
+        tag_type: type,
+      }));
+      wrap.append(run);
+      if (type === "franchise" && score >= 90) {
+        const exclusive = node("button", "run-button", "Exclusive");
+        exclusive.type = "button";
+        exclusive.disabled = state.runnerBusy;
+        exclusive.title = "Exclusive franchise tag: higher tender for no outside negotiation.";
+        exclusive.addEventListener("click", () => runAction("contract_tag", {
+          player_id: player.player_id,
+          tag_type: "exclusive",
+        }));
+        wrap.append(exclusive);
+      }
+      if (type === "franchise" && Number(player.transition_tag_aav || 0) > 0) {
+        const transition = node("button", "run-button", "Transition");
+        transition.type = "button";
+        transition.disabled = state.runnerBusy;
+        transition.title = "Lower one-year tender with right-of-first-refusal logic represented in the sim.";
+        transition.addEventListener("click", () => runAction("contract_tag", {
+          player_id: player.player_id,
+          tag_type: "transition",
+        }));
+        wrap.append(transition);
+      }
     }
     return wrap;
   }
@@ -5023,6 +5486,185 @@
     finishRender(root);
   }
 
+  function tradeAssetKey(asset) {
+    if (!asset) return "";
+    if (asset.type === "player") return `player:${asset.playerId}`;
+    if (asset.type === "pick") return `pick:${asset.pickId}`;
+    return "";
+  }
+
+  function allTradeAssets(side) {
+    const source = side === "user" ? data.tradeCenter?.userAssets : data.tradeCenter?.partnerAssets;
+    return [...(source?.players || []), ...(source?.picks || [])];
+  }
+
+  function tradeAssetByKey(side, key) {
+    return allTradeAssets(side).find((asset) => tradeAssetKey(asset) === key);
+  }
+
+  function selectedTradeAssets(side) {
+    const slots = side === "user" ? state.tradeUserSlots : state.tradePartnerSlots;
+    return slots.map((key) => tradeAssetByKey(side, key)).filter(Boolean);
+  }
+
+  function tradeValueTotal(assets) {
+    return assets.reduce((total, asset) => total + Number(asset.value || 0), 0);
+  }
+
+  function tradeSlotSelect(side, index) {
+    const slots = side === "user" ? state.tradeUserSlots : state.tradePartnerSlots;
+    const assets = allTradeAssets(side);
+    const taken = new Set(slots.filter(Boolean));
+    const select = node("select", "trade-slot-select");
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = `Slot ${index + 1}: Empty`;
+    select.append(empty);
+    assets.forEach((asset) => {
+      const key = tradeAssetKey(asset);
+      if (taken.has(key) && slots[index] !== key) return;
+      const option = document.createElement("option");
+      option.value = key;
+      option.textContent = `${asset.label || asset.name || "Asset"} | ${Number(asset.value || 0).toFixed(1)}`;
+      select.append(option);
+    });
+    select.value = slots[index] || "";
+    select.disabled = state.runnerBusy;
+    select.addEventListener("change", () => {
+      slots[index] = select.value;
+      if (side === "user") state.tradeUserSlots = [...slots];
+      else state.tradePartnerSlots = [...slots];
+      render();
+    });
+    return select;
+  }
+
+  function tradeAssetSummaryCard(asset) {
+    const item = node("div", "trade-asset-card");
+    if (!asset) {
+      item.append(node("span", "muted", "Empty slot"));
+      return item;
+    }
+    append(item, [
+      node("strong", null, asset.label || asset.name || "Asset"),
+      node("small", null, asset.type === "player"
+        ? `${asset.position || "-"} | ${asset.age || "-"} yrs | ${asset.potential || "-"} POT`
+        : `${asset.draftYear || ""} round ${asset.round || "-"}`),
+      tag(`${Number(asset.value || 0).toFixed(1)} value`, ""),
+    ]);
+    return item;
+  }
+
+  function tradeSidePanel(side, title, team) {
+    const p = panel(title, team?.abbr || "");
+    p.classList.add("trade-side-panel");
+    const body = panelBody(p);
+    const slots = side === "user" ? state.tradeUserSlots : state.tradePartnerSlots;
+    const slotGrid = node("div", "trade-slot-grid");
+    for (let index = 0; index < 5; index += 1) {
+      const slot = node("div", "trade-slot");
+      append(slot, [
+        tradeSlotSelect(side, index),
+        tradeAssetSummaryCard(tradeAssetByKey(side, slots[index])),
+      ]);
+      slotGrid.append(slot);
+    }
+    body.append(slotGrid);
+    return p;
+  }
+
+  function renderTradeCenter() {
+    setHeader("Trade Center", "Build player and pick packages, then test them against CPU GM logic.");
+    const root = document.createDocumentFragment();
+    const trade = data.tradeCenter || {};
+    if (runnerMode() && state.tradeLiveKey !== tradeLiveKey() && !state.tradeLoading) {
+      loadLiveTrades().then(render);
+    }
+    const userTeam = trade.userTeam || { abbr: data.activeSave?.user_team || "USER" };
+    const partnerTeam = trade.partnerTeam || {};
+    if (!state.tradePartnerTeam && partnerTeam.abbr) state.tradePartnerTeam = partnerTeam.abbr;
+
+    const toolbar = panel("Trade Setup", trade.generatedAt ? `Updated ${shortDateTime(trade.generatedAt)}` : "Live");
+    const toolbarBody = panelBody(toolbar);
+    const partnerSelect = node("select", "trade-team-select");
+    (trade.teams || []).filter((team) => team.abbr !== userTeam.abbr).forEach((team) => {
+      const option = document.createElement("option");
+      option.value = team.abbr;
+      option.textContent = `${team.abbr} | ${team.name}`;
+      partnerSelect.append(option);
+    });
+    partnerSelect.value = state.tradePartnerTeam || partnerTeam.abbr || "";
+    partnerSelect.disabled = state.runnerBusy || state.tradeLoading;
+    partnerSelect.addEventListener("change", () => {
+      state.tradePartnerTeam = partnerSelect.value;
+      state.tradeUserSlots = Array(5).fill("");
+      state.tradePartnerSlots = Array(5).fill("");
+      state.tradeLiveKey = null;
+      loadLiveTrades().then(render);
+    });
+    const userAssets = selectedTradeAssets("user");
+    const partnerAssets = selectedTradeAssets("partner");
+    const userValue = tradeValueTotal(userAssets);
+    const partnerValue = tradeValueTotal(partnerAssets);
+    const submit = controlButton({
+      label: "Submit Offer",
+      action: "trade_submit",
+      params: {
+        partner_team: state.tradePartnerTeam || partnerTeam.abbr,
+        user_assets: userAssets,
+        partner_assets: partnerAssets,
+      },
+      availability: !userAssets.length || !partnerAssets.length ? { disabledReason: "Add assets to both sides first." } : {},
+      tone: "good",
+    });
+    const cpuMarket = controlButton({
+      label: "Run CPU Market",
+      action: "trade_cpu_market",
+      params: { max_proposals_per_team: 1, ignore_window: true },
+      availability: {},
+      tone: "",
+    });
+    append(toolbarBody, [
+      append(node("div", "trade-toolbar"), [
+        append(node("label", "trade-team-field"), [node("span", null, "Partner"), partnerSelect]),
+        metric("Your Offer", userValue.toFixed(1), `${userAssets.length}/5 assets`, userValue >= partnerValue ? "good" : ""),
+        metric("CPU Sends", partnerValue.toFixed(1), `${partnerAssets.length}/5 assets`, partnerValue > userValue ? "warn" : ""),
+        metric("CPU Chart", partnerTeam.chart || "-", "Partner evaluates on this chart"),
+        submit,
+        cpuMarket,
+      ]),
+    ]);
+    root.append(toolbar);
+
+    const sides = node("div", "trade-builder-grid");
+    append(sides, [
+      tradeSidePanel("user", `${userTeam.abbr || "User"} Sends`, userTeam),
+      tradeSidePanel("partner", `${partnerTeam.abbr || "CPU"} Sends`, partnerTeam),
+    ]);
+    root.append(sides);
+
+    const intel = panel("GM Evaluation Notes", "Depth, need, QB caution");
+    panelBody(intel).append(node("p", "summary-text",
+      "The receiving CPU GM evaluates the package using its assigned trade chart, positional premiums, team needs, outgoing depth loss, and extra QB caution. Accepted user offers execute immediately; close offers can come back as counters."));
+    root.append(intel);
+
+    const recent = panel("Recent Trade Activity", `${(trade.recent || []).length} items`);
+    const list = node("div", "list compact-list");
+    (trade.recent || []).forEach((item) => {
+      list.append(row(
+        `#${item.proposalId} ${item.proposingTeam} -> ${item.receivingTeam}`,
+        `${item.proposalDate || ""} | ${item.proposerNote || item.responderNote || ""}`,
+        item.status || "-",
+        item.status === "executed" ? "good" : item.status === "rejected" ? "warn" : "",
+      ));
+    });
+    panelBody(recent).append(list.children.length ? list : node("div", "empty-state", "No trade proposals yet."));
+    root.append(recent);
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
+  }
+
   function renderRosterHub() {
     const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
     setHeader("View Roster", `${team} roster by position group, ratings, depth role, and player actions.`);
@@ -5195,6 +5837,7 @@
       queueList.append(draftQueueRow(pick, currentQueuePick));
     });
     panelBody(queuePanel).append(queueList.children.length ? queueList : node("div", "empty-state", "No draft room queue exported."));
+    const eventPanel = draftEventPanel(draft.events || []);
 
     const boardPanel = panel(
       "Draft Board",
@@ -5205,7 +5848,7 @@
     boardPanel.classList.add("draft-board-panel");
     panelBody(boardPanel).append(draftBoardToolbar(board, visibleDraftBoard, draftPositions, activeDraftPosition));
     panelBody(boardPanel).append(draftBoardTable(visibleDraftBoard, selected));
-    append(sideRail, [controlsPanel, queuePanel]);
+    append(sideRail, [controlsPanel, queuePanel, eventPanel]);
     append(draftMain, [boardPanel, sideRail]);
     root.append(draftMain);
     if ((draft.userSelections || []).length) {
@@ -5213,6 +5856,9 @@
     }
     if (state.draftProspectPopoverOpen && selected) {
       root.append(draftProspectPopover(selected));
+    }
+    if (state.draftTradeModal) {
+      root.append(draftTradeModal());
     }
     const output = runnerOutputPanel();
     if (output) root.append(output);
@@ -5253,6 +5899,25 @@
       wrap.append(node("div", "draft-room-topline-note warn", draft.orderWarning));
     }
     return wrap;
+  }
+
+  function draftEventPanel(events) {
+    const p = panel("Draft Feed", events.length ? `${events.length} recent` : "Quiet");
+    p.classList.add("draft-event-panel");
+    const body = panelBody(p);
+    const list = node("div", "list compact-list draft-event-list");
+    events.slice(0, 10).forEach((event) => {
+      const item = node("div", "row draft-event-row");
+      append(item, [
+        append(node("span"), [
+          node("strong", null, event.event_type === "user_draft_trade_rejected" ? "Trade rejected" : event.event_type === "user_draft_trade" ? "Trade accepted" : event.event_type || "Draft event"),
+          node("small", null, event.message || ""),
+        ]),
+      ]);
+      list.append(item);
+    });
+    body.append(list.children.length ? list : node("div", "empty-state", "Draft actions and trade talks will appear here."));
+    return p;
   }
 
   function draftWarRoomPanel(draft, visibleBoard, selected) {
@@ -5346,8 +6011,213 @@
       detail.textContent = pick.is_used ? "Selection recorded" : "Upcoming pick";
     }
     append(left, [teamLine, detail]);
-    append(item, [left, tag(pick.is_used ? "Used" : "On Deck", pick.is_used ? "good" : "")]);
+    const right = node("div", "draft-queue-actions");
+    right.append(tag(pick.is_used ? "Used" : "On Deck", pick.is_used ? "good" : ""));
+    if (canUserTradeForDraftPick(pick, currentQueuePick)) {
+      const trade = node("button", "mini-action-button", state.runnerBusy ? "Running" : "Trade");
+      trade.type = "button";
+      trade.disabled = state.runnerBusy || !runnerMode();
+      trade.title = `Offer user-owned picks to acquire pick ${overallPick}.`;
+      trade.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openDraftTradeModal(pick);
+      });
+      right.append(trade);
+    }
+    append(item, [left, right]);
     return item;
+  }
+
+  function canUserTradeForDraftPick(pick, currentQueuePick) {
+    if (!pick?.pick_id || Number(pick.is_used || 0)) return false;
+    const draftState = data.draft?.state;
+    if (!draftState) return false;
+    const userTeam = String(draftState.user_team || data.activeSave?.user_team || "").toUpperCase();
+    const owner = String(pick.current_team || "").toUpperCase();
+    if (!userTeam || !owner || owner === userTeam) return false;
+    const pickNumber = Number(pick.effective_pick_number || pick.pick_number || 0);
+    const currentNumber = Number(currentQueuePick || draftState.current_pick_number || 0);
+    if (!pickNumber || !currentNumber || pickNumber < currentNumber) return false;
+    return pickNumber <= currentNumber + 48;
+  }
+
+  function openDraftTradeModal(pick) {
+    const offerPickIds = defaultDraftTradeOfferPickIds(pick);
+    state.draftTradeModal = {
+      targetPickId: Number(pick?.pick_id || 0),
+      targetPick: { ...(pick || {}) },
+      offerPickIds,
+      addPickId: "",
+      status: "draft",
+      message: "Build a pick package and submit it to the GM on the clock.",
+    };
+    render();
+  }
+
+  function draftTradeAssets() {
+    return (data.draft?.userTradeAssets || [])
+      .filter((asset) => asset?.pickId && !Number(asset.isUsed || 0))
+      .sort((a, b) => {
+        const ay = Number(a.draftYear || 9999);
+        const by = Number(b.draftYear || 9999);
+        if (ay !== by) return ay - by;
+        const ar = Number(a.round || 99);
+        const br = Number(b.round || 99);
+        if (ar !== br) return ar - br;
+        return Number(a.effectivePickNumber || a.pickNumber || a.pickId || 9999) - Number(b.effectivePickNumber || b.pickNumber || b.pickId || 9999);
+      });
+  }
+
+  function defaultDraftTradeOfferPickIds(targetPick) {
+    const assets = draftTradeAssetsForTarget(targetPick);
+    if (!assets.length) return [];
+    const targetNumber = Number(targetPick?.effective_pick_number || targetPick?.pick_number || 9999);
+    const targetRound = Number(targetPick?.round || 7);
+    let maxPicks = targetRound <= 1 ? 4 : targetRound <= 2 ? 3 : 2;
+    if (targetNumber <= 8) maxPicks = 4;
+    return assets.slice(0, maxPicks).map((asset) => Number(asset.pickId)).filter(Boolean);
+  }
+
+  function draftTradeAssetsForTarget(targetPick) {
+    const targetNumber = Number(targetPick?.effective_pick_number || targetPick?.pick_number || 0);
+    const draftYear = Number(targetPick?.draft_year || data.draft?.year || 0);
+    return draftTradeAssets().filter((asset) => {
+      if (!targetNumber || Number(asset.draftYear || 0) !== draftYear) return true;
+      return Number(asset.effectivePickNumber || asset.pickNumber || 0) > targetNumber;
+    });
+  }
+
+  function draftTradeAssetLabel(asset) {
+    if (!asset) return "Draft pick";
+    if (asset.label) return asset.label;
+    const year = asset.draftYear || data.draft?.year || "";
+    const round = asset.round || "-";
+    const pickNumber = asset.effectivePickNumber || asset.pickNumber;
+    const original = asset.originalTeam && asset.originalTeam !== asset.currentTeam ? ` from ${asset.originalTeam}` : "";
+    return pickNumber ? `${year} #${pickNumber} (R${round})${original}` : `${year} Round ${round}${original}`;
+  }
+
+  function draftTradeTargetLabel(pick) {
+    if (!pick) return "Target pick";
+    const pickNumber = pick.effective_pick_number || pick.pick_number;
+    const round = pick.round || "-";
+    const team = pick.current_team || pick.team || "-";
+    const teamName = pick.current_team_name || "Team on clock";
+    return `${pickNumber ? `Pick #${pickNumber}` : "Pick"} · R${round} · ${team} ${teamName}`;
+  }
+
+  function draftTradeModal() {
+    const modal = state.draftTradeModal || {};
+    const draft = data.draft || {};
+    const targetPick = (draft.pickQueue || []).find((pick) => Number(pick.pick_id) === Number(modal.targetPickId)) || modal.targetPick || null;
+    const selectedIds = [...new Set((modal.offerPickIds || []).map(Number).filter(Boolean))]
+      .slice(0, DRAFT_TRADE_MAX_OFFER_PICKS);
+    modal.offerPickIds = selectedIds;
+    const selectedIdSet = new Set(selectedIds.map(String));
+    const assets = draftTradeAssetsForTarget(targetPick);
+    const selectedAssets = selectedIds
+      .map((id) => assets.find((asset) => Number(asset.pickId) === Number(id)))
+      .filter(Boolean);
+    const availableAssets = assets.filter((asset) => !selectedIdSet.has(String(asset.pickId)));
+    const select = node("select", "draft-trade-select");
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    const atOfferLimit = selectedIds.length >= DRAFT_TRADE_MAX_OFFER_PICKS;
+    placeholder.textContent = atOfferLimit
+      ? `Maximum ${DRAFT_TRADE_MAX_OFFER_PICKS} picks`
+      : availableAssets.length ? "Add another pick..." : "No more user picks available";
+    select.append(placeholder);
+    availableAssets.forEach((asset) => {
+      const option = document.createElement("option");
+      option.value = String(asset.pickId);
+      option.textContent = draftTradeAssetLabel(asset);
+      select.append(option);
+    });
+    select.value = modal.addPickId || "";
+    select.disabled = atOfferLimit || !availableAssets.length || state.runnerBusy;
+    select.addEventListener("change", () => {
+      state.draftTradeModal.addPickId = select.value;
+    });
+
+    const addButton = node("button", "control-button secondary", "Add Pick");
+    addButton.type = "button";
+    addButton.disabled = state.runnerBusy || atOfferLimit || !availableAssets.length;
+    addButton.addEventListener("click", () => {
+      const pickId = Number(state.draftTradeModal?.addPickId || select.value || availableAssets[0]?.pickId || 0);
+      if (!pickId) return;
+      if (selectedIds.length >= DRAFT_TRADE_MAX_OFFER_PICKS) return;
+      state.draftTradeModal.offerPickIds = [...selectedIds, pickId].slice(0, DRAFT_TRADE_MAX_OFFER_PICKS);
+      state.draftTradeModal.addPickId = "";
+      render();
+    });
+
+    const chips = node("div", "draft-trade-chip-list");
+    selectedAssets.forEach((asset) => {
+      const chip = node("button", "draft-trade-chip", draftTradeAssetLabel(asset));
+      chip.type = "button";
+      chip.disabled = state.runnerBusy;
+      chip.title = "Remove this pick from the offer";
+      chip.addEventListener("click", () => {
+        state.draftTradeModal.offerPickIds = selectedIds.filter((id) => Number(id) !== Number(asset.pickId));
+        render();
+      });
+      chips.append(chip);
+    });
+    if (!selectedAssets.length) {
+      chips.append(node("div", "empty-state compact-empty", "Add at least one pick to make an offer."));
+    }
+
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.disabled = state.runnerBusy;
+    close.addEventListener("click", () => {
+      state.draftTradeModal = null;
+      render();
+    });
+    const submit = node("button", "control-button primary", state.runnerBusy ? "Sending" : "Submit Offer");
+    submit.type = "button";
+    submit.disabled = state.runnerBusy || !runnerMode() || !targetPick?.pick_id || !selectedIds.length || selectedIds.length > DRAFT_TRADE_MAX_OFFER_PICKS;
+    submit.addEventListener("click", () => {
+      runAction("draft_user_trade", {
+        target_pick_id: Number(targetPick.pick_id),
+        offer_pick_ids: selectedIds,
+      });
+    });
+
+    const overlay = node("div", "box-score-modal-overlay draft-trade-modal-overlay");
+    const dialog = node("section", "box-score-modal draft-trade-modal");
+    append(dialog, [
+      append(node("div", "box-score-modal-header draft-trade-modal-header"), [
+        append(node("div"), [
+          node("span", `tag ${modal.status === "rejected" ? "warn" : ""}`.trim(), modal.status === "rejected" ? "Rejected" : "Draft Trade"),
+          node("h3", null, targetPick ? draftTradeTargetLabel(targetPick) : "Draft Pick Trade"),
+          node("small", "muted", "The receiving GM evaluates this against their assigned trade value chart."),
+        ]),
+        close,
+      ]),
+      append(node("div", "draft-trade-status"), [
+        node("strong", null, modal.status === "rejected" ? "The offer was declined." : "Build your package."),
+        node("small", null, modal.message || ""),
+        node("small", "muted", `Offer packages are capped at ${DRAFT_TRADE_MAX_OFFER_PICKS} picks so trade talks stay realistic.`),
+      ]),
+      append(node("div", "draft-trade-package"), [
+        node("h4", null, "Your Offer"),
+        chips,
+        append(node("div", "draft-trade-add-row"), [select, addButton]),
+      ]),
+      append(node("div", "draft-trade-footer"), [
+        node("small", "muted", `Future picks are eligible, but offers are capped at ${DRAFT_TRADE_MAX_OFFER_PICKS} total picks. Some premium picks simply may not be realistically available.`),
+        submit,
+      ]),
+    ]);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay && !state.runnerBusy) {
+        state.draftTradeModal = null;
+        render();
+      }
+    });
+    overlay.append(dialog);
+    return overlay;
   }
 
   function draftSelectionNameLink(playerId, prospectId, name, position, preferPlayer, team) {
@@ -7969,6 +8839,7 @@
       "calendar-day",
       day.isCurrentMonth ? "" : "outside-month",
       day.isToday ? "today" : "",
+      day.isFocusDate ? "focus-date" : "",
       state.calendarLiveFocus && day.date === calendarLiveFocusDate() ? "sim-focus" : "",
       (day.events || []).length || (day.games || []).length || (day.news || []).length ? "has-items" : "",
     ].filter(Boolean).join(" ");
@@ -8007,13 +8878,53 @@
   }
 
   function calendarEventChip(event) {
-    const button = node("button", "calendar-chip event", event.event_name || "League Event");
+    const matchup = event.matchup || null;
+    const isPreseason = String(event.event_code || "").includes("PRESEASON");
+    const button = node("button", `calendar-chip event ${matchup ? "with-logos" : ""}`.trim());
     button.type = "button";
     button.title = event.notes || event.phase_name || event.event_category || "";
+    if (matchup && isPreseason) {
+      append(button, [
+        teamLogo(matchup.awayLogo, matchup.away_team, "calendar-logo"),
+        append(node("span", "calendar-chip-stack"), [
+          node("strong", null, event.event_name || "Preseason"),
+          node("small", null, matchup.scoreLabel || `${matchup.away_team || "-"} @ ${matchup.home_team || "-"}`),
+        ]),
+        teamLogo(matchup.homeLogo, matchup.home_team, "calendar-logo"),
+      ]);
+    } else {
+      button.append(event.event_name || "League Event");
+    }
     button.addEventListener("click", () => {
       state.selectedCalendarItem = { type: "event", id: event.event_id };
       render();
     });
+    return button;
+  }
+
+  function calendarMilestoneButton(event) {
+    const matchup = event.matchup || null;
+    const isPreseason = String(event.event_code || "").includes("PRESEASON");
+    const button = node(
+      "button",
+      `control-button calendar-milestone-button ${isPreseason || String(event.event_code || "").includes("CAMP") ? "good" : ""} ${matchup ? "with-logos" : ""}`.trim(),
+    );
+    button.type = "button";
+    button.disabled = state.runnerBusy || !runnerMode();
+    button.title = runnerMode() ? actionLabel("advance_to_date") : "Live actions are unavailable";
+    if (matchup && isPreseason) {
+      append(button, [
+        teamLogo(matchup.awayLogo, matchup.away_team, "calendar-logo"),
+        append(node("span", "calendar-chip-stack"), [
+          node("strong", null, `${shortDate(event.event_start_date)} ${event.event_name || "Preseason"}`),
+          node("small", null, matchup.scoreLabel || `${matchup.away_team || "-"} @ ${matchup.home_team || "-"}`),
+        ]),
+        teamLogo(matchup.homeLogo, matchup.home_team, "calendar-logo"),
+      ]);
+    } else {
+      button.textContent = `${shortDate(event.event_start_date)} ${event.event_name || "Calendar Event"}`;
+    }
+    button.addEventListener("click", () => runAction("advance_to_date", { date: event.event_start_date }));
     return button;
   }
 
@@ -8034,13 +8945,15 @@
 
   function calendarGameChip(game) {
     const played = Number(game.played || 0) === 1;
+    const gameType = String(game.game_type || "").toUpperCase();
+    const prefix = gameType === "PRE" ? "PRE " : gameType === "POST" ? "POST " : "";
     const button = node("button", `calendar-chip game ${played ? "final" : ""}`.trim());
     button.type = "button";
     append(button, [
       teamLogo(game.awayLogo, game.away_team, "calendar-logo"),
       node("span", null, played
-        ? `${game.away_team} ${game.away_score ?? "-"} - ${game.home_team} ${game.home_score ?? "-"}`
-        : `${game.away_team} @ ${game.home_team}`),
+        ? `${prefix}${game.away_team} ${game.away_score ?? "-"} - ${game.home_team} ${game.home_score ?? "-"}`
+        : `${prefix}${game.away_team} @ ${game.home_team}`),
       teamLogo(game.homeLogo, game.home_team, "calendar-logo"),
     ]);
     button.addEventListener("click", () => {
@@ -8143,7 +9056,7 @@
       ? node("div", "empty-state", "Loading stored box score...")
       : selectedGameBoxScore(item.game_id);
     return append(node("div", "calendar-detail"), [
-      node("span", "tag", played ? "Final" : "Scheduled"),
+      node("span", "tag", `${String(item.game_type || "REG").toUpperCase()} ${played ? "Final" : "Scheduled"}`),
       node("strong", null, played
         ? `${item.away_team} ${item.away_score ?? "-"} at ${item.home_team} ${item.home_score ?? "-"}`
         : `${item.away_team} at ${item.home_team}`),
@@ -8315,6 +9228,7 @@
     else if (state.view === "depth") renderDepthChart();
     else if (state.view === "contracts") renderContracts();
     else if (state.view === "freeAgency") renderFreeAgency();
+    else if (state.view === "trades") renderTradeCenter();
     else if (state.view === "draft") renderDraft();
     else if (state.view === "aiGm") renderAiGm();
     else if (state.view === "calendar") renderCalendar();

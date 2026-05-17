@@ -13,12 +13,15 @@ import argparse
 import random
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+import sys
 
 import free_agency_processor
+import injury_notifications
+import league_schedule
 import league_news
 import player_personalities
 import scouting
@@ -27,6 +30,10 @@ import scouting
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 SOURCE = "preseason_processor"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from engine import match_engine  # noqa: E402
 
 
 POS_ORDER = {
@@ -103,6 +110,8 @@ class PreseasonResult:
     event_type: str
     inserted_events: int = 0
     snap_rows: int = 0
+    games_scheduled: int = 0
+    games_simmed: int = 0
     inbox_messages: int = 0
     league_news_items: int = 0
     fa_offers: int = 0
@@ -127,6 +136,8 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
+    league_schedule.ensure_schema(con)
+    match_engine.ensure_schema(con)
     player_personalities.ensure_schema(con)
     scouting.ensure_schema(con)
     league_news.ensure_schema(con)
@@ -187,6 +198,161 @@ def active_user_team_id(con: sqlite3.Connection) -> int | None:
 
 def team_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
     return con.execute("SELECT team_id, abbreviation FROM teams ORDER BY abbreviation").fetchall()
+
+
+def regular_opponent_pairs(con: sqlite3.Connection, season: int) -> set[frozenset[int]]:
+    rows = con.execute(
+        """
+        SELECT away_team_id, home_team_id
+        FROM season_games
+        WHERE season = ? AND game_type = 'REG'
+        """,
+        (season,),
+    ).fetchall()
+    return {frozenset((int(row["away_team_id"]), int(row["home_team_id"]))) for row in rows}
+
+
+def choose_preseason_pairing(
+    rng: random.Random,
+    team_ids: list[int],
+    *,
+    regular_pairs: set[frozenset[int]],
+    used_pairs: set[frozenset[int]],
+) -> list[tuple[int, int]]:
+    best_pairs: list[tuple[int, int]] = []
+    best_penalty: int | None = None
+    for _attempt in range(1400):
+        remaining = team_ids[:]
+        rng.shuffle(remaining)
+        pairs: list[tuple[int, int]] = []
+        penalty = 0
+        while remaining:
+            team_id = remaining.pop()
+            scored: list[tuple[int, float, int]] = []
+            for candidate in remaining:
+                pair_key = frozenset((team_id, candidate))
+                score = 0
+                if pair_key in regular_pairs:
+                    score += 100
+                if pair_key in used_pairs:
+                    score += 25
+                scored.append((score, rng.random(), candidate))
+            score, _tie, opponent_id = min(scored)
+            remaining.remove(opponent_id)
+            penalty += score
+            pairs.append((team_id, opponent_id))
+        if best_penalty is None or penalty < best_penalty:
+            best_penalty = penalty
+            best_pairs = pairs
+            if penalty == 0:
+                break
+    return best_pairs
+
+
+def ensure_preseason_schedule(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    event_date: str,
+    event_week: int,
+    seed: str | int | None = None,
+) -> int:
+    ensure_schema(con)
+    existing = con.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+        FROM season_games
+        WHERE season = ? AND game_type = 'PRE'
+        """,
+        (season,),
+    ).fetchone()
+    total_existing = int(existing["total"] or 0) if existing else 0
+    played_existing = int(existing["played"] or 0) if existing else 0
+    if total_existing >= 48:
+        return 0
+    if total_existing and played_existing == 0:
+        con.execute("DELETE FROM season_games WHERE season = ? AND game_type = 'PRE'", (season,))
+        con.execute("DELETE FROM season_weeks WHERE season = ? AND week_type = 'PRE'", (season,))
+    elif total_existing:
+        return 0
+
+    teams = [int(row["team_id"]) for row in team_rows(con)]
+    if len(teams) != 32:
+        raise ValueError(f"Preseason schedule requires 32 teams, found {len(teams)}.")
+    regular_pairs = regular_opponent_pairs(con, season)
+    rng = random.Random(str(seed or f"{season}:preseason-schedule"))
+    base_date = datetime.strptime(str(event_date)[:10], "%Y-%m-%d").date() - timedelta(days=7 * (event_week - 1))
+    used_pairs: set[frozenset[int]] = set()
+    home_counts = {team_id: 0 for team_id in teams}
+    inserted = 0
+
+    for week in range(1, 4):
+        week_start = base_date + timedelta(days=7 * (week - 1))
+        con.execute(
+            """
+            INSERT INTO season_weeks (
+                season, week, week_type, week_start_date, primary_game_date, status, notes
+            )
+            VALUES (?, ?, 'PRE', ?, ?, 'projected', ?)
+            ON CONFLICT(season, week, week_type) DO UPDATE SET
+                week_start_date = excluded.week_start_date,
+                primary_game_date = excluded.primary_game_date,
+                notes = excluded.notes,
+                updated_at = datetime('now')
+            """,
+            (
+                season,
+                week,
+                week_start.isoformat(),
+                week_start.isoformat(),
+                "Generated preseason schedule; matchups avoid regular-season opponents when possible.",
+            ),
+        )
+        pairs = choose_preseason_pairing(rng, teams, regular_pairs=regular_pairs, used_pairs=used_pairs)
+        for number, (team_a, team_b) in enumerate(pairs, start=1):
+            pair_key = frozenset((team_a, team_b))
+            used_pairs.add(pair_key)
+            if home_counts[team_a] < home_counts[team_b]:
+                home_team_id, away_team_id = team_a, team_b
+            elif home_counts[team_b] < home_counts[team_a]:
+                home_team_id, away_team_id = team_b, team_a
+            elif rng.random() < 0.5:
+                home_team_id, away_team_id = team_a, team_b
+            else:
+                home_team_id, away_team_id = team_b, team_a
+            home_counts[home_team_id] += 1
+            game_day = week_start + timedelta(days=(number - 1) // 4)
+            game_time = ("8:00 PM", "7:00 PM", "4:00 PM", "1:00 PM")[(number - 1) % 4]
+            before = con.total_changes
+            con.execute(
+                """
+                INSERT OR IGNORE INTO season_games (
+                    season, week, game_type, week_game_number,
+                    away_team_id, home_team_id, game_date, game_time_et,
+                    schedule_status, matchup_bucket, notes
+                )
+                VALUES (?, ?, 'PRE', ?, ?, ?, ?, ?, 'preseason_generated', 'PRESEASON', ?)
+                """,
+                (
+                    season,
+                    week,
+                    number,
+                    away_team_id,
+                    home_team_id,
+                    game_day.isoformat(),
+                    game_time,
+                    (
+                        "Generated preseason matchup. Avoids a regular-season opponent."
+                        if pair_key not in regular_pairs
+                        else "Generated preseason matchup; regular-season opponent fallback was required."
+                    ),
+                ),
+            )
+            if con.total_changes > before:
+                inserted += 1
+    return inserted
 
 
 def team_roster(con: sqlite3.Connection, team_id: int) -> list[sqlite3.Row]:
@@ -608,6 +774,54 @@ def distribute_preseason_snaps(
     return rows
 
 
+def simulate_preseason_schedule_week(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    preseason_week: int,
+    seed: str | int | None = None,
+) -> int:
+    rows = con.execute(
+        """
+        SELECT *
+        FROM season_games
+        WHERE season = ?
+          AND game_type = 'PRE'
+          AND week = ?
+          AND played = 0
+        ORDER BY game_date, COALESCE(game_time_et, '99:99'), week_game_number, game_id
+        """,
+        (season, preseason_week),
+    ).fetchall()
+    if not rows:
+        return 0
+    injury_marker = injury_notifications.max_event_id(con)
+    saved = 0
+    rng = random.Random(str(seed or f"{season}:preseason:{preseason_week}:games"))
+    for row in rows:
+        game_seed = rng.randint(1, 2_000_000_000)
+        result = match_engine.simulate_game(
+            con,
+            away_team_id=int(row["away_team_id"]),
+            home_team_id=int(row["home_team_id"]),
+            season=int(row["season"]),
+            week=int(row["week"]),
+            schedule_game_id=int(row["game_id"]),
+            seed=game_seed,
+        )
+        match_engine.persist_result(
+            con,
+            result,
+            update_schedule=True,
+            force=False,
+            notes=f"Preseason Week {preseason_week}. Does not count toward regular-season standings or leaders.",
+            rebuild_history=False,
+        )
+        saved += 1
+    injury_notifications.create_injury_notifications(con, min_event_id=injury_marker)
+    return saved
+
+
 def process_preseason_week(
     con: sqlite3.Connection,
     *,
@@ -618,8 +832,26 @@ def process_preseason_week(
     seed: str | int | None = None,
     emit_messages: bool = True,
     process_market: bool = True,
+    simulate_games: bool = False,
 ) -> PreseasonResult:
     rng = random.Random(str(seed or f"{game_id}:{season}:{event_date}:preseason:{preseason_week}"))
+    games_scheduled = ensure_preseason_schedule(
+        con,
+        season=season,
+        event_date=event_date,
+        event_week=preseason_week,
+        seed=f"{game_id}:{season}:preseason-schedule",
+    )
+    games_simmed = (
+        simulate_preseason_schedule_week(
+            con,
+            season=season,
+            preseason_week=preseason_week,
+            seed=f"{game_id}:{season}:preseason-games:{preseason_week}",
+        )
+        if simulate_games
+        else 0
+    )
     snap_rows = 0
     inbox = 0
     news = 0
@@ -725,6 +957,8 @@ def process_preseason_week(
     return PreseasonResult(
         event_type=f"preseason_week_{preseason_week}",
         snap_rows=snap_rows,
+        games_scheduled=games_scheduled,
+        games_simmed=games_simmed,
         inbox_messages=inbox,
         league_news_items=news,
         fa_offers=int(fa.get("cpu_offers", 0)),
@@ -738,6 +972,8 @@ def result_summary(result: PreseasonResult) -> str:
     pieces = [
         f"{result.event_type}: camp events={result.inserted_events}",
         f"snap rows={result.snap_rows}",
+        f"games scheduled={result.games_scheduled}",
+        f"games simmed={result.games_simmed}",
         f"inbox={result.inbox_messages}",
         f"news={result.league_news_items}",
         (
@@ -759,6 +995,7 @@ def run_for_event(
     seed: str | int | None = None,
     emit_messages: bool = True,
     process_market: bool = True,
+    simulate_games: bool = False,
 ) -> PreseasonResult | None:
     if event_code == "VETERAN_TRAINING_CAMP_REPORTING":
         return process_training_camp(
@@ -784,6 +1021,7 @@ def run_for_event(
             seed=seed,
             emit_messages=emit_messages,
             process_market=process_market,
+            simulate_games=simulate_games,
         )
     return None
 
@@ -803,6 +1041,7 @@ def action_event(args: argparse.Namespace) -> None:
                 seed=args.seed,
                 emit_messages=args.apply,
                 process_market=args.apply,
+                simulate_games=bool(args.simulate_games),
             )
             if args.apply:
                 con.commit()
@@ -831,6 +1070,11 @@ def build_parser() -> argparse.ArgumentParser:
     event.add_argument("--event-date", default=datetime.now().date().isoformat())
     event.add_argument("--seed")
     event.add_argument("--apply", action="store_true")
+    event.add_argument(
+        "--simulate-games",
+        action="store_true",
+        help="Also play scheduled preseason games for this event. Normal calendar events leave games for the sim buttons.",
+    )
     event.set_defaults(func=action_event)
 
     return parser

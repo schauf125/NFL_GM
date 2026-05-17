@@ -64,6 +64,19 @@ AI_GM_EVENT_PHASES = {
     "TRADE_DEADLINE": "trade_market",
 }
 
+AI_GM_EVENT_REVIEW_LIMITS = {
+    "FREE_AGENCY_NEGOTIATION_WINDOW": 64,
+    "NEXT_NFL_LEAGUE_YEAR_START": 64,
+    "FINAL_ROSTER_CUTDOWN_53": 48,
+    "PRACTICE_SQUADS_ESTABLISHED": 40,
+    "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN": 40,
+    "REGULAR_SEASON_KICKOFF": 40,
+    "TRADE_DEADLINE": 40,
+    "SCOUTING_COMBINE": 24,
+    "DRAFT_FACILITY_VISIT_DEADLINE": 24,
+    "NFL_DRAFT": 24,
+}
+
 EVENT_SETTING_ACTIONS = {
     "SIM_YEAR_START": {
         "roster_limits_enforced": "0",
@@ -462,10 +475,13 @@ def apply_event_settings(con: sqlite3.Connection, event: sqlite3.Row) -> list[st
 
 
 def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sqlite3.Row) -> str | None:
-    phase = AI_GM_EVENT_PHASES.get(str(event["event_code"]))
+    event_code = str(event["event_code"])
+    phase = AI_GM_EVENT_PHASES.get(event_code)
     if not phase:
         return None
     apply_mode = phase in {"free_agency", "weekly_roster", "roster_cutdown"}
+    limit = AI_GM_EVENT_REVIEW_LIMITS.get(event_code, 24)
+    max_free_agents = 16 if phase == "free_agency" else 10
     try:
         result = ai_gm.run_daily_autonomy(
             con,
@@ -474,13 +490,13 @@ def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sql
             all_teams=True,
             phase=phase,
             include_low=False,
-            limit=128,
+            limit=limit,
             persist=True,
             apply_mode=apply_mode,
             include_user_team=False,
             mode_override=None,
-            max_players=18,
-            max_free_agents=18,
+            max_players=10,
+            max_free_agents=max_free_agents,
             current_date=str(event["event_start_date"]),
         )
     except Exception as exc:
@@ -565,7 +581,13 @@ def run_ai_gm_injury_reactions(
     return status, applied, planned, skipped
 
 
-def process_calendar_events(con: sqlite3.Connection, game_id: str, target_date: str) -> tuple[int, int]:
+def process_calendar_events(
+    con: sqlite3.Connection,
+    game_id: str,
+    target_date: str,
+    *,
+    process_ai_gm: bool = True,
+) -> tuple[int, int]:
     events = events_on_date(con, target_date)
     processed = 0
     alerts = 0
@@ -606,9 +628,10 @@ def process_calendar_events(con: sqlite3.Connection, game_id: str, target_date: 
         )
         if preseason_result is not None:
             details = f"{details} {preseason_processor.result_summary(preseason_result)}".strip()
-        ai_gm_note = run_ai_gm_event_reviews(con, game_id=game_id, event=event)
-        if ai_gm_note:
-            details = f"{details} {ai_gm_note}".strip()
+        if process_ai_gm:
+            ai_gm_note = run_ai_gm_event_reviews(con, game_id=game_id, event=event)
+            if ai_gm_note:
+                details = f"{details} {ai_gm_note}".strip()
         if applied:
             details = f"{details} Settings updated: {', '.join(applied)}".strip()
         action = "settings_updated" if applied else "logged"
@@ -890,6 +913,7 @@ def process_event_range(
     to_date: str,
     include_start: bool = False,
     force: bool = False,
+    process_ai_gm: bool = True,
 ) -> EventRangeResult:
     ensure_schema(con)
     start = parse_date(from_date)
@@ -920,7 +944,7 @@ def process_event_range(
     alerts_created = 0
     for target_date in dates:
         event_count += len(events_on_date(con, target_date))
-        processed, alerts = process_calendar_events(con, game_id, target_date)
+        processed, alerts = process_calendar_events(con, game_id, target_date, process_ai_gm=process_ai_gm)
         processed_event_count += processed
         alerts_created += alerts
 

@@ -85,6 +85,36 @@ MAX_AAV = {
     "ST": 3_500_000,
 }
 
+FRANCHISE_TAG_AAV = {
+    "QB": 43_000_000,
+    "RB": 13_000_000,
+    "WR": 24_000_000,
+    "TE": 14_500_000,
+    "OT": 23_500_000,
+    "IOL": 21_000_000,
+    "EDGE": 26_000_000,
+    "IDL": 24_000_000,
+    "LB": 22_000_000,
+    "CB": 21_000_000,
+    "S": 18_000_000,
+    "ST": 6_000_000,
+}
+
+TRANSITION_TAG_AAV = {
+    "QB": 37_500_000,
+    "RB": 11_000_000,
+    "WR": 21_000_000,
+    "TE": 12_500_000,
+    "OT": 20_500_000,
+    "IOL": 18_000_000,
+    "EDGE": 22_500_000,
+    "IDL": 20_500_000,
+    "LB": 18_500_000,
+    "CB": 18_000_000,
+    "S": 15_000_000,
+    "ST": 5_000_000,
+}
+
 MIN_AAV = {
     "QB": 1_500_000,
     "RB": 1_000_000,
@@ -427,6 +457,8 @@ def expiring_players(con: sqlite3.Connection, team: str | int, season: int) -> l
                 "asking_aav": estimate.asking_aav,
                 "minimum_aav": estimate.minimum_aav,
                 "guarantee_pct": estimate.guarantee_pct,
+                "franchise_tag_aav": tag_tender_aav(position_group(row["position"]), int(row["aav"] or 0), "franchise"),
+                "transition_tag_aav": tag_tender_aav(position_group(row["position"]), int(row["aav"] or 0), "transition"),
                 "extension_start_year": season + 1,
                 "extension_end_year": season + estimate.suggested_years,
             }
@@ -804,6 +836,216 @@ def existing_future_contract(con: sqlite3.Connection, player_id: int, season: in
     ).fetchone()
 
 
+def tag_label(tag_type: str) -> str:
+    value = str(tag_type or "").strip().lower().replace("_", "-")
+    if value in {"transition", "transition-tag"}:
+        return "Transition Tag"
+    if value in {"exclusive", "exclusive-franchise", "exclusive-franchise-tag"}:
+        return "Exclusive Franchise Tag"
+    if value in {"franchise", "non-exclusive", "non-exclusive-franchise", "franchise-tag"}:
+        return "Franchise Tag"
+    raise ValueError("Tag type must be franchise, exclusive, or transition.")
+
+
+def tag_tender_aav(group: str, current_aav: int, tag_type: str) -> int:
+    label = tag_label(tag_type)
+    table = TRANSITION_TAG_AAV if label == "Transition Tag" else FRANCHISE_TAG_AAV
+    tender = table.get(group, table.get("ST", 5_000_000))
+    if label == "Exclusive Franchise Tag":
+        tender = int(tender * 1.08)
+    # NFL tender rule: the tag is the greater of the positional tender or 120% of
+    # the player's prior-year salary. This uses AAV as the practical sim salary.
+    return rounded_money(max(tender, int(current_aav * 1.20)))
+
+
+def existing_team_tag(con: sqlite3.Connection, team_id: int, contract_year: int) -> sqlite3.Row | None:
+    return con.execute(
+        """
+        SELECT c.*, p.first_name || ' ' || p.last_name AS player_name
+        FROM contracts c
+        JOIN players p ON p.player_id = c.player_id
+        WHERE c.team_id = ?
+          AND c.start_year = ?
+          AND c.is_active = 1
+          AND c.contract_type IN ('FranchiseTag', 'ExclusiveFranchiseTag', 'TransitionTag')
+        ORDER BY c.contract_id
+        LIMIT 1
+        """,
+        (team_id, contract_year),
+    ).fetchone()
+
+
+def tag_eligible_players(con: sqlite3.Connection, team: str | int, season: int) -> list[dict[str, Any]]:
+    players = expiring_players(con, team, season)
+    for item in players:
+        group = str(item.get("position_group") or position_group(item.get("position")))
+        current_aav = int(item.get("aav") or 0)
+        franchise = tag_tender_aav(group, current_aav, "franchise")
+        transition = tag_tender_aav(group, current_aav, "transition")
+        score = float(item.get("market_score") or 60)
+        item["franchise_tag_aav"] = franchise
+        item["transition_tag_aav"] = transition
+        item["tag_eligible"] = True
+        item["tag_recommendation"] = (
+            "Franchise tag candidate"
+            if score >= 84 or (group in {"QB", "OT", "EDGE", "WR", "CB"} and score >= 80)
+            else "Transition tag candidate"
+            if score >= 76 and group not in {"RB", "ST"}
+            else "Tag only if negotiations stall"
+        )
+    return players
+
+
+def apply_tag(
+    con: sqlite3.Connection,
+    *,
+    team: str | int,
+    season: int,
+    player_id: int,
+    tag_type: str,
+    apply: bool,
+    force: bool = False,
+    quiet: bool = False,
+    rebuild_all_contracts: bool = False,
+    sync_cap: bool = True,
+    write_cap_snapshot: bool = True,
+) -> int | None:
+    team = team_row(con, team)
+    contract_year = season + 1
+    label = tag_label(tag_type)
+    contract_type = (
+        "TransitionTag"
+        if label == "Transition Tag"
+        else "ExclusiveFranchiseTag"
+        if label == "Exclusive Franchise Tag"
+        else "FranchiseTag"
+    )
+    existing = existing_team_tag(con, int(team["team_id"]), contract_year)
+    if existing:
+        raise ValueError(
+            f"{team['abbreviation']} already used a tag on {existing['player_name']} for {contract_year}."
+        )
+    target = next(
+        (row for row in tag_eligible_players(con, int(team["team_id"]), season) if int(row["player_id"]) == int(player_id)),
+        None,
+    )
+    if not target:
+        raise ValueError("Player is not an eligible expiring contract for this team/season.")
+    future = existing_future_contract(con, player_id, season)
+    if future:
+        raise ValueError("Player already has a future active contract.")
+
+    group = str(target["position_group"])
+    score = float(target["market_score"] or 60)
+    tag_aav = tag_tender_aav(group, int(target["aav"] or 0), tag_type)
+    projected = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+    cap_space = int(projected.get("cap_space") or 0)
+    if cap_space < tag_aav and not force:
+        raise ValueError(
+            f"{team['abbreviation']} lacks projected {contract_year} cap room for a {label} tender "
+            f"({money(tag_aav)}). Use --force to override."
+        )
+    if label == "Franchise Tag" and group == "RB" and score < 86 and not force:
+        raise ValueError("RB franchise tags are restricted to elite backs. Use --force to override.")
+    if label == "Transition Tag" and score < 74 and not force:
+        raise ValueError("Transition tags should be reserved for credible starters. Use --force to override.")
+
+    if not apply:
+        print(
+            "Dry run only. Add --apply to place the "
+            f"{label} on {target['player_name']} for {contract_year} at {money(tag_aav)}."
+        )
+        return None
+
+    setup_contract_years.ensure_schema(con)
+    setup_transactions_cap_ledger.ensure_schema(con)
+    signed_date = current_game_date(con)
+    before = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+    cur = con.execute(
+        """
+        INSERT INTO contracts (
+            player_id, team_id, signed_date, start_year, end_year,
+            total_value, total_years, aav, signing_bonus,
+            roster_bonus, workout_bonus, is_guaranteed,
+            dead_cap_current, dead_cap_next, franchise_tag, contract_type, is_active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 1, 0, 0, ?, ?, 1)
+        """,
+        (
+            player_id,
+            int(team["team_id"]),
+            signed_date,
+            contract_year,
+            contract_year,
+            tag_aav,
+            tag_aav,
+            "Transition"
+            if contract_type == "TransitionTag"
+            else "Exclusive"
+            if contract_type == "ExclusiveFranchiseTag"
+            else "Non-Exclusive",
+            contract_type,
+        ),
+    )
+    contract_id = int(cur.lastrowid)
+    if rebuild_all_contracts:
+        setup_contract_years.rebuild_contract_years(con)
+    else:
+        setup_contract_years.rebuild_contract_year(con, contract_id)
+    if sync_cap:
+        setup_contract_years.sync_team_cap_space(con)
+    after = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+    future_delta = int((after.get("total_committed") or 0) - (before.get("total_committed") or 0))
+    transaction_id, _ = setup_transactions_cap_ledger.insert_transaction(
+        con,
+        transaction_date=signed_date,
+        season=contract_year,
+        phase=current_phase(con),
+        transaction_type="Franchise Tag",
+        team_id=int(team["team_id"]),
+        player_id=player_id,
+        contract_id=contract_id,
+        to_team_id=int(team["team_id"]),
+        old_status=target["status"],
+        new_status=target["status"],
+        cap_delta_current=0,
+        cap_delta_next=future_delta,
+        cash_delta=tag_aav,
+        description=f"{team['abbreviation']} placed the {label} on {target['player_name']} at {money(tag_aav)}.",
+        source=SOURCE,
+        external_ref=f"tag:{contract_year}:{team['team_id']}:{player_id}:{contract_type}",
+    )
+    con.execute(
+        """
+        INSERT INTO transaction_assets (
+            transaction_id, asset_type, player_id, contract_id,
+            to_team_id, amount, season, asset_description
+        )
+        VALUES (?, 'PlayerContract', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            transaction_id,
+            player_id,
+            contract_id,
+            int(team["team_id"]),
+            tag_aav,
+            contract_year,
+            f"{label} one-year tender.",
+        ),
+    )
+    if write_cap_snapshot:
+        setup_transactions_cap_ledger.snapshot_cap_ledger(
+            con,
+            label=f"after_transaction_{transaction_id}_tag",
+            phase=current_phase(con),
+            source=SOURCE,
+            replace=True,
+        )
+    if not quiet:
+        print(f"{team['abbreviation']} tagged {target['player_name']}: {label}, {money(tag_aav)} for {contract_year}.")
+    return contract_id
+
+
 def extend_player(
     con: sqlite3.Connection,
     *,
@@ -956,7 +1198,7 @@ def release_player(
 ) -> None:
     team = team_row(con, team)
     contract_year = season + 1
-    candidates = cap_casualty_candidates(con, int(team["team_id"]), contract_year, limit=200)
+    candidates = [] if force else cap_casualty_candidates(con, int(team["team_id"]), contract_year, limit=200)
     target = next((row for row in candidates if int(row["player_id"]) == int(player_id)), None)
     if not target and not force:
         raise ValueError("Player is not a projected cap-casualty candidate. Use --force to override.")
@@ -1240,7 +1482,7 @@ def restructure_player(
 ) -> None:
     team = team_row(con, team)
     contract_year = season + 1
-    candidates = restructure_candidates(con, int(team["team_id"]), contract_year, limit=200)
+    candidates = [] if force else restructure_candidates(con, int(team["team_id"]), contract_year, limit=200)
     target = next((row for row in candidates if int(row["player_id"]) == int(player_id)), None)
     if not target and not force:
         raise ValueError("Player is not a projected restructure candidate. Use --force to override.")
@@ -1693,6 +1935,18 @@ def build_parser() -> argparse.ArgumentParser:
     extend_parser.add_argument("--apply", action="store_true")
     extend_parser.set_defaults(func=action_extend)
 
+    tag_parser = subparsers.add_parser("tag", help="Use a franchise or transition tag on one own-team expiring player.")
+    tag_parser.add_argument("--team", help="Team abbreviation. Defaults to active save user team.")
+    tag_parser.add_argument("--season", type=int, required=True, help="Season after which the current contract expires.")
+    tag_parser.add_argument("--player-id", type=int, required=True)
+    tag_parser.add_argument("--tag-type", choices=["franchise", "exclusive", "transition"], default="franchise")
+    tag_parser.add_argument("--force", action="store_true")
+    tag_parser.add_argument("--fast", action="store_true", help="Only rebuild this contract and skip the cap-ledger snapshot.")
+    tag_parser.add_argument("--no-full-rebuild", action="store_true", help="Only rebuild this contract's derived rows.")
+    tag_parser.add_argument("--no-cap-snapshot", action="store_true")
+    tag_parser.add_argument("--apply", action="store_true")
+    tag_parser.set_defaults(func=action_tag)
+
     expire_parser = subparsers.add_parser("expire", help="Move unextended expired contracts into free agency.")
     expire_parser.add_argument("--team", help="Optional team abbreviation. Defaults to all teams.")
     expire_parser.add_argument("--expiring-season", type=int, required=True)
@@ -1741,6 +1995,24 @@ def action_extend(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         years=args.years,
         aav=parse_money(args.aav),
         signing_bonus=parse_money(args.bonus) or 0,
+        apply=args.apply,
+        force=args.force,
+        rebuild_all_contracts=not (args.fast or args.no_full_rebuild),
+        write_cap_snapshot=not (args.fast or args.no_cap_snapshot),
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_tag(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    apply_tag(
+        con,
+        team=team_arg(con, args.team),
+        season=args.season,
+        player_id=args.player_id,
+        tag_type=args.tag_type,
         apply=args.apply,
         force=args.force,
         rebuild_all_contracts=not (args.fast or args.no_full_rebuild),

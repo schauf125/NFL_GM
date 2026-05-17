@@ -365,9 +365,9 @@ h2 {
 .role-row,
 .metric-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(92px, 28%);
+  grid-template-columns: minmax(0, 1fr) minmax(124px, 34%) 74px;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   --bar-color: #7f8b98;
   --bar-glow: rgba(127, 139, 152, 0.18);
 }
@@ -411,7 +411,8 @@ h2 {
 .metric-name {
   min-width: 0;
   overflow-wrap: anywhere;
-  font-size: 0.94rem;
+  font-size: 0.98rem;
+  font-weight: 800;
 }
 
 .role-grade,
@@ -426,7 +427,7 @@ h2 {
 
 .skill-bar {
   position: relative;
-  height: 8px;
+  height: 10px;
   border-radius: 999px;
   background:
     rgba(255, 255, 255, 0.07);

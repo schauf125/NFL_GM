@@ -36,7 +36,7 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 def default_db_path() -> Path:
     registry = read_json(SAVE_REGISTRY, {"active_game_id": None, "saves": {}})
-    active_id = registry.get("active_game_id")
+    active_id = registry.get("active_game_id") or registry.get("activeGameId")
     if active_id:
         record = registry.get("saves", {}).get(active_id)
         if record and record.get("db_path"):
@@ -116,10 +116,16 @@ def check_database(con: sqlite3.Connection, checks: list[Check]) -> None:
     )
 
 
-def check_active_save(con: sqlite3.Connection, checks: list[Check]) -> sqlite3.Row | None:
+def check_active_save(con: sqlite3.Connection, checks: list[Check], db_path: Path) -> sqlite3.Row | None:
     game = active_game(con)
     if not game:
-        add(checks, "Active save", "FAIL", "No active game save row found.")
+        status = "WARN" if db_path.resolve() == MASTER_DB.resolve() else "FAIL"
+        detail = (
+            "No active game save row found in the master template DB."
+            if status == "WARN"
+            else "No active game save row found."
+        )
+        add(checks, "Active save", status, detail)
         return None
     game_id = game["game_id"] if "game_id" in game.keys() else "-"
     current_date = game["current_date"] if "current_date" in game.keys() else "-"
@@ -197,7 +203,7 @@ def check_schedule(con: sqlite3.Connection, checks: list[Check], season: int) ->
     add(checks, "Regular-season schedule", status, f"{games} game(s), {weeks} week(s), {played} played.")
 
 
-def check_draft(con: sqlite3.Connection, checks: list[Check], season: int) -> None:
+def check_draft(con: sqlite3.Connection, checks: list[Check], season: int, *, has_active_save: bool) -> None:
     draft_year = season + 1
     if not table_exists(con, "draft_classes") or not table_exists(con, "draft_prospects"):
         add(checks, "Draft class", "FAIL", "Draft class tables missing.")
@@ -207,7 +213,13 @@ def check_draft(con: sqlite3.Connection, checks: list[Check], season: int) -> No
         (draft_year,),
     ).fetchone()
     if not class_row:
-        add(checks, "Draft class", "FAIL", f"No {draft_year} draft class found.")
+        status = "FAIL" if has_active_save else "WARN"
+        detail = (
+            f"No {draft_year} draft class found for the active save."
+            if has_active_save
+            else f"No {draft_year} draft class in the template DB; new saves generate one at start."
+        )
+        add(checks, "Draft class", status, detail)
         return
     draft_class_id = int(class_row["draft_class_id"])
     counts = con.execute(
@@ -284,7 +296,7 @@ def run_checks(db_path: Path) -> dict[str, Any]:
     checks: list[Check] = []
     with connect(db_path) as con:
         check_database(con, checks)
-        game = check_active_save(con, checks)
+        game = check_active_save(con, checks, db_path)
         season = 2026
         if game:
             if "current_league_year" in game.keys() and game["current_league_year"]:
@@ -293,7 +305,7 @@ def run_checks(db_path: Path) -> dict[str, Any]:
                 season = int(scalar(con, "SELECT setting_value FROM game_settings WHERE setting_key = 'current_season'", fallback=2026))
         check_teams_and_rosters(con, checks)
         check_schedule(con, checks, season)
-        check_draft(con, checks, season)
+        check_draft(con, checks, season, has_active_save=game is not None)
         check_system_hooks(con, checks)
     check_ui_export(db_path, checks)
     counts = {

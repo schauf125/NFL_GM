@@ -30,6 +30,10 @@ DEFAULT_SEASON = 2026
 DEFAULT_BOARD_LIMIT = 120
 PREMIUM_GROUPS = {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
 LOW_COST_GROUPS = {"K", "P", "LS"}
+ROUND_ONE_PLAN_MIN_GRADE = 68.0
+ROUND_ONE_PLAN_MIN_CEILING = 76.0
+ROUND_TWO_PLAN_MIN_GRADE = 62.0
+ROUND_TWO_PLAN_MIN_CEILING = 68.0
 CONFIDENCE_PENALTY_BASE = {
     "unscouted": 18.0,
     "low": 14.0,
@@ -510,6 +514,17 @@ def score_prospect(
     if group in LOW_COST_GROUPS and any(as_int(pick.get("round")) <= 4 for pick in picks):
         risk_penalty += 6.0
     confidence_discount, confidence_round, confidence = confidence_penalty(row, picks)
+    early_quality_penalty = 0.0
+    if confidence_round == 1:
+        if grade < ROUND_ONE_PLAN_MIN_GRADE:
+            early_quality_penalty += 34.0 + ((ROUND_ONE_PLAN_MIN_GRADE - grade) * 2.1)
+        if ceiling < ROUND_ONE_PLAN_MIN_CEILING:
+            early_quality_penalty += 26.0 + ((ROUND_ONE_PLAN_MIN_CEILING - ceiling) * 1.8)
+    elif confidence_round == 2:
+        if grade < ROUND_TWO_PLAN_MIN_GRADE:
+            early_quality_penalty += 18.0 + ((ROUND_TWO_PLAN_MIN_GRADE - grade) * 1.6)
+        if ceiling < ROUND_TWO_PLAN_MIN_CEILING:
+            early_quality_penalty += 14.0 + ((ROUND_TWO_PLAN_MIN_CEILING - ceiling) * 1.2)
 
     score = (
         board_value
@@ -521,6 +536,7 @@ def score_prospect(
         + athletic_value
         - risk_penalty
         - confidence_discount
+        - early_quality_penalty
     )
     reasons = []
     if priority:
@@ -535,6 +551,8 @@ def score_prospect(
         reasons.append("risk discount applied")
     if confidence_discount >= 2:
         reasons.append(f"{confidence.lower()} scouting confidence round-{confidence_round} discount")
+    if early_quality_penalty >= 12:
+        reasons.append("early-round grade floor discount")
     if not reasons:
         reasons.append("board value fit")
 
@@ -553,6 +571,7 @@ def score_prospect(
         "scout_confidence": confidence,
         "confidence_context_round": confidence_round,
         "confidence_penalty": round(confidence_discount, 2),
+        "early_quality_penalty": round(early_quality_penalty, 2),
         "archetype": row_value(row, "archetype"),
         "score": round(score, 2),
         "round_fit": round_fit_note(row, picks),

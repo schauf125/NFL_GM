@@ -8,10 +8,13 @@ that save DB.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import re
 import shutil
 import sqlite3
+import stat
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -75,7 +78,7 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def load_registry() -> dict[str, Any]:
-    return read_json(
+    registry = read_json(
         REGISTRY_PATH,
         {
             "version": REGISTRY_VERSION,
@@ -83,12 +86,51 @@ def load_registry() -> dict[str, Any]:
             "saves": {},
         },
     )
+    if "active_game_id" not in registry and "activeGameId" in registry:
+        registry["active_game_id"] = registry.get("activeGameId")
+    registry.pop("activeGameId", None)
+    registry.setdefault("active_game_id", None)
+    registry.setdefault("saves", {})
+    return registry
 
 
 def save_registry(registry: dict[str, Any]) -> None:
     registry["version"] = REGISTRY_VERSION
     registry.setdefault("saves", {})
+    registry.pop("activeGameId", None)
     write_json(REGISTRY_PATH, registry)
+
+
+def _make_writable(path: str) -> None:
+    try:
+        Path(path).chmod(stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        return
+
+
+def _rmtree_onerror(func, path: str, _exc_info) -> None:
+    _make_writable(path)
+    func(path)
+
+
+def remove_tree_with_retries(path: Path, *, attempts: int = 6, delay_seconds: float = 0.5) -> None:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            gc.collect()
+            shutil.rmtree(path, onerror=_rmtree_onerror)
+            return
+        except FileNotFoundError:
+            return
+        except (OSError, PermissionError) as exc:
+            last_error = exc
+            if attempt == attempts - 1:
+                break
+            time.sleep(delay_seconds * (attempt + 1))
+    raise RuntimeError(
+        f"Could not delete save folder after {attempts} attempts: {path}. "
+        "Close any running sim or browser action that is using this save and try again."
+    ) from last_error
 
 
 def backup_sqlite(source: Path, destination: Path) -> None:
@@ -381,7 +423,7 @@ def delete_save(args: argparse.Namespace) -> None:
         raise ValueError(f"Refusing to delete path outside saves directory: {target_dir}")
     existed = target_dir.exists()
     if existed:
-        shutil.rmtree(target_dir)
+        remove_tree_with_retries(target_dir)
     if registry.get("active_game_id") == game_id:
         registry["active_game_id"] = None
     save_registry(registry)

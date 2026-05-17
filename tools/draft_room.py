@@ -46,17 +46,27 @@ CONFIDENCE_ROUND_MULTIPLIER = {
 ROUND_ONE_PLAN_TIER_SIZE = 12
 ROUND_ONE_PUBLIC_ESCAPE_RANK = 16
 ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE = {"high", "very high"}
+ROUND_ONE_MIN_GRADE_FLOOR = 68.0
+ROUND_ONE_MIN_CEILING_FLOOR = 76.0
+ROUND_TWO_MIN_GRADE_FLOOR = 62.0
+ROUND_TWO_MIN_CEILING_FLOOR = 68.0
 DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
 DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 16.0, "high": 8.0, "medium": 1.0, "low": -12.0, "unscouted": -22.0}
 DRAFT_TRADE_PREMIUM_POSITIONS = {"QB", "OT", "EDGE", "CB", "WR"}
 DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 62.0, 2: 58.0, 3: 54.0, 4: 52.0, 5: 50.0, 6: 50.0, 7: 50.0}
 DRAFT_TRADE_MAX_BY_ROUND = {1: 6, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
 DRAFT_TRADE_MAX_TOTAL = 24
+USER_DRAFT_TRADE_MAX_PICKS = 4
 EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
 EARLY_DRAFT_STRONG_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_ELITE_CONFIDENCE = {"very high"}
 QB_DUPLICATE_PICK_PENALTY_BY_ROUND = {1: 95.0, 2: 95.0, 3: 90.0, 4: 72.0, 5: 42.0, 6: 20.0, 7: 8.0}
 QB_ROOM_PICK_PENALTY_BY_ROUND = {1: 125.0, 2: 105.0, 3: 46.0, 4: 22.0, 5: 10.0, 6: 4.0, 7: 0.0}
+QB_RECENT_INVESTMENT_BLOCK_BY_ROUND = {1: 150.0, 2: 125.0, 3: 82.0, 4: 36.0, 5: 18.0, 6: 8.0, 7: 0.0}
+QB_FRANCHISE_ROOM_BLOCK_BY_ROUND = {1: 520.0, 2: 430.0, 3: 240.0, 4: 90.0, 5: 28.0, 6: 8.0, 7: 0.0}
+QB_ESTABLISHED_STARTER_BLOCK_BY_ROUND = {1: 230.0, 2: 170.0, 3: 92.0, 4: 34.0, 5: 12.0, 6: 4.0, 7: 0.0}
+QB_SAME_OFFSEASON_FA_BLOCK_BY_ROUND = {1: 420.0, 2: 260.0, 3: 92.0, 4: 24.0, 5: 6.0, 6: 0.0, 7: 0.0}
+QB_CROWDED_ROOM_BLOCK_BY_ROUND = {1: 280.0, 2: 185.0, 3: 68.0, 4: 18.0, 5: 4.0, 6: 0.0, 7: 0.0}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -66,6 +76,14 @@ def connect(db_path: Path) -> sqlite3.Connection:
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     return con
+
+
+def table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -352,6 +370,24 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
 
     if not pick:
         udfa_results = select_draft_pick.convert_undrafted_available_prospects(con, draft_year)
+        cap_cleanup: dict[str, int] = {}
+        try:
+            import free_agency_processor
+
+            user_team = None
+            if table_exists(con, "active_game_save_view"):
+                user_row = con.execute("SELECT user_team FROM active_game_save_view LIMIT 1").fetchone()
+                user_team = str(user_row["user_team"]) if user_row and user_row["user_team"] else None
+            cap_cleanup = free_agency_processor.cpu_cap_compliance_sweep(
+                con,
+                draft_year,
+                user_team=user_team,
+                min_space=1_000_000,
+                max_moves_per_team=0,
+                max_teams=32,
+            )
+        except Exception as exc:
+            cap_cleanup = {"error": str(exc)}
         con.execute(
             """
             UPDATE draft_room_state
@@ -374,6 +410,23 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
             event_type="draft_complete",
             message=f"The {draft_year} draft is complete.",
         )
+        if cap_cleanup:
+            if "error" in cap_cleanup:
+                message = f"Post-draft cap compliance sweep skipped: {cap_cleanup['error']}."
+            else:
+                message = (
+                    "Post-draft cap compliance sweep: "
+                    f"{cap_cleanup.get('teams', 0)} team(s), "
+                    f"{cap_cleanup.get('restructures', 0)} restructure(s), "
+                    f"{cap_cleanup.get('releases', 0)} release(s), "
+                    f"{cap_cleanup.get('still_over', 0)} team(s) still over target."
+                )
+            log_event(
+                con,
+                draft_year=draft_year,
+                event_type="post_draft_cap_compliance",
+                message=message,
+            )
         if udfa_results:
             top_names = ", ".join(
                 f"{row['player_name']} ({row['position']})"
@@ -419,6 +472,16 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
             draft_year,
         ),
     )
+
+
+def complete_draft_if_no_open_picks(con: sqlite3.Connection, draft_year: int) -> bool:
+    state = current_state(con, draft_year)
+    if not state or state["status"] == "complete":
+        return False
+    if next_open_pick(con, draft_year) is not None:
+        return False
+    set_current_pick(con, draft_year, None)
+    return True
 
 
 def start_draft(con: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -737,6 +800,14 @@ def cpu_early_round_value_penalty(
     if round_number == 1:
         early = pick_number <= 16
         late = pick_number >= 25
+        if perceived_grade < ROUND_ONE_MIN_GRADE_FLOOR:
+            penalty += (92.0 if early else 58.0) + ((ROUND_ONE_MIN_GRADE_FLOOR - perceived_grade) * 3.6)
+        elif perceived_grade < 70.0 and early:
+            penalty += 18.0
+        if perceived_ceiling < ROUND_ONE_MIN_CEILING_FLOOR:
+            penalty += (78.0 if early else 48.0) + ((ROUND_ONE_MIN_CEILING_FLOOR - perceived_ceiling) * 3.0)
+        elif perceived_ceiling < 80.0 and early:
+            penalty += 16.0
         if confidence in {"unscouted", "low"}:
             if base_rank > 40:
                 penalty += 38.0 if early else 24.0
@@ -769,6 +840,10 @@ def cpu_early_round_value_penalty(
     elif round_number == 2:
         if position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
             return penalty
+        if perceived_grade < ROUND_TWO_MIN_GRADE_FLOOR:
+            penalty += 52.0 + ((ROUND_TWO_MIN_GRADE_FLOOR - perceived_grade) * 2.8)
+        if perceived_ceiling < ROUND_TWO_MIN_CEILING_FLOOR:
+            penalty += 38.0 + ((ROUND_TWO_MIN_CEILING_FLOOR - perceived_ceiling) * 2.2)
         if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and wild_ceiling_miss:
             penalty += 34.0
         if confidence in {"unscouted", "low"} and base_rank > 80:
@@ -779,11 +854,31 @@ def cpu_early_round_value_penalty(
             penalty += 18.0
         if true_grade < 57 and potential >= 82 and confidence != "very high":
             penalty += 12.0
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
+            if perceived_grade < 63 and perceived_ceiling < 70:
+                penalty += 64.0
+            elif perceived_grade < 66 and perceived_ceiling < 73:
+                penalty += 38.0
     elif round_number == 3:
         if position in EARLY_DRAFT_LOW_VALUE_POSITIONS:
             penalty += 4.0
         if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and wild_ceiling_miss:
             penalty += 18.0
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
+            if perceived_grade < 60 and perceived_ceiling < 66:
+                penalty += 72.0
+            elif perceived_grade < 62 and perceived_ceiling < 70:
+                penalty += 34.0
+        elif confidence == "medium" and perceived_grade < 58 and perceived_ceiling < 66:
+            penalty += 18.0
+
+    if round_number <= 3 and confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
+        known_low_floor = perceived_grade < 60 and perceived_ceiling < 68
+        known_depth_only = perceived_grade < 64 and perceived_ceiling < 70 and base_rank > pick_number + 24
+        if known_low_floor:
+            penalty += {1: 180.0, 2: 115.0, 3: 62.0}.get(round_number, 0.0)
+        elif known_depth_only:
+            penalty += {1: 92.0, 2: 56.0, 3: 24.0}.get(round_number, 0.0)
 
     return penalty
 
@@ -812,6 +907,37 @@ def drafted_position_counts_before(
     return {str(row["position"] or "").upper(): int(row["count"] or 0) for row in rows}
 
 
+def drafted_qb_investments_before(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    team_id: int,
+    before_pick_number: int,
+) -> list[sqlite3.Row]:
+    return con.execute(
+        f"""
+        {ordered_pick_cte()}
+        SELECT
+            dp.effective_pick_number,
+            dp.round,
+            p.player_id,
+            p.first_name,
+            p.last_name,
+            COALESCE(p.overall, 0) AS overall,
+            COALESCE(p.potential, 0) AS potential
+        FROM ordered dp
+        JOIN players p ON p.player_id = dp.selected_player_id
+        WHERE dp.draft_year = ?
+          AND dp.current_team_id = ?
+          AND COALESCE(dp.is_used, 0) = 1
+          AND dp.effective_pick_number < ?
+          AND p.position = 'QB'
+        ORDER BY dp.effective_pick_number
+        """,
+        (draft_year, team_id, before_pick_number),
+    ).fetchall()
+
+
 def cpu_duplicate_position_penalty(
     row: sqlite3.Row,
     *,
@@ -821,18 +947,36 @@ def cpu_duplicate_position_penalty(
     perceived_grade: float,
     perceived_ceiling: float,
     selected_counts: dict[str, int],
+    qb_investments: list[sqlite3.Row] | None = None,
 ) -> float:
     position = str(row["position"] or "").upper()
     if position != "QB" or selected_counts.get("QB", 0) <= 0:
         return 0.0
     penalty = QB_DUPLICATE_PICK_PENALTY_BY_ROUND.get(max(1, min(7, round_number)), 20.0)
-    exceptional_value = (
-        perceived_grade >= 70
-        and perceived_ceiling >= 82
-        and base_rank <= max(1, overall_pick_number - 20)
+    qb_investments = qb_investments or []
+    premium_qb_taken = any(
+        int(qb["round"] or 7) <= 3
+        and (int(qb["overall"] or 0) >= 66 or int(qb["potential"] or 0) >= 78)
+        for qb in qb_investments
     )
+    developmental_qb_taken = any(int(qb["potential"] or 0) >= 70 for qb in qb_investments)
+    exceptional_value = (
+        perceived_grade >= 76
+        and perceived_ceiling >= 88
+        and base_rank <= max(1, overall_pick_number - 35)
+    )
+    if premium_qb_taken:
+        penalty += {1: 260.0, 2: 220.0, 3: 170.0, 4: 120.0, 5: 92.0, 6: 72.0, 7: 54.0}.get(
+            max(1, min(7, round_number)),
+            54.0,
+        )
+    elif developmental_qb_taken:
+        penalty += {1: 130.0, 2: 110.0, 3: 82.0, 4: 58.0, 5: 38.0, 6: 24.0, 7: 14.0}.get(
+            max(1, min(7, round_number)),
+            14.0,
+        )
     if exceptional_value:
-        penalty *= 0.35
+        penalty *= 0.55 if premium_qb_taken else 0.35
     return penalty
 
 
@@ -840,6 +984,7 @@ def cpu_qb_room_pick_penalty(
     con: sqlite3.Connection,
     row: sqlite3.Row,
     *,
+    draft_year: int,
     team_id: int,
     round_number: int,
     overall_pick_number: int,
@@ -863,7 +1008,7 @@ def cpu_qb_room_pick_penalty(
         FROM players
         WHERE team_id = ?
           AND position = 'QB'
-          AND status IN ('Active', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+          AND status IN ('Active', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
         ORDER BY
             COALESCE(overall, 0) DESC,
             COALESCE(potential, 0) DESC,
@@ -877,38 +1022,133 @@ def cpu_qb_room_pick_penalty(
 
     best_overall = max(int(qb["overall"] or 0) for qb in qbs)
     best_potential = max(int(qb["potential"] or 0) for qb in qbs)
+    viable_qbs = sum(
+        1
+        for qb in qbs
+        if int(qb["overall"] or 0) >= 70 or int(qb["potential"] or 0) >= 74
+    )
     best_young_potential = max(
         (int(qb["potential"] or 0) for qb in qbs if int(qb["age"] or 99) <= 26 or int(qb["years_exp"] or 99) <= 2),
         default=0,
     )
+    best_young_core = max(
+        (
+            int(qb["potential"] or 0)
+            for qb in qbs
+            if (int(qb["age"] or 99) <= 27 or int(qb["years_exp"] or 99) <= 4)
+            and int(qb["overall"] or 0) >= 80
+        ),
+        default=0,
+    )
+    established_starter = any(
+        int(qb["overall"] or 0) >= 82
+        and int(qb["potential"] or 0) >= 84
+        and int(qb["age"] or 99) <= 33
+        for qb in qbs
+    )
     recent_high_investment = any(
-        int(qb["years_exp"] or 99) <= 2 and int(qb["potential"] or 0) >= 82
+        int(qb["years_exp"] or 99) <= 3 and int(qb["potential"] or 0) >= 80
         for qb in qbs
     )
     franchise_qb = best_overall >= 86 or (best_overall >= 82 and best_potential >= 88)
     young_franchise_qb = best_young_potential >= 88
+    young_core_franchise_qb = best_young_core >= 88
+    same_offseason_fa_qb = None
+    if table_exists(con, "transaction_log"):
+        same_offseason_fa_qb = con.execute(
+            """
+            SELECT
+                COUNT(*) AS signings,
+                MAX(COALESCE(c.aav, 0)) AS max_aav,
+                MAX(COALESCE(p.overall, 0)) AS max_overall,
+                MAX(COALESCE(p.potential, 0)) AS max_potential
+            FROM transaction_log tl
+            JOIN players p ON p.player_id = tl.player_id
+            LEFT JOIN contracts c ON c.contract_id = tl.contract_id
+            WHERE tl.team_id = ?
+              AND tl.season = ?
+              AND tl.transaction_type = 'Signing'
+              AND p.position = 'QB'
+              AND COALESCE(tl.source, '') = 'free_agency_processor'
+            """,
+            (team_id, draft_year),
+        ).fetchone()
 
-    if not franchise_qb and not young_franchise_qb and not recent_high_investment:
-        return 0.0
-
-    penalty = QB_ROOM_PICK_PENALTY_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
-    if young_franchise_qb:
-        penalty *= 1.10
-    elif recent_high_investment:
-        penalty *= 0.82
-    if franchise_qb and best_overall >= 90:
-        penalty *= 1.18
-
+    best_young_investment = max(
+        (int(qb["potential"] or 0) for qb in qbs if int(qb["years_exp"] or 99) <= 3),
+        default=0,
+    )
     exceptional_value = (
         perceived_grade >= 78
         and perceived_ceiling >= 92
         and base_rank <= max(1, overall_pick_number - 28)
     )
+    signed_qb_aav = int(same_offseason_fa_qb["max_aav"] or 0) if same_offseason_fa_qb else 0
+    signed_qb_overall = int(same_offseason_fa_qb["max_overall"] or 0) if same_offseason_fa_qb else 0
+    signed_qb_potential = int(same_offseason_fa_qb["max_potential"] or 0) if same_offseason_fa_qb else 0
+    meaningful_same_offseason_qb = (
+        bool(same_offseason_fa_qb and int(same_offseason_fa_qb["signings"] or 0))
+        and (signed_qb_aav >= 10_000_000 or signed_qb_overall >= 74 or signed_qb_potential >= 78)
+    )
+    crowded_viable_room = viable_qbs >= 3 and best_overall >= 75 and best_potential >= 78
+
+    if (
+        not franchise_qb
+        and not young_franchise_qb
+        and not young_core_franchise_qb
+        and not recent_high_investment
+        and not established_starter
+        and not meaningful_same_offseason_qb
+        and not crowded_viable_room
+    ):
+        return 0.0
+
+    penalty = 0.0
+    if meaningful_same_offseason_qb:
+        fa_penalty = QB_SAME_OFFSEASON_FA_BLOCK_BY_ROUND.get(max(1, min(7, round_number)), 0.0)
+        if viable_qbs >= 2:
+            fa_penalty *= 1.25
+        if exceptional_value and round_number >= 3:
+            fa_penalty *= 0.35
+        elif exceptional_value:
+            fa_penalty *= 0.70
+        penalty += fa_penalty
+
+    if crowded_viable_room:
+        crowd_penalty = QB_CROWDED_ROOM_BLOCK_BY_ROUND.get(max(1, min(7, round_number)), 0.0)
+        if exceptional_value and round_number >= 3:
+            crowd_penalty *= 0.35
+        elif exceptional_value:
+            crowd_penalty *= 0.65
+        penalty += crowd_penalty
+
+    if young_core_franchise_qb and not exceptional_value:
+        return penalty + QB_FRANCHISE_ROOM_BLOCK_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
+
+    if established_starter and perceived_ceiling <= best_potential + 6 and perceived_grade < best_overall + 3:
+        room_penalty = QB_ESTABLISHED_STARTER_BLOCK_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
+        if perceived_ceiling < best_potential:
+            room_penalty *= 1.35
+        if perceived_grade < best_overall - 10:
+            room_penalty *= 1.35
+    elif recent_high_investment and perceived_ceiling <= best_young_investment + 2:
+        room_penalty = QB_RECENT_INVESTMENT_BLOCK_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
+        if perceived_grade < best_overall + 4:
+            room_penalty *= 1.15
+    else:
+        room_penalty = QB_ROOM_PICK_PENALTY_BY_ROUND.get(max(1, min(7, round_number)), 12.0)
+    if young_franchise_qb:
+        room_penalty *= 1.10
+    elif recent_high_investment:
+        room_penalty *= 1.10
+    if franchise_qb and best_overall >= 90:
+        room_penalty *= 1.18
+
     if exceptional_value and round_number >= 3:
-        penalty *= 0.25
+        room_penalty *= 0.25
     elif exceptional_value:
-        penalty *= 0.55
-    return penalty
+        room_penalty *= 0.55
+    return penalty + room_penalty
 
 
 def cpu_perceived_grade(row: sqlite3.Row, *, game_id: str, draft_year: int, team_id: int) -> float:
@@ -998,6 +1238,12 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
         team_id=team_id,
         before_pick_number=overall_pick_number,
     )
+    qb_investments = drafted_qb_investments_before(
+        con,
+        draft_year=draft_year,
+        team_id=team_id,
+        before_pick_number=overall_pick_number,
+    )
     scored: list[tuple[float, int, sqlite3.Row]] = []
     plan_tier_ids: set[int] = set()
     if round_number == 1 and plan_ranks:
@@ -1071,10 +1317,12 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
             selected_counts=selected_counts,
+            qb_investments=qb_investments,
         )
         qb_room_penalty = cpu_qb_room_pick_penalty(
             con,
             row,
+            draft_year=draft_year,
             team_id=team_id,
             round_number=round_number,
             overall_pick_number=overall_pick_number,
@@ -1107,6 +1355,55 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 guarded.append(item)
         if guarded:
             scored = guarded
+    if not scored:
+        for row in candidates:
+            base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
+            perceived_grade = cpu_perceived_grade(
+                row,
+                game_id=game_id,
+                draft_year=draft_year,
+                team_id=team_id,
+            )
+            perceived_ceiling = cpu_perceived_ceiling(
+                row,
+                game_id=game_id,
+                draft_year=draft_year,
+                team_id=team_id,
+            )
+            confidence_penalty = cpu_confidence_rank_penalty(row, round_number) * 0.35
+            duplicate_position_penalty = cpu_duplicate_position_penalty(
+                row,
+                round_number=round_number,
+                base_rank=base_rank,
+                overall_pick_number=overall_pick_number,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                selected_counts=selected_counts,
+                qb_investments=qb_investments,
+            )
+            qb_room_penalty = cpu_qb_room_pick_penalty(
+                con,
+                row,
+                draft_year=draft_year,
+                team_id=team_id,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+            )
+            adjusted = (
+                base_rank
+                - position_need_bonus(con, team_id, str(row["position"]))
+                - max(0.0, perceived_grade - 65.0) * 0.45
+                - max(0.0, perceived_ceiling - perceived_grade) * 0.2
+                + confidence_penalty
+                + duplicate_position_penalty
+                + qb_room_penalty
+            )
+            scored.append((adjusted, base_rank, row))
+    if not scored:
+        raise ValueError("No CPU-visible prospects remain on the board.")
     scored.sort(key=lambda item: (item[0], item[1], item[2]["prospect_id"]))
     return scored[0][2]
 
@@ -1201,6 +1498,29 @@ def draft_trade_target_for_team(
             continue
         perceived_grade = cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
         perceived_ceiling = cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
+        qb_room_penalty = cpu_qb_room_pick_penalty(
+            con,
+            row,
+            draft_year=draft_year,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=current_pick_number,
+            base_rank=board_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
+        if qb_room_penalty >= 90:
+            continue
+        early_value_penalty = cpu_early_round_value_penalty(
+            row,
+            round_number=round_number,
+            overall_pick_number=current_pick_number,
+            base_rank=board_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
+        if early_value_penalty >= 90:
+            continue
         urgency = max(0, next_pick_number - board_rank)
         premium = 7.0 if position in DRAFT_TRADE_PREMIUM_POSITIONS and round_number <= 3 else 0.0
         hidden = 8.0 if row["cpu_visibility_status"] == "discovered" and str(row["public_board_status"] or "") == "off_public_board" else 0.0
@@ -1212,6 +1532,8 @@ def draft_trade_target_for_team(
             + max(0.0, perceived_ceiling - perceived_grade) * 0.5
             + premium
             + hidden
+            - (qb_room_penalty * 0.25)
+            - (early_value_penalty * 0.18)
         )
         if score > best[0]:
             reason = f"{position} need target, {confidence} confidence, public rank {board_rank}"
@@ -1350,6 +1672,319 @@ def execute_draft_pick_trade(
         ),
     )
     return refreshed
+
+
+def pick_description(pick: sqlite3.Row) -> str:
+    pick_number = effective_pick_number(pick)
+    if pick_number:
+        return f"{pick['draft_year']} #{pick_number} (R{pick['round']})"
+    return f"{pick['draft_year']} R{pick['round']}"
+
+
+def pick_owner_team_id(pick: sqlite3.Row) -> int:
+    return int(pick["current_team_id"] or 0)
+
+
+def user_pick_trade_offer(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    user_team_id: int,
+    seller_team_id: int,
+    target_pick: sqlite3.Row,
+    offered_pick_ids: list[int] | None = None,
+) -> tuple[list[sqlite3.Row], float, float, str, float]:
+    chart = trade_engine.gm_chart(con, seller_team_id)
+    target_value = pick_chart_value(con, target_pick, chart)
+    if target_value <= 0:
+        raise ValueError("Target pick has no trade value.")
+
+    if offered_pick_ids:
+        unique_offered_pick_ids = list(dict.fromkeys(int(pick_id) for pick_id in offered_pick_ids))
+        if len(unique_offered_pick_ids) > USER_DRAFT_TRADE_MAX_PICKS:
+            raise ValueError(
+                f"Draft pick trade offers are limited to {USER_DRAFT_TRADE_MAX_PICKS} picks."
+            )
+        placeholders = ",".join("?" for _ in unique_offered_pick_ids)
+        offered = con.execute(
+            f"""
+            {ordered_pick_cte()}
+            SELECT dp.*, t.abbreviation AS current_team
+            FROM ordered dp
+            LEFT JOIN teams t ON t.team_id = dp.current_team_id
+            WHERE dp.pick_id IN ({placeholders})
+            ORDER BY dp.draft_year, dp.round, COALESCE(dp.effective_pick_number, dp.pick_number, dp.pick_id), dp.pick_id
+            """,
+            tuple(unique_offered_pick_ids),
+        ).fetchall()
+        if len(offered) != len(unique_offered_pick_ids):
+            raise ValueError("One or more offered picks could not be found.")
+    else:
+        target_number = effective_pick_number(target_pick) or 0
+        offered = []
+        user_next = next_pick_for_team_after(
+            con,
+            draft_year=draft_year,
+            team_id=user_team_id,
+            after_pick_number=target_number,
+        )
+        if user_next:
+            offered.append(user_next)
+        for candidate in available_trade_picks_after(
+            con,
+            draft_year=draft_year,
+            team_id=user_team_id,
+            after_pick_number=target_number,
+            limit=18,
+        ):
+            if any(int(existing["pick_id"]) == int(candidate["pick_id"]) for existing in offered):
+                continue
+            if len(offered) >= USER_DRAFT_TRADE_MAX_PICKS:
+                break
+            current_value = sum(pick_chart_value(con, pick, chart) for pick in offered)
+            if current_value >= target_value * 0.90:
+                break
+            offered.append(candidate)
+    if not offered:
+        raise ValueError("No user-owned picks are available to offer for that target.")
+
+    seen: set[int] = set()
+    clean_offered: list[sqlite3.Row] = []
+    for pick in offered:
+        pick_id = int(pick["pick_id"])
+        if pick_id in seen:
+            continue
+        seen.add(pick_id)
+        if int(pick["is_used"] or 0):
+            raise ValueError(f"Offered pick {pick_description(pick)} has already been used.")
+        if pick_owner_team_id(pick) != user_team_id:
+            raise ValueError(f"Offered pick {pick_description(pick)} is not owned by the user team.")
+        if pick_id == int(target_pick["pick_id"]):
+            raise ValueError("Cannot offer the same pick being acquired.")
+        if int(pick["draft_year"]) == draft_year:
+            pick_number = effective_pick_number(pick) or 9999
+            target_number = effective_pick_number(target_pick) or 0
+            if pick_number <= target_number:
+                raise ValueError("Offered current-year picks must come after the target pick.")
+        clean_offered.append(pick)
+
+    offer_value = sum(pick_chart_value(con, pick, chart) for pick in clean_offered)
+    ratio = offer_value / target_value if target_value else 0.0
+    summary = ", ".join(pick_description(pick) for pick in clean_offered)
+    return clean_offered, offer_value, target_value, summary, ratio
+
+
+def cpu_accepts_user_pick_trade(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    seller_team_id: int,
+    target_pick: sqlite3.Row,
+    offer_value: float,
+    target_value: float,
+) -> tuple[bool, float, str]:
+    round_number = int(target_pick["round"])
+    state = current_state(con, draft_year)
+    current_pick_id = int(state["current_pick_id"] or 0) if state and state["current_pick_id"] is not None else 0
+    on_clock = current_pick_id == int(target_pick["pick_id"])
+    try:
+        willingness = seller_trade_down_willingness(con, draft_year=draft_year, seller_team_id=seller_team_id, pick=target_pick)
+    except Exception:
+        willingness = 0.0
+    floor = 0.92 - min(0.12, willingness)
+    if round_number == 1:
+        floor += 0.05
+    elif round_number == 2:
+        floor += 0.03
+    if on_clock:
+        floor += 0.03
+    floor = max(0.80, min(1.10, floor))
+    ratio = offer_value / target_value if target_value else 0.0
+    if ratio >= floor:
+        return True, floor, f"accepted at {ratio:.2f}x pick value"
+    return False, floor, f"needs about {floor:.2f}x value; offer is {ratio:.2f}x"
+
+
+def execute_user_pick_trade(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    user_team_id: int,
+    target_pick: sqlite3.Row,
+    offered_picks: list[sqlite3.Row],
+    offer_value: float,
+    target_value: float,
+    acceptance_note: str,
+) -> dict[str, Any]:
+    seller_team_id = pick_owner_team_id(target_pick)
+    buyer = team_abbr(con, user_team_id)
+    seller = team_abbr(con, seller_team_id)
+    con.execute(
+        """
+        UPDATE draft_picks
+        SET current_team_id = ?,
+            is_traded = 1,
+            trade_note = ?
+        WHERE pick_id = ?
+        """,
+        (
+            user_team_id,
+            f"{seller} -> {buyer}: user draft-room trade for {pick_description(target_pick)}.",
+            int(target_pick["pick_id"]),
+        ),
+    )
+    for pick in offered_picks:
+        con.execute(
+            """
+            UPDATE draft_picks
+            SET current_team_id = ?,
+                is_traded = 1,
+                trade_note = ?
+            WHERE pick_id = ?
+            """,
+            (
+                seller_team_id,
+                f"{buyer} -> {seller}: user draft-room trade compensation.",
+                int(pick["pick_id"]),
+            ),
+        )
+    refreshed = con.execute(
+        f"""
+        {ordered_pick_cte()}
+        SELECT dp.*, t.abbreviation AS current_team
+        FROM ordered dp
+        LEFT JOIN teams t ON t.team_id = dp.current_team_id
+        WHERE dp.pick_id = ?
+        """,
+        (int(target_pick["pick_id"]),),
+    ).fetchone()
+    state = current_state(con, draft_year)
+    if state and int(state["current_pick_id"] or 0) == int(target_pick["pick_id"]):
+        con.execute(
+            """
+            UPDATE draft_room_state
+            SET current_team_id = ?,
+                updated_at = datetime('now')
+            WHERE draft_year = ?
+            """,
+            (user_team_id, draft_year),
+        )
+    sent_summary = ", ".join(pick_description(pick) for pick in offered_picks)
+    target_number = effective_pick_number(target_pick)
+    log_event(
+        con,
+        draft_year=draft_year,
+        event_type="user_draft_trade",
+        pick=refreshed,
+        message=(
+            f"{buyer} acquired pick #{target_number} from {seller}. "
+            f"Sent {sent_summary} (value {offer_value:.1f} vs {target_value:.1f}); {acceptance_note}."
+        ),
+    )
+    return {
+        "accepted": True,
+        "target_pick_id": int(target_pick["pick_id"]),
+        "target_pick_number": target_number,
+        "seller": seller,
+        "buyer": buyer,
+        "offered_picks": [int(pick["pick_id"]) for pick in offered_picks],
+        "offer_summary": sent_summary,
+        "offer_value": round(offer_value, 2),
+        "target_value": round(target_value, 2),
+        "ratio": round(offer_value / target_value, 3) if target_value else 0,
+        "note": acceptance_note,
+    }
+
+
+def propose_user_pick_trade(con: sqlite3.Connection, args: argparse.Namespace) -> dict[str, Any]:
+    ensure_schema(con)
+    state = current_state(con, args.draft_year)
+    if not state or state["status"] not in {"active", "paused"}:
+        raise ValueError(f"Draft room is not active for {args.draft_year}.")
+    user_team_id = int(state["user_team_id"] or 0)
+    if args.user_team:
+        team = team_by_abbr(con, args.user_team)
+        user_team_id = int(team["team_id"]) if team else user_team_id
+    if user_team_id <= 0:
+        raise ValueError("No user team is set for the draft room.")
+    target_pick = con.execute(
+        f"""
+        {ordered_pick_cte()}
+        SELECT dp.*, t.abbreviation AS current_team
+        FROM ordered dp
+        LEFT JOIN teams t ON t.team_id = dp.current_team_id
+        WHERE dp.pick_id = ?
+        """,
+        (args.target_pick_id,),
+    ).fetchone()
+    if not target_pick:
+        raise ValueError("Target pick was not found.")
+    if int(target_pick["draft_year"]) != int(args.draft_year):
+        raise ValueError("Target pick is not in this draft year.")
+    if int(target_pick["is_used"] or 0):
+        raise ValueError("Target pick has already been used.")
+    seller_team_id = pick_owner_team_id(target_pick)
+    if seller_team_id <= 0:
+        raise ValueError("Target pick has no current owner.")
+    if seller_team_id == user_team_id:
+        raise ValueError("User team already owns that pick.")
+    current_pick_number = int(state["current_pick_number"] or 0)
+    target_pick_number = effective_pick_number(target_pick) or 9999
+    if current_pick_number and target_pick_number < current_pick_number:
+        raise ValueError("Cannot trade for a pick that has already passed.")
+    if current_pick_number and target_pick_number > current_pick_number + int(args.max_ahead or 48):
+        raise ValueError("That pick is too far away for draft-room trade talks.")
+
+    offered, offer_value, target_value, summary, ratio = user_pick_trade_offer(
+        con,
+        draft_year=args.draft_year,
+        user_team_id=user_team_id,
+        seller_team_id=seller_team_id,
+        target_pick=target_pick,
+        offered_pick_ids=args.offer_pick_id,
+    )
+    accepted, floor, note = cpu_accepts_user_pick_trade(
+        con,
+        draft_year=args.draft_year,
+        seller_team_id=seller_team_id,
+        target_pick=target_pick,
+        offer_value=offer_value,
+        target_value=target_value,
+    )
+    if not accepted:
+        log_event(
+            con,
+            draft_year=args.draft_year,
+            event_type="user_draft_trade_rejected",
+            pick=target_pick,
+            message=(
+                f"{team_abbr(con, seller_team_id)} rejected {team_abbr(con, user_team_id)}'s trade offer "
+                f"for pick #{target_pick_number}. Sent {summary} "
+                f"(value {offer_value:.1f} vs {target_value:.1f}); {note}."
+            ),
+        )
+        return {
+            "accepted": False,
+            "target_pick_id": int(target_pick["pick_id"]),
+            "target_pick_number": target_pick_number,
+            "seller": team_abbr(con, seller_team_id),
+            "offer_summary": summary,
+            "offer_value": round(offer_value, 2),
+            "target_value": round(target_value, 2),
+            "ratio": round(ratio, 3),
+            "needed_ratio": round(floor, 3),
+            "note": note,
+        }
+    return execute_user_pick_trade(
+        con,
+        draft_year=args.draft_year,
+        user_team_id=user_team_id,
+        target_pick=target_pick,
+        offered_picks=offered,
+        offer_value=offer_value,
+        target_value=target_value,
+        acceptance_note=note,
+    )
 
 
 def maybe_execute_cpu_draft_trade_up(
@@ -1520,9 +2155,22 @@ def select_for_current_pick(con: sqlite3.Connection, args: argparse.Namespace) -
         (state["current_pick_id"],),
     ).fetchone()
     if not pick:
+        if complete_draft_if_no_open_picks(con, args.draft_year):
+            return {
+                "draft_year": args.draft_year,
+                "draft_complete": True,
+                "message": f"The {args.draft_year} draft is complete.",
+            }
         raise ValueError("No current pick is set.")
     if int(pick["is_used"] or 0):
-        set_current_pick(con, args.draft_year, next_open_pick(con, args.draft_year))
+        next_pick = next_open_pick(con, args.draft_year)
+        set_current_pick(con, args.draft_year, next_pick)
+        if next_pick is None:
+            return {
+                "draft_year": args.draft_year,
+                "draft_complete": True,
+                "message": f"The {args.draft_year} draft is complete.",
+            }
         raise ValueError("Current pick had already been used; advanced the room to the next pick.")
 
     prospect_id = args.prospect_id
@@ -1592,6 +2240,7 @@ def run_skip(con: sqlite3.Connection, args: argparse.Namespace) -> list[dict[str
         if args.apply and getattr(args, "commit_each", False):
             con.commit()
             con.execute("BEGIN")
+    complete_draft_if_no_open_picks(con, args.draft_year)
     return results
 
 
@@ -1709,6 +2358,9 @@ def action_skip(args: argparse.Namespace) -> None:
         results = run_mutation(con, args, run_skip)
     print(f"{'Skipped' if args.apply else 'Would skip'} {len(results)} pick(s).")
     for result in results:
+        if result.get("draft_complete"):
+            print(f"- {result.get('message', 'Draft complete.')}")
+            continue
         print(
             f"- #{result['effective_pick_number']} {result['team']}: "
             f"{result['player_name']} ({result['position']})"
@@ -1739,6 +2391,24 @@ def action_ui_data(args: argparse.Namespace) -> None:
         print(f"Wrote {args.output}")
     else:
         print(text)
+
+
+def action_user_trade(args: argparse.Namespace) -> None:
+    with connect(args.db) as con:
+        result = run_mutation(con, args, propose_user_pick_trade)
+    if result.get("accepted"):
+        print(
+            f"Trade accepted: {result['buyer']} acquired pick #{result['target_pick_number']} "
+            f"from {result['seller']} for {result['offer_summary']} "
+            f"({result['ratio']:.2f}x value)."
+        )
+    else:
+        print(
+            f"Trade rejected by {result['seller']}: {result['note']}. "
+            f"Offer: {result['offer_summary']} ({result['ratio']:.2f}x value)."
+        )
+    if not args.apply:
+        print("Dry run only. Add --apply to execute an accepted trade.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1801,6 +2471,15 @@ def build_parser() -> argparse.ArgumentParser:
     ui_data.add_argument("--draft-year", type=int, required=True)
     ui_data.add_argument("--output", type=Path)
     ui_data.set_defaults(func=action_ui_data)
+
+    user_trade = subparsers.add_parser("user-trade", help="Offer user-owned picks to move up for a CPU-owned pick.")
+    user_trade.add_argument("--draft-year", type=int, required=True)
+    user_trade.add_argument("--target-pick-id", type=int, required=True)
+    user_trade.add_argument("--offer-pick-id", type=int, action="append", help="Specific user pick to include. Omit to auto-package fair value.")
+    user_trade.add_argument("--user-team")
+    user_trade.add_argument("--max-ahead", type=int, default=48)
+    user_trade.add_argument("--apply", action="store_true")
+    user_trade.set_defaults(func=action_user_trade)
     return parser
 
 

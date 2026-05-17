@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Local UI runner for NFL GM.
 
 This serves the static UI and exposes a small whitelist of local game actions.
@@ -33,6 +33,7 @@ import free_agency_processor
 import injury_notifications
 import roster_rules
 import sim_control
+import trade_engine
 import view_box_score
 
 
@@ -54,6 +55,9 @@ PLAYER_EXPORT_ACTIONS = {
     "draft_pause",
     "draft_resume",
     "draft_pick",
+    "draft_user_trade",
+    "trade_submit",
+    "trade_cpu_market",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
@@ -70,6 +74,7 @@ PLAYER_EXPORT_ACTIONS = {
     "free_agency_offer",
     "free_agency_cpu_seed",
     "contract_extend",
+    "contract_tag",
     "contract_release",
     "contract_restructure",
     "depth_chart_set",
@@ -89,10 +94,14 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "draft_pause",
     "draft_resume",
     "draft_pick",
+    "draft_user_trade",
+    "trade_submit",
+    "trade_cpu_market",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
     "contract_extend",
+    "contract_tag",
     "contract_release",
     "contract_restructure",
     "depth_chart_set",
@@ -110,6 +119,7 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
 }
 SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_extend",
+    "contract_tag",
     "contract_release",
     "contract_restructure",
     "roster_release_player",
@@ -123,6 +133,7 @@ DRAFT_RUN_ACTIONS = {
     "draft_pause",
     "draft_resume",
     "draft_pick",
+    "draft_user_trade",
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
@@ -135,6 +146,10 @@ FREE_AGENCY_RUN_ACTIONS = {
     "free_agency_resolve",
     "free_agency_offer",
 }
+TRADE_RUN_ACTIONS = {
+    "trade_submit",
+    "trade_cpu_market",
+}
 CALENDAR_RUN_ACTIONS = {
     "advance_next_event",
     "advance_to_date",
@@ -143,7 +158,32 @@ CALENDAR_RUN_ACTIONS = {
     "auto_cutdown_continue",
 }
 INJURY_ALERT_ACTIONS = {"sim_week", "sim_season"}
-SIM_CANCEL_ACTIONS = {"sim_week", "sim_season"}
+SIM_CANCEL_ACTIONS = {"sim_week", "sim_season", "advance_to_draft"}
+ACTION_TIMEOUT_DEFAULTS = {
+    "advance_to_draft": 6 * 60 * 60,
+    "auto_cutdown_continue": 6 * 60 * 60,
+    "sim_season": 3 * 60 * 60,
+}
+
+
+def action_timeout_seconds(action: str, params: dict[str, Any]) -> int:
+    return int(params.get("timeout_seconds") or ACTION_TIMEOUT_DEFAULTS.get(action, 3600))
+
+
+def remaining_draft_pick_count(draft_year: int) -> int:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS remaining
+            FROM draft_picks
+            WHERE draft_year = ?
+              AND COALESCE(is_used, 0) = 0
+            """,
+            (int(draft_year),),
+        ).fetchone()
+    return int(row["remaining"] or 0) if row else 0
 
 
 def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -152,9 +192,62 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+def save_record(game_id: str) -> dict[str, Any] | None:
+    registry = read_json(SAVE_REGISTRY, {"active_game_id": None, "saves": {}})
+    return (registry.get("saves") or {}).get(game_id)
+
+
+def stop_processes_using_save(game_id: str) -> list[int]:
+    record = save_record(game_id)
+    if not record:
+        return []
+    db_path = ROOT / str(record.get("db_path") or "")
+    save_dir = db_path.parent
+    needles = {str(db_path), str(save_dir), str(db_path).replace("\\", "\\\\")}
+    stopped: list[int] = []
+    if sys.platform != "win32":
+        return stopped
+    script = r"""
+$needles = @(
+__NEEDLES__
+)
+$current = $PID
+$procs = Get-CimInstance Win32_Process | Where-Object {
+  $_.ProcessId -ne $current -and $_.Name -like 'python*' -and $null -ne $_.CommandLine
+}
+foreach ($proc in $procs) {
+  foreach ($needle in $needles) {
+    if ($needle -and $needle.Length -gt 0 -and $proc.CommandLine -like "*$needle*") {
+      Stop-Process -Id $proc.ProcessId -Force
+      Write-Output $proc.ProcessId
+      break
+    }
+  }
+}
+"""
+    needles_literal = "\n".join(json.dumps(value) + "," for value in sorted(needles))
+    script = script.replace("__NEEDLES__", needles_literal)
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        return stopped
+    for line in (result.stdout or "").splitlines():
+        try:
+            stopped.append(int(line.strip()))
+        except ValueError:
+            continue
+    return stopped
+
+
 def active_db_path() -> Path:
     registry = read_json(SAVE_REGISTRY, {"active_game_id": None, "saves": {}})
-    active_id = registry.get("active_game_id")
+    active_id = registry.get("active_game_id") or registry.get("activeGameId")
     if active_id:
         record = registry.get("saves", {}).get(active_id)
         if record and record.get("db_path"):
@@ -603,6 +696,202 @@ def player_search_payload_for_active_db() -> dict[str, Any]:
     }
 
 
+def _team_by_abbr(conn: sqlite3.Connection, abbr: str | None) -> sqlite3.Row | None:
+    if not abbr:
+        return None
+    return conn.execute(
+        "SELECT * FROM teams WHERE UPPER(abbreviation) = UPPER(?)",
+        (abbr,),
+    ).fetchone()
+
+
+def _trade_player_rows(conn: sqlite3.Connection, team_id: int, season: int, chart: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT p.player_id, p.first_name || ' ' || p.last_name AS name,
+               p.position, p.age, p.overall, p.potential, p.dev_trait,
+               p.status, p.jersey_number,
+               c.aav, c.end_year
+        FROM players p
+        LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+        WHERE p.team_id = ?
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Practice Squad')
+        ORDER BY
+          CASE p.position
+            WHEN 'QB' THEN 1 WHEN 'RB' THEN 2 WHEN 'FB' THEN 3 WHEN 'WR' THEN 4
+            WHEN 'TE' THEN 5 WHEN 'OT' THEN 6 WHEN 'OG' THEN 7 WHEN 'C' THEN 8
+            WHEN 'IDL' THEN 9 WHEN 'EDGE' THEN 10 WHEN 'LB' THEN 11 WHEN 'CB' THEN 12
+            WHEN 'S' THEN 13 WHEN 'K' THEN 14 WHEN 'P' THEN 15 WHEN 'LS' THEN 16
+            ELSE 99 END,
+          p.overall DESC, p.potential DESC, p.age ASC
+        LIMIT 90
+        """,
+        (team_id,),
+    ).fetchall()
+    players = []
+    for row in rows:
+        value = trade_engine.player_trade_value(conn, int(row["player_id"]), season, chart)
+        players.append({
+            "type": "player",
+            "playerId": int(row["player_id"]),
+            "label": f"{row['name']} | {row['position']} {int(row['overall'] or 0)} OVR",
+            "name": row["name"],
+            "position": row["position"],
+            "age": row["age"],
+            "overall": row["overall"],
+            "potential": row["potential"],
+            "devTrait": row["dev_trait"],
+            "status": row["status"],
+            "aav": row["aav"],
+            "endYear": row["end_year"],
+            "value": round(value, 2),
+        })
+    return players
+
+
+def _trade_pick_rows(conn: sqlite3.Connection, team_id: int, season: int, chart: str) -> list[dict[str, Any]]:
+    if not table_exists(conn, "draft_picks"):
+        return []
+    rows = conn.execute(
+        """
+        WITH ordered AS (
+            SELECT
+                dp.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY dp.draft_year
+                    ORDER BY dp.round, COALESCE(dp.pick_number, dp.pick_id), dp.pick_id
+                ) AS effective_pick_number,
+                ROW_NUMBER() OVER (
+                    PARTITION BY dp.draft_year, dp.round
+                    ORDER BY COALESCE(dp.pick_number, dp.pick_id), dp.pick_id
+                ) AS effective_pick_in_round
+            FROM draft_picks dp
+            WHERE dp.draft_year BETWEEN ? AND ?
+        )
+        SELECT o.*, ot.abbreviation AS original_team
+        FROM ordered o
+        LEFT JOIN teams ot ON ot.team_id = o.original_team_id
+        WHERE o.current_team_id = ?
+          AND COALESCE(o.is_used, 0) = 0
+        ORDER BY o.draft_year, o.round, o.effective_pick_number, o.pick_id
+        LIMIT 40
+        """,
+        (season, season + 4, team_id),
+    ).fetchall()
+    picks = []
+    for row in rows:
+        pick_number = row["effective_pick_number"] or row["pick_number"]
+        if pick_number:
+            value = trade_engine.pick_value(conn, chart, int(pick_number))
+            label = f"{row['draft_year']} #{pick_number} R{row['round']}"
+        else:
+            value = trade_engine.pick_value_for_round(
+                conn,
+                chart,
+                int(row["draft_year"] or season + 1),
+                int(row["round"] or 1),
+                team_id,
+            )
+            label = f"{row['draft_year']} R{row['round']}"
+        if row["original_team"]:
+            label += f" ({row['original_team']})"
+        picks.append({
+            "type": "pick",
+            "pickId": int(row["pick_id"]),
+            "draftYear": int(row["draft_year"]),
+            "round": int(row["round"]),
+            "pickNumber": int(pick_number) if pick_number else None,
+            "label": label,
+            "value": round(float(value), 2),
+        })
+    return picks
+
+
+def trade_center_payload_for_active_db(partner_abbr: str | None = None) -> dict[str, Any]:
+    db_path = active_db_path()
+    context = game_context(db_path)
+    season = int(context["currentSeason"])
+    active = context.get("activeSave") or {}
+    user_abbr = str(active.get("user_team") or context.get("userTeam") or "MIN").upper()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        trade_engine.ensure_schema(conn)
+        trade_engine.seed_charts(conn)
+        trade_engine.assign_charts_to_gms(conn)
+        teams = [
+            dict(row)
+            for row in conn.execute(
+                """
+                SELECT team_id AS teamId, abbreviation AS abbr,
+                       city || ' ' || nickname AS name
+                FROM teams
+                ORDER BY abbreviation
+                """
+            ).fetchall()
+        ]
+        user_team = _team_by_abbr(conn, user_abbr) or conn.execute("SELECT * FROM teams ORDER BY team_id LIMIT 1").fetchone()
+        user_team_id = int(user_team["team_id"])
+        if not partner_abbr or str(partner_abbr).upper() == user_abbr:
+            partner = conn.execute(
+                "SELECT * FROM teams WHERE team_id != ? ORDER BY abbreviation LIMIT 1",
+                (user_team_id,),
+            ).fetchone()
+        else:
+            partner = _team_by_abbr(conn, partner_abbr)
+        if not partner:
+            partner = conn.execute(
+                "SELECT * FROM teams WHERE team_id != ? ORDER BY abbreviation LIMIT 1",
+                (user_team_id,),
+            ).fetchone()
+        partner_team_id = int(partner["team_id"])
+        cpu_chart = trade_engine.gm_chart(conn, partner_team_id)
+        user_chart = trade_engine.gm_chart(conn, user_team_id)
+        recent = []
+        if table_exists(conn, "trade_proposals_view"):
+            recent = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT proposal_id AS proposalId, proposal_date AS proposalDate,
+                           proposing_team AS proposingTeam, receiving_team AS receivingTeam,
+                           status, proposing_value AS proposingValue,
+                           receiving_value AS receivingValue,
+                           proposer_note AS proposerNote,
+                           responder_note AS responderNote
+                    FROM trade_proposals_view
+                    ORDER BY proposal_date DESC, proposal_id DESC
+                    LIMIT 14
+                    """
+                ).fetchall()
+            ]
+        return {
+            "season": season,
+            "generatedAt": datetime.now().isoformat(timespec="seconds"),
+            "userTeam": {
+                "id": user_team_id,
+                "abbr": user_team["abbreviation"],
+                "name": f"{user_team['city']} {user_team['nickname']}",
+                "chart": user_chart,
+            },
+            "partnerTeam": {
+                "id": partner_team_id,
+                "abbr": partner["abbreviation"],
+                "name": f"{partner['city']} {partner['nickname']}",
+                "chart": cpu_chart,
+            },
+            "teams": teams,
+            "userAssets": {
+                "players": _trade_player_rows(conn, user_team_id, season, cpu_chart),
+                "picks": _trade_pick_rows(conn, user_team_id, season, cpu_chart),
+            },
+            "partnerAssets": {
+                "players": _trade_player_rows(conn, partner_team_id, season, cpu_chart),
+                "picks": _trade_pick_rows(conn, partner_team_id, season, cpu_chart),
+            },
+            "recent": recent,
+        }
+
+
 def league_leaders_payload_for_active_db(season: int | None = None, category: str | None = None) -> dict[str, Any]:
     db_path = active_db_path()
     target_season = int(season or active_export_season(db_path))
@@ -673,6 +962,22 @@ def schedule_payload_for_active_db(season: int | None = None, week: int | None =
 def live_calendar_focus_date(conn: sqlite3.Connection, season: int, fallback: str) -> str:
     if not export_game_center_ui_data.table_exists(conn, "season_games"):
         return fallback
+    fallback_date = str(fallback or "")
+    if fallback_date and fallback_date < f"{season}-09-01":
+        row = conn.execute(
+            """
+            SELECT COALESCE(
+                MIN(CASE WHEN played = 0 THEN game_date END),
+                MAX(CASE WHEN played = 1 THEN game_date END)
+            ) AS preseason_focus_date
+            FROM season_games
+            WHERE season = ?
+              AND game_type = 'PRE'
+            """,
+            (season,),
+        ).fetchone()
+        if row and row["preseason_focus_date"]:
+            return str(row["preseason_focus_date"])
     row = conn.execute(
         """
         SELECT MAX(game_date) AS latest_played_date
@@ -713,6 +1018,11 @@ def calendar_payload_for_active_db(
         conn.row_factory = sqlite3.Row
         if live_focus:
             target_date = live_calendar_focus_date(conn, target_season, str(context["currentDate"]))
+        focus_date = export_game_center_ui_data.default_calendar_focus_date(
+            conn,
+            season=target_season,
+            current_date=target_date,
+        )
         active = export_game_center_ui_data.active_save(conn) or {}
         game_id = active.get("game_id") or active.get("save_id")
         user_team_id = active.get("user_team_id")
@@ -720,6 +1030,7 @@ def calendar_payload_for_active_db(
             conn,
             season=target_season,
             current_date=target_date,
+            focus_date=focus_date,
             game_id=game_id,
             user_team_id=user_team_id,
         )
@@ -1343,14 +1654,23 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         game_id = str(params.get("game_id") or "").strip()
         if not game_id:
             raise ValueError("delete_save requires game_id.")
+        stopped = stop_processes_using_save(game_id)
+        if stopped:
+            print(f"Stopped {len(stopped)} process(es) using save {game_id}: {', '.join(str(pid) for pid in stopped)}")
         return play("delete-save", game_id)
     if action == "advance_next_event":
-        return play("advance-to-next-event")
+        command = play("advance-to-next-event")
+        if params.get("auto_roster_cutdown"):
+            command.append("--auto-roster-cutdown")
+        return command
     if action == "advance_to_date":
         target_date = str(params.get("date") or "").strip()
         if not target_date:
             raise ValueError("advance_to_date requires date.")
-        return play("advance-to-date", "--date", target_date)
+        command = play("advance-to-date", "--date", target_date)
+        if params.get("auto_roster_cutdown"):
+            command.append("--auto-roster-cutdown")
+        return command
     if action == "validate_rosters":
         return play("validate-rosters", "--summary-only")
     if action == "auto_cutdown":
@@ -1358,14 +1678,20 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
     if action == "sim_week":
         week = params.get("week") or state.get("season", {}).get("nextWeek")
         if not week:
-            raise ValueError("No next regular-season week is available.")
-        command = play("sim-week", str(int(week)), "--season", str(season), "--apply")
-        if params.get("skip_roster_gate"):
+            raise ValueError("No next scheduled week is available.")
+        game_type = str(params.get("game_type") or state.get("season", {}).get("nextGameType") or "REG").upper()
+        if game_type not in {"REG", "PRE"}:
+            game_type = "REG"
+        command = play("sim-week", str(int(week)), "--season", str(season), "--game-type", game_type, "--apply")
+        if params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
             command.append("--skip-roster-gate")
         return command
     if action == "sim_season":
-        command = play("sim-season", "--season", str(season), "--apply", "--seed", f"{season}00")
-        if params.get("skip_roster_gate"):
+        game_type = str(params.get("game_type") or state.get("season", {}).get("nextGameType") or "REG").upper()
+        if game_type not in {"REG", "PRE"}:
+            game_type = "REG"
+        command = play("sim-season", "--season", str(season), "--game-type", game_type, "--apply", "--seed", f"{season}00")
+        if params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
             command.append("--skip-roster-gate")
         return command
     if action == "postseason":
@@ -1395,6 +1721,27 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if params.get("aav"):
             command.extend(["--aav", str(int(params["aav"]))])
         return play(*command)
+    if action == "contract_tag":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("contract_tag requires player_id.")
+        tag_type = str(params.get("tag_type") or "franchise").lower()
+        if tag_type not in {"franchise", "exclusive", "transition"}:
+            raise ValueError("contract_tag tag_type must be franchise, exclusive, or transition.")
+        return play(
+            "contract",
+            "tag",
+            "--season",
+            str(season),
+            "--team",
+            str(user_team),
+            "--player-id",
+            str(int(player_id)),
+            "--tag-type",
+            tag_type,
+            "--apply",
+            "--fast",
+        )
     if action == "contract_release":
         player_id = params.get("player_id")
         if not player_id:
@@ -1563,6 +1910,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(start_date),
             "--opening-cpu-offers",
             str(int(params.get("opening_cpu_offers") or 112)),
+            "--cpu-resign-per-team",
+            str(int(params.get("cpu_resign_per_team") or 2)),
             "--cpu-retention-per-team",
             str(int(params.get("cpu_retention_per_team") or 1)),
             "--no-cap-snapshot",
@@ -1635,9 +1984,15 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "advance_to_draft":
-        return play("advance-to-draft", "--draft-year", str(draft_year), "--user-team", str(user_team))
+        command = play("advance-to-draft", "--draft-year", str(draft_year), "--user-team", str(user_team))
+        if params.get("auto_roster_cutdown"):
+            command.append("--auto-roster-cutdown")
+        return command
     if action == "advance_next_league_year":
-        return play("advance-to-next-league-year")
+        command = play("advance-to-next-league-year")
+        if params.get("auto_roster_cutdown"):
+            command.append("--auto-roster-cutdown")
+        return command
     if action == "draft_start":
         return play("draft-room", "start", "--draft-year", str(draft_year), "--user-team", str(user_team), "--paused", "--apply")
     if action == "draft_skip":
@@ -1654,7 +2009,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "draft_skip_to_user":
-        remaining = int(((state.get("draft") or {}).get("pickTotals") or {}).get("remaining") or 999)
+        remaining = remaining_draft_pick_count(draft_year)
         return play(
             "draft-room",
             "skip",
@@ -1667,7 +2022,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "draft_finish":
-        remaining = int(((state.get("draft") or {}).get("pickTotals") or {}).get("remaining") or 999)
+        remaining = remaining_draft_pick_count(draft_year)
         return play(
             "draft-room",
             "skip",
@@ -1707,6 +2062,24 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--no-cap-snapshot",
             "--apply",
         )
+    if action == "draft_user_trade":
+        target_pick_id = params.get("target_pick_id")
+        if not target_pick_id:
+            raise ValueError("draft_user_trade requires target_pick_id.")
+        command = [
+            "draft-room",
+            "user-trade",
+            "--draft-year",
+            str(draft_year),
+            "--target-pick-id",
+            str(int(target_pick_id)),
+            "--user-team",
+            str(user_team),
+            "--apply",
+        ]
+        for pick_id in params.get("offer_pick_ids") or []:
+            command.extend(["--offer-pick-id", str(int(pick_id))])
+        return play(*command)
     if action == "ai_gm_setup":
         return play("ai-gm", "setup", "--season", str(season), "--no-backup")
     if action == "ai_gm_enable_ollama":
@@ -2203,10 +2576,16 @@ def action_response_summary(
             "draft_pause": "Draft Room Paused",
             "draft_resume": "Draft Room Resumed",
             "draft_pick": "Draft Pick Submitted",
+            "draft_user_trade": "Draft Trade Proposed",
             "draft_skip": "Draft Pick Skipped",
             "draft_skip_to_user": "Advanced To User Pick",
             "draft_finish": "Draft Finished",
         }.get(action, "Draft Updated")
+        if action == "draft_user_trade" and "Trade rejected" in (stdout or ""):
+            summary["title"] = "Draft Trade Rejected"
+            summary["status"] = "warning"
+        elif action == "draft_user_trade" and "Trade accepted" in (stdout or ""):
+            summary["title"] = "Draft Trade Accepted"
     elif action in FREE_AGENCY_RUN_ACTIONS:
         summary["affectedPanels"] = ["freeAgency", "contracts", "calendar", "season"]
         summary["title"] = {
@@ -2285,7 +2664,7 @@ def run_auto_cutdown_continue_action(params: dict[str, Any]) -> dict[str, Any]:
         cwd=ROOT,
         text=True,
         capture_output=True,
-        timeout=int(params.get("timeout_seconds") or 3600),
+        timeout=action_timeout_seconds("auto_cutdown_continue", params),
     )
     stdout_parts = [cutdown.stdout]
     stderr_parts = [cutdown.stderr]
@@ -2303,7 +2682,7 @@ def run_auto_cutdown_continue_action(params: dict[str, Any]) -> dict[str, Any]:
             cwd=ROOT,
             text=True,
             capture_output=True,
-            timeout=int(params.get("timeout_seconds") or 3600),
+            timeout=action_timeout_seconds(continue_action, params),
         )
         stdout_parts.append(continued.stdout)
         stderr_parts.append(continued.stderr)
@@ -2377,6 +2756,8 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return run_box_score_action(params)
     if action == "auto_cutdown_continue":
         return run_auto_cutdown_continue_action(params)
+    if action in TRADE_RUN_ACTIONS:
+        return run_trade_action(action, params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
     command = action_command(action, params, before)
     if action in SIM_CANCEL_ACTIONS:
@@ -2395,7 +2776,7 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         cwd=ROOT,
         text=True,
         capture_output=True,
-        timeout=int(params.get("timeout_seconds") or 3600),
+        timeout=action_timeout_seconds(action, params),
     )
     duration_seconds = perf_counter() - started
     include_players = action == "refresh" or (
@@ -2446,6 +2827,138 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             response["injuryAlertsError"] = str(exc)
     return response
+
+
+def _trade_asset_from_ui(item: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    asset_type = str(item.get("type") or item.get("asset_type") or "").lower()
+    if asset_type == "player" and item.get("playerId"):
+        return {
+            "asset_type": "PlayerContract",
+            "player_id": int(item["playerId"]),
+            "description": item.get("label"),
+        }
+    if asset_type == "pick" and item.get("pickId"):
+        return {
+            "asset_type": "DraftPick",
+            "pick_id": int(item["pickId"]),
+            "draft_year": int(item["draftYear"]) if item.get("draftYear") else None,
+            "round": int(item["round"]) if item.get("round") else None,
+            "pick_number": int(item["pickNumber"]) if item.get("pickNumber") else None,
+            "description": item.get("label"),
+        }
+    return None
+
+
+def run_trade_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    started = perf_counter()
+    stdout = ""
+    stderr = ""
+    returncode = 0
+    summary_title = "Trade Updated"
+    summary_status = "ok"
+    try:
+        db_path = active_db_path()
+        context = game_context(db_path)
+        season = int(context["currentSeason"])
+        active = context.get("activeSave") or {}
+        game_id = str(active.get("game_id") or active.get("id") or "ui_trade")
+        user_abbr = str(active.get("user_team") or context.get("userTeam") or "MIN").upper()
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            trade_engine.ensure_schema(conn)
+            trade_engine.seed_charts(conn)
+            trade_engine.assign_charts_to_gms(conn)
+            if action == "trade_cpu_market":
+                result = trade_engine.ai_gm_process_trade_market(
+                    conn,
+                    game_id=game_id,
+                    season=season,
+                    max_proposals_per_team=int(params.get("max_proposals_per_team") or 1),
+                    include_user_team_as_target=not bool(params.get("no_user_offers")),
+                    execute_cpu_cpu=not bool(params.get("no_execute_cpu_cpu")),
+                    ignore_trade_window=bool(params.get("ignore_window", True)),
+                    current_date=str(context["currentDate"]),
+                )
+                conn.commit()
+                counts = result.get("counts") or {}
+                stdout = (
+                    f"CPU trade market generated {counts.get('generated', 0)} proposal(s), "
+                    f"executed {counts.get('executed', 0)} CPU trade(s)."
+                )
+                summary_title = "CPU Trade Market Run"
+            else:
+                partner_abbr = str(params.get("partner_team") or "").upper()
+                partner = _team_by_abbr(conn, partner_abbr)
+                user_team = _team_by_abbr(conn, user_abbr)
+                if not partner or not user_team:
+                    raise ValueError("Could not resolve user or partner team.")
+                user_assets = [
+                    asset for asset in (_trade_asset_from_ui(item) for item in params.get("user_assets") or [])
+                    if asset
+                ][:5]
+                partner_assets = [
+                    asset for asset in (_trade_asset_from_ui(item) for item in params.get("partner_assets") or [])
+                    if asset
+                ][:5]
+                if not user_assets or not partner_assets:
+                    raise ValueError("Trade offers need at least one asset from each team.")
+                proposal_id = trade_engine.create_proposal(
+                    conn,
+                    game_id=game_id,
+                    proposing_team_id=int(user_team["team_id"]),
+                    receiving_team_id=int(partner["team_id"]),
+                    proposing_assets=user_assets,
+                    receiving_assets=partner_assets,
+                    proposer_note="Submitted from Trade Center.",
+                    proposal_date=str(context["currentDate"]),
+                )
+                response = trade_engine.ai_gm_respond(conn, proposal_id=proposal_id, game_id=game_id)
+                if response.get("action") == "accept":
+                    trade_engine.execute_trade(conn, proposal_id)
+                    summary_title = "Trade Accepted"
+                    stdout = f"Trade accepted and executed by {partner['abbreviation']}."
+                elif response.get("action") == "counter_suggestion":
+                    summary_title = "Trade Countered"
+                    summary_status = "warning"
+                    shortfall = response.get("shortfall")
+                    stdout = f"{partner['abbreviation']} wants more value. Shortfall: {shortfall}."
+                else:
+                    summary_title = "Trade Rejected"
+                    summary_status = "warning"
+                    stdout = f"{partner['abbreviation']} rejected the offer."
+                evaluation = response.get("evaluation") or {}
+                if evaluation.get("reason"):
+                    stdout += f" {evaluation['reason']}"
+                conn.commit()
+    except Exception as exc:
+        returncode = 1
+        stderr = str(exc)
+        summary_status = "error"
+        summary_title = "Trade Failed"
+    duration_seconds = perf_counter() - started
+    try:
+        state, app_shell_after = write_exports(include_players=True)
+    except Exception:
+        state, app_shell_after = payload_for_active_db(), app_shell_payload_for_active_db()
+    return {
+        "action": action,
+        "command": f"{action} via Trade Center",
+        "returncode": returncode,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout[-20000:],
+        "stderr": stderr[-20000:],
+        "summary": {
+            "title": summary_title,
+            "message": stdout or stderr or summary_title,
+            "status": summary_status,
+            "durationSeconds": round(duration_seconds, 2),
+            "affectedPanels": ["trade", "roster", "transactions", "contracts"],
+        },
+        "state": state,
+        "app_shell_state": app_shell_after,
+    }
 
 
 def request_runner_cancel(action: str | None = None) -> dict[str, Any]:
@@ -2720,6 +3233,14 @@ class UiHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
+        if parsed.path == "/api/trade-center":
+            try:
+                params = parse_qs(parsed.query)
+                partner = (params.get("partner") or [None])[0]
+                self.write_json(HTTPStatus.OK, trade_center_payload_for_active_db(partner))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
         if parsed.path == "/api/contracts":
             try:
                 params = parse_qs(parsed.query)
@@ -2828,3 +3349,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

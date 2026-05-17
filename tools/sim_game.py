@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from engine import match_engine  # noqa: E402
 from engine import injury_model  # noqa: E402
 import injury_notifications  # noqa: E402
+import preseason_processor  # noqa: E402
 import sim_control  # noqa: E402
 import weekly_processor  # noqa: E402
 
@@ -303,13 +304,15 @@ def scheduled_game_rows(
     con: sqlite3.Connection,
     *,
     season: int,
+    game_type: str = "REG",
     force: bool = False,
     week: int | None = None,
     start_week: int | None = None,
     end_week: int | None = None,
 ) -> list[sqlite3.Row]:
-    filters = ["season = ?", "game_type = 'REG'"]
-    params: list[object] = [season]
+    game_type = str(game_type or "REG").upper()
+    filters = ["season = ?", "game_type = ?"]
+    params: list[object] = [season, game_type]
     if week is not None:
         filters.append("week = ?")
         params.append(week)
@@ -396,13 +399,79 @@ def process_weekly_hooks_for_rows(
     con: sqlite3.Connection,
     rows: list[sqlite3.Row],
     *,
+    game_type: str = "REG",
     force: bool = False,
+    ai_gm_enabled: bool = True,
     cancel_db_path: Path | None = None,
 ) -> None:
     weeks = sorted({int(row["week"]) for row in rows})
     if not weeks:
         return
     season = int(rows[0]["season"])
+    game_type = str(game_type or rows[0]["game_type"] or "REG").upper()
+    if game_type == "PRE":
+        game_row = con.execute(
+            """
+            SELECT setting_value
+            FROM game_settings
+            WHERE setting_key IN ('active_game_id', 'activeGameId')
+            ORDER BY CASE setting_key WHEN 'active_game_id' THEN 0 ELSE 1 END
+            LIMIT 1
+            """
+        ).fetchone()
+        game_id = str(game_row["setting_value"]) if game_row and game_row["setting_value"] else "preseason"
+        for week in weeks:
+            if cancel_db_path is not None:
+                sim_control.raise_if_cancelled(cancel_db_path, f"before preseason hooks for {season} Week {week}.")
+            completion = con.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+                FROM season_games
+                WHERE season = ? AND week = ? AND game_type = 'PRE'
+                """,
+                (season, week),
+            ).fetchone()
+            total_games = int(completion["total"] or 0) if completion else 0
+            played_games = int(completion["played"] or 0) if completion else 0
+            if total_games <= 0 or played_games < total_games:
+                print(f"Preseason hooks skipped for {season} Week {week}: {played_games}/{total_games} games complete.")
+                continue
+            has_calendar_events = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = 'calendar_events'"
+            ).fetchone()
+            event_row = (
+                con.execute(
+                    """
+                    SELECT event_start_date
+                    FROM calendar_events
+                    WHERE season = ?
+                      AND event_code = ?
+                    ORDER BY event_start_date
+                    LIMIT 1
+                    """,
+                    (season, f"PRESEASON_WEEK_{week}"),
+                ).fetchone()
+                if has_calendar_events
+                else None
+            )
+            event_date = str(event_row["event_start_date"]) if event_row else str(rows[0]["game_date"] or f"{season}-08-01")
+            result = preseason_processor.process_preseason_week(
+                con,
+                game_id=game_id,
+                season=season,
+                preseason_week=week,
+                event_date=event_date,
+                seed=f"{game_id}:{season}:preseason-week:{week}",
+                emit_messages=True,
+                process_market=True,
+                simulate_games=False,
+            )
+            print(preseason_processor.result_summary(result))
+        return
+    if game_type != "REG":
+        print(f"No weekly hooks configured for game type {game_type}.")
+        return
     for week in weeks:
         if cancel_db_path is not None:
             sim_control.raise_if_cancelled(cancel_db_path, f"before weekly hooks for {season} Week {week}.")
@@ -411,7 +480,7 @@ def process_weekly_hooks_for_rows(
             SELECT COUNT(*) AS total,
                    SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
             FROM season_games
-            WHERE season = ? AND week = ?
+            WHERE season = ? AND week = ? AND game_type = 'REG'
             """,
             (season, week),
         ).fetchone()
@@ -440,6 +509,7 @@ def process_weekly_hooks_for_rows(
                 week=week,
                 force=force,
                 require_complete=True,
+                ai_gm_enabled=ai_gm_enabled,
             )
         except ValueError as exc:
             print(f"Weekly hooks skipped for {season} Week {week}: {exc}")
@@ -457,7 +527,13 @@ def process_weekly_hooks_for_rows(
 def action_week(args: argparse.Namespace) -> None:
     con = connect(args.db)
     try:
-        rows = scheduled_game_rows(con, season=args.season, week=args.week, force=args.force)
+        rows = scheduled_game_rows(
+            con,
+            season=args.season,
+            game_type=args.game_type,
+            week=args.week,
+            force=args.force,
+        )
         if args.limit:
             rows = rows[: args.limit]
         if not rows:
@@ -474,7 +550,14 @@ def action_week(args: argparse.Namespace) -> None:
         )
         if args.apply:
             if args.weekly_hooks:
-                process_weekly_hooks_for_rows(con, rows, force=args.force, cancel_db_path=args.db)
+                process_weekly_hooks_for_rows(
+                    con,
+                    rows,
+                    game_type=args.game_type,
+                    force=args.force,
+                    ai_gm_enabled=not args.no_ai_gm,
+                    cancel_db_path=args.db,
+                )
             con.commit()
             print(f"Saved {saved} game result(s).")
         else:
@@ -502,6 +585,7 @@ def action_season(args: argparse.Namespace) -> None:
         rows = scheduled_game_rows(
             con,
             season=args.season,
+            game_type=args.game_type,
             start_week=args.start_week,
             end_week=args.end_week,
             force=args.force,
@@ -511,19 +595,39 @@ def action_season(args: argparse.Namespace) -> None:
         if not rows:
             print(f"No unsimmed games found for {args.season}.")
             return
-        simulated, saved = simulate_scheduled_rows(
-            con,
-            rows,
-            seed=args.seed,
-            apply=args.apply,
-            force=args.force,
-            notes=args.notes,
-            cancel_db_path=args.db if args.apply else None,
-        )
+        simulated = 0
+        saved = 0
+        rows_by_week: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            rows_by_week.setdefault(int(row["week"]), []).append(row)
+        for week in sorted(rows_by_week):
+            week_rows = rows_by_week[week]
+            if args.apply:
+                sim_control.raise_if_cancelled(args.db, f"before simulating {args.season} Week {week}.")
+            week_simulated, week_saved = simulate_scheduled_rows(
+                con,
+                week_rows,
+                seed=(args.seed + simulated if args.seed is not None else None),
+                apply=args.apply,
+                force=args.force,
+                notes=args.notes,
+                cancel_db_path=args.db if args.apply else None,
+            )
+            simulated += week_simulated
+            saved += week_saved
+            if args.apply:
+                if args.weekly_hooks:
+                    process_weekly_hooks_for_rows(
+                        con,
+                        week_rows,
+                        game_type=args.game_type,
+                        force=args.force,
+                        ai_gm_enabled=not args.no_ai_gm,
+                        cancel_db_path=args.db,
+                    )
+                con.commit()
+                print(f"Week {week} checkpoint saved ({week_saved} game result(s)).")
         if args.apply:
-            if args.weekly_hooks:
-                process_weekly_hooks_for_rows(con, rows, force=args.force, cancel_db_path=args.db)
-            con.commit()
             print(f"Saved {saved} game result(s) for {args.season}.")
         else:
             print(f"Dry run only. Simulated {simulated} game(s). Add --apply to save these results.")
@@ -575,6 +679,7 @@ def build_parser() -> argparse.ArgumentParser:
     week_parser = subparsers.add_parser("week", help="Simulate every unplayed game in a week.")
     week_parser.add_argument("week", type=int)
     week_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)
+    week_parser.add_argument("--game-type", choices=["REG", "PRE"], default="REG")
     week_parser.add_argument("--seed", type=int)
     week_parser.add_argument("--limit", type=int)
     week_parser.add_argument("--apply", action="store_true", help="Save results and mark games played.")
@@ -586,10 +691,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Run weekly event/roster hooks after saving a completed week.",
     )
+    week_parser.add_argument("--no-ai-gm", action="store_true", help="Skip heavy AI GM scans during weekly hooks.")
     week_parser.set_defaults(func=action_week)
 
-    season_parser = subparsers.add_parser("season", help="Simulate every unplayed regular-season game.")
+    season_parser = subparsers.add_parser("season", help="Simulate every unplayed scheduled game.")
     season_parser.add_argument("--season", type=int, default=match_engine.DEFAULT_SEASON)
+    season_parser.add_argument("--game-type", choices=["REG", "PRE"], default="REG")
     season_parser.add_argument("--start-week", type=int)
     season_parser.add_argument("--end-week", type=int)
     season_parser.add_argument("--seed", type=int)
@@ -603,6 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Run weekly event/roster hooks after each completed week.",
     )
+    season_parser.add_argument("--no-ai-gm", action="store_true", help="Skip heavy AI GM scans during weekly hooks.")
     season_parser.set_defaults(func=action_season)
 
     return parser

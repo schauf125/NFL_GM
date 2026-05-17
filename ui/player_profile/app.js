@@ -31,6 +31,25 @@
     railBackButton: document.getElementById("railBackButton"),
   };
 
+  const ATTRIBUTE_GROUPS_BY_POSITION = {
+    QB: new Set(["universal", "passer", "ball_carrier"]),
+    RB: new Set(["universal", "ball_carrier", "receiver", "blocker"]),
+    FB: new Set(["universal", "ball_carrier", "receiver", "blocker"]),
+    WR: new Set(["universal", "receiver", "ball_carrier", "blocker"]),
+    TE: new Set(["universal", "receiver", "blocker", "ball_carrier"]),
+    OT: new Set(["universal", "blocker"]),
+    OG: new Set(["universal", "blocker"]),
+    C: new Set(["universal", "blocker"]),
+    IDL: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
+    EDGE: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
+    LB: new Set(["universal", "run_defender", "coverage", "tackler", "pass_rusher"]),
+    CB: new Set(["universal", "coverage", "tackler"]),
+    S: new Set(["universal", "coverage", "tackler", "run_defender"]),
+    K: new Set(["universal", "specialist"]),
+    P: new Set(["universal", "specialist"]),
+    LS: new Set(["universal", "specialist", "tackler"]),
+  };
+
   function node(tag, className, text) {
     const element = document.createElement(tag);
     if (className) {
@@ -368,11 +387,17 @@
   }
 
   function topRatings(player, count) {
-    return [...(player.ratings || [])].sort((a, b) => b.value - a.value).slice(0, count);
+    return relevantRatings(player).sort((a, b) => b.value - a.value).slice(0, count);
   }
 
   function weakRatings(player, count) {
-    return [...(player.ratings || [])].sort((a, b) => a.value - b.value).slice(0, count);
+    return relevantRatings(player).sort((a, b) => a.value - b.value).slice(0, count);
+  }
+
+  function relevantRatings(player) {
+    const allowed = ATTRIBUTE_GROUPS_BY_POSITION[String(player?.position || "").toUpperCase()];
+    if (!allowed) return [...(player?.ratings || [])];
+    return (player?.ratings || []).filter((rating) => allowed.has(String(rating.group || "")));
   }
 
   function roleRows(roles) {
@@ -469,30 +494,33 @@
     flexPanel.append(flexRows(player.flex));
     root.append(flexPanel);
 
-    const panelRoot = panel("Attributes", "Full Scouting View");
+    const panelRoot = panel("Attributes", "Position-Relevant View");
     const wrap = node("div", "attributes-wrap");
     const groups = {};
-    (player.ratings || []).forEach((rating) => {
+    relevantRatings(player).forEach((rating) => {
       if (!groups[rating.group]) {
         groups[rating.group] = [];
       }
       groups[rating.group].push(rating);
     });
 
-    Object.keys(groups)
-      .sort((a, b) => (groups[a][0].groupOrder || 99) - (groups[b][0].groupOrder || 99))
-      .forEach((groupKey) => {
-        const card = node("section", "attribute-group");
-        card.append(node("h3", null, groups[groupKey][0].groupLabel));
-        groups[groupKey]
-          .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
-          .forEach((rating) => {
-            const row = node("div", "attribute-row");
-            append(row, [node("div", "attribute-name", rating.label), roleBar(rating.value, 100), node("span", "grade", rating.grade)]);
-            card.append(row);
-          });
-        wrap.append(card);
-      });
+    const groupKeys = Object.keys(groups)
+      .sort((a, b) => (groups[a][0].groupOrder || 99) - (groups[b][0].groupOrder || 99));
+    if (!groupKeys.length) {
+      wrap.append(node("div", "empty-state", "No position-relevant attributes are available."));
+    }
+    groupKeys.forEach((groupKey) => {
+      const card = node("section", "attribute-group");
+      card.append(node("h3", null, groups[groupKey][0].groupLabel));
+      groups[groupKey]
+        .sort((a, b) => b.value - a.value || a.label.localeCompare(b.label))
+        .forEach((rating) => {
+          const row = node("div", "attribute-row");
+          append(row, [node("div", "attribute-name", rating.label), roleBar(rating.value, 100), node("span", "grade", rating.grade)]);
+          card.append(row);
+        });
+      wrap.append(card);
+    });
     panelRoot.append(wrap);
     root.append(panelRoot);
     refs.view.replaceChildren(root);

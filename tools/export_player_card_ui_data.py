@@ -193,6 +193,25 @@ POSITION_LABELS = {
     "LS": "Long Snapper",
 }
 
+ATTRIBUTE_GROUPS_BY_POSITION: dict[str, set[str]] = {
+    "QB": {"universal", "passer", "ball_carrier"},
+    "RB": {"universal", "ball_carrier", "receiver", "blocker"},
+    "FB": {"universal", "ball_carrier", "receiver", "blocker"},
+    "WR": {"universal", "receiver", "ball_carrier", "blocker"},
+    "TE": {"universal", "receiver", "blocker", "ball_carrier"},
+    "OT": {"universal", "blocker"},
+    "OG": {"universal", "blocker"},
+    "C": {"universal", "blocker"},
+    "IDL": {"universal", "pass_rusher", "run_defender", "tackler"},
+    "EDGE": {"universal", "pass_rusher", "run_defender", "tackler"},
+    "LB": {"universal", "run_defender", "coverage", "tackler", "pass_rusher"},
+    "CB": {"universal", "coverage", "tackler"},
+    "S": {"universal", "coverage", "tackler", "run_defender"},
+    "K": {"universal", "specialist"},
+    "P": {"universal", "specialist"},
+    "LS": {"universal", "specialist", "tackler"},
+}
+
 
 def clean_hex(value: str | None, fallback: str) -> str:
     if not value:
@@ -268,6 +287,13 @@ def position_keys(position: str) -> list[str]:
         "composure",
         "consistency",
     ])
+
+
+def position_relevant_metric(position: str, metric: dict[str, Any]) -> bool:
+    allowed = ATTRIBUTE_GROUPS_BY_POSITION.get(str(position or "").upper())
+    if not allowed:
+        return True
+    return str(metric.get("group") or "") in allowed
 
 
 def relative_ui_path(local_path: str | None) -> str | None:
@@ -498,8 +524,9 @@ def fetch_rows(
 
 
 def build_payload(db_path: Path, season: int, limit: int | None = None, player_id: int | None = None) -> dict[str, Any]:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
 
     player_rows = fetch_rows(conn, season, limit, table_exists(conn, "player_graphics_assets"), player_id)
     player_ids = [row["player_id"] for row in player_rows]
@@ -594,6 +621,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
                 metric
                 for key, metric in metrics_by_key.items()
                 if key not in {item["key"] for item in ordered_metrics}
+                and position_relevant_metric(position, metric)
             ]
             ordered_metrics.extend(sorted(extra_metrics, key=lambda item: item["value"], reverse=True)[: 8 - len(ordered_metrics)])
 

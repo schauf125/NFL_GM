@@ -26,6 +26,7 @@ import event_generator
 import league_calendar
 import player_development_modifiers
 import player_personalities
+import preseason_processor
 import roster_rules
 import scouting
 import scheme_fits
@@ -426,6 +427,19 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             f"{scouting_result['hidden']} off-board discovery candidates."
         )
 
+    preseason_games = preseason_processor.ensure_preseason_schedule(
+        con,
+        season=args.start_year,
+        event_date=f"{args.start_year}-08-13",
+        event_week=1,
+        seed=f"{args.game_id}:{args.start_year}:preseason-schedule",
+    )
+    preseason_details = (
+        f"Seeded {preseason_games} preseason game(s)."
+        if preseason_games
+        else "Preseason schedule already available."
+    )
+
     con.execute(
         """
         INSERT INTO game_saves (
@@ -475,7 +489,10 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         game_date=start_date,
         log_type="GAME_START",
         title="Game started",
-        details=f"{scheme_details} {variance_details} {personality_details} {development_details} {draft_class_details}",
+        details=(
+            f"{scheme_details} {variance_details} {personality_details} "
+            f"{development_details} {draft_class_details} {preseason_details}"
+        ),
     )
     for event in events_on_date(con, start_date):
         log_game_event(
@@ -504,6 +521,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         print(development_details)
     print(scheme_details)
     print(draft_class_details)
+    print(preseason_details)
 
 
 def upcoming_events(con: sqlite3.Connection, current_date: str, *, limit: int, strict: bool = False) -> list[sqlite3.Row]:

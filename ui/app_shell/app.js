@@ -140,6 +140,9 @@
         throw new Error(payload.error || `Request failed with ${response.status}`);
       }
       if (payload.app_shell_state) data = payload.app_shell_state;
+      if (action === "delete_save") {
+        await loadLiveState();
+      }
       state.lastResult = payload;
       state.runnerAvailable = true;
       showToast(payload.returncode === 0 ? `${actionLabel(action)} complete` : `${actionLabel(action)} needs attention`);
@@ -152,7 +155,8 @@
       }
     } catch (error) {
       state.lastResult = { error: String(error) };
-      showToast("Action could not be completed");
+      showToast(String(error).replace(/^Error:\s*/, "") || "Action could not be completed");
+      await loadLiveState();
     } finally {
       state.runnerBusy = false;
       state.busyAction = null;

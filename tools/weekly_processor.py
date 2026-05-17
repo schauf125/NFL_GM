@@ -30,7 +30,7 @@ import trade_engine
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
-AI_GM_FULL_SCAN_WEEKS = {1, 4, 8, 12, 16, 18}
+AI_GM_FULL_SCAN_WEEKS = {1, 4, 8, 12, 16}
 CPU_SCOUTING_WEEKS = {2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 17, 18}
 AI_GM_MAJOR_INJURY_GAMES = 5
 ROSTER_MAINTENANCE_WEEKS = {1, 4, 8, 12, 16, 18}
@@ -349,14 +349,14 @@ def should_run_ai_gm_weekly(
     window: WeekWindow,
 ) -> tuple[bool, str, int]:
     if week in AI_GM_FULL_SCAN_WEEKS:
-        return True, "scheduled_full_scan", 48
+        return True, "scheduled_full_scan", 32
     major_injuries = major_injury_pressure_this_week(
         con,
         start_date=window.start_date,
         end_date=window.end_date,
     )
     if major_injuries:
-        return True, f"major_injury_pressure:{major_injuries}", 24
+        return True, f"major_injury_pressure:{major_injuries}", 16
     return False, "cadence_skip", 0
 
 
@@ -598,6 +598,7 @@ def process_week(
         to_date=window.end_date,
         include_start=include_start,
         force=force,
+        process_ai_gm=ai_gm_enabled,
     )
     mark_timing("daily_events", started)
 
@@ -881,8 +882,8 @@ def process_week(
                     apply_mode=True,
                     include_user_team=False,
                     mode_override=None,
-                    max_players=14,
-                    max_free_agents=10,
+                    max_players=10,
+                    max_free_agents=6,
                     current_date=window.end_date,
                 )
                 mark_timing("ai_gm", started)

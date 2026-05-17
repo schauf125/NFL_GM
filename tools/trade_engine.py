@@ -198,6 +198,42 @@ for _r, _vals in enumerate(_CS_ROUNDS, start=1):
     for _i, _v in enumerate(_vals, start=(_r - 1) * 32 + 1):
         CHASE_STUART_POINTS[_i] = _v
 
+# The original rough Chase/Stuart placeholder above over-weighted pick #1 like
+# a 1/pick curve, which made mid-first and future firsts look nearly worthless.
+# Use a flatter analytics-style curve where the top pick is premium, but not
+# worth several full drafts by itself.
+_CHASE_STUART_ANCHORS: list[tuple[int, float]] = [
+    (1, 34.6),
+    (2, 30.2),
+    (3, 27.6),
+    (4, 25.8),
+    (5, 24.3),
+    (8, 21.4),
+    (10, 19.9),
+    (16, 17.2),
+    (24, 14.7),
+    (32, 12.3),
+    (33, 12.0),
+    (48, 9.8),
+    (64, 7.8),
+    (65, 7.6),
+    (80, 5.9),
+    (96, 4.7),
+    (97, 4.6),
+    (128, 2.2),
+    (160, 1.0),
+    (192, 0.4),
+    (224, 0.1),
+]
+CHASE_STUART_POINTS = {}
+for _index, (_start_pick, _start_value) in enumerate(_CHASE_STUART_ANCHORS[:-1]):
+    _end_pick, _end_value = _CHASE_STUART_ANCHORS[_index + 1]
+    _span = max(1, _end_pick - _start_pick)
+    for _pick in range(_start_pick, _end_pick):
+        _progress = (_pick - _start_pick) / _span
+        CHASE_STUART_POINTS[_pick] = round(_start_value + (_end_value - _start_value) * _progress, 3)
+CHASE_STUART_POINTS[224] = _CHASE_STUART_ANCHORS[-1][1]
+
 BALANCED_POINTS: dict[int, float] = {}
 for _pick in range(1, 225):
     _rh = RICH_HILL_POINTS.get(_pick, 0)
@@ -1241,22 +1277,58 @@ def evaluate_trade_for_team(
     # Positional need boost: receiving a player at a position of need
     need_boost = 0.0
     weak_positions = team_weak_positions(con, team_id, season)
-    for asset in recv_assets:
-        if asset["asset_type"] == "PlayerContract" and asset.get("player_id"):
-            p = con.execute(
-                "SELECT position FROM players WHERE player_id = ?",
-                (int(asset["player_id"]),),
-            ).fetchone()
-            if p and p["position"] in weak_positions:
-                need_boost += 0.10
+    incoming_players = trade_asset_players(con, recv_assets)
+    outgoing_players = trade_asset_players(con, give_assets)
+    qb_penalty = 0.0
+    depth_penalty = 0.0
+    depth_bonus = 0.0
+    for player in incoming_players:
+        position = str(player.get("position") or "")
+        overall = float(player.get("overall") or 0)
+        snapshot = team_position_snapshot(con, team_id, position)
+        if position in weak_positions:
+            need_boost += 0.08 + min(0.10, max(0.0, overall - 68.0) / 100.0)
+        if snapshot["best"] and overall >= snapshot["best"] - 2:
+            depth_bonus += 0.04
+        if position == "QB":
+            if snapshot["best"] < 70:
+                need_boost += 0.20
+            elif snapshot["best"] >= 78 and overall < snapshot["best"] - 6:
+                qb_penalty += 0.16
+            elif snapshot["best"] >= 84:
+                qb_penalty += 0.10
+
+    for player in outgoing_players:
+        position = str(player.get("position") or "")
+        overall = float(player.get("overall") or 0)
+        snapshot = team_position_snapshot(
+            con,
+            team_id,
+            position,
+            exclude_player_id=int(player["player_id"]),
+        )
+        best_after = float(snapshot.get("best") or 0)
+        if position == "QB":
+            if overall >= 78:
+                qb_penalty += 0.45
+            elif overall >= 70:
+                qb_penalty += 0.25
+            if best_after < 68:
+                qb_penalty += 0.25
+        elif overall >= best_after + 5 and overall >= 72:
+            depth_penalty += 0.10
+        elif overall >= best_after + 2 and overall >= 68:
+            depth_penalty += 0.05
+        if position in weak_positions:
+            depth_penalty += 0.08
 
     # Determine acceptance threshold
     # Base: value_ratio >= 0.85 (willing to take slight loss)
     # + aggression_factor (aggressive GMs accept worse ratios)
     # + need_boost (need-based flexibility)
     # + deviation (allow deviation from strict chart)
-    threshold = 0.85 - aggression_factor - need_boost - deviation
-    threshold = max(0.50, min(1.20, threshold))
+    threshold = 0.85 - aggression_factor - need_boost - depth_bonus - deviation + depth_penalty + qb_penalty
+    threshold = max(0.50, min(1.65, threshold))
 
     accept = value_ratio >= threshold
 
@@ -1279,6 +1351,12 @@ def evaluate_trade_for_team(
     reason_parts.append(f"Ratio {value_ratio:.2f} vs threshold {threshold:.2f}")
     if need_boost > 0:
         reason_parts.append(f"Need boost: +{need_boost:.2f}")
+    if depth_bonus > 0:
+        reason_parts.append(f"Depth fit: +{depth_bonus:.2f}")
+    if depth_penalty > 0:
+        reason_parts.append(f"Depth loss: -{depth_penalty:.2f}")
+    if qb_penalty > 0:
+        reason_parts.append(f"QB caution: -{qb_penalty:.2f}")
     if aggression_factor != 0:
         reason_parts.append(f"Aggression: {aggression_factor:+.2f}")
 
@@ -1289,6 +1367,9 @@ def evaluate_trade_for_team(
         "value_given": round(value_given, 2),
         "value_ratio": round(value_ratio, 2),
         "need_boost": round(need_boost, 2),
+        "depth_bonus": round(depth_bonus, 2),
+        "depth_penalty": round(depth_penalty, 2),
+        "qb_penalty": round(qb_penalty, 2),
         "chart_deviation_allowed": deviation,
     }
 
@@ -1312,6 +1393,62 @@ def team_weak_positions(con: sqlite3.Connection, team_id: int, season: int) -> s
         if int(row["players"]) <= 2 or float(row["avg_overall"] or 70) < 68:
             weak.add(row["position"])
     return weak
+
+
+def team_position_snapshot(
+    con: sqlite3.Connection,
+    team_id: int,
+    position: str,
+    *,
+    exclude_player_id: int | None = None,
+) -> dict[str, Any]:
+    rows = con.execute(
+        """
+        SELECT player_id, first_name || ' ' || last_name AS name, position,
+               age, overall, potential, status
+        FROM players
+        WHERE team_id = ?
+          AND position = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Practice Squad')
+          AND (? IS NULL OR player_id != ?)
+        ORDER BY overall DESC, potential DESC, age ASC
+        LIMIT 6
+        """,
+        (team_id, position, exclude_player_id, exclude_player_id),
+    ).fetchall()
+    if not rows:
+        return {"count": 0, "best": 0.0, "second": 0.0, "players": []}
+    values = [float(row["overall"] or 0) for row in rows]
+    return {
+        "count": len(rows),
+        "best": values[0],
+        "second": values[1] if len(values) > 1 else 0.0,
+        "players": [dict(row) for row in rows],
+    }
+
+
+def trade_asset_players(con: sqlite3.Connection, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    player_ids = [
+        int(asset["player_id"])
+        for asset in assets
+        if asset.get("asset_type") == "PlayerContract" and asset.get("player_id")
+    ]
+    if not player_ids:
+        return []
+    placeholders = ",".join("?" for _ in player_ids)
+    return rows_as_dicts(
+        con.execute(
+            f"""
+            SELECT p.player_id, p.team_id, p.first_name || ' ' || p.last_name AS name,
+                   p.position, p.age, p.overall, p.potential, p.dev_trait,
+                   c.aav, c.end_year
+            FROM players p
+            LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+            WHERE p.player_id IN ({placeholders})
+            """,
+            player_ids,
+        ).fetchall()
+    )
 
 
 # ---------------------------------------------------------------------------

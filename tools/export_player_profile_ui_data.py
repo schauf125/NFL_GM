@@ -831,8 +831,9 @@ def build_summary(player: sqlite3.Row, role: dict[str, Any] | None, ratings: lis
 
 
 def build_payload(db_path: Path, season: int, limit: int | None = None, player_id: int | None = None) -> dict[str, Any]:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
 
     players_rows = fetch_players(conn, limit, player_id)
     player_ids = [int(row["player_id"]) for row in players_rows]

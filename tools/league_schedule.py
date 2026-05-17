@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build and inspect NFL GM Sim season schedules.
 
-The NFL has published the 2026 home/away opponent matrix, but the exact
-dates/times have not been fully released yet. This tool stores those official
-matchups and assigns them to a deterministic provisional 18-week schedule.
+The 2026 schedule uses the official NFL.com weekly release stored in
+data/schedules/2026_regular_season.json. If that data file is missing, the
+tool can still fall back to the older official opponent matrix with generated
+week placement.
 
 For future seasons, the tool generates projected schedules from the NFL formula:
 division home/away, rotating full-division opponents, same-place games, and the
@@ -14,6 +15,7 @@ real NFL optimizer is not public and exact dates are released later.
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sqlite3
 from dataclasses import dataclass
@@ -25,10 +27,12 @@ import league_calendar
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
+OFFICIAL_2026_SCHEDULE_PATH = ROOT / "data" / "schedules" / "2026_regular_season.json"
 DEFAULT_SEASON = 2026
 NFL_2026_OPPONENTS_URL = (
     "https://www.nfl.com/news/2026-nfl-season-team-by-team-opponents-for-every-game/"
 )
+NFL_2026_SCHEDULE_URL = "https://www.nfl.com/schedules/2026/by-week/reg-{week}"
 NFL_OPS_SCHEDULE_FORMULA_URL = "https://operations.nfl.com/the-game/creating-the-nfl-schedule/"
 
 DIVISIONS = {
@@ -76,11 +80,11 @@ WEEK_GAME_TARGETS = {
     6: 14,
     7: 14,
     8: 14,
-    9: 14,
+    9: 15,
     10: 14,
-    11: 14,
-    12: 15,
-    13: 15,
+    11: 13,
+    12: 16,
+    13: 14,
     14: 15,
     15: 16,
     16: 16,
@@ -438,6 +442,38 @@ def upsert_source(con: sqlite3.Connection, season: int) -> int:
     ).fetchone()
     if not row:
         raise RuntimeError("Could not create schedule source row.")
+    return int(row["source_id"])
+
+
+def upsert_official_schedule_source(con: sqlite3.Connection, season: int, source_url: str) -> int:
+    con.execute(
+        """
+        INSERT INTO season_schedule_sources (
+            season, source_name, source_url, is_official, notes
+        )
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(season, source_name) DO UPDATE SET
+            source_url = excluded.source_url,
+            is_official = excluded.is_official,
+            notes = excluded.notes
+        """,
+        (
+            season,
+            "NFL.com official regular-season schedule",
+            source_url,
+            "Official weekly schedule, dates, sites, and announced kickoff windows from NFL.com.",
+        ),
+    )
+    row = con.execute(
+        """
+        SELECT source_id
+        FROM season_schedule_sources
+        WHERE season = ? AND source_name = ?
+        """,
+        (season, "NFL.com official regular-season schedule"),
+    ).fetchone()
+    if not row:
+        raise RuntimeError("Could not create official schedule source row.")
     return int(row["source_id"])
 
 
@@ -1058,6 +1094,126 @@ def insert_season_weeks(con: sqlite3.Connection, season: int, *, notes: str) -> 
         )
 
 
+def load_official_2026_schedule() -> dict:
+    if not OFFICIAL_2026_SCHEDULE_PATH.exists():
+        raise FileNotFoundError(
+            f"Official 2026 schedule data not found: {OFFICIAL_2026_SCHEDULE_PATH}"
+        )
+    payload = json.loads(OFFICIAL_2026_SCHEDULE_PATH.read_text(encoding="utf-8"))
+    if int(payload.get("season") or 0) != DEFAULT_SEASON:
+        raise ValueError(f"Unexpected official schedule season: {payload.get('season')}")
+    games = payload.get("games") or []
+    if len(games) != 272:
+        raise ValueError(f"Official schedule should contain 272 games, found {len(games)}.")
+    return payload
+
+
+def official_game_note(game: dict) -> str:
+    parts = ["Official NFL.com schedule."]
+    if game.get("time_tbd"):
+        parts.append("Kickoff time TBD.")
+    category = game.get("category")
+    if category:
+        parts.append(str(category))
+    networks = game.get("networks") or []
+    if networks:
+        parts.append("TV: " + "/".join(str(network) for network in networks))
+    slug = game.get("slug")
+    if slug:
+        parts.append(f"Slug: {slug}")
+    return " ".join(parts)
+
+
+def insert_official_2026_schedule(con: sqlite3.Connection, source_id: int, payload: dict) -> None:
+    ids = team_ids(con)
+    games = sorted(
+        payload["games"],
+        key=lambda item: (
+            int(item["week"]),
+            str(item.get("game_date") or "9999-12-31"),
+            str(item.get("game_time_et") or "99:99"),
+            int(item["week_game_number"]),
+        ),
+    )
+    dates_by_week: dict[int, list[str]] = {}
+    teams_by_week: dict[int, set[str]] = {}
+    for week in range(1, 19):
+        dates_by_week[week] = []
+        teams_by_week[week] = set()
+    for game in games:
+        week = int(game["week"])
+        away = str(game["away"])
+        home = str(game["home"])
+        dates_by_week[week].append(str(game["game_date"]))
+        teams_by_week[week].update((away, home))
+
+    for week in range(1, 19):
+        week_dates = sorted(dates_by_week[week])
+        con.execute(
+            """
+            INSERT INTO season_weeks (
+                season, week, week_type, week_start_date, primary_game_date, status, notes
+            )
+            VALUES (?, ?, 'REG', ?, ?, 'official', ?)
+            """,
+            (
+                DEFAULT_SEASON,
+                week,
+                week_dates[0],
+                week_dates[-1],
+                "Official NFL.com weekly schedule.",
+            ),
+        )
+
+    numbers_by_week: dict[int, int] = {week: 0 for week in range(1, 19)}
+    for game in games:
+        week = int(game["week"])
+        away = str(game["away"])
+        home = str(game["home"])
+        numbers_by_week[week] += 1
+        con.execute(
+            """
+            INSERT INTO season_games (
+                season, week, game_type, week_game_number,
+                away_team_id, home_team_id, game_date, game_time_et,
+                neutral_site, site_label, schedule_status, source_id, matchup_bucket, notes
+            )
+            VALUES (?, ?, 'REG', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                DEFAULT_SEASON,
+                week,
+                numbers_by_week[week],
+                ids[away],
+                ids[home],
+                game.get("game_date"),
+                game.get("game_time_et"),
+                1 if game.get("neutral_site") else 0,
+                game.get("site_label"),
+                "official",
+                source_id,
+                matchup_bucket(away, home),
+                official_game_note(game),
+            ),
+        )
+
+    all_teams = set(TEAM_DIVISION)
+    for week in range(1, 19):
+        for team in sorted(all_teams - teams_by_week[week]):
+            con.execute(
+                """
+                INSERT INTO season_team_byes (season, team_id, week, status, notes)
+                VALUES (?, ?, ?, 'official', ?)
+                """,
+                (
+                    DEFAULT_SEASON,
+                    ids[team],
+                    week,
+                    "Official bye week from NFL.com schedule.",
+                ),
+            )
+
+
 def seed_2026_schedule(
     con: sqlite3.Connection,
     *,
@@ -1065,10 +1221,6 @@ def seed_2026_schedule(
     replace_played: bool = False,
 ) -> None:
     ensure_schema(con)
-    validation = validate_seed_data()
-    if not validation.ok:
-        raise ValueError("Seed data failed validation:\n" + "\n".join(validation.errors))
-
     existing = con.execute(
         "SELECT COUNT(*) AS count FROM season_games WHERE season = ? AND game_type = 'REG'",
         (DEFAULT_SEASON,),
@@ -1076,11 +1228,26 @@ def seed_2026_schedule(
     if int(existing["count"] or 0) and not replace:
         raise ValueError("2026 regular-season schedule already exists. Use --replace to rebuild it.")
 
+    clear_regular_schedule(con, DEFAULT_SEASON, replace_played=replace_played)
+    if OFFICIAL_2026_SCHEDULE_PATH.exists():
+        payload = load_official_2026_schedule()
+        source_id = upsert_official_schedule_source(
+            con,
+            DEFAULT_SEASON,
+            str(payload.get("source_url_template") or NFL_2026_SCHEDULE_URL),
+        )
+        insert_official_2026_schedule(con, source_id, payload)
+        con.commit()
+        return
+
+    validation = validate_seed_data()
+    if not validation.ok:
+        raise ValueError("Seed data failed validation:\n" + "\n".join(validation.errors))
+
     source_id = upsert_source(con, DEFAULT_SEASON)
     ids = team_ids(con)
     dates = regular_week_dates(DEFAULT_SEASON)
 
-    clear_regular_schedule(con, DEFAULT_SEASON, replace_played=replace_played)
     insert_season_weeks(
         con,
         DEFAULT_SEASON,

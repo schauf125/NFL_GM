@@ -220,6 +220,13 @@ def ensure_column(con: sqlite3.Connection, table: str, column: str, definition: 
         con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def table_exists(con: sqlite3.Connection, table: str) -> bool:
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table,),
+    ).fetchone() is not None
+
+
 def ensure_schema(con: sqlite3.Connection) -> None:
     ensure_contract_schema(con)
     ensure_transaction_schema(con)
@@ -942,24 +949,49 @@ def seed_waiver_priority(con: sqlite3.Connection, season: int, *, force: bool = 
     if existing:
         return 0
 
-    draft_rows = con.execute(
-        """
-        SELECT original_team_id
-        FROM draft_picks
-        WHERE draft_year = ? AND round = 1 AND original_team_id IS NOT NULL
-        ORDER BY COALESCE(pick_number, pick_id), pick_id
-        """,
-        (season + 1,),
-    ).fetchall()
     ordered_team_ids: list[int] = []
     seen: set[int] = set()
-    for row in draft_rows:
-        team_id = int(row["original_team_id"])
-        if team_id not in seen:
-            ordered_team_ids.append(team_id)
-            seen.add(team_id)
 
-    source = "draft_order_proxy"
+    source = "current_standings"
+    if table_exists(con, "season_team_records"):
+        standings_rows = con.execute(
+            """
+            SELECT str.team_id
+            FROM season_team_records str
+            JOIN teams t ON t.team_id = str.team_id
+            WHERE str.season = ?
+              AND (str.wins + str.losses + str.ties) > 0
+            ORDER BY
+                ((str.wins + str.ties * 0.5) * 1.0 / NULLIF(str.wins + str.losses + str.ties, 0)) ASC,
+                str.wins ASC,
+                (str.points_for - str.points_against) ASC,
+                t.abbreviation ASC
+            """,
+            (season,),
+        ).fetchall()
+        for row in standings_rows:
+            team_id = int(row["team_id"])
+            if team_id not in seen:
+                ordered_team_ids.append(team_id)
+                seen.add(team_id)
+
+    if len(ordered_team_ids) < 32:
+        source = "draft_order_proxy"
+        draft_rows = con.execute(
+            """
+            SELECT original_team_id
+            FROM draft_picks
+            WHERE draft_year = ? AND round = 1 AND original_team_id IS NOT NULL
+            ORDER BY COALESCE(pick_number, pick_id), pick_id
+            """,
+            (season + 1,),
+        ).fetchall()
+        for row in draft_rows:
+            team_id = int(row["original_team_id"])
+            if team_id not in seen:
+                ordered_team_ids.append(team_id)
+                seen.add(team_id)
+
     if len(ordered_team_ids) < 32:
         source = "alphabetical_placeholder"
         ordered_team_ids = [
@@ -983,7 +1015,7 @@ def seed_waiver_priority(con: sqlite3.Connection, season: int, *, force: bool = 
                 team_id,
                 priority,
                 source,
-                "Proxy priority. Replace later with official draft order/current standings logic.",
+                f"Waiver priority seeded from {source.replace('_', ' ')}.",
             ),
         )
     return len(ordered_team_ids)

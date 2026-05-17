@@ -533,31 +533,31 @@ h1 {
 
 .attributes-wrap {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
 }
 
 .attribute-group {
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px;
+  padding: 12px;
   background: rgba(255, 255, 255, 0.03);
 }
 
 .attribute-group h3 {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 0.82rem;
+  font-size: 0.86rem;
 }
 
 .attribute-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(96px, 26%) 64px;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 34%) 78px;
+  gap: 10px;
   align-items: center;
-  padding: 5px 0;
+  padding: 7px 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 
@@ -567,6 +567,9 @@ h1 {
 
 .attribute-name {
   overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 850;
 }
 
 .table-wrap {

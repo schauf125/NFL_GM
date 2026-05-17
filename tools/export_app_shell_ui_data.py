@@ -124,6 +124,7 @@ def load_registry() -> dict[str, Any]:
             "saves": {},
         },
     )
+    active_game_id = registry.get("active_game_id") or registry.get("activeGameId")
     saves = []
     for game_id, record in sorted(registry.get("saves", {}).items()):
         saves.append({
@@ -137,10 +138,10 @@ def load_registry() -> dict[str, Any]:
             "status": record.get("status"),
             "createdAt": record.get("created_at"),
             "lastPlayedAt": record.get("last_played_at"),
-            "active": game_id == registry.get("active_game_id"),
+            "active": game_id == active_game_id,
         })
     return {
-        "activeGameId": registry.get("active_game_id"),
+        "activeGameId": active_game_id,
         "saves": saves,
     }
 
@@ -150,7 +151,7 @@ def default_export_db() -> Path:
         SAVE_REGISTRY,
         {"version": 1, "active_game_id": None, "saves": {}},
     )
-    active_game_id = registry.get("active_game_id")
+    active_game_id = registry.get("active_game_id") or registry.get("activeGameId")
     if active_game_id:
         record = registry.get("saves", {}).get(active_game_id)
         if record and record.get("db_path"):
@@ -161,8 +162,9 @@ def default_export_db() -> Path:
 
 
 def build_payload(db_path: Path) -> dict[str, Any]:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         game_settings = settings(conn)
         return {

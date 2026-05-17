@@ -336,6 +336,7 @@ def save_registry() -> dict[str, Any]:
         SAVE_REGISTRY,
         {"version": 1, "active_game_id": None, "saves": {}},
     )
+    active_game_id = registry.get("active_game_id") or registry.get("activeGameId")
     saves = []
     for game_id, record in sorted(registry.get("saves", {}).items()):
         saves.append(
@@ -347,10 +348,10 @@ def save_registry() -> dict[str, Any]:
                 "phase": record.get("current_phase_code"),
                 "status": record.get("status"),
                 "dbPath": record.get("db_path"),
-                "active": game_id == registry.get("active_game_id"),
+                "active": game_id == active_game_id,
             }
         )
-    return {"activeGameId": registry.get("active_game_id"), "saves": saves}
+    return {"activeGameId": active_game_id, "saves": saves}
 
 
 def default_export_db() -> Path:
@@ -358,7 +359,7 @@ def default_export_db() -> Path:
         SAVE_REGISTRY,
         {"version": 1, "active_game_id": None, "saves": {}},
     )
-    active_game_id = registry.get("active_game_id")
+    active_game_id = registry.get("active_game_id") or registry.get("activeGameId")
     if active_game_id:
         record = registry.get("saves", {}).get(active_game_id)
         if record and record.get("db_path"):
@@ -698,6 +699,100 @@ def upcoming_calendar_games(
     )
 
 
+def user_preseason_matchups_by_week(
+    conn: sqlite3.Connection,
+    *,
+    season: int,
+    user_team_id: int | None = None,
+) -> dict[int, dict[str, Any]]:
+    if not user_team_id or not table_exists(conn, "season_games"):
+        return {}
+    logos = team_logo_map(conn)
+    rows = rows_as_dicts(
+        conn.execute(
+            """
+            SELECT
+                g.game_id,
+                g.week,
+                g.game_date,
+                g.game_time_et,
+                g.played,
+                g.away_score,
+                g.home_score,
+                away.abbreviation AS away_team,
+                away.city || ' ' || away.nickname AS away_team_name,
+                home.abbreviation AS home_team,
+                home.city || ' ' || home.nickname AS home_team_name
+            FROM season_games g
+            JOIN teams away ON away.team_id = g.away_team_id
+            JOIN teams home ON home.team_id = g.home_team_id
+            WHERE g.season = ?
+              AND g.game_type = 'PRE'
+              AND (g.away_team_id = ? OR g.home_team_id = ?)
+            ORDER BY g.week, g.game_date, COALESCE(g.game_time_et, '99:99'), g.game_id
+            """,
+            (season, user_team_id, user_team_id),
+        ).fetchall()
+    )
+    matchups: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        week = int(row.get("week") or 0)
+        if week <= 0 or week in matchups:
+            continue
+        row["awayLogo"] = logos.get(str(row.get("away_team")))
+        row["homeLogo"] = logos.get(str(row.get("home_team")))
+        row["label"] = f"{row.get('away_team', '-')} @ {row.get('home_team', '-')}"
+        if int(row.get("played") or 0):
+            row["scoreLabel"] = (
+                f"{row.get('away_team', '-')} {row.get('away_score', '-')} - "
+                f"{row.get('home_team', '-')} {row.get('home_score', '-')}"
+            )
+        matchups[week] = row
+    return matchups
+
+
+def attach_preseason_matchups(
+    events: list[dict[str, Any]],
+    *,
+    matchups_by_week: dict[int, dict[str, Any]],
+) -> None:
+    if not events or not matchups_by_week:
+        return
+    for event in events:
+        code = str(event.get("event_code") or "")
+        if not code.startswith("PRESEASON_WEEK_"):
+            continue
+        try:
+            week = int(code.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        matchup = matchups_by_week.get(week)
+        if matchup:
+            event["matchup"] = matchup
+
+
+def default_calendar_focus_date(conn: sqlite3.Connection, *, season: int, current_date: str) -> str:
+    if not table_exists(conn, "season_games"):
+        return current_date
+    current_text = str(current_date or "")
+    if current_text and current_text < f"{season}-09-01":
+        row = conn.execute(
+            """
+            SELECT COALESCE(
+                MIN(CASE WHEN played = 0 THEN game_date END),
+                MIN(game_date)
+            ) AS focus_date
+            FROM season_games
+            WHERE season = ?
+              AND game_type = 'PRE'
+            """,
+            (season,),
+        ).fetchone()
+        if row and row["focus_date"]:
+            return str(row["focus_date"])
+    return current_date
+
+
 def calendar_summary(
     conn: sqlite3.Connection,
     *,
@@ -705,8 +800,10 @@ def calendar_summary(
     current_date: str,
     game_id: str | None,
     user_team_id: int | None = None,
+    focus_date: str | None = None,
 ) -> dict[str, Any]:
-    focus, start, end = calendar_bounds(current_date)
+    display_date = focus_date or current_date
+    focus, start, end = calendar_bounds(display_date)
     start_text = start.isoformat()
     end_text = end.isoformat()
     events = calendar_event_rows(conn, start_date=start_text, end_date=end_text)
@@ -740,6 +837,7 @@ def calendar_summary(
                 "weekday": cursor.strftime("%a"),
                 "isCurrentMonth": cursor.month == focus.month,
                 "isToday": key == current_date,
+                "isFocusDate": key == display_date,
                 "events": events_by_date.get(key, []),
                 "games": games_by_date.get(key, []),
                 "news": news_by_date.get(key, []),
@@ -750,8 +848,14 @@ def calendar_summary(
     next_event = next_calendar_event(conn)
     upcoming_events = upcoming_calendar_events(conn, current_date=current_date, limit=12)
     next_games = upcoming_calendar_games(conn, season=season, current_date=current_date, user_team_id=user_team_id)
+    preseason_matchups = user_preseason_matchups_by_week(conn, season=season, user_team_id=user_team_id)
+    attach_preseason_matchups(events, matchups_by_week=preseason_matchups)
+    attach_preseason_matchups(upcoming_events, matchups_by_week=preseason_matchups)
+    if next_event:
+        attach_preseason_matchups([next_event], matchups_by_week=preseason_matchups)
     return {
-        "focusDate": current_date,
+        "focusDate": display_date,
+        "saveDate": current_date,
         "scope": "user_team" if user_team_id else "league",
         "monthLabel": focus.strftime("%B %Y"),
         "rangeStart": start_text,
@@ -763,6 +867,7 @@ def calendar_summary(
         "nextEvent": next_event,
         "upcomingEvents": upcoming_events,
         "upcomingGames": next_games,
+        "preseasonMatchupsByWeek": {str(week): matchup for week, matchup in preseason_matchups.items()},
     }
 
 
@@ -988,6 +1093,21 @@ def injury_center_summary(
 def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | None = None) -> dict[str, Any]:
     if not table_exists(conn, "season_games"):
         return {"season": season, "weeks": [], "totals": {"games": 0, "played": 0, "remaining": 0}}
+    preseason_weeks = conn.execute(
+        """
+        SELECT
+            week,
+            COUNT(*) AS games,
+            SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played,
+            MIN(game_date) AS first_date,
+            MAX(game_date) AS last_date
+        FROM season_games
+        WHERE season = ? AND game_type = 'PRE'
+        GROUP BY week
+        ORDER BY week
+        """,
+        (season,),
+    ).fetchall()
     weeks = conn.execute(
         """
         SELECT
@@ -1003,6 +1123,16 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         """,
         (season,),
     ).fetchall()
+    preseason_totals = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS games,
+            SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+        FROM season_games
+        WHERE season = ? AND game_type = 'PRE'
+        """,
+        (season,),
+    ).fetchone()
     totals = conn.execute(
         """
         SELECT
@@ -1013,6 +1143,17 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         """,
         (season,),
     ).fetchone()
+    preseason_week_items = []
+    next_preseason_week = None
+    for row in preseason_weeks:
+        games_for_week = int(row["games"] or 0)
+        played_for_week = int(row["played"] or 0)
+        item = dict(row)
+        item["remaining"] = games_for_week - played_for_week
+        item["complete"] = games_for_week > 0 and played_for_week >= games_for_week
+        preseason_week_items.append(item)
+        if next_preseason_week is None and item["remaining"] > 0:
+            next_preseason_week = int(row["week"])
     week_items = []
     next_week = None
     for row in weeks:
@@ -1024,6 +1165,10 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         week_items.append(item)
         if next_week is None and item["remaining"] > 0:
             next_week = int(row["week"])
+    next_game_type = "PRE" if next_preseason_week is not None else ("REG" if next_week is not None else None)
+    next_playable_week = next_preseason_week if next_preseason_week is not None else next_week
+    preseason_games = int(preseason_totals["games"] or 0) if preseason_totals else 0
+    preseason_played = int(preseason_totals["played"] or 0) if preseason_totals else 0
     games = int(totals["games"] or 0) if totals else 0
     played = int(totals["played"] or 0) if totals else 0
     postseason = postseason_summary(conn, season)
@@ -1063,12 +1208,12 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         for row in standings:
             row["teamLogo"] = logos.get(str(row.get("abbreviation")))
     next_week_games = []
-    if next_week is not None:
+    if next_playable_week is not None and next_game_type:
         next_week_games = game_rows(
             conn,
             season=season,
-            where_sql="g.game_type = 'REG' AND g.week = ?",
-            params=(next_week,),
+            where_sql="g.game_type = ? AND g.week = ?",
+            params=(next_game_type, next_playable_week),
             order_sql="g.week, g.week_game_number, g.game_id",
             limit=24,
         )
@@ -1092,8 +1237,17 @@ def season_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         )
     return {
         "season": season,
+        "preseasonWeeks": preseason_week_items,
         "weeks": week_items,
-        "nextWeek": next_week,
+        "nextWeek": next_playable_week,
+        "nextRegularWeek": next_week,
+        "nextPreseasonWeek": next_preseason_week,
+        "nextGameType": next_game_type,
+        "preseasonTotals": {
+            "games": preseason_games,
+            "played": preseason_played,
+            "remaining": preseason_games - preseason_played,
+        },
         "totals": {"games": games, "played": played, "remaining": games - played},
         "postseason": postseason,
         "completion": completion,
@@ -1849,6 +2003,84 @@ def draft_user_selections(
     return selections
 
 
+def draft_user_trade_assets(
+    conn: sqlite3.Connection,
+    year: int,
+    user_team_id: int | None,
+    *,
+    current_pick_number: int | None = None,
+) -> list[dict[str, Any]]:
+    if not user_team_id or not table_exists(conn, "draft_picks"):
+        return []
+    end_year = int(year) + 3
+    current_pick_number = int(current_pick_number or 0)
+    rows = rows_as_dicts(
+        conn.execute(
+            """
+            WITH ordered AS (
+                SELECT
+                    dp.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY dp.draft_year
+                        ORDER BY dp.round, COALESCE(dp.pick_number, dp.pick_id), dp.pick_id
+                    ) AS effective_pick_number,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY dp.draft_year, dp.round
+                        ORDER BY COALESCE(dp.pick_number, dp.pick_id), dp.pick_id
+                    ) AS effective_pick_in_round
+                FROM draft_picks dp
+                WHERE dp.draft_year BETWEEN ? AND ?
+            )
+            SELECT
+                o.pick_id AS pickId,
+                o.draft_year AS draftYear,
+                o.round,
+                o.pick_number AS pickNumber,
+                o.pick_in_round AS pickInRound,
+                o.effective_pick_number AS effectivePickNumber,
+                o.effective_pick_in_round AS effectivePickInRound,
+                o.current_team_id AS currentTeamId,
+                current_team.abbreviation AS currentTeam,
+                o.original_team_id AS originalTeamId,
+                original_team.abbreviation AS originalTeam,
+                o.is_used AS isUsed,
+                o.is_comp_pick AS isCompPick,
+                o.is_traded AS isTraded,
+                o.trade_note AS tradeNote
+            FROM ordered o
+            LEFT JOIN teams current_team ON current_team.team_id = o.current_team_id
+            LEFT JOIN teams original_team ON original_team.team_id = o.original_team_id
+            WHERE o.current_team_id = ?
+              AND COALESCE(o.is_used, 0) = 0
+              AND (
+                  o.draft_year > ?
+                  OR o.effective_pick_number > ?
+              )
+            ORDER BY o.draft_year, o.round, o.effective_pick_number, o.pick_id
+            """,
+            (year, end_year, user_team_id, year, current_pick_number),
+        ).fetchall()
+    )
+    for row in rows:
+        row["isFuture"] = int(row.get("draftYear") or year) > int(year)
+        original = row.get("originalTeam")
+        current = row.get("currentTeam")
+        suffix = ""
+        if original and current and original != current:
+            suffix = f" from {original}"
+        elif original:
+            suffix = f" {original}"
+        pick_number = row.get("effectivePickNumber") or row.get("pickNumber")
+        if row["isFuture"]:
+            label = f"{row.get('draftYear')} R{row.get('round')}{suffix}"
+        else:
+            label = f"{row.get('draftYear')} #{pick_number} (R{row.get('round')}){suffix}"
+        if row.get("isCompPick"):
+            label += " comp"
+        row["label"] = label
+    return rows
+
+
 def draft_summary(
     conn: sqlite3.Connection,
     year: int,
@@ -1863,6 +2095,7 @@ def draft_summary(
     board: list[dict[str, Any]] = []
     classes: list[dict[str, Any]] = []
     selections: list[dict[str, Any]] = []
+    user_trade_assets: list[dict[str, Any]] = []
     order_slot_count = 0
     order_finalized = False
     workout_visibility: dict[str, Any] = {}
@@ -1941,6 +2174,18 @@ def draft_summary(
         for pick in queue:
             team = pick.get("current_team") or pick.get("team")
             pick["teamLogo"] = logos.get(str(team)) if team else None
+    current_pick_number = None
+    if state:
+        try:
+            current_pick_number = int(state.get("current_pick_number") or 0)
+        except (TypeError, ValueError):
+            current_pick_number = None
+    user_trade_assets = draft_user_trade_assets(
+        conn,
+        year,
+        user_team_id,
+        current_pick_number=current_pick_number,
+    )
     if table_exists(conn, "draft_room_events"):
         events = rows_as_dicts(
             conn.execute(
@@ -2107,6 +2352,7 @@ def draft_summary(
         "events": events,
         "selections": selections,
         "userSelections": user_selections,
+        "userTradeAssets": user_trade_assets,
         "board": board,
         "classes": classes,
         "pickTotals": pick_totals,
@@ -2488,6 +2734,11 @@ def contract_negotiation_summary(
             "total": len(expiring),
             "priority": sum(1 for player in expiring if player.get("priority") == "Priority"),
             "negotiable": sum(1 for player in expiring if player.get("priority") == "Negotiable"),
+            "tagCandidates": sum(
+                1
+                for player in expiring
+                if player.get("franchise_tag_aav") and float(player.get("market_score") or 0) >= 76
+            ),
             "capCasualties": len(cap_casualties),
             "restructures": len(restructure_candidates),
         },
@@ -3393,8 +3644,9 @@ def command_set(
 
 
 def build_payload(db_path: Path) -> dict[str, Any]:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         game_settings = settings(conn)
         active = active_save(conn)
@@ -3451,6 +3703,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
                 conn,
                 season=current_season,
                 current_date=current_date,
+                focus_date=default_calendar_focus_date(conn, season=current_season, current_date=current_date),
                 game_id=game_id,
                 user_team_id=user_team_id,
             ),

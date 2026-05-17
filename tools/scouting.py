@@ -115,6 +115,8 @@ CPU_FIRST_ROUND_DUE_DILIGENCE_BONUS = 22.0
 CPU_QB_SCOUTING_NEED_FLOOR = 72.0
 CPU_QB_SCOUTING_STRONG_NEED = 78.0
 CPU_QB_DUE_DILIGENCE_BONUS = 34.0
+CPU_QB_CONTRACT_YEAR_NEED = 84.0
+CPU_QB_NEXT_CONTRACT_NEED = 74.0
 CPU_SCOUTING_BUCKETS = {
     "early": (1, 48),
     "day2": (33, 112),
@@ -192,8 +194,9 @@ def choose_hidden_discovery_candidates(
 def connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         raise FileNotFoundError(db_path)
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(db_path, timeout=30)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout = 30000")
     con.execute("PRAGMA foreign_keys = ON")
     return con
 
@@ -2368,6 +2371,8 @@ def cpu_qb_scouting_need_score(con: sqlite3.Connection, team_id: int) -> float:
     top_overall = float(starter["overall"] or 0)
     top_potential = float(starter["potential"] or top_overall)
     age = int(starter["age"] or 0)
+    starter_id = int(starter["player_id"] or 0)
+    target_draft_year = current_season(con) + 1
     score = 0.0
     if top_overall < 66:
         score = max(score, 96.0)
@@ -2387,6 +2392,30 @@ def cpu_qb_scouting_need_score(con: sqlite3.Connection, team_id: int) -> float:
         score = max(score, 48.0)
     elif max(float(row["potential"] or row["overall"] or 0) for row in rows[1:]) < 70 and age >= 30:
         score = max(score, 52.0)
+    if starter_id and table_exists(con, "contracts"):
+        contract = con.execute(
+            """
+            SELECT end_year, aav, contract_type, franchise_tag
+            FROM contracts
+            WHERE player_id = ?
+              AND is_active = 1
+            ORDER BY end_year DESC, contract_id DESC
+            LIMIT 1
+            """,
+            (starter_id,),
+        ).fetchone()
+        if contract:
+            end_year = int(contract["end_year"] or 0)
+            aav = float(contract["aav"] or 0)
+            tagged = bool(contract["franchise_tag"] or str(contract["contract_type"] or "").lower().endswith("tag"))
+            if end_year <= target_draft_year - 1:
+                score = max(score, CPU_QB_CONTRACT_YEAR_NEED)
+            elif end_year <= target_draft_year:
+                score = max(score, CPU_QB_NEXT_CONTRACT_NEED)
+            if tagged and age >= 30:
+                score = max(score, CPU_QB_CONTRACT_YEAR_NEED)
+            if age >= 32 and end_year <= target_draft_year + 1 and aav >= 20_000_000:
+                score = max(score, 72.0)
     return score
 
 

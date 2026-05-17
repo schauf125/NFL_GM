@@ -155,7 +155,7 @@ ROTATION_FATIGUE_THRESHOLDS = {
     "SS": 62,
 }
 
-RB_SEASON_WORKLOAD_SOFT_CAP = 255
+RB_SEASON_WORKLOAD_SOFT_CAP = 235
 
 SPECIAL_TEAMS_POSITION_PRIOR = {
     "LB": 1.18,
@@ -2834,18 +2834,18 @@ class MatchEngine:
         profile = rb_behavior_profile(player)
         talent = weighted_average(player, RB_RUN_WEIGHTS)
         overall = float(player.metadata.get("overall") or player.general_score())
-        weight = 1.0 / (idx + 1.48)
+        weight = 1.0 / (idx + 1.38)
         weight *= 1.0 + clamp((talent - 70) * 0.015, -0.30, 0.36)
         weight *= 1.0 + clamp((overall - 72) * 0.018, -0.34, 0.26)
         if idx >= 1 and overall < 72:
-            weight *= 0.90
+            weight *= 0.94
         if idx >= 2:
-            weight *= 0.78
+            weight *= 0.84
         game_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
-        if idx == 0 and game_carries > 14:
-            weight *= clamp(1.0 - (game_carries - 14.0) * 0.035, 0.42, 1.0)
+        if idx == 0 and game_carries > 12:
+            weight *= clamp(1.0 - (game_carries - 12.0) * 0.050, 0.26, 1.0)
         elif idx >= 1 and game_carries > 10:
-            weight *= clamp(1.0 - (game_carries - 10.0) * 0.035, 0.58, 1.0)
+            weight *= clamp(1.0 - (game_carries - 10.0) * 0.030, 0.62, 1.0)
         if idx == 0:
             weight *= self.rb_workload_availability(player)
         else:
@@ -2855,11 +2855,13 @@ class MatchEngine:
                 starter_score = weighted_average(starter, RB_RUN_WEIGHTS)
                 quality_gap = starter_score - talent
                 if quality_gap <= 4.0:
-                    weight *= 1.30
+                    weight *= 1.46
                 elif quality_gap <= 7.0:
-                    weight *= 1.16
+                    weight *= 1.26
+                elif quality_gap <= 10.0:
+                    weight *= 1.10
                 if self.rb_workload_availability(starter) < 0.88:
-                    weight *= 1.15
+                    weight *= 1.26
         weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
         if distance <= 3 or field_pos >= 85:
             weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014
@@ -2881,19 +2883,19 @@ class MatchEngine:
         injury_prone = float(player.metadata.get("injury_prone") or 50)
         stamina = float(player.rating("stamina", 65))
         limit = RB_SEASON_WORKLOAD_SOFT_CAP
-        limit += clamp(overall - 78.0, 0.0, 16.0) * 6.5
-        limit += clamp(stamina - 68.0, -12.0, 18.0) * 1.4
+        limit += clamp(overall - 78.0, 0.0, 16.0) * 5.0
+        limit += clamp(stamina - 68.0, -12.0, 18.0) * 1.1
         if age >= 31:
-            limit -= 48
+            limit -= 60
         elif age >= 29:
-            limit -= 30
+            limit -= 40
         elif age <= 23 and overall >= 74:
-            limit += 14
+            limit += 8
         if injury_prone >= 62:
-            limit -= 18
+            limit -= 24
         elif injury_prone <= 44:
-            limit += 10
-        return clamp(limit, 185.0, 350.0)
+            limit += 6
+        return clamp(limit, 175.0, 315.0)
 
     def rb_workload_availability(self, player: PlayerSnapshot) -> float:
         stats = player.metadata.get("season_stats") or {}
@@ -2901,11 +2903,11 @@ class MatchEngine:
         season_targets = float(stats.get("targets") or 0.0)
         touches = season_carries + season_targets * 0.42
         limit = self.rb_season_workload_limit(player)
-        if touches <= limit * 0.72:
+        if touches <= limit * 0.66:
             availability = 1.0
         else:
-            over = touches - limit * 0.72
-            availability = 1.0 - over / max(80.0, limit * 0.42) * 0.34
+            over = touches - limit * 0.66
+            availability = 1.0 - over / max(70.0, limit * 0.38) * 0.46
         age = int(player.metadata.get("age") or 26)
         if age >= 31:
             availability -= 0.06
@@ -2917,7 +2919,7 @@ class MatchEngine:
         active_injuries = player.metadata.get("active_injuries") or []
         if active_injuries:
             availability -= 0.12
-        return clamp(availability, 0.50, 1.0)
+        return clamp(availability, 0.32, 1.0)
 
     def state_snapshot(self) -> tuple[dict[int, int], dict[int, Counter], dict[int, Counter], dict[int, int]]:
         return (

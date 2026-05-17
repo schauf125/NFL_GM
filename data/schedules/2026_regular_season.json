@@ -1,0 +1,6884 @@
+{
+  "games": [
+    {
+      "away": "NE",
+      "category": "SNF",
+      "game_date": "2026-09-09",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60178",
+      "home": "SEA",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fb0d78-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-seahawks-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 1,
+      "week_game_number": 1
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-09-10",
+      "game_time_et": "8:35 PM",
+      "gsis_id": "60179",
+      "home": "LAR",
+      "networks": [
+        "NETFLIX"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "a8fc08da-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Melbourne Cricket Ground",
+      "slug": "49ers-at-rams-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Melbourne",
+        "country": "Australia",
+        "id": "00086001-ac21-5b8e-1a38-6bade051be83",
+        "name": "Melbourne Cricket Ground"
+      },
+      "week": 1,
+      "week_game_number": 2
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60180",
+      "home": "CAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc0e5c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-panthers-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 1,
+      "week_game_number": 3
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60181",
+      "home": "CIN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc106b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-bengals-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 1,
+      "week_game_number": 4
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60182",
+      "home": "DET",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc1203-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-lions-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 1,
+      "week_game_number": 5
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60183",
+      "home": "HOU",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc1393-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-texans-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 1,
+      "week_game_number": 6
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60184",
+      "home": "IND",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc15bd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-colts-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 1,
+      "week_game_number": 7
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60185",
+      "home": "JAX",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc1728-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-jaguars-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 1,
+      "week_game_number": 8
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60186",
+      "home": "PIT",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc1864-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-steelers-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 1,
+      "week_game_number": 9
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60187",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a8fc1998-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-titans-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 1,
+      "week_game_number": 10
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60188",
+      "home": "LAC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a87603-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-chargers-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 1,
+      "week_game_number": 11
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60189",
+      "home": "LV",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a881ca-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-raiders-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 1,
+      "week_game_number": 12
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60190",
+      "home": "MIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a88631-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-vikings-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 1,
+      "week_game_number": 13
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2026-09-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60191",
+      "home": "PHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a889dd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-eagles-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 1,
+      "week_game_number": 14
+    },
+    {
+      "away": "DAL",
+      "category": "SNF",
+      "game_date": "2026-09-13",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60192",
+      "home": "NYG",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a88d52-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-giants-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 1,
+      "week_game_number": 15
+    },
+    {
+      "away": "DEN",
+      "category": "MNF",
+      "game_date": "2026-09-14",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60193",
+      "home": "KC",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a890ed-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-chiefs-2026-reg-1",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 1,
+      "week_game_number": 16
+    },
+    {
+      "away": "DET",
+      "category": "TNF",
+      "game_date": "2026-09-17",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60194",
+      "home": "BUF",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a8944e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-bills-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 2,
+      "week_game_number": 1
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60195",
+      "home": "ATL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a89841-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-falcons-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 2,
+      "week_game_number": 2
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60196",
+      "home": "BAL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a89baa-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-ravens-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 2,
+      "week_game_number": 3
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60197",
+      "home": "CHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9a89edd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-bears-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 2,
+      "week_game_number": 4
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60198",
+      "home": "HOU",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0c7c0-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-texans-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 2,
+      "week_game_number": 5
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60199",
+      "home": "NE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0d18f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-patriots-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 2,
+      "week_game_number": 6
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60200",
+      "home": "NYJ",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0d5a5-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-jets-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 2,
+      "week_game_number": 7
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60201",
+      "home": "TB",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0d930-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-buccaneers-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 2,
+      "week_game_number": 8
+    },
+    {
+      "away": "PHI",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60202",
+      "home": "TEN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0dc7c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-titans-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 2,
+      "week_game_number": 9
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60203",
+      "home": "DEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0dff8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-broncos-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 2,
+      "week_game_number": 10
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60204",
+      "home": "LAC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0e3dd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-chargers-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 2,
+      "week_game_number": 11
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60205",
+      "home": "ARI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0e78e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-cardinals-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 2,
+      "week_game_number": 12
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60206",
+      "home": "DAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0eb90-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-cowboys-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 2,
+      "week_game_number": 13
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-09-20",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60207",
+      "home": "SF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "a9e0ef5d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-49ers-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 2,
+      "week_game_number": 14
+    },
+    {
+      "away": "IND",
+      "category": "SNF",
+      "game_date": "2026-09-20",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60208",
+      "home": "KC",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa048ee1-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-chiefs-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 2,
+      "week_game_number": 15
+    },
+    {
+      "away": "NYG",
+      "category": "MNF",
+      "game_date": "2026-09-21",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60209",
+      "home": "LAR",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04989c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-rams-2026-reg-2",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 2,
+      "week_game_number": 16
+    },
+    {
+      "away": "ATL",
+      "category": "TNF",
+      "game_date": "2026-09-24",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60210",
+      "home": "GB",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa049c95-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-packers-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 3,
+      "week_game_number": 1
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60211",
+      "home": "BUF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04a02f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-bills-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 3,
+      "week_game_number": 2
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60212",
+      "home": "CLE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04a395-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-browns-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 3,
+      "week_game_number": 3
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60213",
+      "home": "DET",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04a6ca-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-lions-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 3,
+      "week_game_number": 4
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60214",
+      "home": "IND",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04aa26-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-colts-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 3,
+      "week_game_number": 5
+    },
+    {
+      "away": "NE",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60215",
+      "home": "JAX",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04ad75-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-jaguars-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 3,
+      "week_game_number": 6
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60216",
+      "home": "MIA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04b0d8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-dolphins-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 3,
+      "week_game_number": 7
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60217",
+      "home": "NYG",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa04b4d9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-giants-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 3,
+      "week_game_number": 8
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60218",
+      "home": "PIT",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29b6b0-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-steelers-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 3,
+      "week_game_number": 9
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60219",
+      "home": "WAS",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29c0fa-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-commanders-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 3,
+      "week_game_number": 10
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60220",
+      "home": "SF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29c59c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-49ers-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 3,
+      "week_game_number": 11
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60221",
+      "home": "TB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29c929-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-buccaneers-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 3,
+      "week_game_number": 12
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60222",
+      "home": "DAL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "aa29cd02-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Maracana Stadium",
+      "slug": "ravens-at-cowboys-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Rio de Janeiro",
+        "country": "Brazil",
+        "id": "00084001-eba4-5fc3-666c-fe5e7e422d26",
+        "name": "Maracana Stadium"
+      },
+      "week": 3,
+      "week_game_number": 13
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-09-27",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60223",
+      "home": "NO",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29d062-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-saints-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 3,
+      "week_game_number": 14
+    },
+    {
+      "away": "LAR",
+      "category": "SNF",
+      "game_date": "2026-09-27",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60224",
+      "home": "DEN",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29d387-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-broncos-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 3,
+      "week_game_number": 15
+    },
+    {
+      "away": "PHI",
+      "category": "MNF",
+      "game_date": "2026-09-28",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60225",
+      "home": "CHI",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29d6db-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-bears-2026-reg-3",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 3,
+      "week_game_number": 16
+    },
+    {
+      "away": "PIT",
+      "category": "TNF",
+      "game_date": "2026-10-01",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60226",
+      "home": "CLE",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa29da01-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-browns-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 4,
+      "week_game_number": 1
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60227",
+      "home": "WAS",
+      "networks": [
+        "NFL NETWORK",
+        "NFLN"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "aa29dd21-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Tottenham Hotspur Stadium",
+      "slug": "colts-at-commanders-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "London",
+        "country": "England",
+        "id": "00085528-b0cf-8c3d-be4d-50f8eb4f9a31",
+        "name": "Tottenham Hotspur Stadium"
+      },
+      "week": 4,
+      "week_game_number": 2
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60228",
+      "home": "BAL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b4811-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-ravens-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 4,
+      "week_game_number": 3
+    },
+    {
+      "away": "NE",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60229",
+      "home": "BUF",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b51c9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-bills-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 4,
+      "week_game_number": 4
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60230",
+      "home": "CHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b55ce-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-bears-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 4,
+      "week_game_number": 5
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60231",
+      "home": "CIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b5943-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-bengals-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 4,
+      "week_game_number": 6
+    },
+    {
+      "away": "DAL",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60232",
+      "home": "HOU",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b5c96-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-texans-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 4,
+      "week_game_number": 7
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60233",
+      "home": "NYG",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b607b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-giants-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 4,
+      "week_game_number": 8
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60234",
+      "home": "PHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b63de-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-eagles-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 4,
+      "week_game_number": 9
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60235",
+      "home": "TB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b671b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-buccaneers-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 4,
+      "week_game_number": 10
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60236",
+      "home": "MIN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b6a4b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-vikings-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 4,
+      "week_game_number": 11
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60237",
+      "home": "LV",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa4b6d71-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-raiders-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 4,
+      "week_game_number": 12
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60238",
+      "home": "SEA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b4255-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-seahawks-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 4,
+      "week_game_number": 13
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-10-04",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60239",
+      "home": "SF",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b4cf4-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-49ers-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 4,
+      "week_game_number": 14
+    },
+    {
+      "away": "DET",
+      "category": "SNF",
+      "game_date": "2026-10-04",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60240",
+      "home": "CAR",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b512d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-panthers-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 4,
+      "week_game_number": 15
+    },
+    {
+      "away": "ATL",
+      "category": "MNF",
+      "game_date": "2026-10-05",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60241",
+      "home": "NO",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b5517-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-saints-2026-reg-4",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 4,
+      "week_game_number": 16
+    },
+    {
+      "away": "TB",
+      "category": "TNF",
+      "game_date": "2026-10-08",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60242",
+      "home": "DAL",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b58bf-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-cowboys-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 5,
+      "week_game_number": 1
+    },
+    {
+      "away": "PHI",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60243",
+      "home": "JAX",
+      "networks": [
+        "NFL NETWORK",
+        "NFLN"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b5c2b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-jaguars-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "London",
+        "country": "England",
+        "id": "00085528-b0cf-8c3d-be4d-50f8eb4f9a31",
+        "name": "Tottenham Hotspur Stadium"
+      },
+      "week": 5,
+      "week_game_number": 2
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60244",
+      "home": "MIA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b5f66-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-dolphins-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 5,
+      "week_game_number": 3
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60245",
+      "home": "NE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b6286-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-patriots-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 5,
+      "week_game_number": 4
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60246",
+      "home": "NO",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b65b1-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-saints-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 5,
+      "week_game_number": 5
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60247",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa6b69bb-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-jets-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 5,
+      "week_game_number": 6
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60248",
+      "home": "PIT",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94ac06-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-steelers-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 5,
+      "week_game_number": 7
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60249",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94b527-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-titans-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 5,
+      "week_game_number": 8
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60250",
+      "home": "WAS",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94b906-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-commanders-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 5,
+      "week_game_number": 9
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60251",
+      "home": "LAC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94bc51-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-chargers-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 5,
+      "week_game_number": 10
+    },
+    {
+      "away": "DET",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60252",
+      "home": "ARI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94bfce-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-cardinals-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 5,
+      "week_game_number": 11
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60253",
+      "home": "GB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94c2ef-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-packers-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 5,
+      "week_game_number": 12
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-10-11",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60254",
+      "home": "SEA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94c647-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-seahawks-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 5,
+      "week_game_number": 13
+    },
+    {
+      "away": "BAL",
+      "category": "SNF",
+      "game_date": "2026-10-11",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60255",
+      "home": "ATL",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94c94d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-falcons-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 5,
+      "week_game_number": 14
+    },
+    {
+      "away": "BUF",
+      "category": "MNF",
+      "game_date": "2026-10-12",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60256",
+      "home": "LAR",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94ccd3-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-rams-2026-reg-5",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 5,
+      "week_game_number": 15
+    },
+    {
+      "away": "SEA",
+      "category": "TNF",
+      "game_date": "2026-10-15",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60257",
+      "home": "DEN",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aa94cffe-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-broncos-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 6,
+      "week_game_number": 1
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60258",
+      "home": "JAX",
+      "networks": [
+        "NFL NETWORK",
+        "NFLN"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "aab56e82-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Wembley Stadium",
+      "slug": "texans-at-jaguars-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "London",
+        "country": "England",
+        "id": "00085525-dc80-0059-df54-7c8d69e9fcfd",
+        "name": "Wembley Stadium"
+      },
+      "week": 6,
+      "week_game_number": 2
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60259",
+      "home": "ATL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab577eb-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-falcons-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 6,
+      "week_game_number": 3
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60260",
+      "home": "CLE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab57bb8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-browns-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 6,
+      "week_game_number": 4
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60261",
+      "home": "IND",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab57f15-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-colts-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 6,
+      "week_game_number": 5
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60262",
+      "home": "NE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab58261-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-patriots-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 6,
+      "week_game_number": 6
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60263",
+      "home": "NYG",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab5857e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-giants-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 6,
+      "week_game_number": 7
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60264",
+      "home": "PHI",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab588fe-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-eagles-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 6,
+      "week_game_number": 8
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60265",
+      "home": "TB",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab58c4b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-buccaneers-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 6,
+      "week_game_number": 9
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60266",
+      "home": "LAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab58f7e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-rams-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 6,
+      "week_game_number": 10
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60267",
+      "home": "KC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aab59281-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-chiefs-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 6,
+      "week_game_number": 11
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2026-10-18",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60268",
+      "home": "LV",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad57852-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-raiders-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 6,
+      "week_game_number": 12
+    },
+    {
+      "away": "DAL",
+      "category": "SNF",
+      "game_date": "2026-10-18",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60269",
+      "home": "GB",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad58264-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-packers-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 6,
+      "week_game_number": 13
+    },
+    {
+      "away": "WAS",
+      "category": "MNF",
+      "game_date": "2026-10-19",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60270",
+      "home": "SF",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad58635-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-49ers-2026-reg-6",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 6,
+      "week_game_number": 14
+    },
+    {
+      "away": "NE",
+      "category": "TNF",
+      "game_date": "2026-10-22",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60271",
+      "home": "CHI",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad58a18-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-bears-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 7,
+      "week_game_number": 1
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60272",
+      "home": "NO",
+      "networks": [
+        "NFL NETWORK",
+        "NFLN"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "aad58d7d-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Stade de France",
+      "slug": "steelers-at-saints-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Saint-Denis",
+        "country": "France",
+        "id": "00081391-76c1-d051-ce70-e5047db9c186",
+        "name": "Stade de France"
+      },
+      "week": 7,
+      "week_game_number": 2
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60273",
+      "home": "ATL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad59092-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-falcons-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 7,
+      "week_game_number": 3
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60274",
+      "home": "BAL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad594ee-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-ravens-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 7,
+      "week_game_number": 4
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60275",
+      "home": "CAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad59a67-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-panthers-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 7,
+      "week_game_number": 5
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60276",
+      "home": "HOU",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad59e95-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-texans-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 7,
+      "week_game_number": 6
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60277",
+      "home": "MIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aad5a2ac-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-vikings-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 7,
+      "week_game_number": 7
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60278",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf6ec9e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-jets-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 7,
+      "week_game_number": 8
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60279",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf6f621-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-titans-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 7,
+      "week_game_number": 9
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60280",
+      "home": "ARI",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf6fa3b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-cardinals-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 7,
+      "week_game_number": 10
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60281",
+      "home": "DET",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf6fda2-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-lions-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 7,
+      "week_game_number": 11
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-10-25",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60282",
+      "home": "LV",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf700e5-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-raiders-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 7,
+      "week_game_number": 12
+    },
+    {
+      "away": "KC",
+      "category": "SNF",
+      "game_date": "2026-10-25",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60283",
+      "home": "SEA",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf7040e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-seahawks-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 7,
+      "week_game_number": 13
+    },
+    {
+      "away": "DAL",
+      "category": "MNF",
+      "game_date": "2026-10-26",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60284",
+      "home": "PHI",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf70733-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-eagles-2026-reg-7",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 7,
+      "week_game_number": 14
+    },
+    {
+      "away": "CAR",
+      "category": "TNF",
+      "game_date": "2026-10-29",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60285",
+      "home": "GB",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf70a66-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-packers-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 8,
+      "week_game_number": 1
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60286",
+      "home": "BUF",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf70dac-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-bills-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 8,
+      "week_game_number": 2
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60287",
+      "home": "CIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "aaf71176-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-bengals-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 8,
+      "week_game_number": 3
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60288",
+      "home": "DAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab16512c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-cowboys-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 8,
+      "week_game_number": 4
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60289",
+      "home": "DET",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab165aa8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-lions-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 8,
+      "week_game_number": 5
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60290",
+      "home": "JAX",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab165e6a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-jaguars-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 8,
+      "week_game_number": 6
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60291",
+      "home": "NYJ",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab1661ac-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-jets-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 8,
+      "week_game_number": 7
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60292",
+      "home": "PIT",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab1664ca-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-steelers-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 8,
+      "week_game_number": 8
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60293",
+      "home": "TB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab1667cd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-buccaneers-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 8,
+      "week_game_number": 9
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60294",
+      "home": "LAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab166ac0-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-rams-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 8,
+      "week_game_number": 10
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60295",
+      "home": "DEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab166dc7-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-broncos-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 8,
+      "week_game_number": 11
+    },
+    {
+      "away": "NE",
+      "category": null,
+      "game_date": "2026-11-01",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60296",
+      "home": "MIA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab1670ad-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-dolphins-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 8,
+      "week_game_number": 12
+    },
+    {
+      "away": "PHI",
+      "category": "SNF",
+      "game_date": "2026-11-01",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60297",
+      "home": "WAS",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab167386-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-commanders-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 8,
+      "week_game_number": 13
+    },
+    {
+      "away": "CHI",
+      "category": "MNF",
+      "game_date": "2026-11-02",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60298",
+      "home": "SEA",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab37feaa-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-seahawks-2026-reg-8",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 8,
+      "week_game_number": 14
+    },
+    {
+      "away": "JAX",
+      "category": "TNF",
+      "game_date": "2026-11-05",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60299",
+      "home": "BAL",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab380826-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-ravens-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 9,
+      "week_game_number": 1
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60300",
+      "home": "ATL",
+      "networks": [
+        "NFL NETWORK",
+        "NFLN"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "ab380bc7-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Bernabeu",
+      "slug": "bengals-at-falcons-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Madrid",
+        "country": "Spain",
+        "id": "00084386-115f-c4e8-d258-c39e2b29f95e",
+        "name": "Bernabeu"
+      },
+      "week": 9,
+      "week_game_number": 2
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60301",
+      "home": "CAR",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab380efd-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-panthers-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 9,
+      "week_game_number": 3
+    },
+    {
+      "away": "DAL",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60302",
+      "home": "IND",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab38123a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-colts-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 9,
+      "week_game_number": 4
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60303",
+      "home": "KC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab381724-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-chiefs-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 9,
+      "week_game_number": 5
+    },
+    {
+      "away": "DET",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60304",
+      "home": "MIA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab381a59-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-dolphins-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 9,
+      "week_game_number": 6
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60305",
+      "home": "NO",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab381d58-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-saints-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 9,
+      "week_game_number": 7
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60306",
+      "home": "PHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab38203e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-eagles-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 9,
+      "week_game_number": 8
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60307",
+      "home": "WAS",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab382331-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-commanders-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 9,
+      "week_game_number": 9
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60308",
+      "home": "LAC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab580cb7-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-chargers-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 9,
+      "week_game_number": 10
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60309",
+      "home": "SF",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab581766-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-49ers-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 9,
+      "week_game_number": 11
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60310",
+      "home": "NE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab581b93-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-patriots-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 9,
+      "week_game_number": 12
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-11-08",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60311",
+      "home": "SEA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab581f17-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-seahawks-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 9,
+      "week_game_number": 13
+    },
+    {
+      "away": "TB",
+      "category": "SNF",
+      "game_date": "2026-11-08",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60312",
+      "home": "CHI",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab582247-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-bears-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 9,
+      "week_game_number": 14
+    },
+    {
+      "away": "BUF",
+      "category": "MNF",
+      "game_date": "2026-11-09",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60313",
+      "home": "MIN",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab5825a7-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-vikings-2026-reg-9",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 9,
+      "week_game_number": 15
+    },
+    {
+      "away": "WAS",
+      "category": "TNF",
+      "game_date": "2026-11-12",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60314",
+      "home": "NYG",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab5828d9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-giants-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 10,
+      "week_game_number": 1
+    },
+    {
+      "away": "NE",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "9:30 AM",
+      "gsis_id": "60315",
+      "home": "DET",
+      "networks": [
+        "FOX",
+        "FOX DEPORTES",
+        "FOXDEPORTES"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "ab582c2f-4feb-11f1-abca-2c54536568a9",
+      "site_label": "FC Bayern Munich Stadium",
+      "slug": "patriots-at-lions-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Munich",
+        "country": "Germany",
+        "id": "00081909-44a3-45e8-2bda-7bf41d5f30fc",
+        "name": "FC Bayern Munich Stadium"
+      },
+      "week": 10,
+      "week_game_number": 2
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60316",
+      "home": "ATL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab582f5b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-falcons-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 10,
+      "week_game_number": 3
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60317",
+      "home": "CLE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab583279-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-browns-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 10,
+      "week_game_number": 4
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60318",
+      "home": "GB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab788967-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-packers-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 10,
+      "week_game_number": 5
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60319",
+      "home": "IND",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab789365-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-colts-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 10,
+      "week_game_number": 6
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60320",
+      "home": "NO",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab789769-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-saints-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 10,
+      "week_game_number": 7
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60321",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab789ac9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-jets-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 10,
+      "week_game_number": 8
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60322",
+      "home": "TEN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab789e15-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-titans-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 10,
+      "week_game_number": 9
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60323",
+      "home": "ARI",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab78a133-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-cardinals-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 10,
+      "week_game_number": 10
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60324",
+      "home": "LV",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab78a43c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-raiders-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 10,
+      "week_game_number": 11
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-11-15",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60325",
+      "home": "DAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab78a748-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-cowboys-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 10,
+      "week_game_number": 12
+    },
+    {
+      "away": "PIT",
+      "category": "SNF",
+      "game_date": "2026-11-15",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60326",
+      "home": "CIN",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab78aa48-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-bengals-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 10,
+      "week_game_number": 13
+    },
+    {
+      "away": "LAC",
+      "category": "MNF",
+      "game_date": "2026-11-16",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60327",
+      "home": "BAL",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab78ad5a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-ravens-2026-reg-10",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 10,
+      "week_game_number": 14
+    },
+    {
+      "away": "IND",
+      "category": "TNF",
+      "game_date": "2026-11-19",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60328",
+      "home": "HOU",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab997d97-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-texans-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 11,
+      "week_game_number": 1
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60329",
+      "home": "BUF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab998769-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-bills-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 11,
+      "week_game_number": 2
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60330",
+      "home": "CAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab998b7f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-panthers-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 11,
+      "week_game_number": 3
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60331",
+      "home": "CHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab998f5e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-bears-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 11,
+      "week_game_number": 4
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60332",
+      "home": "DAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab99929a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-cowboys-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 11,
+      "week_game_number": 5
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60333",
+      "home": "DET",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab999586-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-lions-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 11,
+      "week_game_number": 6
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60334",
+      "home": "KC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab999891-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-chiefs-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 11,
+      "week_game_number": 7
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60335",
+      "home": "NYG",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab999b80-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-giants-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 11,
+      "week_game_number": 8
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60336",
+      "home": "LAC",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab999e6f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-chargers-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 11,
+      "week_game_number": 9
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60337",
+      "home": "DEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ab99a17b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-broncos-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 11,
+      "week_game_number": 10
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2026-11-22",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60338",
+      "home": "PHI",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf1908-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-eagles-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 11,
+      "week_game_number": 11
+    },
+    {
+      "away": "MIN",
+      "category": "SNF",
+      "game_date": "2026-11-22",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60339",
+      "home": "SF",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": true,
+      "nfl_game_id": "abbf2213-4feb-11f1-abca-2c54536568a9",
+      "site_label": "Estadio Banorte",
+      "slug": "vikings-at-49ers-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Mexico City",
+        "country": "Mexico",
+        "id": "00082108-46a8-fb55-f264-c8faa1c1849e",
+        "name": "Estadio Banorte"
+      },
+      "week": 11,
+      "week_game_number": 12
+    },
+    {
+      "away": "CIN",
+      "category": "MNF",
+      "game_date": "2026-11-23",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60340",
+      "home": "WAS",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf25b8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-commanders-2026-reg-11",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 11,
+      "week_game_number": 13
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-11-25",
+      "game_time_et": "8:00 PM",
+      "gsis_id": "60341",
+      "home": "LAR",
+      "networks": [
+        "NETFLIX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf28ed-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-rams-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 12,
+      "week_game_number": 1
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-11-26",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60342",
+      "home": "DET",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf2c16-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-lions-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 12,
+      "week_game_number": 2
+    },
+    {
+      "away": "PHI",
+      "category": null,
+      "game_date": "2026-11-26",
+      "game_time_et": "4:30 PM",
+      "gsis_id": "60343",
+      "home": "DAL",
+      "networks": [
+        "FOX",
+        "FOX DEPORTES",
+        "FOXDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf2f12-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-cowboys-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 12,
+      "week_game_number": 3
+    },
+    {
+      "away": "KC",
+      "category": "SNF",
+      "game_date": "2026-11-26",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60344",
+      "home": "BUF",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf321b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-bills-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 12,
+      "week_game_number": 4
+    },
+    {
+      "away": "DEN",
+      "category": "TNF",
+      "game_date": "2026-11-27",
+      "game_time_et": "3:00 PM",
+      "gsis_id": "60345",
+      "home": "PIT",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf352d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-steelers-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 12,
+      "week_game_number": 5
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60346",
+      "home": "CIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf3917-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-bengals-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 12,
+      "week_game_number": 6
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60347",
+      "home": "CLE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abbf3c97-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-browns-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 12,
+      "week_game_number": 7
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60348",
+      "home": "HOU",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfc3c2-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-texans-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 12,
+      "week_game_number": 8
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60349",
+      "home": "IND",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfccbb-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-colts-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 12,
+      "week_game_number": 9
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60350",
+      "home": "MIA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfd040-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-dolphins-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 12,
+      "week_game_number": 10
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60351",
+      "home": "MIN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfd363-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-vikings-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 12,
+      "week_game_number": 11
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60352",
+      "home": "JAX",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfd663-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-jaguars-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 12,
+      "week_game_number": 12
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60353",
+      "home": "ARI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfd959-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-cardinals-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 12,
+      "week_game_number": 13
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2026-11-29",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60354",
+      "home": "SF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfdd00-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-49ers-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 12,
+      "week_game_number": 14
+    },
+    {
+      "away": "NE",
+      "category": "SNF",
+      "game_date": "2026-11-29",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60355",
+      "home": "LAC",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfe0ab-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-chargers-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 12,
+      "week_game_number": 15
+    },
+    {
+      "away": "CAR",
+      "category": "MNF",
+      "game_date": "2026-11-30",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60356",
+      "home": "TB",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfe629-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-buccaneers-2026-reg-12",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 12,
+      "week_game_number": 16
+    },
+    {
+      "away": "KC",
+      "category": "TNF",
+      "game_date": "2026-12-03",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60357",
+      "home": "LAR",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "abdfe9fb-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-rams-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 13,
+      "week_game_number": 1
+    },
+    {
+      "away": "DET",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60358",
+      "home": "ATL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac014f46-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-falcons-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 13,
+      "week_game_number": 2
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60359",
+      "home": "CHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac015881-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-bears-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 13,
+      "week_game_number": 3
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60360",
+      "home": "CLE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac015cdc-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-browns-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 13,
+      "week_game_number": 4
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60361",
+      "home": "NO",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac01603b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-saints-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 13,
+      "week_game_number": 5
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60362",
+      "home": "NYG",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac016348-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-giants-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 13,
+      "week_game_number": 6
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60363",
+      "home": "TB",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac01664b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-buccaneers-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 13,
+      "week_game_number": 7
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60364",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac016953-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-titans-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 13,
+      "week_game_number": 8
+    },
+    {
+      "away": "PHI",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60365",
+      "home": "ARI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac016c40-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-cardinals-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 13,
+      "week_game_number": 9
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60366",
+      "home": "DEN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac016f2b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-broncos-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 13,
+      "week_game_number": 10
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60367",
+      "home": "MIN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac017212-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-vikings-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 13,
+      "week_game_number": 11
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2026-12-06",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60368",
+      "home": "NE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac207191-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-patriots-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 13,
+      "week_game_number": 12
+    },
+    {
+      "away": "HOU",
+      "category": "SNF",
+      "game_date": "2026-12-06",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60369",
+      "home": "PIT",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac207ad3-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-steelers-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 13,
+      "week_game_number": 13
+    },
+    {
+      "away": "DAL",
+      "category": "MNF",
+      "game_date": "2026-12-07",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60370",
+      "home": "SEA",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac207eae-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-seahawks-2026-reg-13",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 13,
+      "week_game_number": 14
+    },
+    {
+      "away": "MIN",
+      "category": "TNF",
+      "game_date": "2026-12-10",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60371",
+      "home": "NE",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac208212-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-patriots-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 14,
+      "week_game_number": 1
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60372",
+      "home": "BAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac208548-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-ravens-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 14,
+      "week_game_number": 2
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60373",
+      "home": "CAR",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac208883-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-panthers-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 14,
+      "week_game_number": 3
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60374",
+      "home": "CLE",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac208bad-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-browns-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 14,
+      "week_game_number": 4
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60375",
+      "home": "DET",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac208ebc-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-lions-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 14,
+      "week_game_number": 5
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60376",
+      "home": "MIA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac2091af-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-dolphins-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 14,
+      "week_game_number": 6
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60377",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac2094c8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-jets-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 14,
+      "week_game_number": 7
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60378",
+      "home": "PHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac411814-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-eagles-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 14,
+      "week_game_number": 8
+    },
+    {
+      "away": "HOU",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60379",
+      "home": "WAS",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac4122e2-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-commanders-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 14,
+      "week_game_number": 9
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60380",
+      "home": "LV",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac4128a9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-raiders-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 14,
+      "week_game_number": 10
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60381",
+      "home": "CIN",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac412c64-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-bengals-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 14,
+      "week_game_number": 11
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60382",
+      "home": "SEA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac413167-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-seahawks-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 14,
+      "week_game_number": 12
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-12-13",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60383",
+      "home": "SF",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac4134f5-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-49ers-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 14,
+      "week_game_number": 13
+    },
+    {
+      "away": "BUF",
+      "category": "SNF",
+      "game_date": "2026-12-13",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60384",
+      "home": "GB",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac41381d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-packers-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 14,
+      "week_game_number": 14
+    },
+    {
+      "away": "PIT",
+      "category": "MNF",
+      "game_date": "2026-12-14",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60385",
+      "home": "JAX",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac413b2b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-jaguars-2026-reg-14",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 14,
+      "week_game_number": 15
+    },
+    {
+      "away": "SF",
+      "category": "TNF",
+      "game_date": "2026-12-17",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60386",
+      "home": "LAC",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac413e34-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-chargers-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 15,
+      "week_game_number": 1
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2026-12-19",
+      "game_time_et": "5:00 PM",
+      "gsis_id": "60387",
+      "home": "PHI",
+      "networks": [
+        "FOX",
+        "FOX DEPORTES",
+        "FOXDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac414151-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-eagles-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 15,
+      "week_game_number": 2
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2026-12-19",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60388",
+      "home": "BUF",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac603d57-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-bills-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 15,
+      "week_game_number": 3
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60389",
+      "home": "CAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac6046a8-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-panthers-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 15,
+      "week_game_number": 4
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60390",
+      "home": "GB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac604a6e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-packers-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 15,
+      "week_game_number": 5
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60391",
+      "home": "HOU",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac604e37-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-texans-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 15,
+      "week_game_number": 6
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60392",
+      "home": "NYG",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac6051b9-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-giants-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 15,
+      "week_game_number": 7
+    },
+    {
+      "away": "BAL",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60393",
+      "home": "PIT",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac60550d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-steelers-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 15,
+      "week_game_number": 8
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60394",
+      "home": "TB",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac60584b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-buccaneers-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 15,
+      "week_game_number": 9
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60395",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac605b63-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-titans-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 15,
+      "week_game_number": 10
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60396",
+      "home": "WAS",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac605e66-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-commanders-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 15,
+      "week_game_number": 11
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60397",
+      "home": "ARI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac60617b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-cardinals-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 15,
+      "week_game_number": 12
+    },
+    {
+      "away": "DAL",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60398",
+      "home": "LAR",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f5336-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-rams-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 15,
+      "week_game_number": 13
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2026-12-20",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60399",
+      "home": "LV",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f60fe-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-raiders-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 15,
+      "week_game_number": 14
+    },
+    {
+      "away": "DET",
+      "category": "SNF",
+      "game_date": "2026-12-20",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60400",
+      "home": "MIN",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f6703-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-vikings-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 15,
+      "week_game_number": 15
+    },
+    {
+      "away": "NE",
+      "category": "MNF",
+      "game_date": "2026-12-21",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60401",
+      "home": "KC",
+      "networks": [
+        "ESPN",
+        "ABC",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f6aff-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-chiefs-2026-reg-15",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 15,
+      "week_game_number": 16
+    },
+    {
+      "away": "HOU",
+      "category": "TNF",
+      "game_date": "2026-12-24",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60402",
+      "home": "PHI",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f6e6e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-eagles-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Philadelphia",
+        "country": "USA",
+        "id": "00082769-1a91-621b-0c2d-27234c215dc0",
+        "name": "Lincoln Financial Field"
+      },
+      "week": 16,
+      "week_game_number": 1
+    },
+    {
+      "away": "GB",
+      "category": null,
+      "game_date": "2026-12-25",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60403",
+      "home": "CHI",
+      "networks": [
+        "NETFLIX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f71a4-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "packers-at-bears-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 16,
+      "week_game_number": 2
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2026-12-25",
+      "game_time_et": "4:30 PM",
+      "gsis_id": "60404",
+      "home": "DEN",
+      "networks": [
+        "NETFLIX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f74ca-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-broncos-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 16,
+      "week_game_number": 3
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2026-12-25",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60405",
+      "home": "SEA",
+      "networks": [
+        "FOX",
+        "FOX DEPORTES",
+        "FOXDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f77ed-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-seahawks-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Seattle",
+        "country": "USA",
+        "id": "00085315-d5b8-18a5-6c08-f91cd9144cb5",
+        "name": "Lumen Field"
+      },
+      "week": 16,
+      "week_game_number": 4
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60410",
+      "home": "BAL",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e36ff-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-ravens-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 16,
+      "week_game_number": 5
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60411",
+      "home": "MIA",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e3acb-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-dolphins-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 16,
+      "week_game_number": 6
+    },
+    {
+      "away": "ARI",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60412",
+      "home": "NO",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e3e14-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cardinals-at-saints-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 16,
+      "week_game_number": 7
+    },
+    {
+      "away": "NE",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60413",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e4134-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "patriots-at-jets-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 16,
+      "week_game_number": 8
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60414",
+      "home": "LV",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e442c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-raiders-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Paradise",
+        "country": "USA",
+        "id": "00081510-8d44-0c8b-d478-07ace72fbbef",
+        "name": "Allegiant Stadium"
+      },
+      "week": 16,
+      "week_game_number": 9
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2026-12-27",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60415",
+      "home": "KC",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e473f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-chiefs-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 16,
+      "week_game_number": 10
+    },
+    {
+      "away": "JAX",
+      "category": "SNF",
+      "game_date": "2026-12-27",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60416",
+      "home": "DAL",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e4a3a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-cowboys-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 16,
+      "week_game_number": 11
+    },
+    {
+      "away": "NYG",
+      "category": "MNF",
+      "game_date": "2026-12-28",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60417",
+      "home": "DET",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e4d51-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-lions-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Detroit",
+        "country": "USA",
+        "id": "00082026-23fe-63b7-7d18-43cec01cfcfb",
+        "name": "Ford Field"
+      },
+      "week": 16,
+      "week_game_number": 12
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2026-12-26",
+      "game_time_et": null,
+      "gsis_id": "60406",
+      "home": "ATL",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f7b15-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-falcons-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 16,
+      "week_game_number": 13
+    },
+    {
+      "away": "CIN",
+      "category": null,
+      "game_date": "2026-12-26",
+      "game_time_et": null,
+      "gsis_id": "60407",
+      "home": "IND",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ac7f7ddf-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bengals-at-colts-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 16,
+      "week_game_number": 14
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2026-12-26",
+      "game_time_et": null,
+      "gsis_id": "60408",
+      "home": "MIN",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e2a00-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-vikings-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 16,
+      "week_game_number": 15
+    },
+    {
+      "away": "CAR",
+      "category": null,
+      "game_date": "2026-12-26",
+      "game_time_et": null,
+      "gsis_id": "60409",
+      "home": "PIT",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ac9e330f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "panthers-at-steelers-2026-reg-16",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Pittsburgh",
+        "country": "USA",
+        "id": "00085411-4ecf-6807-abb8-f9309b0cf6b0",
+        "name": "Acrisure Stadium"
+      },
+      "week": 16,
+      "week_game_number": 16
+    },
+    {
+      "away": "BAL",
+      "category": "TNF",
+      "game_date": "2026-12-31",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60418",
+      "home": "CIN",
+      "networks": [
+        "Prime Video",
+        "PRIME",
+        "PRIMESPANISH",
+        "PRIMEALT1"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1d288-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "ravens-at-bengals-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 17,
+      "week_game_number": 1
+    },
+    {
+      "away": "NO",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60423",
+      "home": "ATL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1e9f7-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "saints-at-falcons-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Atlanta",
+        "country": "USA",
+        "id": "00082076-29a1-1a41-96a5-14b0d14d1317",
+        "name": "Mercedes-Benz Stadium"
+      },
+      "week": 17,
+      "week_game_number": 2
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60424",
+      "home": "CAR",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1ed66-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-panthers-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 17,
+      "week_game_number": 3
+    },
+    {
+      "away": "IND",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60425",
+      "home": "CLE",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1f09a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "colts-at-browns-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Cleveland",
+        "country": "USA",
+        "id": "00081048-4259-348c-7701-2fa3c98bcd53",
+        "name": "Huntington Bank Field"
+      },
+      "week": 17,
+      "week_game_number": 4
+    },
+    {
+      "away": "NYG",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60426",
+      "home": "DAL",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1f3c0-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "giants-at-cowboys-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Arlington",
+        "country": "USA",
+        "id": "00084948-addf-5f39-b283-02455f77c178",
+        "name": "AT&T Stadium"
+      },
+      "week": 17,
+      "week_game_number": 5
+    },
+    {
+      "away": "BUF",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60427",
+      "home": "MIA",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "acc1f6d4-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bills-at-dolphins-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Opa Locka",
+        "country": "USA",
+        "id": "00082475-4308-d8ae-8935-f685fe5d20f2",
+        "name": "Hard Rock Stadium"
+      },
+      "week": 17,
+      "week_game_number": 6
+    },
+    {
+      "away": "MIN",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60428",
+      "home": "NYJ",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0969b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "vikings-at-jets-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 17,
+      "week_game_number": 7
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "1:00 PM",
+      "gsis_id": "60429",
+      "home": "TEN",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0a08e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-titans-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Nashville",
+        "country": "USA",
+        "id": "00082350-52f3-e11f-8c49-0193cb89e66f",
+        "name": "Nissan Stadium"
+      },
+      "week": 17,
+      "week_game_number": 8
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "4:05 PM",
+      "gsis_id": "60430",
+      "home": "ARI",
+      "networks": [
+        "CBS"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0a457-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-cardinals-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 17,
+      "week_game_number": 9
+    },
+    {
+      "away": "DET",
+      "category": null,
+      "game_date": "2027-01-03",
+      "game_time_et": "4:25 PM",
+      "gsis_id": "60431",
+      "home": "CHI",
+      "networks": [
+        "FOX"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0a7e7-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-bears-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Chicago",
+        "country": "USA",
+        "id": "00084620-af4a-a315-44ad-cdc562bfc3ad",
+        "name": "Soldier Field"
+      },
+      "week": 17,
+      "week_game_number": 10
+    },
+    {
+      "away": "PHI",
+      "category": "SNF",
+      "game_date": "2027-01-03",
+      "game_time_et": "8:20 PM",
+      "gsis_id": "60432",
+      "home": "SF",
+      "networks": [
+        "NBC",
+        "UNIVERSO"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0ab32-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-49ers-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Santa Clara",
+        "country": "USA",
+        "id": "00082099-57dc-7d8f-dbdb-9a693342cda6",
+        "name": "Levi's\u00c2\u00ae Stadium"
+      },
+      "week": 17,
+      "week_game_number": 11
+    },
+    {
+      "away": "HOU",
+      "category": "MNF",
+      "game_date": "2027-01-04",
+      "game_time_et": "8:15 PM",
+      "gsis_id": "60433",
+      "home": "GB",
+      "networks": [
+        "ESPN",
+        "ESPN DEPORTES",
+        "ESPNDEPORTES"
+      ],
+      "neutral_site": false,
+      "nfl_game_id": "ace0ae7b-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "texans-at-packers-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": false,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 17,
+      "week_game_number": 12
+    },
+    {
+      "away": "WAS",
+      "category": null,
+      "game_date": "2027-01-02",
+      "game_time_et": null,
+      "gsis_id": "60419",
+      "home": "JAX",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acc1dc59-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "commanders-at-jaguars-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Jacksonville",
+        "country": "USA",
+        "id": "00082049-e1c5-6172-a084-094f2c34a377",
+        "name": "EverBank Stadium"
+      },
+      "week": 17,
+      "week_game_number": 13
+    },
+    {
+      "away": "KC",
+      "category": null,
+      "game_date": "2027-01-02",
+      "game_time_et": null,
+      "gsis_id": "60420",
+      "home": "LAC",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acc1e08e-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chiefs-at-chargers-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 17,
+      "week_game_number": 14
+    },
+    {
+      "away": "DEN",
+      "category": null,
+      "game_date": "2027-01-02",
+      "game_time_et": null,
+      "gsis_id": "60421",
+      "home": "NE",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acc1e3de-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "broncos-at-patriots-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 17,
+      "week_game_number": 15
+    },
+    {
+      "away": "LAR",
+      "category": null,
+      "game_date": "2027-01-02",
+      "game_time_et": null,
+      "gsis_id": "60422",
+      "home": "TB",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acc1e702-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "rams-at-buccaneers-2026-reg-17",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Tampa",
+        "country": "USA",
+        "id": "00083697-451e-88a5-6695-aa32961fba3a",
+        "name": "Raymond James Stadium"
+      },
+      "week": 17,
+      "week_game_number": 16
+    },
+    {
+      "away": "SF",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60434",
+      "home": "ARI",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ace0b1ad-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "49ers-at-cardinals-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Glendale",
+        "country": "USA",
+        "id": "00081907-ad83-307e-8d26-209df8e6df50",
+        "name": "State Farm Stadium"
+      },
+      "week": 18,
+      "week_game_number": 1
+    },
+    {
+      "away": "PIT",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60435",
+      "home": "BAL",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ace0b48a-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "steelers-at-ravens-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Baltimore",
+        "country": "USA",
+        "id": "00083695-126e-1517-91fe-aab634a526ea",
+        "name": "M&T Bank Stadium"
+      },
+      "week": 18,
+      "week_game_number": 2
+    },
+    {
+      "away": "NYJ",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60436",
+      "home": "BUF",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ace0b74f-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jets-at-bills-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Orchard Park",
+        "country": "USA",
+        "id": "00083770-6add-eaf7-4975-0fb66a44b335",
+        "name": "Highmark Stadium"
+      },
+      "week": 18,
+      "week_game_number": 3
+    },
+    {
+      "away": "ATL",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60437",
+      "home": "CAR",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ace0ba82-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "falcons-at-panthers-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Charlotte",
+        "country": "USA",
+        "id": "00081769-78fe-4172-a6d6-395cf0141069",
+        "name": "Bank of America Stadium"
+      },
+      "week": 18,
+      "week_game_number": 4
+    },
+    {
+      "away": "CLE",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60438",
+      "home": "CIN",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff782d-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "browns-at-bengals-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Cincinnati",
+        "country": "USA",
+        "id": "00083530-fc9f-2795-83d8-308b54d591fe",
+        "name": "Paycor Stadium"
+      },
+      "week": 18,
+      "week_game_number": 5
+    },
+    {
+      "away": "LAC",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60439",
+      "home": "DEN",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff8054-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "chargers-at-broncos-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Denver",
+        "country": "USA",
+        "id": "00085786-61c2-c519-196f-576acb0dcd5f",
+        "name": "Empower Field at Mile High"
+      },
+      "week": 18,
+      "week_game_number": 6
+    },
+    {
+      "away": "DET",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60440",
+      "home": "GB",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff837c-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "lions-at-packers-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Green Bay",
+        "country": "USA",
+        "id": "00082606-f7cb-15ed-a40a-f85cfda3ecdd",
+        "name": "Lambeau Field"
+      },
+      "week": 18,
+      "week_game_number": 7
+    },
+    {
+      "away": "TEN",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60441",
+      "home": "HOU",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff8654-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "titans-at-texans-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Houston",
+        "country": "USA",
+        "id": "00083698-a263-8c18-f063-4dc45196bfef",
+        "name": "Reliant Stadium"
+      },
+      "week": 18,
+      "week_game_number": 8
+    },
+    {
+      "away": "JAX",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60442",
+      "home": "IND",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff8914-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "jaguars-at-colts-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Indianapolis",
+        "country": "USA",
+        "id": "00082878-4c6e-d80a-0da7-6f8355c339c2",
+        "name": "Lucas Oil Stadium"
+      },
+      "week": 18,
+      "week_game_number": 9
+    },
+    {
+      "away": "LV",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60443",
+      "home": "KC",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff8bba-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "raiders-at-chiefs-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Kansas City",
+        "country": "USA",
+        "id": "00081552-5c92-a7d0-fa55-fc0bb887fb88",
+        "name": "GEHA Field at Arrowhead Stadium"
+      },
+      "week": 18,
+      "week_game_number": 10
+    },
+    {
+      "away": "SEA",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60444",
+      "home": "LAR",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff8e70-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "seahawks-at-rams-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Inglewood",
+        "country": "USA",
+        "id": "00083005-73cf-76e4-0b7c-b1a83f72b2c5",
+        "name": "SoFi Stadium"
+      },
+      "week": 18,
+      "week_game_number": 11
+    },
+    {
+      "away": "CHI",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60445",
+      "home": "MIN",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff9123-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "bears-at-vikings-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Minneapolis",
+        "country": "USA",
+        "id": "00081652-d8a8-d698-5b3f-31487c6624f7",
+        "name": "U.S. Bank Stadium"
+      },
+      "week": 18,
+      "week_game_number": 12
+    },
+    {
+      "away": "MIA",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60446",
+      "home": "NE",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff93c4-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "dolphins-at-patriots-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Foxborough",
+        "country": "USA",
+        "id": "00081065-961a-76b2-de6a-b6da2602a129",
+        "name": "Gillette Stadium"
+      },
+      "week": 18,
+      "week_game_number": 13
+    },
+    {
+      "away": "TB",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60447",
+      "home": "NO",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "acff9659-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "buccaneers-at-saints-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "New Orleans",
+        "country": "USA",
+        "id": "00082870-94c7-53ad-b2bf-a1d334cf1512",
+        "name": "Caesars Superdome"
+      },
+      "week": 18,
+      "week_game_number": 14
+    },
+    {
+      "away": "PHI",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60448",
+      "home": "NYG",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ad1f1cde-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "eagles-at-giants-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "East Rutherford",
+        "country": "USA",
+        "id": "00083757-62dd-de21-f672-4d0ca5ad5a9e",
+        "name": "MetLife Stadium"
+      },
+      "week": 18,
+      "week_game_number": 15
+    },
+    {
+      "away": "DAL",
+      "category": null,
+      "game_date": "2027-01-10",
+      "game_time_et": null,
+      "gsis_id": "60449",
+      "home": "WAS",
+      "networks": [],
+      "neutral_site": false,
+      "nfl_game_id": "ad1f2595-4feb-11f1-abca-2c54536568a9",
+      "site_label": null,
+      "slug": "cowboys-at-commanders-2026-reg-18",
+      "status": "SCHEDULED",
+      "time_tbd": true,
+      "venue": {
+        "city": "Landover",
+        "country": "USA",
+        "id": "00082389-5f81-bc7b-7280-78260ea1be2a",
+        "name": "Northwest Stadium"
+      },
+      "week": 18,
+      "week_game_number": 16
+    }
+  ],
+  "notes": "Official NFL.com regular-season matchups, dates, sites, and announced kickoff windows. Week 18 kickoff times are TBD and use the listed league date placeholder.",
+  "retrieved_at_utc": "2026-05-16T00:09:20Z",
+  "season": 2026,
+  "source": "NFL.com by-week schedule pages",
+  "source_url_template": "https://www.nfl.com/schedules/2026/by-week/reg-{week}"
+}
