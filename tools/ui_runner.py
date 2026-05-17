@@ -3335,6 +3335,7 @@ def main() -> int:
     args = parser.parse_args()
 
     mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("image/webp", ".webp")
     try:
         write_exports()
     except sqlite3.OperationalError as exc:
@@ -3354,4 +3355,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
