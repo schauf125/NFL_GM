@@ -25,6 +25,7 @@ import league_calendar
 import league_news
 import roster_cutdown
 import scouting
+import season_storylines
 import trade_engine
 
 
@@ -112,6 +113,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     game_flow.ensure_schema(con)
     daily_processor.ensure_schema(con)
     event_generator.ensure_schema(con)
+    season_storylines.ensure_schema(con)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS game_weekly_processing_runs (
@@ -725,6 +727,17 @@ def process_week(
         news_date=window.end_date,
     )
     mark_timing("youth_evaluation_news", started)
+    started = time.perf_counter()
+    storyline_result = season_storylines.process_weekly_storylines(
+        con,
+        game_id=target_game_id,
+        season=season,
+        week=week,
+        event_date=window.end_date,
+        seed=f"{target_game_id}:{season}:{week}:storylines",
+        emit_messages=True,
+    )
+    mark_timing("season_storylines", started)
     try:
         started = time.perf_counter()
         queued_scouting_result = scouting.process_assignments(
@@ -817,6 +830,11 @@ def process_week(
     )
     if youth_evaluation_news:
         scouting_note += f" Youth evaluation generated {youth_evaluation_news} roster note(s)."
+    if int(storyline_result.get("inserted", 0)) or int(storyline_result.get("trade_rumors", 0)):
+        scouting_note += (
+            f" Storylines added {int(storyline_result.get('inserted', 0))} player note(s)"
+            f" and {int(storyline_result.get('trade_rumors', 0))} trade rumor(s)."
+        )
     sanity_moves = (
         int(practice_squad_sanity_result.get("promoted", 0))
         + int(practice_squad_sanity_result.get("swapped", 0)) * 2

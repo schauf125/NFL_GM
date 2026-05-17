@@ -63,6 +63,10 @@ saves/*
 # Generated UI exports. Rebuild them with the export tools when needed.
 ui/**/*-data.js
 
+# Graphics are local game assets, often restored from the safe backup folder.
+# Do not let normal Git updates/uploads add, remove, or replace this folder.
+graphics/
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

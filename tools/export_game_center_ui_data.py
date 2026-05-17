@@ -107,6 +107,9 @@ DRAFT_LIGHT_ROW_DROP_FIELDS = {
     "scouting_concerns",
     "scouting_projection",
     "scouting_report",
+    "medical_notes",
+    "interview_notes",
+    "late_process_note",
     "combine_grade",
     "drills_completed",
     "bench_press_reps",
@@ -122,6 +125,11 @@ DRAFT_LIGHT_ROW_DROP_FIELDS = {
     "pro_day_broad_jump_in",
     "pro_day_improved_from_combine",
     "pro_day_medical_recheck",
+    "private_workout_status",
+    "private_workout_type",
+    "private_workout_interest",
+    "private_workout_grade",
+    "private_workout_note",
 }
 
 DRAFT_COMBINE_UI_FIELDS = {
@@ -150,6 +158,23 @@ DRAFT_PRO_DAY_UI_FIELDS = {
     "pro_day_broad_jump_in",
     "pro_day_improved_from_combine",
     "pro_day_medical_recheck",
+}
+
+DRAFT_PROCESS_UI_FIELDS = {
+    "medical_flag",
+    "medical_risk",
+    "medical_notes",
+    "interview_trait",
+    "interview_grade",
+    "interview_notes",
+    "late_process_status",
+    "late_process_note",
+    "public_board_delta",
+    "private_workout_status",
+    "private_workout_type",
+    "private_workout_interest",
+    "private_workout_grade",
+    "private_workout_note",
 }
 
 
@@ -2224,6 +2249,24 @@ def draft_summary(
             ("senior_bowl_notes", "''"),
         ):
             discovery_columns.append(column if column in board_columns else f"{fallback} AS {column}")
+        process_columns = []
+        for column, fallback in (
+            ("medical_flag", "'Clean file'"),
+            ("medical_risk", "'Clear'"),
+            ("medical_notes", "''"),
+            ("interview_trait", "'Not logged'"),
+            ("interview_grade", "NULL"),
+            ("interview_notes", "''"),
+            ("late_process_status", "'Stable'"),
+            ("late_process_note", "''"),
+            ("public_board_delta", "0"),
+            ("private_workout_status", "'None logged'"),
+            ("private_workout_type", "'None'"),
+            ("private_workout_interest", "'Normal'"),
+            ("private_workout_grade", "NULL"),
+            ("private_workout_note", "''"),
+        ):
+            process_columns.append(column if column in board_columns else f"{fallback} AS {column}")
         visibility_filter = ""
         params: list[Any] = [year]
         if not draft_day_reveal:
@@ -2280,6 +2323,7 @@ def draft_summary(
                     scouting_concerns,
                     scouting_projection,
                     scouting_report,
+                    {", ".join(process_columns)},
                     combine_status,
                     combine_grade,
                     athletic_score,
@@ -2384,6 +2428,20 @@ def enrich_scouting_payload_with_draft_board(scouting_payload: dict[str, Any], d
         "scouting_concerns",
         "scouting_projection",
         "scouting_report",
+        "medical_flag",
+        "medical_risk",
+        "medical_notes",
+        "interview_trait",
+        "interview_grade",
+        "interview_notes",
+        "late_process_status",
+        "late_process_note",
+        "public_board_delta",
+        "private_workout_status",
+        "private_workout_type",
+        "private_workout_interest",
+        "private_workout_grade",
+        "private_workout_note",
         "combine_status",
         "combine_grade",
         "athletic_score",

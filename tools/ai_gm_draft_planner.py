@@ -511,6 +511,26 @@ def score_prospect(
         risk_penalty += 2.0
     if as_int(row_value(row, "combine_injured")) or as_int(row_value(row, "pro_day_medical_recheck")):
         risk_penalty += 3.0
+    medical_risk = str(row_value(row, "medical_risk", "") or "").lower()
+    if medical_risk == "red flag":
+        risk_penalty += 7.0 + biases["risk_penalty"] * 0.45
+    elif medical_risk == "concern":
+        risk_penalty += 3.5 + biases["risk_penalty"] * 0.25
+    elif medical_risk == "monitor":
+        risk_penalty += 1.0
+    interview_grade = as_float(row_value(row, "interview_grade"))
+    interview_trait = str(row_value(row, "interview_trait", "") or "").lower()
+    interview_value = 0.0
+    if interview_grade:
+        interview_value = clamp((interview_grade - 60) * 0.08, -3.0, 3.0)
+        if group == "QB":
+            interview_value *= 1.6
+        else:
+            estimated_round = projected_round(row)
+            if estimated_round <= 2:
+                interview_value *= 1.15
+    if "concern" in interview_trait or "entitlement" in interview_trait:
+        risk_penalty += 2.0
     if group in LOW_COST_GROUPS and any(as_int(pick.get("round")) <= 4 for pick in picks):
         risk_penalty += 6.0
     confidence_discount, confidence_round, confidence = confidence_penalty(row, picks)
@@ -534,6 +554,7 @@ def score_prospect(
         + premium_value
         + upside_value
         + athletic_value
+        + interview_value
         - risk_penalty
         - confidence_discount
         - early_quality_penalty
@@ -549,6 +570,10 @@ def score_prospect(
         reasons.append("plus athletic testing")
     if risk_penalty >= 5:
         reasons.append("risk discount applied")
+    if interview_value >= 1.5:
+        reasons.append("strong private/interview context")
+    elif interview_value <= -1.5:
+        reasons.append("private/interview concern")
     if confidence_discount >= 2:
         reasons.append(f"{confidence.lower()} scouting confidence round-{confidence_round} discount")
     if early_quality_penalty >= 12:

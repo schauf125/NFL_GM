@@ -10,6 +10,7 @@ the same thing as the regular season.
 from __future__ import annotations
 
 import argparse
+import json
 import random
 import sqlite3
 from dataclasses import dataclass
@@ -24,11 +25,13 @@ import injury_notifications
 import league_schedule
 import league_news
 import player_personalities
+import season_storylines
 import scouting
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
+OFFICIAL_2026_PRESEASON_PATH = ROOT / "data" / "schedules" / "2026_preseason.json"
 SOURCE = "preseason_processor"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -139,6 +142,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     league_schedule.ensure_schema(con)
     match_engine.ensure_schema(con)
     player_personalities.ensure_schema(con)
+    season_storylines.ensure_schema(con)
     scouting.ensure_schema(con)
     league_news.ensure_schema(con)
     con.executescript(
@@ -212,6 +216,129 @@ def regular_opponent_pairs(con: sqlite3.Connection, season: int) -> set[frozense
     return {frozenset((int(row["away_team_id"]), int(row["home_team_id"]))) for row in rows}
 
 
+def team_ids_by_abbreviation(con: sqlite3.Connection) -> dict[str, int]:
+    return {
+        str(row["abbreviation"]): int(row["team_id"])
+        for row in con.execute("SELECT team_id, abbreviation FROM teams").fetchall()
+    }
+
+
+def load_official_2026_preseason() -> dict[str, Any] | None:
+    if not OFFICIAL_2026_PRESEASON_PATH.exists():
+        return None
+    payload = json.loads(OFFICIAL_2026_PRESEASON_PATH.read_text(encoding="utf-8"))
+    games = payload.get("games") or []
+    if len(games) != 48:
+        raise ValueError(f"Official 2026 preseason schedule should contain 48 games, found {len(games)}.")
+    return payload
+
+
+def insert_official_preseason_schedule(con: sqlite3.Connection, *, season: int, payload: dict[str, Any]) -> int:
+    ids = team_ids_by_abbreviation(con)
+    missing = sorted(
+        {
+            str(game[side])
+            for game in payload.get("games", [])
+            for side in ("away", "home")
+            if str(game[side]) not in ids
+        }
+    )
+    if missing:
+        raise ValueError(f"Official preseason schedule has unknown team abbreviations: {', '.join(missing)}")
+    con.execute(
+        """
+        INSERT INTO season_schedule_sources (season, source_name, source_url, is_official, notes)
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(season, source_name) DO UPDATE SET
+            source_url = excluded.source_url,
+            is_official = excluded.is_official,
+            notes = excluded.notes
+        """,
+        (
+            season,
+            str(payload.get("source") or "NFL preseason schedule"),
+            str(payload.get("source_url") or ""),
+            str(payload.get("notes") or "Official preseason schedule."),
+        ),
+    )
+    source_row = con.execute(
+        "SELECT source_id FROM season_schedule_sources WHERE season = ? AND source_name = ?",
+        (season, str(payload.get("source") or "NFL preseason schedule")),
+    ).fetchone()
+    source_id = int(source_row["source_id"]) if source_row else None
+    games = sorted(
+        payload["games"],
+        key=lambda game: (
+            int(game["week"]),
+            str(game.get("game_date") or "9999-12-31"),
+            str(game.get("game_time_et") or "99:99"),
+            int(game.get("week_game_number") or 999),
+        ),
+    )
+    dates_by_week: dict[int, list[str]] = {week: [] for week in range(1, 4)}
+    for game in games:
+        dates_by_week[int(game["week"])].append(str(game["game_date"]))
+    for week in range(1, 4):
+        week_dates = sorted(dates_by_week[week])
+        con.execute(
+            """
+            INSERT INTO season_weeks (
+                season, week, week_type, week_start_date, primary_game_date, status, notes
+            )
+            VALUES (?, ?, 'PRE', ?, ?, 'official_opponents', ?)
+            ON CONFLICT(season, week, week_type) DO UPDATE SET
+                week_start_date = excluded.week_start_date,
+                primary_game_date = excluded.primary_game_date,
+                status = excluded.status,
+                notes = excluded.notes,
+                updated_at = datetime('now')
+            """,
+            (
+                season,
+                week,
+                week_dates[0],
+                week_dates[-1],
+                "Official NFL preseason opponents; non-national game dates sit inside official week windows.",
+            ),
+        )
+    inserted = 0
+    for number, game in enumerate(games, start=1):
+        away = str(game["away"])
+        home = str(game["home"])
+        status = "preseason_official" if game.get("date_status") == "official" else "preseason_official_week_projected_date"
+        notes = "Official 2026 NFL preseason matchup."
+        if game.get("network"):
+            notes += f" National TV: {game['network']}."
+        if game.get("date_status") != "official":
+            notes += " Date assigned inside official week window until club-specific kickoff is announced."
+        before = con.total_changes
+        con.execute(
+            """
+            INSERT OR IGNORE INTO season_games (
+                season, week, game_type, week_game_number,
+                away_team_id, home_team_id, game_date, game_time_et,
+                schedule_status, source_id, matchup_bucket, notes
+            )
+            VALUES (?, ?, 'PRE', ?, ?, ?, ?, ?, ?, ?, 'PRESEASON', ?)
+            """,
+            (
+                season,
+                int(game["week"]),
+                int(game.get("week_game_number") or number),
+                ids[away],
+                ids[home],
+                str(game["game_date"]),
+                str(game.get("game_time_et") or ""),
+                status,
+                source_id,
+                notes,
+            ),
+        )
+        if con.total_changes > before:
+            inserted += 1
+    return inserted
+
+
 def choose_preseason_pairing(
     rng: random.Random,
     team_ids: list[int],
@@ -258,11 +385,14 @@ def ensure_preseason_schedule(
     seed: str | int | None = None,
 ) -> int:
     ensure_schema(con)
+    official_payload = load_official_2026_preseason() if season == 2026 else None
+    expected_games = len(official_payload.get("games") or []) if official_payload else 48
     existing = con.execute(
         """
         SELECT
             COUNT(*) AS total,
-            SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played
+            SUM(CASE WHEN played = 1 THEN 1 ELSE 0 END) AS played,
+            SUM(CASE WHEN schedule_status LIKE 'preseason_official%' THEN 1 ELSE 0 END) AS official
         FROM season_games
         WHERE season = ? AND game_type = 'PRE'
         """,
@@ -270,13 +400,18 @@ def ensure_preseason_schedule(
     ).fetchone()
     total_existing = int(existing["total"] or 0) if existing else 0
     played_existing = int(existing["played"] or 0) if existing else 0
-    if total_existing >= 48:
+    official_existing = int(existing["official"] or 0) if existing else 0
+    if official_payload and total_existing >= expected_games and official_existing >= expected_games:
+        return 0
+    if total_existing >= expected_games and not official_payload:
         return 0
     if total_existing and played_existing == 0:
         con.execute("DELETE FROM season_games WHERE season = ? AND game_type = 'PRE'", (season,))
         con.execute("DELETE FROM season_weeks WHERE season = ? AND week_type = 'PRE'", (season,))
     elif total_existing:
         return 0
+    if official_payload:
+        return insert_official_preseason_schedule(con, season=season, payload=official_payload)
 
     teams = [int(row["team_id"]) for row in team_rows(con)]
     if len(teams) != 32:
@@ -672,6 +807,18 @@ def process_training_camp(
                     if news_id is not None:
                         news += 1
 
+    storyline_result = season_storylines.process_camp_storylines(
+        con,
+        game_id=game_id,
+        season=season,
+        event_date=event_date,
+        seed=f"{game_id}:{season}:{event_date}:camp-storylines",
+        emit_messages=emit_messages,
+    )
+    inserted += int(storyline_result.get("inserted", 0))
+    inbox += int(storyline_result.get("inbox", 0))
+    news += int(storyline_result.get("news", 0))
+
     fa = (
         process_free_agency_movement(
             con,
@@ -941,6 +1088,18 @@ def process_preseason_week(
                 )
                 if news_id is not None:
                     news += 1
+
+    if preseason_week in {2, 3}:
+        storyline_result = season_storylines.process_camp_storylines(
+            con,
+            game_id=game_id,
+            season=season,
+            event_date=event_date,
+            seed=f"{game_id}:{season}:{event_date}:preseason-battles:{preseason_week}",
+            emit_messages=emit_messages,
+        )
+        inbox += int(storyline_result.get("inbox", 0))
+        news += int(storyline_result.get("news", 0))
 
     fa = (
         process_free_agency_movement(

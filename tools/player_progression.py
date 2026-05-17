@@ -31,6 +31,7 @@ import apply_new_game_variance  # noqa: E402
 import league_news  # noqa: E402
 import player_development_modifiers  # noqa: E402
 import scheme_fits  # noqa: E402
+import season_storylines  # noqa: E402
 
 
 POSITION_GROUP = {
@@ -763,6 +764,28 @@ def preseason_development_score(
     if potential_gap >= 8 and band in {"rookie", "young"} and snaps >= 45:
         score += min(0.22, potential_gap * 0.012)
     return clamp(score, -1.35, 1.75)
+
+
+def storyline_development_score(
+    context: dict[str, float],
+    *,
+    band: str,
+    years_exp: int,
+) -> float:
+    """Translate season narrative hooks into a small progression input."""
+    if not context:
+        return 0.0
+    momentum = float(context.get("storyline_momentum", 0.0) or 0.0)
+    confidence = float(context.get("storyline_confidence", 0.0) or 0.0)
+    potential = float(context.get("storyline_potential", 0.0) or 0.0)
+    story_count = float(context.get("storyline_count", 0.0) or 0.0)
+    young_factor = 1.0 if band in {"rookie", "young"} else 0.55 if band == "prime" else 0.32
+    if years_exp <= 2:
+        young_factor += 0.12
+    score = momentum * 0.42 + confidence * 0.38 + potential * 0.30
+    if story_count >= 4 and abs(score) > 0.45:
+        score *= 0.86
+    return clamp(score * young_factor, -0.95, 1.10)
 
 
 def load_injury_context(con: sqlite3.Connection, season: int) -> dict[int, dict[str, float]]:
@@ -2353,6 +2376,7 @@ def build_contexts(
     contract_context = load_contract_context(con, from_season)
     practice_squad_shares = load_practice_squad_shares(con, from_season)
     preseason_context = load_preseason_development_context(con, game_id=game_id, season=from_season)
+    storyline_context = season_storylines.load_progression_context(con, game_id=game_id, season=from_season)
     qb_reboot_context = load_qb_reboot_context(con, from_season)
     mentor_scores = mentor_room_scores(players, personality_traits)
     coach_scores = coach_position_scores(con)
@@ -2529,6 +2553,13 @@ def build_contexts(
             opportunity_drag=opportunity_drag,
             band=band,
         )
+        storyline_effect = storyline_development_score(
+            storyline_context.get(player_id, {}),
+            band=band,
+            years_exp=years_exp,
+        )
+        if storyline_effect:
+            circumstance_effect = clamp(circumstance_effect + storyline_effect, -5.0, 5.0)
         veteran_variance = veteran_career_variance_delta(
             rng,
             position=position,
@@ -2630,6 +2661,7 @@ def build_contexts(
             qb_reboot,
             veteran_variance,
             preseason_score,
+            storyline_effect,
         )
         contexts.append(
             PlayerContext(
@@ -2857,6 +2889,7 @@ def context_notes(
     qb_reboot: float,
     veteran_variance: float,
     preseason_score: float,
+    storyline_score: float,
 ) -> str:
     bits = [f"{band} curve", f"base {base_delta:+.2f}"]
     if abs(position_age_score) >= 0.2:
@@ -2893,6 +2926,8 @@ def context_notes(
         bits.append(f"veteran variance {veteran_variance:+.1f}")
     if abs(preseason_score) >= 0.35:
         bits.append(f"preseason context {preseason_score:+.1f}")
+    if abs(storyline_score) >= 0.25:
+        bits.append(f"season storyline {storyline_score:+.1f}")
     if abs(scheme_score) >= 2.0:
         bits.append(f"scheme {scheme_score:+.1f}")
     if abs(coaching_score) >= 2.0:

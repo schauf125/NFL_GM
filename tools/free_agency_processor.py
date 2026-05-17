@@ -3278,6 +3278,143 @@ def quick_cap_release_candidates(
     return candidates[:limit]
 
 
+def apply_quick_cap_restructure(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    league_year: int,
+    candidate: dict[str, Any],
+) -> int:
+    converted = int(candidate.get("suggested_convert") or 0)
+    if converted <= 0:
+        raise ValueError("No restructure amount available.")
+    proration_years = max(1, min(5, int(candidate.get("proration_years") or 1)))
+    current_proration = int(converted / proration_years)
+    con.execute(
+        """
+        INSERT INTO contract_restructures (
+            contract_id, player_id, team_id, restructure_season, converted_salary,
+            proration_years, current_year_proration, source, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(candidate["contract_id"]),
+            int(candidate["player_id"]),
+            team_id,
+            league_year,
+            converted,
+            proration_years,
+            current_proration,
+            SOURCE,
+            "CPU post-draft cap compliance restructure.",
+        ),
+    )
+    contract_negotiations.apply_restructure_to_contract_years(
+        con,
+        contract_id=int(candidate["contract_id"]),
+        restructure_season=league_year,
+        converted_salary=converted,
+        proration_years=proration_years,
+    )
+    sync_team_cap_space(con)
+    return converted - current_proration
+
+
+def apply_quick_cap_release(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    league_year: int,
+    candidate: dict[str, Any],
+    event_date: str,
+) -> int:
+    player_id = int(candidate["player_id"])
+    contract_id = int(candidate["contract_id"])
+    dead_current = int(candidate.get("dead_cap_if_cut_pre_june1") or 0)
+    savings = int(candidate.get("net_savings_pre_june1") or 0)
+    con.execute("UPDATE contracts SET is_active = 0 WHERE contract_id = ?", (contract_id,))
+    con.execute(
+        """
+        UPDATE contract_years
+        SET is_active = 0,
+            notes = COALESCE(notes || ' ', '') || 'CPU post-draft cap compliance release.',
+            updated_at = datetime('now')
+        WHERE contract_id = ?
+          AND season >= ?
+        """,
+        (contract_id, league_year),
+    )
+    if dead_current:
+        con.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                league_year,
+                f"Dead cap from releasing {candidate['player_name']}.",
+                dead_current,
+                player_id,
+                SOURCE,
+            ),
+        )
+    con.execute(
+        "UPDATE players SET team_id = NULL, status = 'Free Agent' WHERE player_id = ?",
+        (player_id,),
+    )
+    if table_exists(con, "depth_charts"):
+        con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))
+    try:
+        roster_actions.upsert_basic_free_agent_profile(con, player_id)
+    except Exception:
+        pass
+    try:
+        transaction_id, _ = insert_transaction(
+            con,
+            transaction_date=event_date,
+            season=league_year,
+            phase=PHASE,
+            transaction_type="Release",
+            team_id=team_id,
+            player_id=player_id,
+            contract_id=contract_id,
+            from_team_id=team_id,
+            old_status="Active",
+            new_status="Free Agent",
+            cap_delta_current=-savings,
+            cash_delta=0,
+            description=f"CPU cap compliance release of {candidate['player_name']}.",
+            source=SOURCE,
+            external_ref=f"cpu_cap_compliance_release:{league_year}:{player_id}:{contract_id}",
+        )
+        con.execute(
+            """
+            INSERT INTO transaction_assets (
+                transaction_id, asset_type, player_id, contract_id,
+                from_team_id, amount, season, asset_description
+            )
+            VALUES (?, 'ReleasedPlayer', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                transaction_id,
+                player_id,
+                contract_id,
+                team_id,
+                dead_current,
+                league_year,
+                "CPU post-draft cap compliance release.",
+            ),
+        )
+    except Exception:
+        pass
+    sync_team_cap_space(con)
+    return savings
+
+
 def cpu_cap_compliance_sweep(
     con: sqlite3.Connection,
     league_year: int,
@@ -3316,9 +3453,10 @@ def cpu_cap_compliance_sweep(
             totals["timed_out"] = 1
             break
         team_id = int(team["team_id"])
-        action_season = league_year - 1
         moves = 0
         touched = False
+        period = current_period(con, league_year)
+        event_date = period["current_date"] if period else f"{league_year}-04-22"
         while moves < max_moves_per_team:
             if time.monotonic() - started_at > time_budget_seconds:
                 totals["timed_out"] = 1
@@ -3348,16 +3486,15 @@ def cpu_cap_compliance_sweep(
                 if not core_player or savings < 2_000_000 or remaining_years < 2:
                     continue
                 try:
-                    contract_negotiations.restructure_player(
+                    applied_savings = apply_quick_cap_restructure(
                         con,
-                        team=team_id,
-                        season=action_season,
-                        player_id=int(candidate["player_id"]),
-                        amount=int(candidate["suggested_convert"] or 0),
-                        apply=True,
-                        force=True,
+                        team_id=team_id,
+                        league_year=league_year,
+                        candidate=candidate,
                     )
                 except Exception:
+                    continue
+                if applied_savings <= 0:
                     continue
                 totals["restructures"] += 1
                 moves += 1
@@ -3366,7 +3503,7 @@ def cpu_cap_compliance_sweep(
                 log_event(
                     con,
                     league_year=league_year,
-                    event_date=current_period(con, league_year)["current_date"] if current_period(con, league_year) else f"{league_year}-04-22",
+                    event_date=event_date,
                     event_hour=None,
                     event_type="cpu_cap_compliance_restructure",
                     team_id=team_id,
@@ -3402,16 +3539,16 @@ def cpu_cap_compliance_sweep(
                 if overall >= 72 and savings < 4_000_000:
                     continue
                 try:
-                    contract_negotiations.release_player(
+                    applied_savings = apply_quick_cap_release(
                         con,
-                        team=team_id,
-                        season=action_season,
-                        player_id=int(candidate["player_id"]),
-                        post_june1=False,
-                        apply=True,
-                        force=True,
+                        team_id=team_id,
+                        league_year=league_year,
+                        candidate=candidate,
+                        event_date=event_date,
                     )
                 except Exception:
+                    continue
+                if applied_savings <= 0:
                     continue
                 totals["releases"] += 1
                 moves += 1
@@ -3420,7 +3557,7 @@ def cpu_cap_compliance_sweep(
                 log_event(
                     con,
                     league_year=league_year,
-                    event_date=current_period(con, league_year)["current_date"] if current_period(con, league_year) else f"{league_year}-04-22",
+                    event_date=event_date,
                     event_hour=None,
                     event_type="cpu_cap_compliance_release",
                     team_id=team_id,

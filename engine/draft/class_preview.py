@@ -220,10 +220,10 @@ HANDEDNESS_WEIGHTS: dict[str, dict[str, float]] = {
 }
 
 INTERNATIONAL_CHANCE_FACTORS: dict[str, float] = {
-    "tier_1": 0.25,
-    "tier_2": 2.40,
-    "tier_3": 3.00,
-    "tier_4": 2.20,
+    "tier_1": 0.10,
+    "tier_2": 0.45,
+    "tier_3": 0.65,
+    "tier_4": 1.80,
 }
 
 DEFAULT_HIDDEN_PROSPECT_MIN = 50
@@ -248,9 +248,9 @@ HIDDEN_TALENT_RANK_BUCKETS: tuple[tuple[int, int, float], ...] = (
 )
 
 PUBLIC_COLLEGE_TIER_WEIGHTS_BY_BUCKET = {
-    "round_1": {"Power": 3.0, "Regular": 0.35, "Small": 0.05},
-    "round_2_3": {"Power": 2.0, "Regular": 0.80, "Small": 0.10},
-    "round_4_5": {"Power": 1.20, "Regular": 1.00, "Small": 0.30},
+    "round_1": {"Power": 3.6, "Regular": 0.30, "Small": 0.025},
+    "round_2_3": {"Power": 2.25, "Regular": 0.78, "Small": 0.08},
+    "round_4_5": {"Power": 1.35, "Regular": 1.00, "Small": 0.24},
     "round_6_7": {"Power": 0.80, "Regular": 1.20, "Small": 1.00},
     "leftover": {"Power": 0.40, "Regular": 1.50, "Small": 2.50},
 }
@@ -324,6 +324,15 @@ class DraftClassPreviewRow:
     private_workout_interest: str
     private_workout_grade: int | None
     private_workout_note: str
+    medical_flag: str
+    medical_risk: str
+    medical_notes: str
+    interview_trait: str
+    interview_grade: int | None
+    interview_notes: str
+    late_process_status: str
+    late_process_note: str
+    public_board_delta: int
     archetype: str
     original_archetype: str
     archetype_identity_status: str
@@ -493,6 +502,16 @@ class DraftClassPreviewGenerator:
                 combine=combine,
                 pro_day=pro_day,
             )
+            medical_flag, medical_risk, medical_notes = self._medical_profile(
+                attributes=attributes,
+                combine=combine,
+                pro_day=pro_day,
+            )
+            interview_trait, interview_grade, interview_notes = self._interview_profile(
+                position=position,
+                attributes=attributes,
+                private_workout=private_workout,
+            )
             scouting_report = self.scouting_generator.generate(
                 name=generated_name.full_name,
                 position=position,
@@ -587,6 +606,15 @@ class DraftClassPreviewGenerator:
                     private_workout_interest=private_workout.interest_level,
                     private_workout_grade=private_workout.outcome_grade,
                     private_workout_note=private_workout.note,
+                    medical_flag=medical_flag,
+                    medical_risk=medical_risk,
+                    medical_notes=medical_notes,
+                    interview_trait=interview_trait,
+                    interview_grade=interview_grade,
+                    interview_notes=interview_notes,
+                    late_process_status="Stable",
+                    late_process_note="Initial public board placement.",
+                    public_board_delta=0,
                     archetype=attributes.archetype,
                     original_archetype=attributes.original_archetype,
                     archetype_identity_status=attributes.archetype_identity_status,
@@ -674,6 +702,8 @@ class DraftClassPreviewGenerator:
         scored.sort(key=lambda item: (-item[0], item[1].true_rank, item[1].full_name))
         public_rows: list[DraftClassPreviewRow] = []
         for public_rank, (_score, row) in enumerate(scored, start=1):
+            board_delta = int((row.public_board_rank or row.rank) - public_rank)
+            late_process_status, late_process_note = self._late_process_profile(row, board_delta)
             scouting_projection = self.scouting_generator._projection(public_rank)
             scouting_report = row.scouting_report.replace(
                 row.scouting_projection,
@@ -690,6 +720,9 @@ class DraftClassPreviewGenerator:
                     discovery_status="public_board",
                     projected_round=self._projected_round(public_rank),
                     projected_pick=public_rank if public_rank <= 256 else None,
+                    public_board_delta=board_delta,
+                    late_process_status=late_process_status,
+                    late_process_note=late_process_note,
                     scouting_projection=scouting_projection,
                     scouting_report=scouting_report,
                 )
@@ -720,6 +753,9 @@ class DraftClassPreviewGenerator:
                     discovery_status="undiscovered",
                     projected_round=None,
                     projected_pick=None,
+                    public_board_delta=0,
+                    late_process_status="Area scout watch",
+                    late_process_note="Off the public board; movement depends on discoveries, pro days, and team visits.",
                     scouting_projection=scouting_projection,
                     scouting_report=scouting_report,
                 )
@@ -728,15 +764,17 @@ class DraftClassPreviewGenerator:
 
     def _true_talent_score(self, row: DraftClassPreviewRow) -> float:
         role_score = max(row.primary_role_score or 0.0, row.secondary_role_score or 0.0)
+        age_penalty = self._age_public_board_penalty(row.age, true_talent=True)
         if row.position.upper() in {"K", "P"}:
-            return row.true_grade * 0.58 + row.ceiling_grade * 0.10 + role_score * 0.04 - 16.0
+            return row.true_grade * 0.58 + row.ceiling_grade * 0.10 + role_score * 0.04 - 16.0 - age_penalty * 0.35
         if row.position.upper() == "LS":
-            return row.true_grade * 0.45 + row.ceiling_grade * 0.06 + role_score * 0.03 - 24.0
+            return row.true_grade * 0.45 + row.ceiling_grade * 0.06 + role_score * 0.03 - 24.0 - age_penalty * 0.35
         return (
             row.true_grade * 0.74
             + row.ceiling_grade * 0.18
             + role_score * 0.06
             + self._positional_value(row.position) * 0.35
+            - age_penalty
         )
 
     def _hidden_board_shadow_score(self, row: DraftClassPreviewRow) -> float:
@@ -776,6 +814,10 @@ class DraftClassPreviewGenerator:
     def _public_board_score(self, row: DraftClassPreviewRow) -> float:
         positional_value = self._positional_value(row.position)
         risk_penalty = {"Low": 0.0, "Medium": 1.5, "High": 4.2}.get(row.scout_risk, 1.5)
+        medical_penalty = {"Clear": 0.0, "Monitor": 1.2, "Concern": 3.4, "Red flag": 7.0}.get(row.medical_risk, 0.0)
+        interview_component = self._interview_board_component(row)
+        translation_penalty = self._translation_public_board_penalty(row)
+        age_penalty = self._age_public_board_penalty(row.age)
         combine_signal = row.combine_grade if row.combine_grade is not None else row.athletic_score
         pro_day_signal = row.pro_day_grade if row.pro_day_grade is not None else row.pro_day_athletic_score
         workout_signal = _average_present(combine_signal, pro_day_signal)
@@ -796,10 +838,169 @@ class DraftClassPreviewGenerator:
             + row.scout_ceiling * 0.22
             + production_anchor
             + workout_component
+            + interview_component
             + positional_value
             - risk_penalty
+            - medical_penalty
+            - translation_penalty
+            - age_penalty
             + board_noise
         )
+
+    def _medical_profile(self, *, attributes, combine, pro_day) -> tuple[str, str, str]:
+        durability = int(attributes.ratings.get("durability", 60))
+        risk_roll = self.rng.random()
+        flagged = bool(combine.is_injured or pro_day.medical_recheck)
+        if not flagged:
+            flagged = durability < 48 and risk_roll < 0.28
+        if not flagged:
+            flagged = attributes.risk_level == "High" and risk_roll < 0.10
+        if not flagged:
+            return "Clean file", "Clear", "No major pre-draft medical flag generated."
+
+        area = self.rng.choices(
+            ["knee", "ankle", "hamstring", "shoulder", "back", "foot", "soft-tissue"],
+            weights=[20, 16, 15, 14, 11, 10, 14],
+            k=1,
+        )[0]
+        if combine.is_injured and pro_day.medical_recheck:
+            risk = "Red flag" if durability < 55 or self.rng.random() < 0.35 else "Concern"
+        elif durability < 45:
+            risk = "Concern"
+        else:
+            risk = "Monitor"
+        flag = f"{area.title()} flagged"
+        note_map = {
+            "Monitor": f"{area.title()} was noted by medical staff, but the file is more follow-up than hard downgrade.",
+            "Concern": f"{area.title()} concern creates real durability variance and should matter for early picks.",
+            "Red flag": f"{area.title()} red flag may push conservative teams down the board unless checks clear.",
+        }
+        return flag, risk, note_map[risk]
+
+    def _interview_profile(self, *, position: str, attributes, private_workout) -> tuple[str, int | None, str]:
+        processing = int(attributes.ratings.get("processing_speed", attributes.true_grade))
+        recognition = int(attributes.ratings.get("play_recognition", attributes.true_grade))
+        composure = int(attributes.ratings.get("composure", attributes.true_grade))
+        discipline = int(attributes.ratings.get("discipline", attributes.true_grade))
+        consistency = int(attributes.ratings.get("consistency", attributes.true_grade))
+        base = (
+            processing * 0.28
+            + recognition * 0.24
+            + composure * 0.18
+            + discipline * 0.16
+            + consistency * 0.14
+        )
+        if private_workout.outcome_grade is not None:
+            base = base * 0.72 + private_workout.outcome_grade * 0.28
+        if position.upper() == "QB":
+            base += 2.0
+        grade = max(25, min(95, round(base + self.rng.gauss(0, 6.0))))
+        if grade >= 78:
+            trait = self.rng.choice(["High football IQ", "Coachable leader", "Preparation standout", "Rapid processor"])
+            note = "Private exposure gives teams a positive football-character signal."
+        elif grade <= 46:
+            trait = self.rng.choice(["Playbook concern", "Entitlement concern", "Adaptability question", "Coachability question"])
+            note = "Interview/workout context may make teams want extra conviction before investing premium capital."
+        elif grade >= 66:
+            trait = self.rng.choice(["Steady interview", "Good learner", "Mature approach", "Competitive makeup"])
+            note = "Interview/workout context is mildly positive without becoming a headline."
+        else:
+            trait = self.rng.choice(["Mixed interview", "Needs structure", "Quiet room", "Uneven whiteboard"])
+            note = "Private context is mixed and should add uncertainty rather than a hard label."
+        return trait, grade, note
+
+    def _interview_board_component(self, row: DraftClassPreviewRow) -> float:
+        grade = row.interview_grade
+        if grade is None:
+            return 0.0
+        component = max(-4.5, min(4.5, (grade - 60) * 0.10))
+        if row.position.upper() == "QB":
+            component *= 1.45
+        elif row.public_board_rank is not None and row.public_board_rank <= 64:
+            component *= 1.15
+        if "concern" in row.interview_trait.lower():
+            component -= 1.0
+        return component
+
+    def _late_process_profile(self, row: DraftClassPreviewRow, board_delta: int) -> tuple[str, str]:
+        if board_delta >= 55:
+            reason = self.rng.choice([
+                "pro-day testing and follow-up visits created late momentum",
+                "teams appear more comfortable after private exposure",
+                "athletic testing and role fit pushed him up boards",
+            ])
+            return "Riser", f"Moved up about {board_delta} slots as {reason}."
+        if board_delta <= -55:
+            reason = self.rng.choice([
+                "medical/interview context introduced uncertainty",
+                "late cross-checks cooled the public-board grade",
+                "teams became less convinced the traits translate cleanly",
+            ])
+            return "Faller", f"Slipped about {abs(board_delta)} slots as {reason}."
+        if abs(board_delta) >= 24:
+            direction = "up" if board_delta > 0 else "down"
+            return "Minor movement", f"Moved {direction} about {abs(board_delta)} slots during late-process cross-checks."
+        return "Stable", "Late-process information mostly confirmed the early board range."
+
+    @staticmethod
+    def _age_public_board_penalty(age: int | None, *, true_talent: bool = False) -> float:
+        """Keep the top of the board closer to real NFL draft-age patterns."""
+        try:
+            prospect_age = int(age) if age is not None else 22
+        except (TypeError, ValueError):
+            prospect_age = 22
+        if prospect_age <= 21:
+            return 0.0
+        if prospect_age == 22:
+            return 0.80 if true_talent else 0.60
+        if prospect_age == 23:
+            return 3.80 if true_talent else 3.00
+        if prospect_age == 24:
+            return 7.00 if true_talent else 5.80
+        if prospect_age == 25:
+            return 9.00 if true_talent else 7.80
+        return 10.50 if true_talent else 9.00
+
+    def _translation_public_board_penalty(self, row: DraftClassPreviewRow) -> float:
+        """Make early small-school/international board jumps rarer without banning them."""
+        rank = row.true_rank
+        tier = row.college_tier
+        penalty = 0.0
+        if tier == "Small":
+            if rank <= 20:
+                penalty += 8.5
+            elif rank <= 32:
+                penalty += 5.5
+            elif rank <= 96:
+                penalty += 2.8
+            elif rank <= 160:
+                penalty += 1.2
+        elif tier == "Regular":
+            if rank <= 20:
+                penalty += 3.0
+            elif rank <= 32:
+                penalty += 1.8
+
+        if tier == "International" or row.is_international or row.birth_country != UNITED_STATES:
+            if rank <= 32:
+                penalty += 12.0
+            elif rank <= 64:
+                penalty += 8.0
+            elif rank <= 128:
+                penalty += 6.0
+            elif rank <= 160:
+                penalty += 3.4
+
+        outlier_relief = 0.0
+        if row.scout_grade >= 75:
+            outlier_relief += min(3.0, (row.scout_grade - 74) * 0.55)
+        if row.scout_ceiling >= 84:
+            outlier_relief += min(2.5, (row.scout_ceiling - 83) * 0.45)
+        if row.combine_grade is not None and row.combine_grade >= 82:
+            outlier_relief += 1.8
+        if row.pro_day_grade is not None and row.pro_day_grade >= 84:
+            outlier_relief += 1.2
+        return max(0.0, penalty - outlier_relief)
 
     def _scouting_variance_score(
         self,

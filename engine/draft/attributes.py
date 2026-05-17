@@ -593,7 +593,76 @@ class DraftAttributeGenerator:
             ceiling = max(ceiling, 68 + self.rng.random() * 5)
         if talent_profile == "hidden_unlisted":
             ceiling += self._hidden_ceiling_variance()
+        ceiling = self._finished_product_ceiling(
+            ceiling=ceiling,
+            true_grade=true_grade,
+            age=age,
+            rank=rank,
+            tier=tier,
+            dev_trait=dev_trait,
+            position=position,
+            talent_profile=talent_profile,
+        )
         return clamp(ceiling, max(45, true_grade + 1), 92)
+
+    def _finished_product_ceiling(
+        self,
+        *,
+        ceiling: float,
+        true_grade: int,
+        age: int,
+        rank: int,
+        tier: str,
+        dev_trait: str,
+        position: str,
+        talent_profile: str,
+    ) -> float:
+        """Older rookies are usually closer to their ceiling, with exceptions.
+
+        Seniors and graduates can still be late bloomers or raw traits bets,
+        but the common case should be a more finished profile than a 20- or
+        21-year-old early entrant.
+        """
+
+        if position in {"K", "P", "LS"} or age < 22:
+            return ceiling
+        gap = ceiling - true_grade
+        if gap <= 1:
+            return ceiling
+        target_gap = {
+            22: 6.8,
+            23: 5.2,
+            24: 4.2,
+            25: 3.5,
+        }.get(age, 3.2 if age > 25 else 6.8)
+        if tier == "round_1":
+            target_gap += 0.4
+        elif tier == "round_2_3":
+            target_gap += 0.2
+        if rank <= 16 and true_grade >= 66:
+            target_gap += 0.4
+        if talent_profile == "hidden_unlisted":
+            target_gap += 1.0
+
+        exception_chance = {
+            22: 0.18,
+            23: 0.13,
+            24: 0.09,
+            25: 0.08,
+        }.get(age, 0.06)
+        if dev_trait == "X-Factor":
+            exception_chance += 0.20
+            target_gap += 1.4
+        elif dev_trait == "Superstar":
+            exception_chance += 0.14
+            target_gap += 1.0
+        elif dev_trait == "Star":
+            exception_chance += 0.08
+            target_gap += 0.5
+
+        if gap <= target_gap or self.rng.random() < min(0.55, exception_chance):
+            return ceiling
+        return true_grade + max(1.0, target_gap + self.rng.gauss(0.0, 1.0))
 
     def _age_ceiling_modifier(
         self,
@@ -920,13 +989,15 @@ class DraftAttributeGenerator:
         baseline = POSITION_BASELINES.get(position, POSITION_BASELINES["WR"])
         weight_delta = weight_lbs - baseline["weight"]
         height_delta = height_in - baseline["height"]
+        density_factor = 7.0 if position in {"FB", "TE", "OT", "OG", "C", "IDL", "EDGE", "OLB", "ILB", "LS"} else 5.0
+        frame_density_delta = weight_delta - height_delta * density_factor
         arm_delta = (arm_length_in or (height_in * 0.44)) - (height_in * 0.44)
         hand_delta = (hand_size_in or 9.5) - 9.5
 
         athletic_bonus = (true_grade - 60) / 10
         speed = baseline["speed"] + athletic_bonus - max(0, weight_delta) / 9 + max(0, -weight_delta) / 14
         agility = baseline["agility"] + athletic_bonus - max(0, weight_delta) / 11 + max(0, -weight_delta) / 18
-        strength = baseline["strength"] + weight_delta / 8 + max(0, height_delta) / 3
+        strength = baseline["strength"] + weight_delta / 12 + frame_density_delta / 14 + max(0, height_delta) / 6
 
         if archetype in {"Vertical threat", "Speed rusher", "Elusive back", "Dual-threat", "Man corner", "Deep safety"}:
             speed += 3
@@ -970,7 +1041,101 @@ class DraftAttributeGenerator:
         }
 
         ratings.update(self._skill_ratings(position, archetype, true_grade, speed, acceleration, agility, strength, balance, recognition, processing, composure, arm_delta, hand_delta))
+        self._apply_body_skill_correlations(
+            position=position,
+            ratings=ratings,
+            height_delta=height_delta,
+            weight_delta=weight_delta,
+            frame_density_delta=frame_density_delta,
+            arm_delta=arm_delta,
+            hand_delta=hand_delta,
+        )
         return self._fill_and_cap(position, ratings)
+
+    def _body_modifier(
+        self,
+        signal: float,
+        scale: float,
+        *,
+        contrary_chance: float = 0.12,
+        noise: float = 0.45,
+        limit: float = 5.0,
+    ) -> float:
+        """Convert a physical signal into a rating nudge with rare reversals."""
+        if abs(signal) < 0.01:
+            return self.rng.gauss(0.0, noise * 0.35)
+        modifier = signal * scale + self.rng.gauss(0.0, noise)
+        if self.rng.random() < contrary_chance:
+            modifier *= -self.rng.uniform(0.35, 0.95)
+        return max(-limit, min(limit, modifier))
+
+    def _nudge_rating(self, ratings: dict[str, int], key: str, amount: float) -> None:
+        if key in ratings:
+            ratings[key] = clamp(ratings[key] + amount, 1, 99)
+
+    def _apply_body_skill_correlations(
+        self,
+        *,
+        position: str,
+        ratings: dict[str, int],
+        height_delta: float,
+        weight_delta: float,
+        frame_density_delta: float,
+        arm_delta: float,
+        hand_delta: float,
+    ) -> None:
+        # Normalize around roughly meaningful football measurement differences.
+        height_signal = max(-2.0, min(2.0, height_delta / 3.0))
+        weight_signal = max(-2.0, min(2.0, weight_delta / 22.0))
+        density_signal = max(-2.0, min(2.0, frame_density_delta / 24.0))
+        arm_signal = max(-2.0, min(2.0, arm_delta / 1.15))
+        hand_signal = max(-2.0, min(2.0, hand_delta / 0.55))
+        anchor_signal = max(-2.0, min(2.0, density_signal * 0.88 + weight_signal * 0.12))
+        power_frame_signal = max(-2.0, min(2.0, weight_signal * 0.65 + height_signal * 0.15 + density_signal * 0.20))
+
+        hand_catch = self._body_modifier(hand_signal, 1.55, contrary_chance=0.14, limit=4.5)
+        length_catch = self._body_modifier(height_signal * 0.55 + arm_signal * 0.45, 1.25, contrary_chance=0.10, limit=4.0)
+        mass_power = self._body_modifier(power_frame_signal, 1.45, contrary_chance=0.11, limit=4.5)
+        anchor_power = self._body_modifier(anchor_signal, 2.20, contrary_chance=0.10, limit=5.5)
+        mass_mobility = self._body_modifier(weight_signal, -1.20, contrary_chance=0.13, limit=4.0)
+        length_leverage = self._body_modifier(arm_signal, 1.15, contrary_chance=0.11, limit=3.5)
+
+        if position in {"WR", "TE", "RB", "FB"}:
+            for key in ("hands", "catch_in_traffic"):
+                self._nudge_rating(ratings, key, hand_catch)
+            self._nudge_rating(ratings, "contested_catch", hand_catch * 0.55 + length_catch * 1.25 + mass_power * 0.25)
+            self._nudge_rating(ratings, "ball_security", hand_catch * 0.55 + mass_power * 0.20)
+            self._nudge_rating(ratings, "release_vs_press", length_leverage * 0.45 + mass_power * 0.35)
+            self._nudge_rating(ratings, "route_snap", mass_mobility * 0.65)
+            self._nudge_rating(ratings, "elusiveness", mass_mobility * 0.65)
+            self._nudge_rating(ratings, "contact_power", mass_power * 0.85)
+        elif position == "QB":
+            self._nudge_rating(ratings, "throw_power", hand_catch * 0.65 + mass_power * 0.35)
+            self._nudge_rating(ratings, "ball_security", hand_catch * 0.45)
+            self._nudge_rating(ratings, "platform_control", mass_power * 0.25 + mass_mobility * 0.25)
+            self._nudge_rating(ratings, "throw_release", mass_mobility * 0.35)
+        elif position in {"OT", "OG", "C"}:
+            self._nudge_rating(ratings, "pass_block_power", anchor_power * 0.80 + mass_power * 0.20)
+            self._nudge_rating(ratings, "run_block_drive", anchor_power * 0.70 + mass_power * 0.30)
+            self._nudge_rating(ratings, "block_sustain", anchor_power * 0.50 + length_leverage * 0.35)
+            self._nudge_rating(ratings, "pass_block_speed", length_leverage * 0.85 + mass_mobility * 0.45)
+            self._nudge_rating(ratings, "reach_block", length_leverage * 0.45 + mass_mobility * 0.80)
+            self._nudge_rating(ratings, "lead_block", mass_mobility * 0.55)
+        elif position in {"EDGE", "OLB", "IDL"}:
+            self._nudge_rating(ratings, "power_rush", anchor_power * 0.45 + mass_power * 0.35 + length_leverage * 0.30)
+            self._nudge_rating(ratings, "speed_rush", mass_mobility * 0.70 + length_leverage * 0.25)
+            self._nudge_rating(ratings, "block_shedding", anchor_power * 0.50 + length_leverage * 0.45)
+            self._nudge_rating(ratings, "double_team_takeon", anchor_power * 1.10)
+            self._nudge_rating(ratings, "gap_integrity", anchor_power * 0.55)
+            self._nudge_rating(ratings, "edge_contain", length_leverage * 0.40 + mass_mobility * 0.25)
+        elif position in {"CB", "NB", "FS", "SS", "ILB"}:
+            self._nudge_rating(ratings, "press_coverage", length_leverage * 0.90 + mass_power * 0.25)
+            self._nudge_rating(ratings, "man_coverage", mass_mobility * 0.55 + length_leverage * 0.20)
+            self._nudge_rating(ratings, "zone_recovery", mass_mobility * 0.60)
+            self._nudge_rating(ratings, "ball_skills", hand_catch * 0.45 + length_catch * 0.35)
+            self._nudge_rating(ratings, "hit_power", mass_power * 0.75)
+            self._nudge_rating(ratings, "open_field_tackle", mass_mobility * 0.35)
+            self._nudge_rating(ratings, "tackle_wrap", length_leverage * 0.35 + mass_power * 0.30)
 
     def _skill_ratings(
         self,

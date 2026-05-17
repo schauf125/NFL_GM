@@ -32,7 +32,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-hidden-prospects", action="store_true", help="Generate only the public board.")
     parser.add_argument("--seed", default="2027-preview")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--international-chance", type=float, default=0.05)
+    parser.add_argument("--international-chance", type=float, default=0.04)
     parser.add_argument("--physical-outlier-chance", type=float, default=0.045)
     parser.add_argument("--class-strength", type=int, default=50)
     parser.add_argument(

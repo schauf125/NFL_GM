@@ -51,6 +51,7 @@ from setup_transactions_cap_ledger import (
 import player_personalities
 import player_development_modifiers
 import scheme_fits
+import player_headshot_backfill
 
 
 SOURCE = "draft_selection"
@@ -1176,6 +1177,7 @@ def convert_undrafted_prospect_to_free_agent(
         prospect=prospect,
         draft_year=draft_year,
     )
+    player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
     rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
@@ -1658,6 +1660,7 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         pick=pick,
         rookie_contract=contract,
     )
+    player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)

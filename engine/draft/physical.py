@@ -191,6 +191,8 @@ class PhysicalProfileGenerator:
     def _sample_z(self, outlier_chance: float) -> tuple[float, bool]:
         if self.rng.random() < outlier_chance:
             direction = -1 if self.rng.random() < 0.5 else 1
+            if self.rng.random() < 0.12:
+                return direction * self.rng.uniform(3.25, 4.15), True
             return direction * self.rng.uniform(2.0, 3.25), True
         while True:
             value = self.rng.gauss(0.0, 1.0)

@@ -125,6 +125,10 @@ CPU_SCOUTING_BUCKETS = {
 PRE_DRAFT_PUBLIC_EARLY_COUNT = 10
 PRE_DRAFT_PUBLIC_LATE_COUNT = 15
 PREMIUM_POSITION_SCOUTING_BONUS = 4.0
+USER_AUTO_TOP30_FIRST_ROUND_CAP = 8
+USER_AUTO_TOP30_LATE_EARLY_CAP = 6
+USER_AUTO_TOP30_DAY2_CAP = 8
+USER_AUTO_TOP30_DAY3_CAP = 8
 
 
 def specific_scouting_cost(position: str | None) -> int:
@@ -3674,6 +3678,7 @@ def execute_top30_visit(
     seed: str | None = None,
     visit_date: str | None = None,
     allow_after_draft: bool = False,
+    confidence_steps: int = 2,
 ) -> dict[str, Any]:
     target_game_id, class_row, target_year, team_abbr = top30_context(con, game_id=game_id, draft_year=draft_year)
     draft_class_id = int(class_row["draft_class_id"])
@@ -3750,10 +3755,11 @@ def execute_top30_visit(
     notes = top30_visit_note(prospect, result_type=result_type, traits=traits, hidden_info=hidden_info)
     old_confidence = normalize_confidence(prospect["user_scouting_confidence"])
     old_level = int(prospect["user_scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence])
-    visit_confidence = advance_confidence(old_confidence, 2)
+    confidence_steps = max(1, min(2, int(confidence_steps or 1)))
+    visit_confidence = advance_confidence(old_confidence, confidence_steps)
     visit_level = max(old_level, CONFIDENCE_TARGET_LEVELS[visit_confidence])
     if result_type == "full":
-        visit_confidence = "Very High"
+        visit_confidence = "Very High" if confidence_steps >= 2 else advance_confidence(old_confidence, 2)
         visit_level = max(visit_level, 95)
     con.execute(
         """
@@ -3984,36 +3990,111 @@ def auto_assign_top30_visits(
         season=current_season(con),
         evaluation_date=effective_visit_date,
     )
+    existing_bucket_counts = {
+        "first": 0,
+        "late_early": 0,
+        "day2": 0,
+        "day3": 0,
+    }
+    for row in con.execute(
+        """
+        SELECT COALESCE(dp.public_board_rank, dp.scouting_rank, 9999) AS rank
+        FROM scouting_top30_visits stv
+        JOIN draft_prospects dp ON dp.prospect_id = stv.prospect_id
+        WHERE stv.game_id = ?
+          AND stv.draft_year = ?
+          AND stv.team_abbr = ?
+        """,
+        (target_game_id, target_year, team_abbr),
+    ).fetchall():
+        rank = int(row["rank"] or 9999)
+        if rank <= 32:
+            existing_bucket_counts["first"] += 1
+        elif rank <= 64:
+            existing_bucket_counts["late_early"] += 1
+        elif rank <= 112:
+            existing_bucket_counts["day2"] += 1
+        elif rank <= 220:
+            existing_bucket_counts["day3"] += 1
+
+    def visit_bucket(prospect: sqlite3.Row) -> str:
+        rank = board_rank(prospect, 9999)
+        if rank <= 32:
+            return "first"
+        if rank <= 64:
+            return "late_early"
+        if rank <= 112:
+            return "day2"
+        return "day3"
+
+    bucket_caps = {
+        "first": USER_AUTO_TOP30_FIRST_ROUND_CAP,
+        "late_early": USER_AUTO_TOP30_LATE_EARLY_CAP,
+        "day2": USER_AUTO_TOP30_DAY2_CAP,
+        "day3": USER_AUTO_TOP30_DAY3_CAP,
+    }
+
+    def prospect_visit_weight(prospect: sqlite3.Row, index: int) -> float:
+        rank = int(prospect["public_board_rank"] or 260)
+        grade = float(prospect["scout_grade"] or 55)
+        variance = float(prospect["scouting_variance"] or 0)
+        confidence = normalize_confidence(prospect["scouting_confidence"])
+        confidence_bonus = {"Low": 12.0, "Medium": 8.0, "High": 3.0, "Very High": 0.5}.get(confidence, 6.0)
+        rank_bonus = max(0.5, 40.0 / max(1, rank))
+        strategic_score = user_auto_scouting_score(
+            prospect,
+            need_scores=need_scores,
+            pick_profile=pick_profile,
+        )
+        need_score = need_scores.get(prospect_position_group(prospect), 0.0)
+        if need_score < 20.0 and rank > 96:
+            confidence_bonus *= 0.45
+        if visit_bucket(prospect) == "first" and need_score < 34.0:
+            strategic_score *= 0.72
+        return max(
+            0.1,
+            confidence_bonus
+            + rank_bonus
+            + strategic_score / 8.0
+            + (grade - 55.0) / 10.0
+            + variance / 14.0
+            - index * 0.01,
+        )
+
     pool = list(candidates)
     selected: list[sqlite3.Row] = []
+
+    def add_weighted_from(bucket_name: str, limit: int) -> None:
+        nonlocal pool
+        if limit <= 0:
+            return
+        while pool and len(selected) < remaining and limit > 0:
+            bucket_pool = [row for row in pool if visit_bucket(row) == bucket_name]
+            if not bucket_pool:
+                return
+            weighted = [prospect_visit_weight(row, index) for index, row in enumerate(bucket_pool)]
+            choice = rng.choices(bucket_pool, weights=weighted, k=1)[0]
+            selected.append(choice)
+            pool.remove(choice)
+            limit -= 1
+
+    for bucket_name in ("first", "late_early", "day2", "day3"):
+        add_weighted_from(
+            bucket_name,
+            max(0, bucket_caps[bucket_name] - existing_bucket_counts.get(bucket_name, 0)),
+        )
+
     while pool and len(selected) < remaining:
-        weighted = []
-        for index, prospect in enumerate(pool):
-            rank = int(prospect["public_board_rank"] or 260)
-            grade = float(prospect["scout_grade"] or 55)
-            variance = float(prospect["scouting_variance"] or 0)
-            confidence = normalize_confidence(prospect["scouting_confidence"])
-            confidence_bonus = {"Low": 12.0, "Medium": 8.0, "High": 3.0, "Very High": 0.5}.get(confidence, 6.0)
-            rank_bonus = max(0.5, 40.0 / max(1, rank))
-            strategic_score = user_auto_scouting_score(
-                prospect,
-                need_scores=need_scores,
-                pick_profile=pick_profile,
-            )
-            need_score = need_scores.get(prospect_position_group(prospect), 0.0)
-            if need_score < 20.0 and rank > 96:
-                confidence_bonus *= 0.45
-            weight = max(
-                0.1,
-                confidence_bonus
-                + rank_bonus
-                + strategic_score / 8.0
-                + (grade - 55.0) / 10.0
-                + variance / 14.0
-                - index * 0.01,
-            )
-            weighted.append(weight)
-        choice = rng.choices(pool, weights=weighted, k=1)[0]
+        first_count = existing_bucket_counts["first"] + sum(1 for row in selected if visit_bucket(row) == "first")
+        eligible_pool = [
+            row
+            for row in pool
+            if visit_bucket(row) != "first" or first_count < USER_AUTO_TOP30_FIRST_ROUND_CAP
+        ]
+        if not eligible_pool:
+            break
+        weighted = [prospect_visit_weight(row, index) for index, row in enumerate(eligible_pool)]
+        choice = rng.choices(eligible_pool, weights=weighted, k=1)[0]
         selected.append(choice)
         pool.remove(choice)
 
@@ -4027,6 +4108,7 @@ def auto_assign_top30_visits(
                 draft_year=target_year,
                 seed=f"{seed or target_game_id}:{target_year}:{int(prospect['prospect_id'])}:auto-top30",
                 visit_date=effective_visit_date,
+                confidence_steps=1,
             )
         )
 

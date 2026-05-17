@@ -4669,16 +4669,75 @@
     return Array.from({ length: maxRank }, (_, index) => index + 1);
   }
 
-  function depthSetRankButton(slot, rank, player, label) {
+  function formationRank(meta) {
+    return Math.max(1, Number(meta?.rank || 1));
+  }
+
+  function activeFormationMetas() {
+    return [...offensePersonnelSlots(), ...defensePackageSlots()].map((meta) => ({
+      ...meta,
+      rank: formationRank(meta),
+    }));
+  }
+
+  function activeFormationEntries(depth) {
+    const map = depthSlotMap(depth);
+    return activeFormationMetas()
+      .map((meta) => {
+        const slot = map.get(meta.slot);
+        const player = (slot?.players || [])[formationRank(meta) - 1];
+        return {
+          slot: meta.slot,
+          label: meta.label || meta.slot,
+          rank: formationRank(meta),
+          player,
+          playerId: player?.player_id === undefined || player?.player_id === null ? "" : String(player.player_id),
+        };
+      })
+      .filter((entry) => entry.player);
+  }
+
+  function formationDuplicatePlayerIds(depth) {
+    const counts = new Map();
+    activeFormationEntries(depth).forEach((entry) => {
+      if (!entry.playerId) return;
+      counts.set(entry.playerId, (counts.get(entry.playerId) || 0) + 1);
+    });
+    return new Set([...counts.entries()].filter(([, count]) => count > 1).map(([id]) => id));
+  }
+
+  function formationConflictEntry(depth, playerId, slot, rank) {
+    const id = String(playerId || "");
+    const targetSlot = String(slot || "").toUpperCase();
+    const targetRank = Number(rank || 1);
+    if (!id || !activeFormationMetas().some((meta) => meta.slot === targetSlot && formationRank(meta) === targetRank)) return null;
+    return activeFormationEntries(depth).find((entry) => (
+      entry.playerId === id
+      && !(String(entry.slot || "").toUpperCase() === targetSlot && Number(entry.rank || 1) === targetRank)
+    )) || null;
+  }
+
+  function formationConflictText(entry) {
+    if (!entry) return "";
+    const rankText = entry.rank > 1 ? ` #${entry.rank}` : "";
+    return `${entry.player?.player_name || "Player"} is already on the field at ${entry.label}${rankText}.`;
+  }
+
+  function depthSetRankButton(depth, slot, rank, player, label) {
     const currentRank = Number(player.depth_rank || 0);
+    const conflict = formationConflictEntry(depth, player.player_id, slot, rank);
     const button = node("button", "depth-rank-button", label || `#${rank}`);
     button.type = "button";
-    button.disabled = state.runnerBusy || !runnerMode() || currentRank === Number(rank);
-    button.title = currentRank === Number(rank)
+    button.disabled = state.runnerBusy || !runnerMode() || currentRank === Number(rank) || Boolean(conflict);
+    button.title = conflict ? formationConflictText(conflict) : currentRank === Number(rank)
       ? `${player.player_name} is already ${slot} #${rank}`
       : `Set ${player.player_name} as ${slot} #${rank}`;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (conflict) {
+        showToast(formationConflictText(conflict));
+        return;
+      }
       runAction("depth_chart_set", {
         position: slot,
         rank,
@@ -4707,7 +4766,7 @@
     );
     const actions = node("div", "depth-chip-actions");
     depthRankTargets(selected).forEach((rank) => {
-      actions.append(depthSetRankButton(selected.slot, rank, player));
+      actions.append(depthSetRankButton(depth, selected.slot, rank, player));
     });
     append(item, [top, meta, actions]);
     return item;
@@ -4733,7 +4792,7 @@
     const controls = node("div", "depth-player-card-controls");
     append(controls, [
       depthMoveButtons(selected.slot, player),
-      depthReplacementControl(selected.slot, player.depth_rank, depth.roster || [], player.player_id),
+      depthReplacementControl(depth, selected.slot, player.depth_rank, depth.roster || [], player.player_id),
     ]);
     append(card, [header, detail, controls]);
     return card;
@@ -4869,14 +4928,17 @@
   function formationSlotTile(depth, selected, slot, meta) {
     const rankIndex = Math.max(0, Number(meta.rank || 1) - 1);
     const starter = (slot.players || [])[rankIndex];
-    const button = node("button", `formation-slot ${slot.slot === selected?.slot ? "active" : ""}`.trim());
+    const duplicateIds = formationDuplicatePlayerIds(depth);
+    const isDuplicate = starter?.player_id !== undefined && duplicateIds.has(String(starter.player_id));
+    const button = node("button", `formation-slot ${slot.slot === selected?.slot ? "active" : ""} ${isDuplicate ? "duplicate" : ""}`.trim());
     button.type = "button";
+    if (isDuplicate) button.title = `${starter.player_name} is starting in more than one spot in this formation.`;
     if (meta.row) button.style.gridRow = String(meta.row);
     if (meta.col) button.style.gridColumn = String(meta.col);
     append(button, [
       node("span", "formation-slot-label", meta.label || slot.slot),
       node("strong", null, formationPlayerLabel(starter)),
-      node("small", null, starter ? `${starter.position || slot.slot}${starter.overall ? ` | ${starter.overall} OVR` : ""}${meta.rank ? ` | #${meta.rank}` : ""}` : `${slot.slot} depth${meta.rank ? ` #${meta.rank}` : ""}`),
+      node("small", null, starter ? `${starter.position || slot.slot}${starter.overall ? ` | ${starter.overall} OVR` : ""}${meta.rank ? ` | #${meta.rank}` : ""}${isDuplicate ? " | duplicate" : ""}` : `${slot.slot} depth${meta.rank ? ` #${meta.rank}` : ""}`),
     ]);
     button.addEventListener("click", () => {
       state.selectedDepthSlot = slot.slot;
@@ -5776,7 +5838,7 @@
     return wrap;
   }
 
-  function depthReplacementControl(slot, rank, roster, currentPlayerId) {
+  function depthReplacementControl(depth, slot, rank, roster, currentPlayerId) {
     const wrap = node("span", "replace-control");
     const select = node("select", "depth-select");
     const sorted = [...roster].sort((a, b) => {
@@ -5786,8 +5848,11 @@
     });
     sorted.forEach((player) => {
       const option = node("option", null, `${playerFitsSlot(player, slot) ? "*" : " "} ${player.player_name} (${player.position})`);
+      const conflict = formationConflictEntry(depth, player.player_id, slot, rank);
       option.value = String(player.player_id);
       option.selected = String(player.player_id) === String(currentPlayerId);
+      option.disabled = Boolean(conflict) && String(player.player_id) !== String(currentPlayerId);
+      if (conflict) option.textContent += ` - already at ${conflict.label}${conflict.rank > 1 ? ` #${conflict.rank}` : ""}`;
       select.append(option);
     });
     const set = node("button", "run-button compact", "Set");
@@ -5795,6 +5860,11 @@
     set.disabled = state.runnerBusy;
     set.addEventListener("click", (event) => {
       event.stopPropagation();
+      const conflict = formationConflictEntry(depth, select.value, slot, rank);
+      if (conflict && String(select.value) !== String(currentPlayerId)) {
+        showToast(formationConflictText(conflict));
+        return;
+      }
       runAction("depth_chart_set", {
         position: slot,
         rank,
@@ -6663,6 +6733,8 @@
       ["Class", valueOrDash(player.college_class)],
       ["Senior Bowl", seniorBowlLabel(player)],
       ["School", `${player.college || "-"}${player.college_tier ? ` (${player.college_tier})` : ""}`],
+      ["Late Buzz", valueOrDash(player.late_process_status)],
+      ["Board Move", boardMoveText(player.public_board_delta)],
       ["Height", heightText(player.height_in)],
       ["Weight", weightText(player.weight_lbs)],
       ["Arm", inchesText(player.arm_length_in)],
@@ -6682,12 +6754,19 @@
         ["Broad", inchesToFeetText(player.broad_jump_in)],
         ["3 Cone", decimalOrDash(player.three_cone_sec, 2)],
         ["Shuttle", decimalOrDash(player.twenty_yard_shuttle_sec, 2)],
-        ["Medical", Number(player.combine_injured || 0) ? "Flag" : "Clear"],
+        ["Medical", player.medical_risk || (Number(player.combine_injured || 0) ? "Flag" : "Clear")],
       ], "compact")));
     } else {
       const workoutDate = data.scouting?.workoutVisibility?.combineDate || data.scouting?.workoutVisibility?.combineEndDate;
       body.append(sectionBlock("Combine", node("div", "empty-state", workoutDate ? `Combine data unlocks after ${shortDate(workoutDate)}.` : "Combine data is not available yet.")));
     }
+
+    body.append(sectionBlock("Process Notes", detailGrid([
+      ["Medical", `${player.medical_flag || "Clean file"}${player.medical_risk ? ` | ${player.medical_risk}` : ""}`],
+      ["Interview", `${player.interview_trait || "-"}${player.interview_grade ? ` | ${player.interview_grade}` : ""}`],
+      ["Private", `${player.private_workout_type || "None"}${player.private_workout_interest ? ` | ${player.private_workout_interest}` : ""}`],
+      ["Board", player.late_process_note || "-"],
+    ], "compact")));
 
     body.append(sectionBlock(
       "Scouted Attributes",
@@ -6716,6 +6795,12 @@
     }
     body.append(action);
     return card;
+  }
+
+  function boardMoveText(delta) {
+    const value = Number(delta || 0);
+    if (!value) return "Stable";
+    return `${value > 0 ? "+" : ""}${value}`;
   }
 
   function draftProspectPopover(player, options = {}) {
@@ -8849,10 +8934,15 @@
       node("span", null, day.weekday || ""),
     ]);
     const items = node("div", "calendar-items");
-    (day.events || []).slice(0, 3).forEach((event) => items.append(calendarEventChip(event)));
+    const hasPreseasonGame = (day.games || []).some((game) => String(game.game_type || "").toUpperCase() === "PRE");
+    const visibleEvents = (day.events || []).filter((event) => {
+      const code = String(event.event_code || "");
+      return !(hasPreseasonGame && code.startsWith("PRESEASON_WEEK_"));
+    });
+    visibleEvents.slice(0, 3).forEach((event) => items.append(calendarEventChip(event)));
     (day.games || []).slice(0, 4).forEach((game) => items.append(calendarGameChip(game)));
     (day.news || []).slice(0, 3).forEach((item) => items.append(calendarNewsChip(item)));
-    const overflow = (day.events || []).length + (day.games || []).length + (day.news || []).length - items.children.length;
+    const overflow = visibleEvents.length + (day.games || []).length + (day.news || []).length - items.children.length;
     if (overflow > 0) items.append(node("span", "calendar-more", `+${overflow} more`));
     append(cell, [top, items]);
     return cell;

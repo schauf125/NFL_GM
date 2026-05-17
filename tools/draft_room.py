@@ -383,8 +383,9 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
                 draft_year,
                 user_team=user_team,
                 min_space=1_000_000,
-                max_moves_per_team=0,
+                max_moves_per_team=4,
                 max_teams=32,
+                time_budget_seconds=12.0,
             )
         except Exception as exc:
             cap_cleanup = {"error": str(exc)}

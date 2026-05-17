@@ -2443,6 +2443,16 @@ body[data-view="season"] .row .tag {
   background: rgba(245, 201, 92, 0.15);
 }
 
+.formation-slot.duplicate {
+  border-color: rgba(239, 68, 68, 0.9);
+  background: rgba(127, 29, 29, 0.34);
+}
+
+.formation-slot.duplicate .formation-slot-label,
+.formation-slot.duplicate small {
+  color: #fecaca;
+}
+
 .formation-slot-label {
   color: var(--accent);
   font-size: 0.56rem;

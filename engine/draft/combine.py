@@ -538,6 +538,12 @@ class CombineGenerator:
             for key, chance in chances.items()
         }
 
+    def _workout_noise(self, sigma: float, workout_modifier: float, *, limit: float) -> float:
+        noise = self.rng.gauss(0, sigma)
+        if abs(workout_modifier) >= 4.0 and self.rng.random() < 0.35:
+            noise += self.rng.choice((-1, 1)) * self.rng.uniform(sigma * 0.65, sigma * 1.45)
+        return _clamp_float(noise, -limit, limit)
+
     def _results(
         self,
         *,
@@ -559,13 +565,14 @@ class CombineGenerator:
         balance = ratings.get("balance", 50)
         weight_delta = weight_lbs - position_baseline["weight"]
         height_delta = height_in - position_baseline["height"]
+        frame_density_delta = weight_delta - height_delta * 7.0
         workout_penalty = -workout_modifier if limited and workout_modifier > 0 else workout_modifier
 
         speed_delta = speed - position_baseline["speed"]
         acceleration_delta = acceleration - position_baseline["speed"]
         agility_delta = agility - position_baseline["agility"]
         strength_delta = strength - position_baseline["strength"]
-        explosion = blend((speed_delta, 0.35), (acceleration_delta, 0.30), (agility_delta, 0.20), (strength_delta, 0.15))
+        explosion = blend((speed_delta, 0.28), (acceleration_delta, 0.36), (agility_delta, 0.18), (strength_delta, 0.18))
 
         forty = None
         if drills.get("forty_yard_dash"):
@@ -575,7 +582,7 @@ class CombineGenerator:
                     - speed_delta * 0.010
                     - acceleration_delta * 0.004
                     + max(0, weight_delta) * 0.0012
-                    + self.rng.gauss(0, 0.055)
+                    + self._workout_noise(0.055, workout_modifier, limit=0.14)
                     - workout_penalty * 0.010,
                     4.20,
                     5.65,
@@ -593,7 +600,7 @@ class CombineGenerator:
                     ten_base
                     - acceleration_delta * 0.0035
                     - agility_delta * 0.001
-                    + self.rng.gauss(0, 0.025)
+                    + self._workout_noise(0.025, workout_modifier, limit=0.065)
                     - workout_penalty * 0.003,
                     1.43,
                     1.98,
@@ -605,10 +612,10 @@ class CombineGenerator:
         if drills.get("bench_press_reps") and baseline["bench"] > 0:
             bench = clamp(
                 baseline["bench"]
-                + strength_delta * 0.35
-                + max(0, weight_delta) * 0.035
-                + max(0, height_delta) * -0.25
-                + self.rng.gauss(0, 3.2)
+                + strength_delta * 0.42
+                + frame_density_delta * 0.045
+                + max(0, height_delta) * -0.20
+                + self._workout_noise(3.4, workout_modifier, limit=8.0)
                 + workout_penalty * 0.35,
                 4,
                 45,
@@ -619,9 +626,9 @@ class CombineGenerator:
             vertical = round(
                 _clamp_float(
                     baseline["vertical"]
-                    + explosion * 0.23
-                    - max(0, weight_delta) * 0.025
-                    + self.rng.gauss(0, 2.1)
+                    + explosion * 0.26
+                    - max(0, weight_delta) * 0.018
+                    + self._workout_noise(2.1, workout_modifier, limit=5.5)
                     + workout_penalty * 0.28,
                     18.0,
                     46.5,
@@ -635,9 +642,9 @@ class CombineGenerator:
         if drills.get("broad_jump_in"):
             broad = clamp(
                 baseline["broad"]
-                + explosion * 0.75
-                - max(0, weight_delta) * 0.045
-                + self.rng.gauss(0, 5.0)
+                + explosion * 0.86
+                - max(0, weight_delta) * 0.035
+                + self._workout_noise(5.0, workout_modifier, limit=13.0)
                 + workout_penalty * 0.90,
                 84,
                 140,
@@ -648,10 +655,11 @@ class CombineGenerator:
             cone = round(
                 _clamp_float(
                     baseline["cone"]
-                    - agility_delta * 0.010
-                    - balance * 0.0015
+                    - agility_delta * 0.012
+                    - acceleration_delta * 0.002
+                    - balance * 0.0013
                     + max(0, weight_delta) * 0.0012
-                    + self.rng.gauss(0, 0.10)
+                    + self._workout_noise(0.10, workout_modifier, limit=0.26)
                     - workout_penalty * 0.010,
                     6.45,
                     8.65,
@@ -664,10 +672,10 @@ class CombineGenerator:
             shuttle = round(
                 _clamp_float(
                     baseline["shuttle"]
-                    - agility_delta * 0.007
-                    - acceleration_delta * 0.003
+                    - agility_delta * 0.008
+                    - acceleration_delta * 0.004
                     + max(0, weight_delta) * 0.0010
-                    + self.rng.gauss(0, 0.08)
+                    + self._workout_noise(0.08, workout_modifier, limit=0.20)
                     - workout_penalty * 0.008,
                     3.82,
                     5.35,
@@ -683,7 +691,7 @@ class CombineGenerator:
                     - agility_delta * 0.012
                     - acceleration_delta * 0.006
                     + max(0, weight_delta) * 0.0015
-                    + self.rng.gauss(0, 0.18)
+                    + self._workout_noise(0.18, workout_modifier, limit=0.42)
                     - workout_penalty * 0.015,
                     10.45,
                     13.80,
