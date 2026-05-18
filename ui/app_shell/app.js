@@ -177,7 +177,7 @@
   function busyMessage() {
     const elapsed = `Elapsed: ${state.elapsedSeconds}s`;
     if (state.busyAction === "new_june1_save") {
-      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league is preparing a playable save with roster variance, personalities, development traits, scheme fits, and draft class setup. This page will move forward when it is ready.`;
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league is preparing a playable save with roster variance, personalities, development traits, and scheme fits. Draft class setup now happens after the save opens.`;
     }
     if (state.busyAction === "load_game") {
       return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is switching the active save and refreshing the UI data. This does not regenerate draft classes, traits, ratings variance, or development modifiers.`;
@@ -281,7 +281,7 @@
     const startCopy = node("div", "start-copy");
     append(startCopy, [
       node("strong", null, "Create a fresh June 1 save"),
-      node("p", "muted", "Build a playable league file with roster variance, hidden personalities, development modifiers, scheme fits, and draft prep already seeded."),
+      node("p", "muted", "Build a playable league file with roster variance, hidden personalities, development modifiers, and scheme fits. Draft class setup happens after the save opens."),
     ]);
     const startControls = node("div", "command-actions");
     const newButton = node("button", "primary-button", runnerMode() ? "Start Game" : "Open UI Runner");

@@ -130,14 +130,14 @@ MARKET_TIER_MULTIPLIERS = {
 MARKET_GROUP_MULTIPLIERS = {
     "QB": 1.08,
     "RB": 1.02,
-    "WR": 1.08,
+    "WR": 1.06,
     "TE": 1.06,
     "OT": 1.12,
     "IOL": 1.14,
     "EDGE": 1.12,
-    "IDL": 1.06,
+    "IDL": 1.02,
     "LB": 1.05,
-    "CB": 1.08,
+    "CB": 1.05,
     "S": 1.06,
     "K": 1.02,
     "P": 1.02,
@@ -210,6 +210,21 @@ CPU_GROUP_OFFER_COUNT_LIMITS = {
     "LB": 2,
     "CB": 2,
     "S": 2,
+    "ST": 1,
+}
+
+CPU_GROUP_DEPTH_COUNT_LIMITS = {
+    "QB": 3,
+    "RB": 5,
+    "WR": 7,
+    "TE": 4,
+    "OT": 5,
+    "IOL": 6,
+    "EDGE": 6,
+    "IDL": 6,
+    "LB": 6,
+    "CB": 7,
+    "S": 6,
     "ST": 1,
 }
 
@@ -683,21 +698,21 @@ def market_age_factor(group: str, tier: str, age: int | None) -> float:
         return 1.0
     if group == "WR":
         if age >= 34:
-            return 0.72
+            return 0.66
         if age >= 32:
-            return 0.84
+            return 0.76
         if age >= 30:
-            return 0.93
+            return 0.88
         if age <= 25 and tier in {"Premium", "Starter"}:
             return 1.05
         return 1.0
     if group in {"CB", "S", "LB"}:
         if age >= 34:
-            return 0.74
+            return 0.68
         if age >= 32:
-            return 0.84
+            return 0.78
         if age >= 30:
-            return 0.92
+            return 0.87
         if age <= 25 and tier in {"Premium", "Starter"}:
             return 1.04
         return 1.0
@@ -713,11 +728,11 @@ def market_age_factor(group: str, tier: str, age: int | None) -> float:
         return 1.0
     if group == "IDL":
         if age >= 35:
-            return 0.76
+            return 0.70
         if age >= 33:
-            return 0.84
+            return 0.78
         if age >= 31:
-            return 0.94
+            return 0.89
         if age <= 25 and tier in {"Premium", "Starter"}:
             return 1.04
         return 1.0
@@ -803,11 +818,11 @@ def market_price_ceiling(row: sqlite3.Row | dict[str, Any], tier: str, *, post_d
         else:
             base = 38_000_000
     group_multiplier = {
-        "WR": 1.18,
+        "WR": 1.15,
         "OT": 1.18,
         "EDGE": 1.18,
-        "CB": 1.10,
-        "IDL": 1.08,
+        "CB": 1.06,
+        "IDL": 1.03,
         "IOL": 1.05,
         "TE": 0.98,
         "S": 0.92,
@@ -815,6 +830,8 @@ def market_price_ceiling(row: sqlite3.Row | dict[str, Any], tier: str, *, post_d
         "RB": 0.78,
         "ST": 0.42,
     }.get(group, 1.0)
+    if group == "WR" and score >= 88:
+        group_multiplier = 1.24
     tier_multiplier = {"Premium": 1.08, "Starter": 1.0, "Rotation": 0.88, "Depth": 0.72, "Camp": 0.60}.get(tier, 0.85)
     ceiling = base * group_multiplier * tier_multiplier
     if post_draft:
@@ -871,11 +888,11 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
     tables = {
         "QB": [(64, 5_000_000), (68, 8_500_000), (72, 13_000_000), (76, 20_000_000), (80, 32_000_000), (99, 58_000_000)],
         "RB": [(64, 2_200_000), (68, 3_800_000), (72, 5_800_000), (76, 8_500_000), (80, 12_500_000), (99, 16_000_000)],
-        "CB": [(60, 3_500_000), (64, 5_500_000), (68, 8_500_000), (72, 12_500_000), (76, 17_000_000), (80, 23_000_000), (99, 30_000_000)],
+        "CB": [(60, 3_500_000), (64, 5_500_000), (68, 8_500_000), (72, 12_000_000), (76, 16_000_000), (80, 22_000_000), (99, 29_000_000)],
         "S": [(60, 3_000_000), (64, 4_800_000), (68, 7_500_000), (72, 10_500_000), (76, 14_500_000), (80, 19_000_000), (99, 24_000_000)],
         "EDGE": [(64, 4_800_000), (68, 8_000_000), (72, 12_500_000), (76, 18_000_000), (80, 25_000_000), (99, 34_000_000)],
-        "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 11_000_000), (76, 16_000_000), (80, 23_000_000), (99, 30_000_000)],
-        "WR": [(64, 4_000_000), (68, 7_000_000), (72, 11_500_000), (76, 17_000_000), (80, 24_000_000), (99, 34_000_000)],
+        "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 10_500_000), (76, 14_000_000), (80, 20_000_000), (99, 28_000_000)],
+        "WR": [(64, 4_000_000), (68, 7_000_000), (72, 10_500_000), (76, 15_500_000), (80, 24_000_000), (99, 36_000_000)],
         "TE": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (76, 13_000_000), (80, 18_000_000), (99, 23_000_000)],
         "OT": [(64, 4_500_000), (68, 8_000_000), (72, 13_500_000), (76, 18_500_000), (80, 25_000_000), (99, 32_000_000)],
         "IOL": [(64, 4_000_000), (68, 7_000_000), (72, 11_500_000), (76, 16_000_000), (80, 22_000_000), (99, 28_000_000)],
@@ -2465,6 +2482,23 @@ def load_team_need_scores(con: sqlite3.Connection) -> dict[tuple[int, str], floa
     return need_scores
 
 
+def load_team_group_counts(con: sqlite3.Connection) -> dict[tuple[int, str], int]:
+    rows = con.execute(
+        """
+        SELECT team_id, position
+        FROM players
+        WHERE team_id IS NOT NULL
+          AND status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
+        """
+    ).fetchall()
+    counts: dict[tuple[int, str], int] = {}
+    for row in rows:
+        group = position_group_for(str(row["position"]))
+        key = (int(row["team_id"]), group)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def team_list_contains(raw: Any, team: str | None) -> bool:
     if not raw or not team:
         return False
@@ -3861,6 +3895,7 @@ def create_cpu_offers(
     event_date, event_hour = event_time(period)
     candidates = cpu_offer_candidates(con, int(period["league_year"]), count)
     need_scores = load_team_need_scores(con)
+    group_counts = load_team_group_counts(con)
     early_wave = str(period["current_stage"] or "") == "day_one_hourly" and int(period["day_count"] or 1) <= 1
     late_market = cpu_late_market(period)
     if late_market:
@@ -3915,7 +3950,18 @@ def create_cpu_offers(
             group_offer_count = team_group_offers.get(group_key, 0)
             group_spend_limit = CPU_GROUP_SPEND_LIMITS.get(player_group, 30_000_000)
             group_count_limit = CPU_GROUP_OFFER_COUNT_LIMITS.get(player_group, 2)
+            roster_group_count = group_counts.get(group_key, 0)
+            group_depth_limit = CPU_GROUP_DEPTH_COUNT_LIMITS.get(player_group, ROOM_IDEAL_BY_GROUP.get(player_group, 5) + 1)
             late_need_exception = late_market and top_remaining and team_need >= 28
+            if player_group == "QB":
+                if roster_group_count >= group_depth_limit and team_need < 70:
+                    continue
+                if group_offer_count >= 1 and team_need < 70:
+                    continue
+                if group_spend > 0 and team_need < 75:
+                    continue
+            elif roster_group_count >= group_depth_limit and group_offer_count >= 1 and team_need < 40 and not late_need_exception:
+                continue
             if group_offer_count >= group_count_limit and team_need < 48 and not late_need_exception:
                 continue
             if group_spend >= group_spend_limit and team_need < 62 and not late_need_exception:
@@ -3976,6 +4022,9 @@ def create_cpu_offers(
             years = preferred_years_for_offer(player, rng, max_years=5)
             if player_group == "QB" and player_score < 72:
                 years = min(years, 2)
+            if player_group == "QB" and player_score < 75 and team_need < 75:
+                years = min(years, 1)
+                aav = min(aav, max(low, round_to(quality_cap * 0.92, 50_000)))
             if player_group == "RB":
                 years = min(years, 2 if player_score < 78 else 3)
             bonus = int(round((aav * years * rng.uniform(0.03, 0.18)) / 50_000) * 50_000)
@@ -3997,6 +4046,7 @@ def create_cpu_offers(
             team_spend[team_id] = team_spend.get(team_id, 0) + aav
             team_group_spend[group_key] = team_group_spend.get(group_key, 0) + aav
             team_group_offers[group_key] = team_group_offers.get(group_key, 0) + 1
+            group_counts[group_key] = group_counts.get(group_key, 0) + 1
             log_event(
                 con,
                 league_year=int(period["league_year"]),

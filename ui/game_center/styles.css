@@ -1428,6 +1428,57 @@ body[data-view="season"] .row .tag {
   opacity: 0.42;
 }
 
+.draft-class-setup {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+}
+
+.draft-class-setup .panel-body {
+  display: grid;
+  gap: 10px;
+}
+
+.draft-class-setup-modal {
+  max-width: 760px;
+}
+
+.draft-class-setup-body {
+  display: grid;
+  gap: 12px;
+}
+
+.setup-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.setup-copy span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.draft-class-actions {
+  display: grid;
+  grid-template-columns: max-content minmax(280px, 1fr) max-content;
+  gap: 8px;
+  align-items: center;
+}
+
+.draft-class-package-select {
+  min-height: 38px;
+  border: 1px solid rgba(222, 233, 246, 0.18);
+  border-radius: 7px;
+  background: rgba(18, 27, 37, 0.92);
+  color: var(--text);
+  padding: 7px 10px;
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .draft-class-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
 .calendar-milestone-strip {
   display: flex;
   flex-wrap: wrap;

@@ -610,14 +610,22 @@ def process_calendar_events(
             ).strip()
         if event["event_code"] == "SIM_YEAR_START":
             draft_year = int(event["league_year"]) + 1
-            draft_result = draft_class_bootstrap.ensure_draft_class(
+            league_calendar.upsert_setting(
                 con,
-                draft_year=draft_year,
-                seed=f"{game_id}:draft-class:{draft_year}",
-                notes=f"Generated at sim year start {event['event_start_date']}.",
-                refresh_legacy_without_offboard=True,
+                "draft_class_setup_pending_year",
+                str(draft_year),
+                overwrite=True,
             )
-            details = f"{details} {draft_result.message}".strip()
+            league_calendar.upsert_setting(
+                con,
+                "draft_class_setup_pending_reason",
+                f"Choose Generate or Import Draft Class for the {draft_year} draft.",
+                overwrite=True,
+            )
+            details = (
+                f"{details} {draft_year} draft class setup pending; "
+                "choose Generate or Import Draft Class from the game UI."
+            ).strip()
         preseason_result = preseason_processor.run_for_event(
             con,
             game_id=game_id,

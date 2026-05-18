@@ -295,6 +295,64 @@ def profile_biases(profile: dict[str, Any]) -> dict[str, float]:
     }
 
 
+def qb_franchise_need_context(con: sqlite3.Connection, team_id: int) -> dict[str, Any]:
+    rows = con.execute(
+        """
+        SELECT
+            first_name || ' ' || last_name AS player_name,
+            age,
+            years_exp,
+            overall,
+            potential,
+            COALESCE(dev_trait, '') AS trait
+        FROM players
+        WHERE team_id = ?
+          AND position = 'QB'
+          AND status IN ('Active', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+        ORDER BY COALESCE(overall, 0) DESC, COALESCE(potential, 0) DESC, player_id
+        LIMIT 5
+        """,
+        (team_id,),
+    ).fetchall()
+    best_overall = max((as_int(row["overall"]) for row in rows), default=0)
+    best_potential = max((as_int(row["potential"]) for row in rows), default=0)
+    best_young_potential = max(
+        (
+            as_int(row["potential"])
+            for row in rows
+            if as_int(row["age"], 99) <= 27 or as_int(row["years_exp"], 99) <= 4
+        ),
+        default=0,
+    )
+    franchise_qb = best_overall >= 86 or (best_overall >= 82 and best_potential >= 88)
+    young_franchise_qb = best_young_potential >= 88
+    recent_high_investment = any(
+        as_int(row["years_exp"], 99) <= 3 and as_int(row["potential"]) >= 82
+        for row in rows
+    )
+    unresolved = not franchise_qb and not young_franchise_qb and not recent_high_investment
+    urgent = unresolved and (best_overall < 76 or best_potential < 82)
+    if not unresolved:
+        score = 0.0
+    elif urgent:
+        score = 118.0
+    elif best_overall < 80 or best_potential < 85:
+        score = 92.0
+    else:
+        score = 64.0
+    return {
+        "best_overall": best_overall,
+        "best_potential": best_potential,
+        "unresolved": unresolved,
+        "urgent": urgent,
+        "draft_priority_score": score,
+        "drivers": [
+            "franchise QB search",
+            f"best current QB {best_overall}/{best_potential}",
+        ],
+    }
+
+
 def position_priority_map(evaluation: dict[str, Any], profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
     priorities: dict[str, dict[str, Any]] = {}
     biases = profile_biases(profile)
@@ -346,6 +404,43 @@ def position_priority_map(evaluation: dict[str, Any], profile: dict[str, Any]) -
                 "low-cost role; prefer late board value"
             ]
     return priorities
+
+
+def apply_qb_franchise_priority(
+    priorities: dict[str, dict[str, Any]],
+    *,
+    con: sqlite3.Connection,
+    team_id: int,
+    picks: list[dict[str, Any]],
+) -> None:
+    context = qb_franchise_need_context(con, team_id)
+    if not context["unresolved"]:
+        return
+    earliest = min(
+        (as_int(pick.get("effective_pick_number") or pick.get("pick_number"), 999) for pick in picks),
+        default=999,
+    )
+    score = as_float(context["draft_priority_score"])
+    if earliest <= 5:
+        score += 22.0
+    elif earliest <= 10:
+        score += 14.0
+    elif earliest <= 20:
+        score += 6.0
+    existing = priorities.setdefault(
+        "QB",
+        {
+            "position_group": "QB",
+            "priority": "franchise_search",
+            "need_score": 0.0,
+            "draft_priority_score": 0.0,
+            "drivers": [],
+        },
+    )
+    existing["priority"] = "franchise_search" if context["urgent"] else existing.get("priority") or "succession"
+    existing["need_score"] = max(as_float(existing.get("need_score")), min(100.0, score))
+    existing["draft_priority_score"] = round(max(as_float(existing.get("draft_priority_score")), score), 1)
+    existing["drivers"] = list(dict.fromkeys(list(context["drivers"]) + list(existing.get("drivers") or [])))
 
 
 def available_prospects(
@@ -500,6 +595,11 @@ def score_prospect(
     grade_value = clamp((grade - 50) * 1.4, 0, 55)
     ceiling_value = clamp((ceiling - grade) * 0.9, -5, 18)
     need_value = min(28.0, as_float(priority.get("draft_priority_score")) * 0.42)
+    franchise_qb_value = 0.0
+    if group == "QB" and str(priority.get("priority") or "") == "franchise_search":
+        franchise_qb_value = min(58.0, as_float(priority.get("draft_priority_score")) * 0.48)
+        if rank <= 10 and grade >= 74 and ceiling >= 86:
+            franchise_qb_value += 18.0
     premium_value = biases["premium_bonus"] if group in PREMIUM_GROUPS else 0.0
     upside_value = biases["upside_bonus"] if ceiling >= grade + 8 else 0.0
     athletic_value = 2.0 if athletic >= 82 else 1.0 if athletic >= 74 else 0.0
@@ -551,6 +651,7 @@ def score_prospect(
         + grade_value
         + ceiling_value
         + need_value
+        + franchise_qb_value
         + premium_value
         + upside_value
         + athletic_value
@@ -562,6 +663,8 @@ def score_prospect(
     reasons = []
     if priority:
         reasons.extend(list(priority.get("drivers") or [])[:2])
+    if franchise_qb_value >= 30:
+        reasons.append("top-pick franchise QB priority")
     if group in PREMIUM_GROUPS:
         reasons.append("premium-position pick value")
     if ceiling >= grade + 8:
@@ -674,6 +777,7 @@ def build_draft_plan(
     )
     picks = draft_picks_for_team(con, team_id, draft_year)
     priorities = position_priority_map(evaluation, profile)
+    apply_qb_franchise_priority(priorities, con=con, team_id=team_id, picks=picks)
     prospects = available_prospects(con, draft_year, team_id=team_id, limit=max(25, board_limit))
     scored = [
         score_prospect(row, priorities=priorities, profile=profile, picks=picks)

@@ -50,6 +50,8 @@ RUNNING_ACTION: str | None = None
 PLAYER_EXPORT_ACTIONS = {
     "new_june1_save",
     "load_game",
+    "draft_class_generate",
+    "draft_class_import",
     "advance_to_draft",
     "draft_start",
     "draft_pause",
@@ -102,6 +104,8 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
+    "draft_class_generate",
+    "draft_class_import",
     "contract_extend",
     "contract_tag",
     "contract_option_exercise",
@@ -134,6 +138,8 @@ SKIP_PLAYER_REEXPORT_ACTIONS = {
     "practice_squad_release",
 }
 DRAFT_RUN_ACTIONS = {
+    "draft_class_generate",
+    "draft_class_import",
     "advance_to_draft",
     "draft_start",
     "draft_pause",
@@ -1669,6 +1675,33 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if stopped:
             print(f"Stopped {len(stopped)} process(es) using save {game_id}: {', '.join(str(pid) for pid in stopped)}")
         return play("delete-save", game_id)
+    if action == "draft_class_generate":
+        draft_year = int(params.get("draft_year") or draft_year)
+        command = [
+            "draft-class",
+            "generate",
+            "--draft-year",
+            str(draft_year),
+        ]
+        if params.get("force"):
+            command.append("--force")
+        return play(*command)
+    if action == "draft_class_import":
+        draft_year = int(params.get("draft_year") or draft_year)
+        package = str(params.get("package") or "").strip()
+        if not package:
+            raise ValueError("draft_class_import requires package.")
+        command = [
+            "draft-class",
+            "import",
+            "--draft-year",
+            str(draft_year),
+            "--package",
+            package,
+        ]
+        if params.get("force"):
+            command.append("--force")
+        return play(*command)
     if action == "advance_next_event":
         command = play("advance-to-next-event")
         if params.get("auto_roster_cutdown"):

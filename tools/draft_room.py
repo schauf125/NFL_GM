@@ -50,11 +50,11 @@ ROUND_ONE_MIN_GRADE_FLOOR = 68.0
 ROUND_ONE_MIN_CEILING_FLOOR = 76.0
 ROUND_TWO_MIN_GRADE_FLOOR = 62.0
 ROUND_TWO_MIN_CEILING_FLOOR = 68.0
-DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 8, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
+DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 16, 2: 9, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
 DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 16.0, "high": 8.0, "medium": 1.0, "low": -12.0, "unscouted": -22.0}
 DRAFT_TRADE_PREMIUM_POSITIONS = {"QB", "OT", "EDGE", "CB", "WR"}
 DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 62.0, 2: 58.0, 3: 54.0, 4: 52.0, 5: 50.0, 6: 50.0, 7: 50.0}
-DRAFT_TRADE_MAX_BY_ROUND = {1: 6, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
+DRAFT_TRADE_MAX_BY_ROUND = {1: 8, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
 DRAFT_TRADE_MAX_TOTAL = 24
 USER_DRAFT_TRADE_MAX_PICKS = 4
 EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
@@ -67,6 +67,8 @@ QB_FRANCHISE_ROOM_BLOCK_BY_ROUND = {1: 520.0, 2: 430.0, 3: 240.0, 4: 90.0, 5: 28
 QB_ESTABLISHED_STARTER_BLOCK_BY_ROUND = {1: 230.0, 2: 170.0, 3: 92.0, 4: 34.0, 5: 12.0, 6: 4.0, 7: 0.0}
 QB_SAME_OFFSEASON_FA_BLOCK_BY_ROUND = {1: 420.0, 2: 260.0, 3: 92.0, 4: 24.0, 5: 6.0, 6: 0.0, 7: 0.0}
 QB_CROWDED_ROOM_BLOCK_BY_ROUND = {1: 280.0, 2: 185.0, 3: 68.0, 4: 18.0, 5: 4.0, 6: 0.0, 7: 0.0}
+QB_FRANCHISE_SEARCH_TOP10_BONUS = 92.0
+QB_FRANCHISE_SEARCH_TOP5_BONUS = 122.0
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -632,6 +634,123 @@ def position_need_bonus(con: sqlite3.Connection, team_id: int, position: str) ->
     return 0
 
 
+def qb_room_summary(con: sqlite3.Connection, team_id: int) -> dict[str, Any]:
+    qbs = con.execute(
+        """
+        SELECT
+            player_id,
+            first_name,
+            last_name,
+            age,
+            years_exp,
+            overall,
+            potential,
+            COALESCE(dev_trait, '') AS trait
+        FROM players
+        WHERE team_id = ?
+          AND position = 'QB'
+          AND status IN ('Active', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+        ORDER BY
+            COALESCE(overall, 0) DESC,
+            COALESCE(potential, 0) DESC,
+            player_id
+        LIMIT 5
+        """,
+        (team_id,),
+    ).fetchall()
+    best_overall = max((int(qb["overall"] or 0) for qb in qbs), default=0)
+    best_potential = max((int(qb["potential"] or 0) for qb in qbs), default=0)
+    best_young_potential = max(
+        (
+            int(qb["potential"] or 0)
+            for qb in qbs
+            if int(qb["age"] or 99) <= 27 or int(qb["years_exp"] or 99) <= 4
+        ),
+        default=0,
+    )
+    franchise_qb = best_overall >= 86 or (best_overall >= 82 and best_potential >= 88)
+    young_franchise_qb = best_young_potential >= 88
+    recent_high_investment = any(
+        int(qb["years_exp"] or 99) <= 3
+        and (
+            int(qb["potential"] or 0) >= 85
+            or (int(qb["overall"] or 0) >= 78 and int(qb["potential"] or 0) >= 83)
+        )
+        for qb in qbs
+    )
+    unresolved = not franchise_qb and not young_franchise_qb and not recent_high_investment
+    urgent = unresolved and (best_overall < 76 or best_potential < 82)
+    return {
+        "qbs": qbs,
+        "best_overall": best_overall,
+        "best_potential": best_potential,
+        "best_young_potential": best_young_potential,
+        "franchise_qb": franchise_qb,
+        "young_franchise_qb": young_franchise_qb,
+        "recent_high_investment": recent_high_investment,
+        "unresolved": unresolved,
+        "urgent": urgent,
+    }
+
+
+def franchise_qb_search_bonus(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    round_number: int,
+    overall_pick_number: int | None,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+) -> float:
+    """Make top-10 teams without an answer at QB act like QB-needy NFL teams."""
+    if str(row["position"] or "").upper() != "QB" or round_number > 2:
+        return 0.0
+    pick_number = overall_pick_number or ((max(1, round_number) - 1) * 32) + 16
+    room = qb_room_summary(con, team_id)
+    if not room["unresolved"]:
+        return 0.0
+
+    viable_round_one_target = (
+        base_rank <= 24
+        and perceived_grade >= 72
+        and perceived_ceiling >= 84
+    )
+    premium_franchise_target = (
+        base_rank <= 12
+        and perceived_grade >= 76
+        and perceived_ceiling >= 88
+    )
+    if not viable_round_one_target and not (round_number == 2 and perceived_ceiling >= 86 and perceived_grade >= 68):
+        return 0.0
+
+    bonus = 0.0
+    if round_number == 1:
+        if pick_number <= 5:
+            bonus = QB_FRANCHISE_SEARCH_TOP5_BONUS
+        elif pick_number <= 10:
+            bonus = QB_FRANCHISE_SEARCH_TOP10_BONUS
+        elif pick_number <= 15:
+            bonus = 78.0
+        elif pick_number <= 20:
+            bonus = 54.0
+        else:
+            bonus = 28.0
+    elif round_number == 2:
+        bonus = 22.0
+
+    if room["urgent"]:
+        bonus *= 1.25
+    if premium_franchise_target:
+        bonus *= 1.22
+    if perceived_grade >= 79 and perceived_ceiling >= 90:
+        bonus *= 1.12
+    if room["best_overall"] >= 78 and room["best_potential"] >= 84:
+        bonus *= 0.65
+    return bonus
+
+
 def team_abbr(con: sqlite3.Connection, team_id: int | None) -> str:
     if team_id is None:
         return "?"
@@ -1048,7 +1167,11 @@ def cpu_qb_room_pick_penalty(
         for qb in qbs
     )
     recent_high_investment = any(
-        int(qb["years_exp"] or 99) <= 3 and int(qb["potential"] or 0) >= 80
+        int(qb["years_exp"] or 99) <= 3
+        and (
+            int(qb["potential"] or 0) >= 85
+            or (int(qb["overall"] or 0) >= 78 and int(qb["potential"] or 0) >= 83)
+        )
         for qb in qbs
     )
     franchise_qb = best_overall >= 86 or (best_overall >= 82 and best_potential >= 88)
@@ -1092,13 +1215,31 @@ def cpu_qb_room_pick_penalty(
         and (signed_qb_aav >= 10_000_000 or signed_qb_overall >= 74 or signed_qb_potential >= 78)
     )
     crowded_viable_room = viable_qbs >= 3 and best_overall >= 75 and best_potential >= 78
-
-    if (
+    unresolved_room = (
         not franchise_qb
         and not young_franchise_qb
         and not young_core_franchise_qb
         and not recent_high_investment
         and not established_starter
+    )
+    premium_franchise_target = (
+        round_number == 1
+        and overall_pick_number <= 10
+        and base_rank <= 12
+        and perceived_grade >= 76
+        and perceived_ceiling >= 88
+    )
+    bridge_same_offseason_qb = (
+        meaningful_same_offseason_qb
+        and signed_qb_aav < 20_000_000
+        and signed_qb_overall < 76
+        and signed_qb_potential < 80
+    )
+    if unresolved_room and premium_franchise_target and bridge_same_offseason_qb:
+        meaningful_same_offseason_qb = False
+
+    if (
+        unresolved_room
         and not meaningful_same_offseason_qb
         and not crowded_viable_room
     ):
@@ -1331,12 +1472,23 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
         )
+        qb_search_bonus = franchise_qb_search_bonus(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
         adjusted = (
             base_rank
             - bonus
             - premium_bonus
             - scouting_adjustment
             - plan_bonus
+            - qb_search_bonus
             + confidence_penalty
             + early_value_penalty
             + duplicate_position_penalty
@@ -1393,9 +1545,20 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 perceived_grade=perceived_grade,
                 perceived_ceiling=perceived_ceiling,
             )
+            qb_search_bonus = franchise_qb_search_bonus(
+                con,
+                row,
+                team_id=team_id,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+            )
             adjusted = (
                 base_rank
                 - position_need_bonus(con, team_id, str(row["position"]))
+                - qb_search_bonus
                 - max(0.0, perceived_grade - 65.0) * 0.45
                 - max(0.0, perceived_ceiling - perceived_grade) * 0.2
                 + confidence_penalty
@@ -1483,8 +1646,6 @@ def draft_trade_target_for_team(
     best: tuple[float, sqlite3.Row | None, str] = (0.0, None, "")
     for row in rows:
         board_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
-        if board_rank < current_pick_number - 4 or board_rank > danger_rank:
-            continue
         position = str(row["position"] or "").upper()
         need = position_need_bonus(con, team_id, position)
         confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
@@ -1499,6 +1660,26 @@ def draft_trade_target_for_team(
             continue
         perceived_grade = cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
         perceived_ceiling = cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
+        qb_search_bonus = franchise_qb_search_bonus(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=current_pick_number,
+            base_rank=board_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
+        premium_sliding_qb = (
+            position == "QB"
+            and qb_search_bonus >= 50.0
+            and confidence in {"high", "very high"}
+            and board_rank <= max(24, current_pick_number + 4)
+            and perceived_grade >= 74
+            and perceived_ceiling >= 86
+        )
+        if not premium_sliding_qb and (board_rank < current_pick_number - 4 or board_rank > danger_rank):
+            continue
         qb_room_penalty = cpu_qb_room_pick_penalty(
             con,
             row,
@@ -1524,6 +1705,8 @@ def draft_trade_target_for_team(
             continue
         urgency = max(0, next_pick_number - board_rank)
         premium = 7.0 if position in DRAFT_TRADE_PREMIUM_POSITIONS and round_number <= 3 else 0.0
+        if premium_sliding_qb:
+            premium += 28.0
         hidden = 8.0 if row["cpu_visibility_status"] == "discovered" and str(row["public_board_status"] or "") == "off_public_board" else 0.0
         score = (
             need
@@ -1531,6 +1714,7 @@ def draft_trade_target_for_team(
             + min(16.0, urgency * 0.85)
             + max(0.0, perceived_grade - 70.0) * 0.8
             + max(0.0, perceived_ceiling - perceived_grade) * 0.5
+            + min(42.0, qb_search_bonus * 0.34)
             + premium
             + hidden
             - (qb_room_penalty * 0.25)
@@ -1540,6 +1724,65 @@ def draft_trade_target_for_team(
             reason = f"{position} need target, {confidence} confidence, public rank {board_rank}"
             best = (score, row, reason)
     return best
+
+
+def seller_should_keep_pick(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    seller_team_id: int,
+    pick: sqlite3.Row,
+) -> bool:
+    """Block CPU trade-downs when the team on the clock should make the obvious pick."""
+    round_number = int(pick["round"])
+    current_pick_number = effective_pick_number(pick) or 0
+    if round_number > 1 or current_pick_number <= 0:
+        return False
+    try:
+        best = choose_auto_prospect(con, draft_year, pick)
+    except Exception:
+        return False
+    position = str(best["position"] or "").upper()
+    room = qb_room_summary(con, seller_team_id)
+    game_id = active_game_id(con)
+    base_rank = cpu_base_rank(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+    perceived_grade = cpu_perceived_grade(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+    perceived_ceiling = cpu_perceived_ceiling(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+    confidence = str(best["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+    if position != "QB":
+        need = position_need_bonus(con, seller_team_id, position)
+        premium_position = position in DRAFT_TRADE_PREMIUM_POSITIONS or position in {"IDL", "DT", "NT", "FS", "SS", "S"}
+        premium_target = (
+            premium_position
+            and confidence in {"high", "very high"}
+            and need > 0
+            and base_rank <= max(12, current_pick_number + 2)
+            and perceived_grade >= 78
+            and perceived_ceiling >= 84
+        )
+        blue_chip_target = (
+            premium_position
+            and confidence == "very high"
+            and base_rank <= max(8, current_pick_number)
+            and perceived_grade >= 80
+            and perceived_ceiling >= 88
+        )
+        return bool(
+            (current_pick_number <= 12 and (premium_target or blue_chip_target))
+            or (current_pick_number <= 20 and need >= 18 and premium_target)
+        )
+
+    if not room["unresolved"]:
+        return False
+    premium_target = (
+        base_rank <= max(18, current_pick_number + 4)
+        and perceived_grade >= 74
+        and perceived_ceiling >= 86
+        and confidence in {"high", "very high"}
+    )
+    if not premium_target:
+        return False
+    return bool(room["urgent"] or current_pick_number <= 15)
 
 
 def build_trade_up_offer(
@@ -2000,6 +2243,8 @@ def maybe_execute_cpu_draft_trade_up(
     state = current_state(con, draft_year)
     user_team_id = int(state["user_team_id"] or 0) if state and state["user_team_id"] is not None else 0
     if seller_team_id == user_team_id:
+        return pick, None
+    if seller_should_keep_pick(con, draft_year=draft_year, seller_team_id=seller_team_id, pick=pick):
         return pick, None
     current_pick_number = effective_pick_number(pick) or 0
     round_number = int(pick["round"])

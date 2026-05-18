@@ -26,6 +26,7 @@ import export_player_profile_ui_data
 import league_news
 import roster_rules
 import scouting
+import saved_draft_class_package
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
 
 
@@ -1426,6 +1427,44 @@ def draft_event_date(conn: sqlite3.Connection, year: int) -> str | None:
         (year - 1, f"{year} NFL Draft"),
     ).fetchone()
     return str(row["event_start_date"]) if row else None
+
+
+def draft_class_setup(conn: sqlite3.Connection, season: int, year: int, *, active_game: bool = True) -> dict[str, Any]:
+    pending_year = settings(conn).get("draft_class_setup_pending_year")
+    class_row = None
+    prospect_count = 0
+    if table_exists(conn, "draft_classes"):
+        class_row = conn.execute(
+            """
+            SELECT dc.*,
+                   COUNT(dp.prospect_id) AS prospect_count,
+                   SUM(CASE WHEN dp.public_board_status = 'off_public_board' THEN 1 ELSE 0 END) AS off_board_count
+            FROM draft_classes dc
+            LEFT JOIN draft_prospects dp ON dp.draft_class_id = dc.draft_class_id
+            WHERE dc.draft_year = ?
+            GROUP BY dc.draft_class_id
+            """,
+            (year,),
+        ).fetchone()
+        if class_row:
+            prospect_count = int(class_row["prospect_count"] or 0)
+    packages: list[dict[str, Any]] = []
+    try:
+        packages = saved_draft_class_package.list_packages()
+    except Exception as exc:
+        packages = [{"valid": False, "name": "Saved class folder unavailable", "error": str(exc)}]
+    required = bool(active_game) and prospect_count == 0 and (not pending_year or str(pending_year) == str(year))
+    return {
+        "draftYear": year,
+        "season": season,
+        "required": required,
+        "pendingYear": pending_year,
+        "exists": prospect_count > 0,
+        "prospectCount": prospect_count,
+        "class": one_as_dict(class_row) if class_row else None,
+        "packages": packages,
+        "packageRoot": str(saved_draft_class_package.DEFAULT_PACKAGE_ROOT),
+    }
 
 
 def draft_position_keys(position: str | None) -> list[str]:
@@ -3614,6 +3653,8 @@ def command_set(
         "freeAgencyDay": f"python tools\\play.py free-agency advance-day --league-year {fa_year} --no-cap-snapshot --apply",
         "freeAgencyOffer": f"python tools\\play.py free-agency offer --league-year {fa_year} --team {team} --player <id> --years <years> --aav <aav> --apply",
         "draftGenerate": f"python tools\\play.py draft --year {draft_year_value} --count 330 --seed {draft_year_value} --apply",
+        "draftClassGenerate": f"python tools\\play.py draft-class generate --draft-year {draft_year_value}",
+        "draftClassImport": f"python tools\\play.py draft-class import --draft-year {draft_year_value} --package <saved_class_folder>",
         "draftValidate": f"python tools\\play.py validate-draft db --draft-year {draft_year_value}",
         "advanceToDraft": f"python tools\\play.py advance-to-draft --draft-year {draft_year_value} --user-team {team}",
         "draftStart": f"python tools\\play.py draft-room start --draft-year {draft_year_value} --user-team {team} --paused --apply",
@@ -3784,6 +3825,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "contractNegotiations": contract_negotiation_summary(conn, current_season, user_team),
             "depthChart": depth_chart_summary(conn, user_team, current_season),
             "draft": draft_payload,
+            "draftClassSetup": draft_class_setup(conn, current_season, draft_year_value, active_game=bool(active)),
             "rookieClass": {
                 "year": current_season,
                 "selections": draft_user_selections(conn, current_season, user_team_id),

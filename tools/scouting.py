@@ -105,6 +105,7 @@ DISCOVER_NON_PUBLIC_COUNT = 8
 USER_AUTO_DUE_DILIGENCE_MIN = 3
 USER_AUTO_NEED_MIN = 2
 USER_AUTO_NON_NEED_REPEAT_PENALTY = 18.0
+USER_AUTO_FIRST_ROUND_VERY_HIGH_CAP = 8
 CPU_WEEKLY_SCOUTING_COUNT = 5
 CPU_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
 USER_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
@@ -114,7 +115,7 @@ LATER_ROUND_SCOUTING_NEED_BONUS = 10.0
 CPU_FIRST_ROUND_DUE_DILIGENCE_BONUS = 22.0
 CPU_QB_SCOUTING_NEED_FLOOR = 72.0
 CPU_QB_SCOUTING_STRONG_NEED = 78.0
-CPU_QB_DUE_DILIGENCE_BONUS = 34.0
+CPU_QB_DUE_DILIGENCE_BONUS = 44.0
 CPU_QB_CONTRACT_YEAR_NEED = 84.0
 CPU_QB_NEXT_CONTRACT_NEED = 74.0
 CPU_SCOUTING_BUCKETS = {
@@ -1768,11 +1769,18 @@ def select_user_auto_assign_candidates(
     need_scores: dict[str, float],
     pick_profile: dict[str, Any],
     count: int,
+    first_round_very_high_remaining: int | None = None,
 ) -> list[sqlite3.Row]:
     selected: list[sqlite3.Row] = []
     selected_ids: set[int] = set()
+    first_round_vh_slots = (
+        9999
+        if first_round_very_high_remaining is None
+        else max(0, int(first_round_very_high_remaining))
+    )
 
     def add_from(pool: list[sqlite3.Row], limit: int) -> None:
+        nonlocal first_round_vh_slots
         for prospect in sorted(
             pool,
             key=lambda row: (
@@ -1785,8 +1793,15 @@ def select_user_auto_assign_candidates(
             prospect_id = int(prospect["prospect_id"])
             if prospect_id in selected_ids:
                 continue
+            rank = board_rank(prospect)
+            confidence = normalize_confidence(row_value(prospect, "scouting_confidence", "Low"))
+            would_create_first_round_vh = rank <= 32 and confidence == "High"
+            if would_create_first_round_vh and first_round_vh_slots <= 0:
+                continue
             selected.append(prospect)
             selected_ids.add(prospect_id)
+            if would_create_first_round_vh:
+                first_round_vh_slots -= 1
             limit -= 1
 
     due_diligence = [
@@ -2017,11 +2032,29 @@ def auto_assign_scouts(
         season=period.season,
         evaluation_date=period.date,
     )
+    first_round_very_high = int(
+        con.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM draft_prospects dp
+            JOIN scouting_prospect_progress spp
+              ON spp.prospect_id = dp.prospect_id
+             AND spp.game_id = ?
+             AND spp.draft_year = ?
+            WHERE dp.draft_class_id = ?
+              AND dp.public_board_rank BETWEEN 1 AND 32
+              AND spp.scouting_confidence = 'Very High'
+            """,
+            (target_game_id, target_year, int(class_row["draft_class_id"])),
+        ).fetchone()["count"]
+        or 0
+    )
     selected = select_user_auto_assign_candidates(
         candidates,
         need_scores=need_scores,
         pick_profile=pick_profile,
         count=max(1, count),
+        first_round_very_high_remaining=USER_AUTO_FIRST_ROUND_VERY_HIGH_CAP - first_round_very_high,
     )
     if not selected:
         raise ValueError("No visible prospects need more scouting right now.")
@@ -2383,9 +2416,11 @@ def cpu_qb_scouting_need_score(con: sqlite3.Connection, team_id: int) -> float:
     elif top_overall < 70:
         score = max(score, 88.0)
     elif top_overall < 74:
-        score = max(score, 72.0)
+        score = max(score, 84.0)
+    elif top_overall < 76 and top_potential < 82:
+        score = max(score, 78.0)
     elif top_overall < 78 and top_potential < 82:
-        score = max(score, 54.0)
+        score = max(score, 62.0)
     if age >= 36:
         score = max(score, 86.0)
     elif age >= 34:
@@ -2565,7 +2600,7 @@ def cpu_qb_scouting_priority_bonus(
     confidence_multiplier = {"Low": 1.0, "Medium": 0.78, "High": 0.28, "Very High": 0.0}.get(confidence, 0.7)
     rank_window = 96 if earliest <= 2 else 160
     rank_multiplier = max(0.25, (rank_window + 1 - min(rank, rank_window)) / rank_window)
-    pick_multiplier = 1.15 if pick_profile.get("has_first_round_pick") else 0.85 if earliest <= 3 else 0.55
+    pick_multiplier = 1.35 if pick_profile.get("has_first_round_pick") else 0.90 if earliest <= 3 else 0.55
     return CPU_QB_DUE_DILIGENCE_BONUS * (need_score / 100.0) * confidence_multiplier * rank_multiplier * pick_multiplier
 
 

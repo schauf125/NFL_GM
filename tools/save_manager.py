@@ -483,7 +483,17 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--no-variance", action="store_true")
     create_parser.add_argument("--no-personality-variance", action="store_true")
     create_parser.add_argument("--no-development-modifiers", action="store_true")
-    create_parser.add_argument("--no-draft-class-generation", action="store_true")
+    create_parser.add_argument(
+        "--no-draft-class-generation",
+        dest="no_draft_class_generation",
+        action="store_true",
+        default=True,
+    )
+    create_parser.add_argument(
+        "--generate-draft-class-at-start",
+        dest="no_draft_class_generation",
+        action="store_false",
+    )
     create_parser.add_argument("--draft-class-count", type=int, default=game_flow.draft_class_bootstrap.DEFAULT_PUBLIC_PROSPECT_COUNT)
     create_parser.add_argument("--draft-hidden-count", type=int)
     create_parser.add_argument("--no-hidden-draft-prospects", action="store_true")

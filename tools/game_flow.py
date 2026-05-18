@@ -38,6 +38,14 @@ DEFAULT_START_YEAR = 2026
 DEFAULT_CALENDAR_YEARS = 10
 
 
+def table_exists(con: sqlite3.Connection, name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
 @dataclass(frozen=True)
 class ActiveGame:
     game_id: str
@@ -332,7 +340,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     variance_run_id = None
     personality_run_id = None
     development_run_id = None
-    draft_class_details = "Draft class generation skipped."
+    draft_class_details = "Draft class setup is pending user choice."
 
     if not args.no_variance:
         player_results, role_score_updates = apply_new_game_variance.apply_variance(
@@ -400,7 +408,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     else:
         development_details = "Hidden development modifiers skipped."
 
-    if not getattr(args, "no_draft_class_generation", False):
+    if not getattr(args, "no_draft_class_generation", True):
         draft_year = args.start_year + 1
         draft_result = draft_class_bootstrap.ensure_draft_class(
             con,
@@ -425,6 +433,23 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             f"{draft_result.message} Scouting desk initialized with "
             f"{scouting_result['public']} public prospects and "
             f"{scouting_result['hidden']} off-board discovery candidates."
+        )
+    else:
+        league_calendar.upsert_setting(
+            con,
+            "draft_class_setup_pending_year",
+            str(args.start_year + 1),
+            overwrite=True,
+        )
+        league_calendar.upsert_setting(
+            con,
+            "draft_class_setup_pending_reason",
+            "Choose Generate or Import Draft Class for this June 1 save.",
+            overwrite=True,
+        )
+        draft_class_details = (
+            f"{args.start_year + 1} draft class setup pending. "
+            "Choose Generate or Import Draft Class from the game UI."
         )
 
     preseason_games = preseason_processor.ensure_preseason_schedule(
@@ -554,6 +579,58 @@ def events_on_date(con: sqlite3.Connection, target_date: str) -> list[sqlite3.Ro
     )
 
 
+def draft_class_has_prospects(con: sqlite3.Connection, draft_year: int) -> bool:
+    if not table_exists(con, "draft_classes") or not table_exists(con, "draft_prospects"):
+        return False
+    row = con.execute(
+        """
+        SELECT COUNT(dp.prospect_id) AS prospect_count
+        FROM draft_classes dc
+        LEFT JOIN draft_prospects dp ON dp.draft_class_id = dc.draft_class_id
+        WHERE dc.draft_year = ?
+        GROUP BY dc.draft_class_id
+        """,
+        (draft_year,),
+    ).fetchone()
+    return bool(row and int(row["prospect_count"] or 0) > 0)
+
+
+def pending_draft_class_setup_year(con: sqlite3.Connection) -> int | None:
+    if not table_exists(con, "game_settings"):
+        return None
+    row = con.execute(
+        "SELECT setting_value FROM game_settings WHERE setting_key = 'draft_class_setup_pending_year'"
+    ).fetchone()
+    if not row or not row["setting_value"]:
+        return None
+    try:
+        draft_year = int(row["setting_value"])
+    except (TypeError, ValueError):
+        return None
+    return None if draft_class_has_prospects(con, draft_year) else draft_year
+
+
+def first_sim_year_start_between(
+    con: sqlite3.Connection,
+    current_date: str,
+    target_date: str,
+) -> sqlite3.Row | None:
+    if not table_exists(con, "league_calendar_events"):
+        return None
+    return con.execute(
+        """
+        SELECT *
+        FROM league_calendar_events
+        WHERE event_code = 'SIM_YEAR_START'
+          AND date(event_start_date) > date(?)
+          AND date(event_start_date) <= date(?)
+        ORDER BY event_start_date, sort_order
+        LIMIT 1
+        """,
+        (current_date, target_date),
+    ).fetchone()
+
+
 def print_events(events: list[sqlite3.Row]) -> None:
     for event in events:
         end = f" to {event['event_end_date']}" if event["event_end_date"] else ""
@@ -668,6 +745,18 @@ def advance_to_date(
     target = parse_date(target_date)
     if target <= current:
         raise ValueError(f"Target date must be after current date {game.current_date}.")
+    pending_draft_year = pending_draft_class_setup_year(con)
+    if pending_draft_year is not None:
+        raise ValueError(
+            f"Draft class setup is required for the {pending_draft_year} draft. "
+            "Choose Generate or Import Draft Class before advancing the calendar."
+        )
+    sim_year_start = first_sim_year_start_between(con, game.current_date, target_date)
+    if sim_year_start and parse_date(str(sim_year_start["event_start_date"])) < target:
+        raise ValueError(
+            f"{sim_year_start['event_start_date']} is a June 1 league-year start. "
+            "Advance to that date first, then choose Generate or Import Draft Class before continuing."
+        )
     phase, crossed_events = update_active_game_date(con, game, target_date)
     processing_result = daily_processor.process_event_range(
         con,
@@ -865,7 +954,19 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--no-variance", action="store_true", help="Skip new-game rating variance.")
     start_parser.add_argument("--no-personality-variance", action="store_true", help="Skip hidden personality seeding.")
     start_parser.add_argument("--no-development-modifiers", action="store_true", help="Skip hidden development modifier seeding.")
-    start_parser.add_argument("--no-draft-class-generation", action="store_true", help="Skip automatic draft class generation.")
+    start_parser.add_argument(
+        "--no-draft-class-generation",
+        dest="no_draft_class_generation",
+        action="store_true",
+        default=True,
+        help="Skip automatic draft class generation. This is the default; choose the class from the UI.",
+    )
+    start_parser.add_argument(
+        "--generate-draft-class-at-start",
+        dest="no_draft_class_generation",
+        action="store_false",
+        help="Legacy mode: generate the next draft class immediately when the save starts.",
+    )
     start_parser.add_argument("--draft-class-count", type=int, default=draft_class_bootstrap.DEFAULT_PUBLIC_PROSPECT_COUNT)
     start_parser.add_argument("--draft-hidden-count", type=int, help="Exact off-public-board prospect count.")
     start_parser.add_argument("--no-hidden-draft-prospects", action="store_true", help="Generate only the public draft board.")

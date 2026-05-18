@@ -8,6 +8,7 @@
     cancelRequested: false,
     lastResult: null,
     selectedDraftProspectId: null,
+    selectedDraftClassPackage: "",
     draftProspectPopoverOpen: false,
     draftTradeModal: null,
     draftBoardSort: { key: "rank", direction: "asc" },
@@ -115,6 +116,8 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "draft_class_generate",
+    "draft_class_import",
     "auto_cutdown_continue",
   ]);
   const STATS_REFRESH_ACTIONS = new Set([
@@ -137,6 +140,8 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "draft_class_generate",
+    "draft_class_import",
     "auto_cutdown_continue",
     "free_agency_start",
     "free_agency_advance_hour",
@@ -222,6 +227,8 @@
     "advance_next_league_year",
   ]);
   const DRAFT_REFRESH_ACTIONS = new Set([
+    "draft_class_generate",
+    "draft_class_import",
     "advance_to_draft",
     "auto_cutdown_continue",
     "draft_start",
@@ -242,6 +249,8 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "draft_class_generate",
+    "draft_class_import",
     "scouting_setup",
     "scouting_auto",
     "scouting_one",
@@ -966,25 +975,28 @@
     return link;
   }
 
-  function prospectLink(prospectId, name, className) {
+  function prospectLink(prospectId, name, className, options = {}) {
     if (!prospectId) return node("span", className || "", name || "-");
     const button = node("button", className || "prospect-link", name || "Prospect");
     button.type = "button";
     button.addEventListener("click", (event) => {
       event.stopPropagation();
-      openProspect(prospectId);
+      openProspect(prospectId, options);
     });
     return button;
   }
 
-  function openProspect(prospectId) {
+  function openProspect(prospectId, options = {}) {
     const id = String(prospectId || "");
     state.selectedDraftProspectId = prospectId;
     state.selectedCalendarItem = null;
     state.draftProspectPopoverOpen = true;
     const scoutingHasProspect = (data.scouting?.board || []).some((prospect) => String(prospect.prospect_id) === id);
     const draftHasProspect = (data.draft?.board || []).some((prospect) => String(prospect.prospect_id) === id);
-    const targetView = scoutingHasProspect || !draftHasProspect ? "scouting" : "draft";
+    const preferredView = options.preferredView === "draft" || options.preferredView === "scouting"
+      ? options.preferredView
+      : null;
+    const targetView = preferredView || (scoutingHasProspect || !draftHasProspect ? "scouting" : "draft");
     if (!scoutingHasProspect && !draftHasProspect && runnerMode()) {
       switchView(targetView);
       loadLiveScouting({ limit: 500, quiet: true }).then(() => {
@@ -1767,6 +1779,12 @@
   async function runAction(action, params) {
     if (!runnerMode() || state.runnerBusy) return;
     params = { ...(params || {}) };
+    const setup = data.draftClassSetup || {};
+    if (setup.required && !["draft_class_generate", "draft_class_import", "refresh", "load_game", "delete_save"].includes(action)) {
+      showToast("Choose Generate or Import Draft Class before advancing.");
+      render();
+      return;
+    }
     if (!confirmBeforeAction(action, params)) return;
     if (queueSimAdvancePrompt(action, params)) return;
     if (queueRosterCutdownModePrompt(action, params)) return;
@@ -2129,6 +2147,8 @@
       draft_skip: "Skip Draft Pick",
       draft_skip_to_user: "Skip To User Pick",
       draft_finish: "Finish Draft",
+      draft_class_generate: "Generate Draft Class",
+      draft_class_import: "Import Draft Class",
       draft_pick: "Make Draft Pick",
       draft_user_trade: "Trade For Draft Pick",
       draft_start: "Start Draft Room",
@@ -3462,6 +3482,69 @@
     return overlay;
   }
 
+  function draftClassSetupModal() {
+    const setup = data.draftClassSetup || {};
+    if (!setup.required) return null;
+    const packages = (setup.packages || []).filter((item) => item.valid);
+    if (!state.selectedDraftClassPackage && packages.length) {
+      state.selectedDraftClassPackage = packages[0].path || "";
+    }
+    const overlay = node("div", "box-score-modal-overlay draft-class-setup-overlay");
+    const modal = node("section", "box-score-modal draft-class-setup-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("span", "tag warn", "Required"),
+      node("h3", null, "Draft Class Setup"),
+      node("small", null, `${setup.draftYear || data.draft?.year || ""} Draft`),
+    ]);
+    top.append(title);
+
+    const body = node("div", "box-score-modal-body draft-class-setup-body");
+    append(body, [
+      node("p", null, "Choose how this draft class enters the league before advancing the calendar."),
+      node("p", "muted", "Generate a fresh fictional class, or import a saved package. Imported packages are remapped to this save’s draft year."),
+    ]);
+
+    const actions = node("div", "draft-class-actions");
+    const generate = node("button", "control-button good", "Generate Draft Class");
+    generate.type = "button";
+    generate.disabled = state.runnerBusy || !runnerMode();
+    generate.addEventListener("click", () => runAction("draft_class_generate", { draft_year: setup.draftYear || data.draft?.year }));
+
+    const select = node("select", "draft-class-package-select");
+    select.disabled = state.runnerBusy || !runnerMode() || packages.length === 0;
+    packages.forEach((item) => {
+      const label = `${item.name || item.packageName} (${item.prospectCount || "?"} prospects${item.draftYear ? `, saved ${item.draftYear}` : ""})`;
+      const option = node("option", null, label);
+      option.value = item.path || "";
+      if (option.value === state.selectedDraftClassPackage) option.selected = true;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.selectedDraftClassPackage = select.value;
+    });
+
+    const importButton = node("button", "control-button primary", "Import Selected Class");
+    importButton.type = "button";
+    importButton.disabled = state.runnerBusy || !runnerMode() || !state.selectedDraftClassPackage;
+    importButton.addEventListener("click", () => runAction("draft_class_import", {
+      draft_year: setup.draftYear || data.draft?.year,
+      package: state.selectedDraftClassPackage,
+    }));
+    append(actions, [generate, select, importButton]);
+    body.append(actions);
+    body.append(node("small", "muted", packages.length
+      ? `Saved classes: ${setup.packageRoot || "Saved Draft Classes"}`
+      : `No saved classes found under ${setup.packageRoot || "Saved Draft Classes"}.`));
+    if (state.runnerBusy && (state.busyAction === "draft_class_generate" || state.busyAction === "draft_class_import")) {
+      body.append(node("div", "empty-state", `${actionLabel(state.busyAction)} is running...`));
+    }
+    append(modal, [top, body]);
+    overlay.append(modal);
+    return overlay;
+  }
+
   function rosterGateCountsFromState() {
     const depth = data.depthChart || {};
     const rows = rosterRows(depth);
@@ -3528,6 +3611,8 @@
     if (simPrompt) root.append(simPrompt);
     const cutdownMode = rosterCutdownModeModal();
     if (cutdownMode) root.append(cutdownMode);
+    const draftSetup = draftClassSetupModal();
+    if (draftSetup) root.append(draftSetup);
     refs.content.replaceChildren(root);
   }
 
@@ -6377,7 +6462,7 @@
   function draftSelectionNameLink(playerId, prospectId, name, position, preferPlayer, team) {
     const label = `${name || "Selected Player"}${position ? ` (${position})` : ""}`;
     if (preferPlayer && playerId) return playerLink(playerId, label, "player-link strong-link", { team, position });
-    if (prospectId) return prospectLink(prospectId, label, "prospect-link strong-link");
+    if (prospectId) return prospectLink(prospectId, label, "prospect-link strong-link", { preferredView: "draft" });
     if (playerId) return playerLink(playerId, label, "player-link strong-link", { team, position });
     return node("span", "strong-link", label);
   }
@@ -9001,6 +9086,52 @@
     append(monthBody, [weekdayRow, monthGrid]);
     root.append(monthPanel);
     finishRender(root);
+  }
+
+  function draftClassSetupPanel() {
+    const setup = data.draftClassSetup || {};
+    if (!setup.required) return null;
+    const packages = (setup.packages || []).filter((item) => item.valid);
+    if (!state.selectedDraftClassPackage && packages.length) {
+      state.selectedDraftClassPackage = packages[0].path || "";
+    }
+    const root = panel("Draft Class Setup", `${setup.draftYear || data.draft?.year || ""} Draft`);
+    root.classList.add("draft-class-setup");
+    const body = panelBody(root);
+    const intro = append(node("div", "setup-copy"), [
+      node("strong", null, "Choose how this year’s draft class enters the league."),
+      node("span", null, `New saves and each June 1 now pause here instead of silently generating prospects.`),
+    ]);
+    const actions = node("div", "draft-class-actions");
+    const generate = node("button", "control-button good", "Generate Draft Class");
+    generate.type = "button";
+    generate.disabled = state.runnerBusy || !runnerMode();
+    generate.addEventListener("click", () => runAction("draft_class_generate", { draft_year: setup.draftYear || data.draft?.year }));
+    const select = node("select", "draft-class-package-select");
+    select.disabled = state.runnerBusy || !runnerMode() || packages.length === 0;
+    packages.forEach((item) => {
+      const label = `${item.name || item.packageName} (${item.prospectCount || "?"} prospects${item.draftYear ? `, saved ${item.draftYear}` : ""})`;
+      const option = node("option", null, label);
+      option.value = item.path || "";
+      if (option.value === state.selectedDraftClassPackage) option.selected = true;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.selectedDraftClassPackage = select.value;
+    });
+    const importButton = node("button", "control-button", "Import Selected Class");
+    importButton.type = "button";
+    importButton.disabled = state.runnerBusy || !runnerMode() || !state.selectedDraftClassPackage;
+    importButton.addEventListener("click", () => runAction("draft_class_import", {
+      draft_year: setup.draftYear || data.draft?.year,
+      package: state.selectedDraftClassPackage,
+    }));
+    append(actions, [generate, select, importButton]);
+    const footer = node("small", "muted", packages.length
+      ? `Saved classes are loaded from ${setup.packageRoot || "Saved Draft Classes"}. The package year can be remapped to this save’s draft year.`
+      : `No saved packages were found under ${setup.packageRoot || "Saved Draft Classes"}.`);
+    append(body, [intro, actions, footer]);
+    return root;
   }
 
   function calendarDayCell(day) {
