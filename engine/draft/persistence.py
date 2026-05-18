@@ -438,6 +438,8 @@ def _insert_prospect(
         "discovery_status": row.discovery_status,
         "scouting_variance": row.scouting_variance,
         "discovery_notes": row.discovery_notes,
+        "development_pathway": row.development_pathway,
+        "pipeline_note": row.pipeline_note,
         "eye_color": row.eye_color,
         "hair_color": row.hair_color,
         "hairstyle": row.hairstyle,

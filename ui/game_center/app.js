@@ -88,6 +88,18 @@
   };
   const DRAFT_TRADE_MAX_OFFER_PICKS = 4;
   let viewRefreshInFlight = null;
+  const SIM_PROGRESS_POLL_ACTIONS = new Set([
+    "sim_week",
+    "sim_season",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_to_draft",
+    "advance_next_league_year",
+    "auto_cutdown_continue",
+    "postseason",
+    "postseason_round",
+    "complete_season",
+  ]);
 
   const refs = {
     seasonLabel: document.getElementById("seasonLabel"),
@@ -685,14 +697,12 @@
     { slot: "RB", label: "HB", row: 7, col: "7" },
   ];
   const DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LEO", row: 1, col: "3" },
-    { slot: "LDL", label: "DT", row: 1, col: "5" },
-    { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
-    { slot: "RDL", label: "DT", row: 1, col: "8" },
-    { slot: "REDGE", label: "REO", row: 1, col: "10" },
+    { slot: "LEDGE", label: "LEO", row: 1, col: "4" },
+    { slot: "LDL", label: "DT", row: 1, col: "6" },
+    { slot: "RDL", label: "DT", row: 1, col: "7" },
+    { slot: "REDGE", label: "REO", row: 1, col: "9" },
     { slot: "WLB", label: "WLB", row: 2, col: "5" },
     { slot: "MLB", label: "MLB", row: 2, col: "7" },
-    { slot: "SLB", label: "SLB", row: 2, col: "9", optional: true },
     { slot: "NB", label: "Nickel", row: 4, col: "4" },
     { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
     { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
@@ -829,21 +839,25 @@
     return section ? `${date} | ${section}` : date;
   }
 
-  function setHeader(title, subhead) {
-    document.body.dataset.view = state.view;
+  function updateHeaderChrome() {
     refs.seasonLabel.textContent = String(data.currentSeason || "");
     refs.phaseText.textContent = data.currentPhase || "";
-    refs.title.textContent = title;
-    refs.subhead.textContent = subhead;
     refs.dateText.textContent = currentDateDisplay();
     refs.saveText.textContent = data.activeSave?.display_name || data.registry?.activeGameId || "Master DB";
+    updateConditionalNav();
+    updateLiveStatus();
+  }
+
+  function setHeader(title, subhead) {
+    document.body.dataset.view = state.view;
+    refs.title.textContent = title;
+    refs.subhead.textContent = subhead;
     if (refs.backButton) {
       refs.backButton.disabled = state.viewHistory.length === 0;
       refs.backButton.title = state.viewHistory.length ? `Back to ${viewLabel(state.viewHistory[state.viewHistory.length - 1])}` : "No previous screen";
     }
-    updateConditionalNav();
     refs.buttons.forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
-    updateLiveStatus();
+    updateHeaderChrome();
   }
 
   function viewLabel(view) {
@@ -1164,6 +1178,7 @@
     const payload = await apiGet("state", "/api/state");
     if (!payload) return false;
     data = payload;
+    updateHeaderChrome();
     return true;
   }
 
@@ -1217,11 +1232,13 @@
       calendar: payload.calendar || data.calendar || {},
       events: payload.events || data.events || [],
       calendarGeneratedAt: payload.generatedAt,
-      currentDate: payload.currentDate || data.currentDate,
+      currentDate: payload.saveCurrentDate || payload.currentDate || data.currentDate,
+      currentPhase: payload.currentPhase || data.currentPhase,
       saveCurrentDate: payload.saveCurrentDate || data.saveCurrentDate,
     };
     state.calendarLiveKey = `${payload.season || season || ""}:${payload.currentDate || currentDate || ""}`;
     state.calendarLiveFocus = Boolean(payload.liveFocus);
+    updateHeaderChrome();
     return true;
   }
 
@@ -1691,7 +1708,7 @@
   }
 
   function startSimProgressPolling(action) {
-    if (!["sim_week", "sim_season", "advance_to_draft", "auto_cutdown_continue"].includes(action) || !runnerMode()) return null;
+    if (!SIM_PROGRESS_POLL_ACTIONS.has(action) || !runnerMode()) return null;
     let stopped = false;
     const tick = async () => {
       if (stopped) return;
@@ -1788,7 +1805,7 @@
     if (!confirmBeforeAction(action, params)) return;
     if (queueSimAdvancePrompt(action, params)) return;
     if (queueRosterCutdownModePrompt(action, params)) return;
-    const calendarProgressAction = action === "sim_week" || action === "sim_season" || action === "advance_to_draft" || action === "auto_cutdown_continue";
+    const calendarProgressAction = SIM_PROGRESS_POLL_ACTIONS.has(action);
     if (calendarProgressAction) {
       state.calendarLiveFocus = true;
       switchView("calendar", { refresh: true });
@@ -6951,6 +6968,8 @@
       ["Senior Bowl", seniorBowlLabel(player)],
       ["School", `${player.college || "-"}${player.college_tier ? ` (${player.college_tier})` : ""}`],
       ["Hometown", valueOrDash(player.hometown)],
+      ["Pathway", valueOrDash(player.development_pathway)],
+      ["Origin", valueOrDash(player.birth_country)],
       ["Late Buzz", valueOrDash(player.late_process_status)],
       ["Board Move", boardMoveText(player.public_board_delta)],
       ["Height", heightText(player.height_in)],
@@ -6983,6 +7002,7 @@
       ["Medical", `${player.medical_flag || "Clean file"}${player.medical_risk ? ` | ${player.medical_risk}` : ""}`],
       ["Interview", `${player.interview_trait || "-"}${player.interview_grade ? ` | ${player.interview_grade}` : ""}`],
       ["Private", `${player.private_workout_type || "None"}${player.private_workout_interest ? ` | ${player.private_workout_interest}` : ""}`],
+      ["Pipeline", player.pipeline_note || player.discovery_notes || "-"],
       ["Board", player.late_process_note || "-"],
     ], "compact")));
 

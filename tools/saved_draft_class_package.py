@@ -40,6 +40,12 @@ ROW_DEFAULTS: dict[str, Any] = {
     "late_process_status": "Stable",
     "late_process_note": "",
     "public_board_delta": 0,
+    "development_pathway": "Traditional pipeline",
+    "pipeline_note": "",
+    "hometown": "",
+    "hometown_city": "",
+    "hometown_state": "",
+    "hometown_region": "",
 }
 
 

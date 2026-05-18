@@ -1054,6 +1054,7 @@ def calendar_payload_for_active_db(
         "season": target_season,
         "currentDate": target_date,
         "saveCurrentDate": str(context["currentDate"]),
+        "currentPhase": context["currentPhase"],
         "liveFocus": bool(live_focus),
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
         "calendar": calendar,

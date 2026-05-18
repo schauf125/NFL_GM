@@ -71,8 +71,10 @@ class NameGenerator:
         *,
         ethnicity_key: str | None = None,
         country: str | None = None,
-        football_bias: float = 0.35,
+        football_bias: float = 0.24,
         cultural_bias: float = 0.72,
+        international_first_cultural_bias: float = 0.84,
+        international_last_cultural_bias: float = 0.94,
         international_chance: float = 0.035,
         avoid_real_player_names: bool = True,
         max_attempts: int = 25,
@@ -92,7 +94,7 @@ class NameGenerator:
                 country=country,
                 is_international=is_international,
                 football_bias=football_bias,
-                cultural_bias=cultural_bias,
+                cultural_bias=international_first_cultural_bias if is_international else cultural_bias,
             )
             last_name, last_source = self._choose_name_component(
                 "last",
@@ -100,7 +102,16 @@ class NameGenerator:
                 country=country,
                 is_international=is_international,
                 football_bias=football_bias,
-                cultural_bias=cultural_bias,
+                cultural_bias=international_last_cultural_bias if is_international else cultural_bias,
+            )
+            last_name, last_source = self._maybe_compound_last_name(
+                last_name,
+                last_source,
+                ethnicity_key=ethnicity_key,
+                country=country,
+                is_international=is_international,
+                football_bias=football_bias,
+                cultural_bias=international_last_cultural_bias if is_international else cultural_bias,
             )
             full_key = normalize_name_key(f"{first_name} {last_name}")
             if not avoid_real_player_names or full_key not in self.football_full_names:
@@ -415,6 +426,51 @@ class NameGenerator:
             self._base_rows(component_type),
             football_bias=football_bias,
         )
+
+    def _maybe_compound_last_name(
+        self,
+        last_name: str,
+        last_source: str,
+        *,
+        ethnicity_key: str,
+        country: str,
+        is_international: bool,
+        football_bias: float,
+        cultural_bias: float,
+    ) -> tuple[str, str]:
+        if "-" in last_name or " " in last_name:
+            return last_name, last_source
+        chance = 0.0
+        if is_international:
+            chance = {
+                "Mexico": 0.065,
+                "Brazil": 0.050,
+                "Philippines": 0.045,
+                "Canada": 0.018,
+                "United Kingdom": 0.015,
+                "Australia": 0.012,
+                "France": 0.018,
+            }.get(country, 0.006)
+        elif ethnicity_key == "hispanic_latino":
+            chance = 0.018
+        if chance <= 0 or self.rng.random() >= chance:
+            return last_name, last_source
+        second_last, second_source = self._choose_name_component(
+            "last",
+            ethnicity_key=ethnicity_key,
+            country=country,
+            is_international=is_international,
+            football_bias=football_bias * 0.5,
+            cultural_bias=cultural_bias,
+        )
+        if (
+            second_last == last_name
+            or "-" in second_last
+            or " " in second_last
+            or len(second_last) < 3
+        ):
+            return last_name, last_source
+        return f"{last_name}-{second_last}", f"{last_source}+{second_source}:compound"
 
     def _base_rows(self, component_type: str) -> list[dict[str, object]]:
         if component_type == "first":

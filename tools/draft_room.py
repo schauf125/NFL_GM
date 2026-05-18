@@ -49,8 +49,10 @@ ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE = {"high", "very high"}
 ROUND_ONE_LATE_MAX_LOW_CEILING_RANK = 48
 ROUND_ONE_MIN_GRADE_FLOOR = 68.0
 ROUND_ONE_MIN_CEILING_FLOOR = 76.0
-ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS = {"QB", "OT", "EDGE", "CB", "IDL"}
+ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS = {"QB", "OT", "EDGE", "IDL"}
 ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS = {"C", "OG", "RB", "TE", "ILB", "FS", "SS", "NB"}
+ROUND_ONE_LUXURY_ROOM_POSITIONS = {"WR", "TE", "CB", "NB", "FS", "SS"}
+ROUND_ONE_LOW_CEILING_POSITIONS = {"WR", "TE", "CB", "NB", "FS", "SS", "C", "OG", "ILB", "LB"}
 ROUND_TWO_MIN_GRADE_FLOOR = 62.0
 ROUND_TWO_MIN_CEILING_FLOOR = 68.0
 DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 16, 2: 9, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
@@ -626,7 +628,7 @@ def position_need_bonus(con: sqlite3.Connection, team_id: int, position: str) ->
         SELECT COUNT(*) AS count
         FROM players
         WHERE team_id = ?
-          AND status IN ('Active', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
           AND position = ?
         """,
         (team_id, position.upper()),
@@ -1379,6 +1381,152 @@ def cpu_qb_room_pick_penalty(
     return penalty + room_penalty
 
 
+def grouped_roster_positions(position: str) -> tuple[str, ...]:
+    normalized = position.upper()
+    if normalized in {"CB", "NB"}:
+        return ("CB", "NB")
+    if normalized in {"FS", "SS", "S"}:
+        return ("FS", "SS")
+    if normalized in {"OG", "C"}:
+        return ("OG", "C")
+    return (normalized,)
+
+
+def top_room_players(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    position: str,
+    limit: int = 4,
+) -> list[sqlite3.Row]:
+    positions = grouped_roster_positions(position)
+    placeholders = ", ".join("?" for _ in positions)
+    return con.execute(
+        f"""
+        SELECT
+            player_id,
+            first_name,
+            last_name,
+            position,
+            age,
+            years_exp,
+            overall,
+            potential,
+            status
+        FROM players
+        WHERE team_id = ?
+          AND position IN ({placeholders})
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+        ORDER BY COALESCE(overall, 0) DESC, COALESCE(potential, 0) DESC, player_id
+        LIMIT ?
+        """,
+        (team_id, *positions, limit),
+    ).fetchall()
+
+
+def cpu_round_one_hard_reject(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    round_number: int,
+    overall_pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+) -> bool:
+    """Reject first-round profiles that are clear luxury or low-ceiling reaches."""
+    if round_number != 1:
+        return False
+    position = str(row["position"] or "").upper()
+    confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+    pick_number = overall_pick_number or 32
+
+    if position == "QB":
+        room = qb_room_summary(con, team_id)
+        exceptional = (
+            perceived_grade >= 78.0
+            and perceived_ceiling >= 92.0
+            and base_rank <= max(12, pick_number - 18)
+        )
+        if not room["unresolved"] and not exceptional:
+            return True
+        if perceived_ceiling < 80.0 or perceived_grade < 67.0:
+            return True
+        return False
+
+    if position in ROUND_ONE_LOW_CEILING_POSITIONS:
+        if perceived_ceiling < 74.0:
+            return True
+        if perceived_ceiling < 77.0 and perceived_grade < 70.0 and base_rank > 18:
+            return True
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and perceived_ceiling < 76.0 and perceived_grade < 70.0:
+            return True
+
+    if position in ROUND_ONE_LUXURY_ROOM_POSITIONS:
+        room = top_room_players(con, team_id=team_id, position=position, limit=4)
+        if room:
+            starters = sum(1 for player in room if int(player["overall"] or 0) >= 76 or int(player["potential"] or 0) >= 82)
+            top_overall = max(int(player["overall"] or 0) for player in room)
+            top_potential = max(int(player["potential"] or 0) for player in room)
+            meaningful_need = position_need_bonus(con, team_id, position) >= 8
+            premium_upgrade = perceived_grade >= top_overall - 1 and perceived_ceiling >= top_potential + 4
+            if (
+                starters >= 2
+                and not meaningful_need
+                and not premium_upgrade
+                and perceived_ceiling < 82.0
+                and perceived_grade < 73.0
+            ):
+                return True
+
+    return False
+
+
+def cpu_luxury_room_reach_penalty(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    round_number: int,
+    overall_pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+) -> float:
+    position = str(row["position"] or "").upper()
+    if round_number > 2 or position not in ROUND_ONE_LUXURY_ROOM_POSITIONS:
+        return 0.0
+    room = top_room_players(con, team_id=team_id, position=position, limit=5)
+    if not room:
+        return 0.0
+    starters = sum(1 for player in room if int(player["overall"] or 0) >= 76 or int(player["potential"] or 0) >= 82)
+    top_overall = max(int(player["overall"] or 0) for player in room)
+    top_potential = max(int(player["potential"] or 0) for player in room)
+    need = position_need_bonus(con, team_id, position)
+    penalty = 0.0
+    luxury_depth_pick = perceived_ceiling < 82.0 or perceived_grade < 70.0
+    if starters >= 2 and need <= 0 and luxury_depth_pick:
+        penalty += 72.0 if round_number == 1 else 28.0
+    elif starters >= 2 and need < 8 and luxury_depth_pick:
+        penalty += 44.0 if round_number == 1 else 18.0
+    elif starters >= 1 and need <= 0 and perceived_ceiling < 80.0:
+        penalty += 24.0 if round_number == 1 else 8.0
+
+    not_upgrade = perceived_grade < top_overall - 2 and perceived_ceiling <= top_potential + 1
+    low_ceiling = perceived_ceiling < 78.0
+    if round_number == 1 and not_upgrade and low_ceiling:
+        penalty += 56.0
+    elif round_number == 1 and not_upgrade:
+        penalty += 24.0
+
+    if perceived_grade >= top_overall and perceived_ceiling >= top_potential + 5:
+        penalty *= 0.35
+    elif base_rank <= max(12, overall_pick_number - 12) and perceived_ceiling >= 84.0:
+        penalty *= 0.55
+    return penalty
+
+
 def cpu_perceived_grade(row: sqlite3.Row, *, game_id: str, draft_year: int, team_id: int) -> float:
     return scouting_perception.perceived_grade(
         row,
@@ -1497,6 +1645,17 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             draft_year=draft_year,
             team_id=team_id,
         )
+        if cpu_round_one_hard_reject(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        ):
+            continue
         if round_number == 1:
             public_escape = base_rank <= ROUND_ONE_PUBLIC_ESCAPE_RANK and confidence in ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE
             in_plan_tier = int(row["prospect_id"]) in plan_tier_ids
@@ -1620,6 +1779,16 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
         )
+        luxury_room_penalty = cpu_luxury_room_reach_penalty(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
         qb_search_bonus = franchise_qb_search_bonus(
             con,
             row,
@@ -1642,6 +1811,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             + duplicate_position_penalty
             + position_room_penalty
             + qb_room_penalty
+            + luxury_room_penalty
         )
         scored.append((adjusted, base_rank, row))
     if round_number == 1 and plan_tier_ids:
@@ -1672,6 +1842,17 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 draft_year=draft_year,
                 team_id=team_id,
             )
+            if cpu_round_one_hard_reject(
+                con,
+                row,
+                team_id=team_id,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+            ):
+                continue
             confidence_penalty = cpu_confidence_rank_penalty(row, round_number) * 0.35
             duplicate_position_penalty = cpu_duplicate_position_penalty(
                 row,
@@ -1704,6 +1885,16 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 perceived_grade=perceived_grade,
                 perceived_ceiling=perceived_ceiling,
             )
+            luxury_room_penalty = cpu_luxury_room_reach_penalty(
+                con,
+                row,
+                team_id=team_id,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+            )
             qb_search_bonus = franchise_qb_search_bonus(
                 con,
                 row,
@@ -1724,6 +1915,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 + duplicate_position_penalty
                 + position_room_penalty
                 + qb_room_penalty
+                + luxury_room_penalty
             )
             scored.append((adjusted, base_rank, row))
     if not scored:

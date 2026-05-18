@@ -161,17 +161,60 @@ COLLEGE_STATE_OVERRIDES: dict[str, str] = {
 }
 
 NATIONAL_POWER_STATES = {"AL", "FL", "GA", "LA", "OH", "TX", "CA", "MI", "PA", "OK", "OR", "SC", "TN"}
+DOMESTIC_ETHNICITY_STATE_MULTIPLIERS: dict[str, dict[str, float]] = {
+    # Soft cultural/regional nudges. These should make patterns visible across a
+    # class without turning any background into a geography lock.
+    "native_hawaiian_pacific_islander": {
+        "HI": 9.0, "UT": 3.0, "CA": 2.7, "WA": 2.2, "OR": 1.6, "NV": 1.5, "AZ": 1.25,
+    },
+    "hispanic_latino": {
+        "TX": 2.2, "CA": 2.0, "FL": 1.85, "AZ": 1.75, "NM": 1.65, "NV": 1.35, "CO": 1.25, "IL": 1.15, "NY": 1.1, "NJ": 1.1,
+    },
+    "asian": {
+        "CA": 2.6, "WA": 1.9, "HI": 3.8, "NY": 1.45, "NJ": 1.35, "TX": 1.25, "IL": 1.15, "VA": 1.15, "MA": 1.15,
+    },
+    "american_indian_alaska_native": {
+        "OK": 2.8, "AZ": 2.1, "NM": 2.0, "AK": 3.8, "MT": 1.9, "ND": 1.8, "SD": 1.8, "WA": 1.35, "NC": 1.25,
+    },
+    "black_african_american": {
+        "GA": 1.35, "FL": 1.25, "LA": 1.25, "AL": 1.22, "MS": 1.22, "SC": 1.18, "TX": 1.15, "MD": 1.12, "VA": 1.1,
+    },
+}
+
+ORIGIN_COUNTRY_STATE_MULTIPLIERS: dict[str, dict[str, float]] = {
+    "American Samoa": {"HI": 8.0, "CA": 3.0, "UT": 2.7, "WA": 2.0, "OR": 1.5},
+    "Samoa": {"HI": 7.0, "CA": 2.8, "UT": 2.6, "WA": 1.8, "OR": 1.4},
+    "Tonga": {"HI": 6.0, "UT": 4.4, "CA": 2.4, "WA": 1.6, "OR": 1.3},
+    "Mexico": {"TX": 2.8, "CA": 2.4, "AZ": 2.0, "NM": 1.9, "NV": 1.4, "CO": 1.25, "IL": 1.15},
+    "Philippines": {"CA": 3.2, "HI": 3.0, "WA": 1.6, "NV": 1.4, "TX": 1.2},
+    "Japan": {"CA": 2.4, "HI": 3.2, "WA": 1.7, "NY": 1.2},
+    "India": {"CA": 2.0, "NJ": 1.8, "NY": 1.6, "TX": 1.5, "IL": 1.25, "GA": 1.15},
+    "Canada": {"MI": 1.5, "WA": 1.45, "NY": 1.4, "MN": 1.35, "ND": 1.35, "VT": 1.25, "ME": 1.25},
+    "Jamaica": {"FL": 2.2, "NY": 1.7, "NJ": 1.35, "GA": 1.2},
+    "Nigeria": {"TX": 1.55, "GA": 1.35, "MD": 1.3, "NY": 1.25, "NJ": 1.2},
+    "Ghana": {"NY": 1.35, "NJ": 1.25, "MD": 1.25, "VA": 1.15, "TX": 1.15},
+}
+
 INTERNATIONAL_HOMETOWNS = {
     "Canada": {"Toronto, Ontario": 28, "Vancouver, British Columbia": 18, "Montreal, Quebec": 14, "Calgary, Alberta": 12, "Ottawa, Ontario": 8},
     "Australia": {"Sydney, New South Wales": 34, "Melbourne, Victoria": 30, "Brisbane, Queensland": 14, "Perth, Western Australia": 10},
     "Germany": {"Berlin": 24, "Munich": 18, "Frankfurt": 16, "Hamburg": 14, "Dusseldorf": 8},
     "United Kingdom": {"London": 40, "Birmingham": 14, "Manchester": 14, "Leeds": 8, "Glasgow": 8},
+    "France": {"Paris": 36, "Marseille": 14, "Lyon": 12, "Toulouse": 9, "Nice": 7},
+    "Netherlands": {"Amsterdam": 34, "Rotterdam": 20, "The Hague": 14, "Utrecht": 10, "Eindhoven": 8},
     "Nigeria": {"Lagos": 46, "Abuja": 18, "Port Harcourt": 10, "Ibadan": 9},
     "Ghana": {"Accra": 52, "Kumasi": 18, "Tema": 8},
     "Cameroon": {"Douala": 38, "Yaounde": 34, "Bamenda": 8},
     "American Samoa": {"Pago Pago": 78, "Tafuna": 12},
     "Samoa": {"Apia": 72, "Faleula": 8},
     "Tonga": {"Nuku'alofa": 74, "Neiafu": 8},
+    "New Zealand": {"Auckland": 34, "Wellington": 18, "Christchurch": 16, "Hamilton": 10, "Dunedin": 6},
+    "Mexico": {"Mexico City": 34, "Guadalajara": 16, "Monterrey": 14, "Tijuana": 10, "Puebla": 8},
+    "Japan": {"Tokyo": 38, "Osaka": 18, "Yokohama": 14, "Nagoya": 10, "Fukuoka": 6},
+    "Philippines": {"Manila": 38, "Quezon City": 18, "Cebu City": 12, "Davao City": 10},
+    "India": {"Mumbai": 24, "Delhi": 22, "Bengaluru": 16, "Hyderabad": 12, "Chennai": 10, "Ahmedabad": 6},
+    "Brazil": {"Sao Paulo": 30, "Rio de Janeiro": 22, "Brasilia": 12, "Salvador": 10, "Belo Horizonte": 8},
+    "Jamaica": {"Kingston": 48, "Montego Bay": 18, "Spanish Town": 12, "Portmore": 8},
 }
 
 
@@ -186,15 +229,55 @@ class HometownGenerator:
         college_tier: str,
         birth_country: str,
         is_international: bool,
+        ethnicity_key: str | None = None,
+        ethnicity_label: str | None = None,
+        origin_ethnicity_key: str | None = None,
     ) -> HometownProfile:
-        if is_international and birth_country != UNITED_STATES and self.rng.random() < 0.72:
+        if is_international and birth_country != UNITED_STATES and self.rng.random() < 0.94:
             return self._international_hometown(birth_country)
+        background_weights = self._background_focus_state_weights(
+            birth_country=birth_country,
+            ethnicity_key=ethnicity_key,
+            ethnicity_label=ethnicity_label,
+            origin_ethnicity_key=origin_ethnicity_key,
+        )
+        if background_weights and self.rng.random() < self._background_focus_chance(
+            ethnicity_key=ethnicity_key,
+            ethnicity_label=ethnicity_label,
+            origin_ethnicity_key=origin_ethnicity_key,
+            birth_country=birth_country,
+        ):
+            state = self._weighted_state(background_weights)
+            city = self._weighted_choice(STATE_CITY_WEIGHTS.get(state) or {"Springfield": 1.0})
+            return HometownProfile(city=city, state=state, region=STATE_REGIONS.get(state, "Unknown"))
         college_state = COLLEGE_STATE_OVERRIDES.get(college)
-        state = self._choose_state(college_state=college_state, college_tier=college_tier)
+        state = self._choose_state(
+            college_state=college_state,
+            college_tier=college_tier,
+            birth_country=birth_country,
+            ethnicity_key=ethnicity_key,
+            ethnicity_label=ethnicity_label,
+            origin_ethnicity_key=origin_ethnicity_key,
+        )
         city = self._weighted_choice(STATE_CITY_WEIGHTS.get(state) or {"Springfield": 1.0})
         return HometownProfile(city=city, state=state, region=STATE_REGIONS.get(state, "Unknown"))
 
-    def _choose_state(self, *, college_state: str | None, college_tier: str) -> str:
+    def _choose_state(
+        self,
+        *,
+        college_state: str | None,
+        college_tier: str,
+        birth_country: str,
+        ethnicity_key: str | None,
+        ethnicity_label: str | None,
+        origin_ethnicity_key: str | None,
+    ) -> str:
+        state_weights = self._state_weights_for_background(
+            birth_country=birth_country,
+            ethnicity_key=ethnicity_key,
+            ethnicity_label=ethnicity_label,
+            origin_ethnicity_key=origin_ethnicity_key,
+        )
         if college_state and college_state in STATE_WEIGHTS:
             local_chance = self._local_chance(college_state, college_tier)
             roll = self.rng.random()
@@ -204,11 +287,90 @@ class HometownGenerator:
                 return self._weighted_state(
                     {
                         state: weight
-                        for state, weight in STATE_WEIGHTS.items()
+                        for state, weight in state_weights.items()
                         if STATE_REGIONS.get(state) == STATE_REGIONS.get(college_state)
                     }
                 )
-        return self._weighted_state(STATE_WEIGHTS)
+        return self._weighted_state(state_weights)
+
+    def _state_weights_for_background(
+        self,
+        *,
+        birth_country: str,
+        ethnicity_key: str | None,
+        ethnicity_label: str | None,
+        origin_ethnicity_key: str | None,
+    ) -> dict[str, float]:
+        weights = dict(STATE_WEIGHTS)
+        keys = {
+            str(ethnicity_key or "").strip().lower(),
+            str(origin_ethnicity_key or "").strip().lower(),
+        }
+        label = str(ethnicity_label or "").strip().lower()
+        if "polynesian" in label or "hawaiian" in label or "pacific islander" in label:
+            keys.add("native_hawaiian_pacific_islander")
+        for key in keys:
+            for state, multiplier in DOMESTIC_ETHNICITY_STATE_MULTIPLIERS.get(key, {}).items():
+                if state in weights:
+                    weights[state] *= multiplier
+        for state, multiplier in ORIGIN_COUNTRY_STATE_MULTIPLIERS.get(str(birth_country or ""), {}).items():
+            if state in weights:
+                weights[state] *= multiplier
+        return weights
+
+    def _background_focus_state_weights(
+        self,
+        *,
+        birth_country: str,
+        ethnicity_key: str | None,
+        ethnicity_label: str | None,
+        origin_ethnicity_key: str | None,
+    ) -> dict[str, float]:
+        weights: dict[str, float] = {}
+        keys = {
+            str(ethnicity_key or "").strip().lower(),
+            str(origin_ethnicity_key or "").strip().lower(),
+        }
+        label = str(ethnicity_label or "").strip().lower()
+        if "polynesian" in label or "hawaiian" in label or "pacific islander" in label:
+            keys.add("native_hawaiian_pacific_islander")
+        for key in keys:
+            for state, multiplier in DOMESTIC_ETHNICITY_STATE_MULTIPLIERS.get(key, {}).items():
+                if state in STATE_WEIGHTS:
+                    weights[state] = weights.get(state, 0.0) + (STATE_WEIGHTS[state] * multiplier)
+        for state, multiplier in ORIGIN_COUNTRY_STATE_MULTIPLIERS.get(str(birth_country or ""), {}).items():
+            if state in STATE_WEIGHTS:
+                weights[state] = weights.get(state, 0.0) + (STATE_WEIGHTS[state] * multiplier)
+        return weights
+
+    @staticmethod
+    def _background_focus_chance(
+        *,
+        ethnicity_key: str | None,
+        ethnicity_label: str | None,
+        origin_ethnicity_key: str | None,
+        birth_country: str,
+    ) -> float:
+        keys = {
+            str(ethnicity_key or "").strip().lower(),
+            str(origin_ethnicity_key or "").strip().lower(),
+        }
+        label = str(ethnicity_label or "").strip().lower()
+        if "polynesian" in label or "hawaiian" in label or "pacific islander" in label:
+            keys.add("native_hawaiian_pacific_islander")
+        if str(birth_country or "") in {"American Samoa", "Samoa", "Tonga"}:
+            return 0.38
+        if "native_hawaiian_pacific_islander" in keys:
+            return 0.30
+        if "american_indian_alaska_native" in keys:
+            return 0.24
+        if "asian" in keys or "hispanic_latino" in keys:
+            return 0.18
+        if str(birth_country or "") in ORIGIN_COUNTRY_STATE_MULTIPLIERS:
+            return 0.16
+        if "black_african_american" in keys:
+            return 0.08
+        return 0.0
 
     @staticmethod
     def _local_chance(college_state: str, college_tier: str) -> float:

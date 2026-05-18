@@ -61,6 +61,7 @@ class FirstNameStats:
     gender: str
     ssa_births: int = 0
     ssa_recent_births: int = 0
+    ssa_peak_year_births: int = 0
     first_year: int | None = None
     last_year: int | None = None
     football_count: int = 0
@@ -240,6 +241,7 @@ def load_first_names(args: argparse.Namespace) -> tuple[dict[tuple[str, str], Fi
         entry.ssa_births += count
         if year >= args.recent_start_year:
             entry.ssa_recent_births += count
+        entry.ssa_peak_year_births = max(entry.ssa_peak_year_births, count)
         entry.first_year = year if entry.first_year is None else min(entry.first_year, year)
         entry.last_year = year if entry.last_year is None else max(entry.last_year, year)
     return stats, source
@@ -395,11 +397,15 @@ def load_diversity_config(
 
 
 def first_name_weight(row: FirstNameStats) -> int:
+    football_bonus = 0
+    if row.ssa_births >= 250 or row.ssa_peak_year_births >= 40:
+        football_bonus = row.football_count * 120 + row.football_active_count * 220
+    elif row.ssa_births > 0:
+        football_bonus = row.football_count * 25 + row.football_active_count * 40
     return max(
         1,
-        int(row.ssa_recent_births + row.ssa_births * 0.15)
-        + row.football_count * 500
-        + row.football_active_count * 1000,
+        int(row.ssa_recent_births * 1.20 + row.ssa_births * 0.20 + row.ssa_peak_year_births * 6)
+        + football_bonus,
     )
 
 
@@ -410,6 +416,15 @@ def last_name_weight(row: LastNameStats) -> int:
         + row.football_count * 2500
         + row.football_active_count * 5000,
     )
+
+
+def first_name_football_weight(row: FirstNameStats) -> int:
+    if row.ssa_births <= 0:
+        return 0
+    if row.ssa_births < 100 and row.ssa_peak_year_births < 20:
+        return max(0, row.football_count * 2 + row.football_active_count * 4)
+    commonality = min(1.0, row.ssa_births / 3000.0)
+    return max(0, round((row.football_count * 35 + row.football_active_count * 75) * (0.35 + commonality)))
 
 
 def football_weight(count: int, active_count: int) -> int:
@@ -741,7 +756,15 @@ def insert_names(
     first_rows = [
         row
         for row in first_rows[: args.max_first_names]
-        if row.ssa_births > 0 or row.football_count > 0
+        if (
+            row.ssa_births >= args.min_first_name_births
+            or row.ssa_peak_year_births >= args.min_first_name_peak_year_births
+            or (
+                row.ssa_births > 0
+                and row.football_count > 0
+                and row.ssa_peak_year_births >= args.min_football_first_name_peak_year_births
+            )
+        )
     ]
     last_rows = sorted(
         last_names.values(),
@@ -775,7 +798,7 @@ def insert_names(
                 row.football_count,
                 row.football_active_count,
                 first_name_weight(row),
-                football_weight(row.football_count, row.football_active_count),
+                first_name_football_weight(row),
                 source_flags(has_us=row.ssa_births > 0, football_count=row.football_count),
             )
             for row in first_rows
@@ -839,6 +862,12 @@ def insert_names(
             ("first_end_year", str(args.first_end_year or "")),
             ("football_active_since", str(args.football_active_since)),
             ("max_first_names", str(args.max_first_names)),
+            ("min_first_name_births", str(args.min_first_name_births)),
+            ("min_first_name_peak_year_births", str(args.min_first_name_peak_year_births)),
+            (
+                "min_football_first_name_peak_year_births",
+                str(args.min_football_first_name_peak_year_births),
+            ),
             ("max_last_names", str(args.max_last_names)),
             ("diversity_config", str(args.diversity_config)),
         ],
@@ -911,11 +940,14 @@ def build_parser() -> argparse.ArgumentParser:
     build_parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     build_parser.add_argument("--refresh", action="store_true")
     build_parser.add_argument("--diversity-config", type=Path, default=DEFAULT_DIVERSITY_CONFIG)
-    build_parser.add_argument("--first-start-year", type=int, default=1960)
-    build_parser.add_argument("--first-end-year", type=int)
-    build_parser.add_argument("--recent-start-year", type=int, default=1995)
+    build_parser.add_argument("--first-start-year", type=int, default=2001)
+    build_parser.add_argument("--first-end-year", type=int, default=2008)
+    build_parser.add_argument("--recent-start-year", type=int, default=2001)
     build_parser.add_argument("--football-active-since", type=int, default=2024)
-    build_parser.add_argument("--max-first-names", type=int, default=12000)
+    build_parser.add_argument("--max-first-names", type=int, default=6500)
+    build_parser.add_argument("--min-first-name-births", type=int, default=80)
+    build_parser.add_argument("--min-first-name-peak-year-births", type=int, default=15)
+    build_parser.add_argument("--min-football-first-name-peak-year-births", type=int, default=25)
     build_parser.add_argument("--max-last-names", type=int, default=25000)
     build_parser.set_defaults(func=cmd_build)
 
@@ -925,7 +957,7 @@ def build_parser() -> argparse.ArgumentParser:
     sample_parser = subparsers.add_parser("sample", help="Generate sample names")
     sample_parser.add_argument("--count", type=int, default=20)
     sample_parser.add_argument("--seed")
-    sample_parser.add_argument("--football-bias", type=float, default=0.35)
+    sample_parser.add_argument("--football-bias", type=float, default=0.24)
     sample_parser.add_argument("--international-chance", type=float, default=0.035)
     sample_parser.add_argument("--show-meta", action="store_true")
     sample_parser.set_defaults(func=cmd_sample)

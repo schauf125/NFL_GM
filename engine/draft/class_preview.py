@@ -16,7 +16,7 @@ from .combine import CombineGenerator
 from .college import CollegeGenerator
 from .hometown import HometownGenerator
 from .names import NameGenerator, UNITED_STATES
-from .physical import PhysicalProfileGenerator, format_height, format_measurement
+from .physical import PhysicalProfileGenerator, PhysicalTraits, format_height, format_measurement
 from .scouting import ScoutingReportGenerator
 from .workouts import PrivateWorkoutGenerator, ProDayGenerator
 
@@ -202,6 +202,7 @@ COUNTRY_TIER_WEIGHTS: dict[str, dict[str, float]] = {
         "New Zealand": 8,
         "Japan": 6,
         "Philippines": 5,
+        "India": 4,
         "Brazil": 5,
         "Jamaica": 5,
         "France": 4,
@@ -267,6 +268,8 @@ class DraftClassPreviewRow:
     discovery_status: str
     scouting_variance: int
     discovery_notes: str
+    development_pathway: str
+    pipeline_note: str
     draft_year: int
     first_name: str
     last_name: str
@@ -451,10 +454,6 @@ class DraftClassPreviewGenerator:
                 country=birth_country,
                 international_chance=0.0,
             )
-            physical = self.physical_generator.generate(
-                position,
-                outlier_chance=physical_outlier_chance,
-            )
             handedness = self._choose_handedness(position)
             college = self.college_generator.generate(
                 rank=index,
@@ -464,11 +463,35 @@ class DraftClassPreviewGenerator:
                 if is_hidden
                 else self._college_tier_weights_for_rank(index),
             )
+            development_pathway, pipeline_note = self._development_pathway(
+                position=position,
+                birth_country=generated_name.country,
+                is_international=generated_name.is_international,
+                college=college.college,
+                college_tier=college.college_tier,
+                rank=index,
+            )
+            physical = self.physical_generator.generate(
+                position,
+                outlier_chance=physical_outlier_chance,
+            )
+            physical = self._apply_pathway_physical_flavor(
+                physical=physical,
+                position=position,
+                birth_country=generated_name.country,
+                development_pathway=development_pathway,
+            )
             hometown = self.hometown_generator.generate(
                 college=college.college,
                 college_tier=college.college_tier,
                 birth_country=generated_name.country,
                 is_international=generated_name.is_international,
+                ethnicity_key=generated_name.ethnicity_key,
+                ethnicity_label=generated_name.ethnicity_label,
+                origin_ethnicity_key=(
+                    self.name_generator.ethnicity_key_for_country(generated_name.country)
+                    or generated_name.ethnicity_key
+                ),
             )
             appearance = self.appearance_generator.generate(
                 ethnicity_key=generated_name.ethnicity_key,
@@ -559,7 +582,13 @@ class DraftClassPreviewGenerator:
                     discovery_notes=self._discovery_notes(
                         college_tier=college.college_tier,
                         discovery_profile=discovery_profile,
+                        development_pathway=development_pathway,
+                        pipeline_note=pipeline_note,
+                        birth_country=generated_name.country,
+                        is_international=generated_name.is_international,
                     ),
+                    development_pathway=development_pathway,
+                    pipeline_note=pipeline_note,
                     draft_year=draft_year,
                     first_name=generated_name.first_name,
                     last_name=generated_name.last_name,
@@ -654,7 +683,13 @@ class DraftClassPreviewGenerator:
                     scout_grade=scouting_report.perceived_grade,
                     scout_ceiling=scouting_report.perceived_ceiling,
                     scout_risk=scouting_report.perceived_risk,
-                    scouting_summary=scouting_report.summary,
+                    scouting_summary=self._append_pathway_summary(
+                        scouting_report.summary,
+                        development_pathway=development_pathway,
+                        pipeline_note=pipeline_note,
+                        birth_country=generated_name.country,
+                        college_tier=college.college_tier,
+                    ),
                     scouting_strengths=scouting_report.strengths_text,
                     scouting_concerns=scouting_report.concerns_text,
                     scouting_projection=scouting_report.projection,
@@ -863,6 +898,215 @@ class DraftClassPreviewGenerator:
             + board_noise
         )
 
+    def _development_pathway(
+        self,
+        *,
+        position: str,
+        birth_country: str,
+        is_international: bool,
+        college: str,
+        college_tier: str,
+        rank: int,
+    ) -> tuple[str, str]:
+        position_key = position.upper()
+        if is_international or birth_country != UNITED_STATES or college_tier == "International":
+            country = birth_country
+            if country in {"Australia", "New Zealand", "Samoa", "Tonga", "American Samoa"}:
+                options = {
+                    "International Pathway": 34,
+                    "Rugby convert": 28 if position_key in {"TE", "EDGE", "ILB", "SS", "FB", "OT"} else 14,
+                    "Regional pipeline": 20,
+                    "Late football starter": 10,
+                    "Track background": 8 if position_key in {"WR", "CB", "FS", "RB"} else 2,
+                }
+            elif country == "Canada":
+                options = {
+                    "Canadian prep": 48,
+                    "Regional pipeline": 24,
+                    "International Pathway": 12,
+                    "Late football starter": 8,
+                    "Track background": 8 if position_key in {"WR", "CB", "FS", "RB"} else 2,
+                }
+            elif country in {"Nigeria", "Ghana", "Cameroon"}:
+                options = {
+                    "International Pathway": 34,
+                    "Late football starter": 24,
+                    "Regional pipeline": 18,
+                    "Track background": 14 if position_key in {"WR", "CB", "FS", "RB", "EDGE"} else 5,
+                    "Football family": 5,
+                }
+            elif country in {"Mexico", "Brazil", "Jamaica"}:
+                options = {
+                    "International Pathway": 36,
+                    "Regional pipeline": 24,
+                    "Late football starter": 16,
+                    "Track background": 16 if position_key in {"WR", "CB", "FS", "RB"} else 6,
+                    "Specialist pipeline": 10 if position_key in {"K", "P"} else 2,
+                }
+            elif country in {"Japan", "Philippines", "India"}:
+                options = {
+                    "International Pathway": 42,
+                    "Specialist pipeline": 28 if position_key in {"K", "P", "LS"} else 8,
+                    "Late football starter": 22,
+                    "Regional pipeline": 16,
+                }
+            else:
+                options = {
+                    "International Pathway": 42,
+                    "Regional pipeline": 22,
+                    "Late football starter": 18,
+                    "Track background": 8 if position_key in {"WR", "CB", "FS", "RB"} else 3,
+                }
+            pathway = self._weighted_choice(options)
+            note = self._pipeline_note(
+                pathway=pathway,
+                country=country,
+                college=college,
+                college_tier=college_tier,
+            )
+            return pathway, note
+
+        if college in {"Army", "Navy", "Air Force"}:
+            return "Military academy", "Service-academy background adds discipline signals and a less common evaluation path."
+        domestic_options = {"Traditional pipeline": 84}
+        if college_tier in {"Small", "Regular"} or rank > 96:
+            domestic_options["JUCO route"] = 5 if rank <= 160 else 9
+            domestic_options["Late football starter"] = 3 if rank <= 96 else 6
+            domestic_options["Regional pipeline"] = 4
+        if position_key in {"WR", "CB", "FS", "RB", "EDGE"}:
+            domestic_options["Track background"] = 4 if rank <= 96 else 7
+        if rank > 64:
+            domestic_options["Football family"] = 3
+        pathway = self._weighted_choice(domestic_options)
+        if pathway == "Traditional pipeline":
+            return pathway, ""
+        return pathway, self._pipeline_note(
+            pathway=pathway,
+            country=UNITED_STATES,
+            college=college,
+            college_tier=college_tier,
+        )
+
+    def _pipeline_note(
+        self,
+        *,
+        pathway: str,
+        country: str,
+        college: str,
+        college_tier: str,
+    ) -> str:
+        if pathway == "International Pathway":
+            return f"{country} background gives teams a longer projection curve and more private-workout value."
+        if pathway == "Rugby convert":
+            return f"{country} rugby background shows in contact balance, but football instincts may need cross-checks."
+        if pathway == "Canadian prep":
+            return "Canadian development path gives cleaner football exposure than most international files."
+        if pathway == "Track background":
+            return "Track background can inflate testing, so teams will want to separate speed from play speed."
+        if pathway == "Late football starter":
+            return "Late football starter with more variance between tools, instincts, and future growth."
+        if pathway == "Specialist pipeline":
+            return f"{country} specialist path makes kicking operation and pressure context more important."
+        if pathway == "JUCO route":
+            return f"{college_tier.lower()}-profile JUCO route creates more year-to-year context than a normal college file."
+        if pathway == "Military academy":
+            return "Service-academy path adds maturity indicators, but role translation still needs careful scouting."
+        if pathway == "Football family":
+            return "Football-family background creates a small instincts bump without removing normal variance."
+        if pathway == "Regional pipeline":
+            return f"{country if country != UNITED_STATES else college} regional pipeline gives area scouts more influence than public media."
+        return ""
+
+    def _apply_pathway_physical_flavor(
+        self,
+        *,
+        physical: PhysicalTraits,
+        position: str,
+        birth_country: str,
+        development_pathway: str,
+    ) -> PhysicalTraits:
+        position_key = position.upper()
+        height_delta = 0
+        weight_delta = 0
+        arm_delta = 0.0
+        hand_delta = 0.0
+
+        pacific = birth_country in {"Samoa", "Tonga", "American Samoa", "New Zealand", "Australia"}
+        west_african = birth_country in {"Nigeria", "Ghana", "Cameroon"}
+        if pacific and position_key in {"OT", "OG", "C", "IDL", "EDGE", "ILB", "TE"}:
+            weight_delta += round(self.rng.gauss(10, 7))
+            arm_delta += self.rng.choice([0.0, 0.125, 0.25])
+            hand_delta += self.rng.choice([0.0, 0.125, 0.25])
+        if birth_country in {"Australia", "New Zealand"} and position_key in {"P", "K"}:
+            height_delta += 1 if self.rng.random() < 0.35 else 0
+        if west_african and position_key in {"EDGE", "IDL", "OT", "ILB", "TE"}:
+            height_delta += 1 if self.rng.random() < 0.30 else 0
+            arm_delta += self.rng.choice([0.125, 0.25, 0.375])
+        if birth_country in {"Japan", "Philippines", "India"} and position_key not in {"OT", "OG", "C", "IDL"}:
+            weight_delta -= round(abs(self.rng.gauss(3, 3)))
+        if development_pathway == "Track background" and position_key in {"WR", "CB", "FS", "RB"}:
+            weight_delta -= round(abs(self.rng.gauss(2, 2)))
+        if not any([height_delta, weight_delta, arm_delta, hand_delta]):
+            return physical
+
+        profile = self.physical_generator._profile(position_key)
+        height = self.physical_generator._clamp(
+            physical.height_in + height_delta,
+            int(profile["gen_height_min"]),
+            int(profile["gen_height_max"]),
+        )
+        weight = self.physical_generator._clamp(
+            physical.weight_lbs + weight_delta,
+            int(profile["gen_weight_min"]),
+            int(profile["gen_weight_max"]),
+        )
+        arm_length = self.physical_generator._round_to_nearest_float(
+            self.physical_generator._clamp_float(
+                physical.arm_length_in + arm_delta,
+                float(profile["gen_arm_length_min"]),
+                float(profile["gen_arm_length_max"]),
+            ),
+            0.125,
+        )
+        hand_size = self.physical_generator._round_to_nearest_float(
+            self.physical_generator._clamp_float(
+                physical.hand_size_in + hand_delta,
+                float(profile["gen_hand_size_min"]),
+                float(profile["gen_hand_size_max"]),
+            ),
+            0.125,
+        )
+        return replace(
+            physical,
+            height_in=height,
+            weight_lbs=weight,
+            arm_length_in=arm_length,
+            hand_size_in=hand_size,
+            is_height_outlier=physical.is_height_outlier or abs(height - physical.height_in) >= 2,
+            is_weight_outlier=physical.is_weight_outlier or abs(weight - physical.weight_lbs) >= 12,
+            is_arm_outlier=physical.is_arm_outlier or abs(arm_length - physical.arm_length_in) >= 0.375,
+            is_hand_outlier=physical.is_hand_outlier or abs(hand_size - physical.hand_size_in) >= 0.25,
+        )
+
+    def _append_pathway_summary(
+        self,
+        summary: str,
+        *,
+        development_pathway: str,
+        pipeline_note: str,
+        birth_country: str,
+        college_tier: str,
+    ) -> str:
+        if development_pathway == "Traditional pipeline" and not pipeline_note:
+            return summary
+        prefix = development_pathway
+        if birth_country != UNITED_STATES:
+            prefix = f"{development_pathway} ({birth_country})"
+        if college_tier == "International" and birth_country == UNITED_STATES:
+            prefix = f"{development_pathway} (international exposure)"
+        note = pipeline_note or "Evaluation path adds a little more context variance than a standard file."
+        return f"{summary} {prefix}: {note}"
+
     def _medical_profile(self, *, attributes, combine, pro_day) -> tuple[str, str, str]:
         durability = int(attributes.ratings.get("durability", 60))
         risk_roll = self.rng.random()
@@ -1006,6 +1250,16 @@ class DraftClassPreviewGenerator:
                 penalty += 6.0
             elif rank <= 160:
                 penalty += 3.4
+        pathway = row.development_pathway
+        if pathway in {"International Pathway", "Late football starter", "Rugby convert", "Specialist pipeline"}:
+            if rank <= 64:
+                penalty += 2.4
+            elif rank <= 160:
+                penalty += 1.5
+            else:
+                penalty += 0.7
+        elif pathway in {"JUCO route", "Track background"} and rank <= 96:
+            penalty += 0.9
 
         outlier_relief = 0.0
         if row.scout_grade >= 75:
@@ -1047,7 +1301,21 @@ class DraftClassPreviewGenerator:
         base += {"High": -5, "Medium": 2, "Low": 11}.get(scout_confidence, 2)
         return max(5, min(100, round(base + self.rng.gauss(0, 5.5))))
 
-    def _discovery_notes(self, *, college_tier: str, discovery_profile: str) -> str:
+    def _discovery_notes(
+        self,
+        *,
+        college_tier: str,
+        discovery_profile: str,
+        development_pathway: str,
+        pipeline_note: str,
+        birth_country: str,
+        is_international: bool,
+    ) -> str:
+        pathway_note = ""
+        if development_pathway != "Traditional pipeline":
+            pathway_note = f" {development_pathway}: {pipeline_note}"
+        elif is_international or birth_country != UNITED_STATES:
+            pathway_note = f" International background from {birth_country} adds scouting variance."
         if discovery_profile == HIDDEN_DISCOVERY_PROFILE:
             if college_tier == "Small":
                 source = "small-school area-scout"
@@ -1059,13 +1327,15 @@ class DraftClassPreviewGenerator:
                 source = "late-cycle area-scout"
             return (
                 f"Not listed on the initial public big board; starts as a {source} name "
-                "with high scouting variance."
+                f"with high scouting variance.{pathway_note}"
             )
         if college_tier == "Small":
-            return "Public-board prospect, but small-school translation still needs extra live scouting."
+            return f"Public-board prospect, but small-school translation still needs extra live scouting.{pathway_note}"
         if college_tier == "Regular":
-            return "Public-board prospect with moderate scouting noise outside the national spotlight."
-        return "Public-board prospect with normal early scouting coverage."
+            return f"Public-board prospect with moderate scouting noise outside the national spotlight.{pathway_note}"
+        if college_tier == "International":
+            return f"Public-board prospect whose international context needs extra cross-checking.{pathway_note}"
+        return f"Public-board prospect with normal early scouting coverage.{pathway_note}"
 
     def _hidden_projection(self, row: DraftClassPreviewRow) -> str:
         if row.scout_grade >= 62 or row.scout_ceiling >= 72:

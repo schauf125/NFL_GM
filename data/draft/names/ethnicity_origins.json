@@ -5,177 +5,1227 @@
       "label": "Black / African American",
       "target_pct": 0.548,
       "sigma_pct": 0.018,
-      "min_pct": 0.500,
-      "max_pct": 0.600,
-      "first_styles": {"us_general": 25, "football": 20, "african_american": 45, "west_african": 7, "caribbean": 3},
-      "last_styles": {"us_general": 55, "football": 25, "african_american": 12, "west_african": 5, "caribbean": 3}
+      "min_pct": 0.5,
+      "max_pct": 0.6,
+      "first_styles": {
+        "us_general": 42,
+        "football": 10,
+        "african_american": 38,
+        "west_african": 7,
+        "caribbean": 3
+      },
+      "last_styles": {
+        "us_general": 55,
+        "football": 25,
+        "african_american": 12,
+        "west_african": 5,
+        "caribbean": 3
+      }
     },
     {
       "key": "white",
       "label": "White",
       "target_pct": 0.259,
       "sigma_pct": 0.012,
-      "min_pct": 0.220,
-      "max_pct": 0.300,
-      "first_styles": {"us_general": 55, "football": 20, "anglo": 15, "european": 10},
-      "last_styles": {"us_general": 50, "football": 20, "anglo": 15, "european": 15}
+      "min_pct": 0.22,
+      "max_pct": 0.3,
+      "first_styles": {
+        "us_general": 68,
+        "football": 10,
+        "anglo": 13,
+        "european": 9
+      },
+      "last_styles": {
+        "us_general": 50,
+        "football": 20,
+        "anglo": 15,
+        "european": 15
+      }
     },
     {
       "key": "multiracial",
       "label": "Two or More Races",
       "target_pct": 0.092,
       "sigma_pct": 0.008,
-      "min_pct": 0.060,
+      "min_pct": 0.06,
       "max_pct": 0.125,
-      "first_styles": {"us_general": 35, "football": 20, "african_american": 18, "hispanic_latino": 12, "polynesian": 8, "asian": 7},
-      "last_styles": {"us_general": 35, "football": 20, "african_american": 12, "hispanic_latino": 14, "polynesian": 10, "asian": 9}
+      "first_styles": {
+        "us_general": 46,
+        "football": 10,
+        "african_american": 17,
+        "hispanic_latino": 12,
+        "polynesian": 8,
+        "asian": 7
+      },
+      "last_styles": {
+        "us_general": 35,
+        "football": 20,
+        "african_american": 12,
+        "hispanic_latino": 14,
+        "polynesian": 10,
+        "asian": 9
+      }
     },
     {
       "key": "hispanic_latino",
       "label": "Hispanic / Latino",
-      "target_pct": 0.040,
+      "target_pct": 0.04,
       "sigma_pct": 0.006,
-      "min_pct": 0.020,
-      "max_pct": 0.070,
-      "first_styles": {"us_general": 25, "football": 10, "hispanic_latino": 65},
-      "last_styles": {"us_general": 20, "football": 10, "hispanic_latino": 70}
+      "min_pct": 0.02,
+      "max_pct": 0.07,
+      "first_styles": {
+        "us_general": 32,
+        "football": 6,
+        "hispanic_latino": 62
+      },
+      "last_styles": {
+        "us_general": 20,
+        "football": 10,
+        "hispanic_latino": 70
+      }
     },
     {
       "key": "native_hawaiian_pacific_islander",
       "label": "Native Hawaiian / Pacific Islander",
-      "target_pct": 0.020,
+      "target_pct": 0.02,
       "sigma_pct": 0.005,
       "min_pct": 0.005,
       "max_pct": 0.045,
-      "first_styles": {"us_general": 20, "football": 10, "polynesian": 45, "hawaiian": 15, "samoan": 10},
-      "last_styles": {"football": 15, "polynesian": 45, "hawaiian": 15, "samoan": 25}
+      "first_styles": {
+        "us_general": 30,
+        "football": 5,
+        "polynesian": 40,
+        "hawaiian": 15,
+        "samoan": 10
+      },
+      "last_styles": {
+        "football": 15,
+        "polynesian": 45,
+        "hawaiian": 15,
+        "samoan": 25
+      }
     },
     {
       "key": "asian",
       "label": "Asian",
       "target_pct": 0.002,
       "sigma_pct": 0.002,
-      "min_pct": 0.000,
+      "min_pct": 0.0,
       "max_pct": 0.012,
-      "first_styles": {"us_general": 35, "asian": 45, "south_asian": 15, "football": 5},
-      "last_styles": {"asian": 55, "south_asian": 25, "us_general": 15, "football": 5}
+      "first_styles": {
+        "us_general": 35,
+        "asian": 45,
+        "south_asian": 15,
+        "football": 5
+      },
+      "last_styles": {
+        "asian": 55,
+        "south_asian": 25,
+        "us_general": 15,
+        "football": 5
+      }
     },
     {
       "key": "american_indian_alaska_native",
       "label": "American Indian / Alaska Native",
       "target_pct": 0.003,
       "sigma_pct": 0.002,
-      "min_pct": 0.000,
+      "min_pct": 0.0,
       "max_pct": 0.015,
-      "first_styles": {"us_general": 55, "native_american": 35, "football": 10},
-      "last_styles": {"native_american": 65, "us_general": 25, "football": 10}
+      "first_styles": {
+        "us_general": 55,
+        "native_american": 35,
+        "football": 10
+      },
+      "last_styles": {
+        "native_american": 65,
+        "us_general": 25,
+        "football": 10
+      }
     },
     {
       "key": "other_unknown",
       "label": "Other / Unknown",
-      "target_pct": 0.060,
-      "sigma_pct": 0.010,
-      "min_pct": 0.030,
-      "max_pct": 0.090,
-      "first_styles": {"us_general": 60, "football": 20, "international_misc": 20},
-      "last_styles": {"us_general": 55, "football": 20, "international_misc": 25}
+      "target_pct": 0.06,
+      "sigma_pct": 0.01,
+      "min_pct": 0.03,
+      "max_pct": 0.09,
+      "first_styles": {
+        "us_general": 70,
+        "football": 8,
+        "international_misc": 22
+      },
+      "last_styles": {
+        "us_general": 55,
+        "football": 20,
+        "international_misc": 25
+      }
     }
   ],
   "international_origins": [
-    {"country": "Canada", "weight": 26, "ethnicity_key": "white", "common_positions": "OL, DL, WR", "first_styles": {"canadian": 55, "us_general": 35, "football": 10}, "last_styles": {"canadian": 55, "us_general": 35, "football": 10}},
-    {"country": "Nigeria", "weight": 19, "ethnicity_key": "black_african_american", "common_positions": "DL, LB, OL", "first_styles": {"west_african": 70, "us_general": 20, "football": 10}, "last_styles": {"west_african": 80, "football": 10, "us_general": 10}},
-    {"country": "Australia", "weight": 10, "ethnicity_key": "white", "common_positions": "P, OL", "first_styles": {"australian": 60, "anglo": 25, "football": 15}, "last_styles": {"australian": 55, "anglo": 30, "football": 15}},
-    {"country": "Germany", "weight": 6, "ethnicity_key": "white", "common_positions": "WR, FB, OL", "first_styles": {"german": 65, "european": 20, "football": 15}, "last_styles": {"german": 75, "european": 15, "football": 10}},
-    {"country": "United Kingdom", "weight": 6, "ethnicity_key": "white", "common_positions": "DL, TE", "first_styles": {"anglo": 70, "football": 15, "us_general": 15}, "last_styles": {"anglo": 70, "football": 15, "us_general": 15}},
-    {"country": "American Samoa", "weight": 5, "ethnicity_key": "native_hawaiian_pacific_islander", "common_positions": "DL, OL, LB", "first_styles": {"samoan": 55, "polynesian": 30, "football": 15}, "last_styles": {"samoan": 65, "polynesian": 25, "football": 10}},
-    {"country": "Samoa", "weight": 4, "ethnicity_key": "native_hawaiian_pacific_islander", "common_positions": "DL, OL, LB", "first_styles": {"samoan": 60, "polynesian": 30, "football": 10}, "last_styles": {"samoan": 70, "polynesian": 20, "football": 10}},
-    {"country": "Tonga", "weight": 3, "ethnicity_key": "native_hawaiian_pacific_islander", "common_positions": "DL, OL", "first_styles": {"polynesian": 65, "samoan": 20, "football": 15}, "last_styles": {"polynesian": 75, "samoan": 15, "football": 10}},
-    {"country": "Ghana", "weight": 3, "ethnicity_key": "black_african_american", "common_positions": "DL, LB, DB", "first_styles": {"west_african": 70, "football": 15, "us_general": 15}, "last_styles": {"west_african": 80, "football": 10, "us_general": 10}},
-    {"country": "Cameroon", "weight": 2, "ethnicity_key": "black_african_american", "common_positions": "DL, EDGE, LB", "first_styles": {"west_african": 70, "football": 15, "us_general": 15}, "last_styles": {"west_african": 80, "football": 10, "us_general": 10}},
-    {"country": "Mexico", "weight": 2, "ethnicity_key": "hispanic_latino", "common_positions": "OL, DL, K", "first_styles": {"hispanic_latino": 75, "football": 10, "us_general": 15}, "last_styles": {"hispanic_latino": 80, "football": 10, "us_general": 10}},
-    {"country": "New Zealand", "weight": 2, "ethnicity_key": "native_hawaiian_pacific_islander", "common_positions": "P, OL, DL", "first_styles": {"australian": 35, "polynesian": 35, "anglo": 20, "football": 10}, "last_styles": {"australian": 25, "polynesian": 45, "anglo": 20, "football": 10}},
-    {"country": "Ireland", "weight": 1, "ethnicity_key": "white", "common_positions": "K, P, TE", "first_styles": {"anglo": 60, "european": 25, "football": 15}, "last_styles": {"anglo": 70, "european": 20, "football": 10}},
-    {"country": "Netherlands", "weight": 1, "ethnicity_key": "white", "common_positions": "OL, DL", "first_styles": {"european": 60, "football": 20, "us_general": 20}, "last_styles": {"european": 70, "football": 15, "us_general": 15}},
-    {"country": "France", "weight": 1, "ethnicity_key": "white", "common_positions": "WR, DB, DL", "first_styles": {"european": 60, "football": 20, "us_general": 20}, "last_styles": {"european": 70, "football": 15, "us_general": 15}},
-    {"country": "Japan", "weight": 1, "ethnicity_key": "asian", "common_positions": "WR, DB, K", "first_styles": {"asian": 75, "football": 10, "us_general": 15}, "last_styles": {"asian": 80, "football": 10, "us_general": 10}},
-    {"country": "Philippines", "weight": 1, "ethnicity_key": "asian", "common_positions": "DB, WR, K", "first_styles": {"asian": 45, "hispanic_latino": 25, "us_general": 20, "football": 10}, "last_styles": {"asian": 45, "hispanic_latino": 30, "us_general": 15, "football": 10}},
-    {"country": "Brazil", "weight": 1, "ethnicity_key": "hispanic_latino", "common_positions": "K, WR, DB", "first_styles": {"hispanic_latino": 55, "international_misc": 25, "football": 20}, "last_styles": {"hispanic_latino": 55, "international_misc": 25, "football": 20}},
-    {"country": "Jamaica", "weight": 1, "ethnicity_key": "black_african_american", "common_positions": "WR, DB, RB", "first_styles": {"caribbean": 60, "african_american": 25, "football": 15}, "last_styles": {"caribbean": 60, "african_american": 25, "football": 15}}
+    {
+      "country": "Canada",
+      "weight": 26,
+      "ethnicity_key": "white",
+      "common_positions": "OL, DL, WR",
+      "first_styles": {
+        "canadian": 55,
+        "us_general": 35,
+        "football": 10
+      },
+      "last_styles": {
+        "canadian": 55,
+        "us_general": 35,
+        "football": 10
+      }
+    },
+    {
+      "country": "Nigeria",
+      "weight": 19,
+      "ethnicity_key": "black_african_american",
+      "common_positions": "DL, LB, OL",
+      "first_styles": {
+        "west_african": 70,
+        "us_general": 20,
+        "football": 10
+      },
+      "last_styles": {
+        "west_african": 80,
+        "football": 10,
+        "us_general": 10
+      }
+    },
+    {
+      "country": "Australia",
+      "weight": 10,
+      "ethnicity_key": "white",
+      "common_positions": "P, OL",
+      "first_styles": {
+        "australian": 60,
+        "anglo": 25,
+        "football": 15
+      },
+      "last_styles": {
+        "australian": 55,
+        "anglo": 30,
+        "football": 15
+      }
+    },
+    {
+      "country": "Germany",
+      "weight": 6,
+      "ethnicity_key": "white",
+      "common_positions": "WR, FB, OL",
+      "first_styles": {
+        "german": 65,
+        "european": 20,
+        "football": 15
+      },
+      "last_styles": {
+        "german": 75,
+        "european": 15,
+        "football": 10
+      }
+    },
+    {
+      "country": "United Kingdom",
+      "weight": 6,
+      "ethnicity_key": "white",
+      "common_positions": "DL, TE",
+      "first_styles": {
+        "anglo": 70,
+        "football": 15,
+        "us_general": 15
+      },
+      "last_styles": {
+        "anglo": 70,
+        "football": 15,
+        "us_general": 15
+      }
+    },
+    {
+      "country": "American Samoa",
+      "weight": 5,
+      "ethnicity_key": "native_hawaiian_pacific_islander",
+      "common_positions": "DL, OL, LB",
+      "first_styles": {
+        "samoan": 55,
+        "polynesian": 30,
+        "football": 15
+      },
+      "last_styles": {
+        "samoan": 65,
+        "polynesian": 25,
+        "football": 10
+      }
+    },
+    {
+      "country": "Samoa",
+      "weight": 4,
+      "ethnicity_key": "native_hawaiian_pacific_islander",
+      "common_positions": "DL, OL, LB",
+      "first_styles": {
+        "samoan": 60,
+        "polynesian": 30,
+        "football": 10
+      },
+      "last_styles": {
+        "samoan": 70,
+        "polynesian": 20,
+        "football": 10
+      }
+    },
+    {
+      "country": "Tonga",
+      "weight": 3,
+      "ethnicity_key": "native_hawaiian_pacific_islander",
+      "common_positions": "DL, OL",
+      "first_styles": {
+        "polynesian": 65,
+        "samoan": 20,
+        "football": 15
+      },
+      "last_styles": {
+        "polynesian": 75,
+        "samoan": 15,
+        "football": 10
+      }
+    },
+    {
+      "country": "Ghana",
+      "weight": 3,
+      "ethnicity_key": "black_african_american",
+      "common_positions": "DL, LB, DB",
+      "first_styles": {
+        "west_african": 70,
+        "football": 15,
+        "us_general": 15
+      },
+      "last_styles": {
+        "west_african": 80,
+        "football": 10,
+        "us_general": 10
+      }
+    },
+    {
+      "country": "Cameroon",
+      "weight": 2,
+      "ethnicity_key": "black_african_american",
+      "common_positions": "DL, EDGE, LB",
+      "first_styles": {
+        "west_african": 70,
+        "football": 15,
+        "us_general": 15
+      },
+      "last_styles": {
+        "west_african": 80,
+        "football": 10,
+        "us_general": 10
+      }
+    },
+    {
+      "country": "Mexico",
+      "weight": 2,
+      "ethnicity_key": "hispanic_latino",
+      "common_positions": "OL, DL, K",
+      "first_styles": {
+        "hispanic_latino": 75,
+        "football": 10,
+        "us_general": 15
+      },
+      "last_styles": {
+        "hispanic_latino": 80,
+        "football": 10,
+        "us_general": 10
+      }
+    },
+    {
+      "country": "New Zealand",
+      "weight": 2,
+      "ethnicity_key": "native_hawaiian_pacific_islander",
+      "common_positions": "P, OL, DL",
+      "first_styles": {
+        "australian": 35,
+        "polynesian": 35,
+        "anglo": 20,
+        "football": 10
+      },
+      "last_styles": {
+        "australian": 25,
+        "polynesian": 45,
+        "anglo": 20,
+        "football": 10
+      }
+    },
+    {
+      "country": "Ireland",
+      "weight": 1,
+      "ethnicity_key": "white",
+      "common_positions": "K, P, TE",
+      "first_styles": {
+        "anglo": 60,
+        "european": 25,
+        "football": 15
+      },
+      "last_styles": {
+        "anglo": 70,
+        "european": 20,
+        "football": 10
+      }
+    },
+    {
+      "country": "Netherlands",
+      "weight": 1,
+      "ethnicity_key": "white",
+      "common_positions": "OL, DL",
+      "first_styles": {
+        "european": 60,
+        "football": 20,
+        "us_general": 20
+      },
+      "last_styles": {
+        "european": 70,
+        "football": 15,
+        "us_general": 15
+      }
+    },
+    {
+      "country": "France",
+      "weight": 1,
+      "ethnicity_key": "white",
+      "common_positions": "WR, DB, DL",
+      "first_styles": {
+        "european": 60,
+        "football": 20,
+        "us_general": 20
+      },
+      "last_styles": {
+        "european": 70,
+        "football": 15,
+        "us_general": 15
+      }
+    },
+    {
+      "country": "Japan",
+      "weight": 1,
+      "ethnicity_key": "asian",
+      "common_positions": "WR, DB, K",
+      "first_styles": {
+        "asian": 75,
+        "football": 10,
+        "us_general": 15
+      },
+      "last_styles": {
+        "asian": 80,
+        "football": 10,
+        "us_general": 10
+      }
+    },
+    {
+      "country": "Philippines",
+      "weight": 1,
+      "ethnicity_key": "asian",
+      "common_positions": "DB, WR, K",
+      "first_styles": {
+        "asian": 45,
+        "hispanic_latino": 25,
+        "us_general": 20,
+        "football": 10
+      },
+      "last_styles": {
+        "asian": 45,
+        "hispanic_latino": 30,
+        "us_general": 15,
+        "football": 10
+      }
+    },
+    {
+      "country": "India",
+      "weight": 1,
+      "ethnicity_key": "asian",
+      "common_positions": "K, P, OL, EDGE",
+      "first_styles": {
+        "south_asian": 70,
+        "asian": 10,
+        "football": 10,
+        "us_general": 10
+      },
+      "last_styles": {
+        "south_asian": 82,
+        "asian": 8,
+        "football": 5,
+        "us_general": 5
+      }
+    },
+    {
+      "country": "Brazil",
+      "weight": 1,
+      "ethnicity_key": "hispanic_latino",
+      "common_positions": "K, WR, DB",
+      "first_styles": {
+        "hispanic_latino": 55,
+        "international_misc": 25,
+        "football": 20
+      },
+      "last_styles": {
+        "hispanic_latino": 55,
+        "international_misc": 25,
+        "football": 20
+      }
+    },
+    {
+      "country": "Jamaica",
+      "weight": 1,
+      "ethnicity_key": "black_african_american",
+      "common_positions": "WR, DB, RB",
+      "first_styles": {
+        "caribbean": 60,
+        "african_american": 25,
+        "football": 15
+      },
+      "last_styles": {
+        "caribbean": 60,
+        "african_american": 25,
+        "football": 15
+      }
+    }
   ],
   "styles": {
     "african_american": {
       "first": {
-        "DeAndre": 10, "Darius": 10, "Malik": 10, "Jalen": 10, "Tyrese": 8, "Jamal": 8, "Lamar": 8, "Rashad": 8, "Travon": 7, "DeShawn": 7, "Marquis": 7, "Darnell": 7, "Keshawn": 7, "Javon": 7, "Antwan": 6, "Tariq": 6, "Demarcus": 6, "Tyree": 6, "Shaquille": 6, "Jaquan": 6, "Kamari": 5, "Jaylen": 5, "Amari": 5, "Trevon": 5, "DaMarcus": 4, "LaMichael": 4
+        "DeAndre": 10,
+        "Darius": 10,
+        "Malik": 10,
+        "Jalen": 10,
+        "Tyrese": 8,
+        "Jamal": 8,
+        "Lamar": 8,
+        "Rashad": 8,
+        "Travon": 7,
+        "DeShawn": 7,
+        "Marquis": 7,
+        "Darnell": 7,
+        "Keshawn": 7,
+        "Javon": 7,
+        "Antwan": 6,
+        "Tariq": 6,
+        "Demarcus": 6,
+        "Tyree": 6,
+        "Shaquille": 6,
+        "Jaquan": 6,
+        "Kamari": 5,
+        "Jaylen": 5,
+        "Amari": 5,
+        "Trevon": 5,
+        "DaMarcus": 4,
+        "LaMichael": 4
       },
       "last": {
-        "Johnson": 12, "Williams": 12, "Jackson": 11, "Davis": 10, "Jones": 10, "Brown": 9, "Washington": 8, "Jefferson": 7, "Freeman": 6, "Coleman": 6, "Harris": 6, "Robinson": 6, "Carter": 5, "Walker": 5, "Reed": 5, "Moore": 5
+        "Johnson": 12,
+        "Williams": 12,
+        "Jackson": 11,
+        "Davis": 10,
+        "Jones": 10,
+        "Brown": 9,
+        "Washington": 8,
+        "Jefferson": 7,
+        "Freeman": 6,
+        "Coleman": 6,
+        "Harris": 6,
+        "Robinson": 6,
+        "Carter": 5,
+        "Walker": 5,
+        "Reed": 5,
+        "Moore": 5
       }
     },
     "west_african": {
       "first": {
-        "Chukwuma": 10, "Chidobe": 9, "Ifeatu": 9, "Olamide": 8, "Olu": 8, "Adewale": 8, "Chigoziem": 8, "Onyeka": 8, "Kelechi": 8, "Uchenna": 8, "Obinna": 7, "Kwame": 7, "Kofi": 6, "Kojo": 6, "Nana": 6, "Ayo": 6, "Tunde": 5, "Ikenna": 5, "Emeka": 5, "Chima": 5
+        "Chukwuma": 10,
+        "Chidobe": 9,
+        "Ifeatu": 9,
+        "Olamide": 8,
+        "Olu": 8,
+        "Adewale": 8,
+        "Chigoziem": 8,
+        "Onyeka": 8,
+        "Kelechi": 8,
+        "Uchenna": 8,
+        "Obinna": 7,
+        "Kwame": 7,
+        "Kofi": 6,
+        "Kojo": 6,
+        "Nana": 6,
+        "Ayo": 6,
+        "Tunde": 5,
+        "Ikenna": 5,
+        "Emeka": 5,
+        "Chima": 5,
+        "Chijioke": 5,
+        "Nnamdi": 5,
+        "Ibrahim": 5,
+        "Amadou": 5,
+        "Moussa": 4,
+        "Sekou": 4,
+        "Yaya": 4,
+        "Boubacar": 4,
+        "Abdul": 4,
+        "Malick": 4
       },
       "last": {
-        "Okafor": 12, "Okonkwo": 12, "Ogunjobi": 10, "Okwara": 10, "Ojulari": 9, "Onwenu": 9, "Ogbah": 8, "Adebayo": 8, "Adebo": 8, "Odenigbo": 7, "Nwosu": 7, "Eze": 7, "Mensah": 7, "Owusu": 7, "Boateng": 6, "Asamoah": 6, "Nwachukwu": 6, "Nwankwo": 6
+        "Okafor": 12,
+        "Okonkwo": 12,
+        "Ogunjobi": 10,
+        "Okwara": 10,
+        "Ojulari": 9,
+        "Onwenu": 9,
+        "Ogbah": 8,
+        "Adebayo": 8,
+        "Adebo": 8,
+        "Odenigbo": 7,
+        "Nwosu": 7,
+        "Eze": 7,
+        "Mensah": 7,
+        "Owusu": 7,
+        "Boateng": 6,
+        "Asamoah": 6,
+        "Nwachukwu": 6,
+        "Nwankwo": 6,
+        "Akinwande": 6,
+        "Akinola": 6,
+        "Akande": 5,
+        "Balogun": 5,
+        "Diop": 5,
+        "Traore": 5,
+        "Sarr": 4,
+        "Cisse": 4,
+        "Kamara": 4,
+        "Bamba": 4
       }
     },
     "caribbean": {
-      "first": {"Andre": 10, "Devon": 8, "Dwayne": 8, "Marlon": 8, "Rohan": 7, "Damion": 7, "Lennox": 6, "Ricardo": 6, "Jermaine": 6, "Tyrone": 6, "Kemar": 5, "Omar": 5},
-      "last": {"Campbell": 10, "Clarke": 9, "Francis": 8, "Reid": 8, "Morgan": 8, "Bailey": 7, "Foster": 7, "Gordon": 7, "James": 7, "Powell": 7, "Sinclair": 5, "Forbes": 5}
+      "first": {
+        "Andre": 10,
+        "Devon": 8,
+        "Dwayne": 8,
+        "Marlon": 8,
+        "Rohan": 7,
+        "Damion": 7,
+        "Lennox": 6,
+        "Ricardo": 6,
+        "Jermaine": 6,
+        "Tyrone": 6,
+        "Kemar": 5,
+        "Omar": 5,
+        "Kareem": 6,
+        "Darian": 6,
+        "Malachi": 6,
+        "Delano": 5,
+        "Winston": 5,
+        "Orlando": 5,
+        "Kieron": 4,
+        "Akeem": 4
+      },
+      "last": {
+        "Campbell": 10,
+        "Clarke": 9,
+        "Francis": 8,
+        "Reid": 8,
+        "Morgan": 8,
+        "Bailey": 7,
+        "Foster": 7,
+        "Gordon": 7,
+        "James": 7,
+        "Powell": 7,
+        "Sinclair": 5,
+        "Forbes": 5,
+        "Brown": 8,
+        "Williams": 8,
+        "Morrison": 6,
+        "Douglas": 6,
+        "Lawrence": 5,
+        "Spence": 5,
+        "Walters": 5,
+        "McKenzie": 5
+      }
     },
     "hispanic_latino": {
-      "first": {"Mateo": 12, "Diego": 12, "Jose": 11, "Luis": 10, "Carlos": 10, "Miguel": 9, "Alejandro": 9, "Xavier": 8, "Angel": 8, "Cruz": 7, "Javier": 7, "Santiago": 7, "Rafael": 6, "Emilio": 6, "Marco": 6, "Julian": 6, "Nico": 5, "Andres": 5},
-      "last": {"Garcia": 14, "Martinez": 13, "Rodriguez": 13, "Hernandez": 12, "Lopez": 12, "Gonzalez": 11, "Ramirez": 10, "Torres": 9, "Sanchez": 9, "Flores": 8, "Rivera": 8, "Castillo": 7, "Morales": 7, "Ortiz": 7, "Vasquez": 6, "Ramos": 6}
+      "first": {
+        "Mateo": 12,
+        "Diego": 12,
+        "Jose": 11,
+        "Luis": 10,
+        "Carlos": 10,
+        "Miguel": 9,
+        "Alejandro": 9,
+        "Xavier": 8,
+        "Angel": 8,
+        "Cruz": 7,
+        "Javier": 7,
+        "Santiago": 7,
+        "Rafael": 6,
+        "Emilio": 6,
+        "Marco": 6,
+        "Julian": 6,
+        "Nico": 5,
+        "Andres": 5,
+        "Sebastian": 7,
+        "Matias": 7,
+        "Gael": 6,
+        "Adrian": 6,
+        "Cristian": 6,
+        "Hector": 5,
+        "Ivan": 5,
+        "Noel": 5,
+        "Isaac": 5,
+        "Tomas": 4
+      },
+      "last": {
+        "Garcia": 14,
+        "Martinez": 13,
+        "Rodriguez": 13,
+        "Hernandez": 12,
+        "Lopez": 12,
+        "Gonzalez": 11,
+        "Ramirez": 10,
+        "Torres": 9,
+        "Sanchez": 9,
+        "Flores": 8,
+        "Rivera": 8,
+        "Castillo": 7,
+        "Morales": 7,
+        "Ortiz": 7,
+        "Vasquez": 6,
+        "Ramos": 6,
+        "Cruz": 8,
+        "Reyes": 8,
+        "Mendoza": 7,
+        "Vega": 7,
+        "Aguilar": 7,
+        "Mendez": 6,
+        "Dominguez": 6,
+        "Navarro": 6,
+        "Cabrera": 5,
+        "Vargas": 5
+      }
     },
     "polynesian": {
-      "first": {"Tua": 12, "Taulia": 8, "Tuli": 8, "Manti": 8, "Penei": 8, "Amoni": 7, "Sione": 7, "Isaia": 7, "Junior": 7, "Makai": 6, "Mana": 6, "Leka": 6, "Tala": 5, "Mika": 5, "Aisea": 5, "Maika": 5},
-      "last": {"Tagovailoa": 14, "Tuipulotu": 13, "Nacua": 12, "Sewell": 11, "Suamataia": 10, "Mailata": 10, "Lotulelei": 9, "Ngata": 9, "Mauga": 8, "Polamalu": 8, "Faalele": 7, "Tufele": 7, "Peko": 6, "Fotu": 6}
+      "first": {
+        "Tua": 12,
+        "Taulia": 8,
+        "Tuli": 8,
+        "Manti": 8,
+        "Penei": 8,
+        "Amoni": 7,
+        "Sione": 7,
+        "Isaia": 7,
+        "Junior": 7,
+        "Makai": 6,
+        "Mana": 6,
+        "Leka": 6,
+        "Tala": 5,
+        "Mika": 5,
+        "Aisea": 5,
+        "Maika": 5,
+        "Tevita": 6,
+        "Solomone": 6,
+        "Esera": 5,
+        "Kalani": 5,
+        "Semisi": 5,
+        "Mosese": 5,
+        "Tavake": 4,
+        "Siale": 4
+      },
+      "last": {
+        "Tagovailoa": 14,
+        "Tuipulotu": 13,
+        "Nacua": 12,
+        "Sewell": 11,
+        "Suamataia": 10,
+        "Mailata": 10,
+        "Lotulelei": 9,
+        "Ngata": 9,
+        "Mauga": 8,
+        "Polamalu": 8,
+        "Faalele": 7,
+        "Tufele": 7,
+        "Peko": 6,
+        "Fotu": 6,
+        "Matautia": 7,
+        "Tonga": 7,
+        "Unga": 6,
+        "Taumoepeau": 6,
+        "Mafi": 6,
+        "Aumavae": 5,
+        "Laulu": 5,
+        "Tuiasosopo": 5
+      }
     },
     "hawaiian": {
-      "first": {"Koa": 12, "Keanu": 10, "Kai": 10, "Kaleo": 9, "Keoni": 8, "Noa": 8, "Ikaika": 8, "Makoa": 7, "Nalu": 7, "Kainoa": 7, "Liko": 5, "Kimo": 5},
-      "last": {"Kalua": 10, "Kahale": 9, "Keawe": 9, "Akana": 8, "Keli'i": 8, "Kalama": 8, "Kahananui": 7, "Kealoha": 7, "Manu": 6, "Akamu": 6}
+      "first": {
+        "Koa": 12,
+        "Keanu": 10,
+        "Kai": 10,
+        "Kaleo": 9,
+        "Keoni": 8,
+        "Noa": 8,
+        "Ikaika": 8,
+        "Makoa": 7,
+        "Nalu": 7,
+        "Kainoa": 7,
+        "Liko": 5,
+        "Kimo": 5,
+        "Kealii": 6,
+        "Kekoa": 6,
+        "Kaimana": 6,
+        "Keola": 5,
+        "Kainalu": 5,
+        "Makana": 5,
+        "Aukai": 4,
+        "Mikala": 4
+      },
+      "last": {
+        "Kalua": 10,
+        "Kahale": 9,
+        "Keawe": 9,
+        "Akana": 8,
+        "Keli'i": 8,
+        "Kalama": 8,
+        "Kahananui": 7,
+        "Kealoha": 7,
+        "Manu": 6,
+        "Akamu": 6,
+        "Kamakawiwoole": 5,
+        "Kaaihue": 5,
+        "Kekahuna": 5,
+        "Kahawai": 5,
+        "Kaili": 4,
+        "Kaua": 4,
+        "Kawai": 4,
+        "Palelei": 4
+      }
     },
     "samoan": {
-      "first": {"Sione": 10, "Aisea": 9, "Leki": 8, "Tavita": 8, "Mauga": 7, "Toa": 7, "Malosi": 7, "Vili": 6, "Iosefa": 6, "Leone": 6, "Mikaele": 5},
-      "last": {"Ta'amu": 12, "Toeaina": 10, "Mauigoa": 10, "Tupou": 9, "Fehoko": 9, "Tuimoloau": 9, "Fifita": 8, "Fua": 8, "Misi": 7, "Latu": 7, "Vea": 6}
+      "first": {
+        "Sione": 10,
+        "Aisea": 9,
+        "Leki": 8,
+        "Tavita": 8,
+        "Mauga": 7,
+        "Toa": 7,
+        "Malosi": 7,
+        "Vili": 6,
+        "Iosefa": 6,
+        "Leone": 6,
+        "Mikaele": 5,
+        "Puleleiite": 4,
+        "Tupuola": 4,
+        "Siaosi": 5,
+        "Lokeni": 5,
+        "Pita": 5,
+        "Tui": 5,
+        "Fetu": 4,
+        "Alofa": 4
+      },
+      "last": {
+        "Ta'amu": 12,
+        "Toeaina": 10,
+        "Mauigoa": 10,
+        "Tupou": 9,
+        "Fehoko": 9,
+        "Tuimoloau": 9,
+        "Fifita": 8,
+        "Fua": 8,
+        "Misi": 7,
+        "Latu": 7,
+        "Vea": 6,
+        "Seumalo": 7,
+        "Potoae": 6,
+        "Taimani": 6,
+        "Siofele": 5,
+        "Mulitalo": 5,
+        "Luatua": 5,
+        "Tufono": 5,
+        "Savaiinaea": 4
+      }
     },
     "asian": {
-      "first": {"Kenji": 10, "Hiro": 8, "Kai": 8, "Min": 7, "Jin": 7, "Dae": 6, "Takeshi": 6, "Yuki": 6, "Bao": 5, "Kaito": 5, "Jun": 5, "Nico": 4},
-      "last": {"Nguyen": 12, "Kim": 11, "Lee": 11, "Chen": 10, "Park": 9, "Tran": 9, "Wong": 8, "Pham": 8, "Lin": 7, "Zhang": 7, "Liu": 6, "Yamamoto": 5}
+      "first": {
+        "Kenji": 10,
+        "Hiro": 8,
+        "Kai": 8,
+        "Min": 7,
+        "Jin": 7,
+        "Dae": 6,
+        "Takeshi": 6,
+        "Yuki": 6,
+        "Bao": 5,
+        "Kaito": 5,
+        "Jun": 5,
+        "Nico": 4,
+        "Akira": 6,
+        "Riku": 6,
+        "Haruto": 5,
+        "Daichi": 5,
+        "Ming": 5,
+        "Tao": 5,
+        "Wei": 4,
+        "Joon": 4,
+        "Sung": 4,
+        "Hwan": 4
+      },
+      "last": {
+        "Nguyen": 12,
+        "Kim": 11,
+        "Lee": 11,
+        "Chen": 10,
+        "Park": 9,
+        "Tran": 9,
+        "Wong": 8,
+        "Pham": 8,
+        "Lin": 7,
+        "Zhang": 7,
+        "Liu": 6,
+        "Yamamoto": 5,
+        "Choi": 7,
+        "Kang": 7,
+        "Kobayashi": 6,
+        "Sato": 6,
+        "Tanaka": 6,
+        "Nakamura": 5,
+        "Mori": 5,
+        "Hoang": 5,
+        "Do": 4,
+        "Ma": 4
+      }
     },
     "south_asian": {
-      "first": {"Arjun": 10, "Rohan": 9, "Devan": 8, "Sameer": 8, "Nikhil": 7, "Amit": 7, "Kiran": 6, "Vikram": 6, "Raj": 6, "Ishan": 5, "Arnav": 5},
-      "last": {"Singh": 12, "Patel": 12, "Shah": 9, "Kumar": 9, "Gupta": 8, "Reddy": 8, "Nair": 7, "Gill": 7, "Chaudhry": 6, "Mehta": 6}
+      "first": {
+        "Arjun": 10,
+        "Rohan": 9,
+        "Devan": 8,
+        "Sameer": 8,
+        "Nikhil": 7,
+        "Amit": 7,
+        "Kiran": 6,
+        "Vikram": 6,
+        "Raj": 6,
+        "Ishan": 5,
+        "Arnav": 5,
+        "Aarav": 7,
+        "Vihaan": 6,
+        "Kabir": 6,
+        "Rahul": 6,
+        "Sahil": 5,
+        "Neel": 5,
+        "Dev": 5,
+        "Jai": 5,
+        "Aryan": 4,
+        "Ravi": 4
+      },
+      "last": {
+        "Singh": 12,
+        "Patel": 12,
+        "Shah": 9,
+        "Kumar": 9,
+        "Gupta": 8,
+        "Reddy": 8,
+        "Nair": 7,
+        "Gill": 7,
+        "Chaudhry": 6,
+        "Mehta": 6,
+        "Malik": 7,
+        "Chopra": 6,
+        "Kapoor": 6,
+        "Bhatia": 6,
+        "Iyer": 5,
+        "Rao": 5,
+        "Menon": 5,
+        "Desai": 5,
+        "Chandra": 4,
+        "Verma": 4
+      }
     },
     "native_american": {
-      "first": {"Dakota": 8, "Cody": 8, "Makai": 6, "Kai": 6, "Talon": 5, "Blaine": 5, "Shay": 5, "Dawson": 5},
-      "last": {"Begay": 12, "Yazzie": 12, "Nez": 10, "Benally": 9, "Tsosie": 9, "Bitsui": 8, "Charley": 7, "Tso": 7, "Todacheene": 6, "Peshlakai": 6, "Beaver": 5, "Goodluck": 5}
+      "first": {
+        "Dakota": 8,
+        "Cody": 8,
+        "Makai": 6,
+        "Kai": 6,
+        "Talon": 5,
+        "Blaine": 5,
+        "Shay": 5,
+        "Dawson": 5
+      },
+      "last": {
+        "Begay": 12,
+        "Yazzie": 12,
+        "Nez": 10,
+        "Benally": 9,
+        "Tsosie": 9,
+        "Bitsui": 8,
+        "Charley": 7,
+        "Tso": 7,
+        "Todacheene": 6,
+        "Peshlakai": 6,
+        "Beaver": 5,
+        "Goodluck": 5
+      }
     },
     "anglo": {
-      "first": {"Jack": 12, "Henry": 11, "William": 11, "James": 11, "Owen": 9, "Luke": 9, "Connor": 8, "Mason": 8, "Graham": 7, "Nolan": 7, "Brady": 6, "Wyatt": 6, "Cooper": 6},
-      "last": {"Smith": 12, "Taylor": 11, "Brown": 11, "Wilson": 10, "Miller": 10, "Clark": 9, "Baker": 8, "Parker": 8, "Cooper": 7, "Bennett": 7, "Murphy": 7, "Kelly": 7}
+      "first": {
+        "Jack": 12,
+        "Henry": 11,
+        "William": 11,
+        "James": 11,
+        "Owen": 9,
+        "Luke": 9,
+        "Connor": 8,
+        "Mason": 8,
+        "Graham": 7,
+        "Nolan": 7,
+        "Brady": 6,
+        "Wyatt": 6,
+        "Cooper": 6
+      },
+      "last": {
+        "Smith": 12,
+        "Taylor": 11,
+        "Brown": 11,
+        "Wilson": 10,
+        "Miller": 10,
+        "Clark": 9,
+        "Baker": 8,
+        "Parker": 8,
+        "Cooper": 7,
+        "Bennett": 7,
+        "Murphy": 7,
+        "Kelly": 7
+      }
     },
     "european": {
-      "first": {"Lukas": 10, "Felix": 9, "Jakob": 9, "Jonas": 8, "Max": 8, "Anton": 8, "Leon": 8, "Nico": 7, "Milan": 6, "Theo": 6, "Matteo": 6, "Henrik": 5},
-      "last": {"Wagner": 10, "Bauer": 9, "Fischer": 9, "Weber": 9, "Schneider": 8, "Muller": 8, "Hoffmann": 8, "Klein": 7, "Novak": 7, "Kowalski": 7, "Rossi": 6, "Dubois": 6}
+      "first": {
+        "Lukas": 10,
+        "Felix": 9,
+        "Jakob": 9,
+        "Jonas": 8,
+        "Max": 8,
+        "Anton": 8,
+        "Leon": 8,
+        "Nico": 7,
+        "Milan": 6,
+        "Theo": 6,
+        "Matteo": 6,
+        "Henrik": 5,
+        "Hugo": 6,
+        "Oscar": 6,
+        "Emil": 6,
+        "Soren": 5,
+        "Anders": 5,
+        "Marius": 5,
+        "Rasmus": 4,
+        "Noah": 4
+      },
+      "last": {
+        "Wagner": 10,
+        "Bauer": 9,
+        "Fischer": 9,
+        "Weber": 9,
+        "Schneider": 8,
+        "Muller": 8,
+        "Hoffmann": 8,
+        "Klein": 7,
+        "Novak": 7,
+        "Kowalski": 7,
+        "Rossi": 6,
+        "Dubois": 6,
+        "Lindholm": 5,
+        "Eriksson": 5,
+        "Johansson": 5,
+        "Nielsen": 5,
+        "Madsen": 4,
+        "Nowak": 4,
+        "Moreau": 4,
+        "Bernard": 4
+      }
     },
     "german": {
-      "first": {"Lukas": 12, "Felix": 10, "Jonas": 10, "Leon": 9, "Maximilian": 8, "Finn": 8, "Anton": 7, "Noah": 7, "Elias": 7, "Mats": 5},
-      "last": {"Muller": 12, "Schmidt": 12, "Schneider": 10, "Fischer": 10, "Weber": 9, "Wagner": 9, "Becker": 8, "Hoffmann": 8, "Klein": 7, "Schroder": 7}
+      "first": {
+        "Lukas": 12,
+        "Felix": 10,
+        "Jonas": 10,
+        "Leon": 9,
+        "Maximilian": 8,
+        "Finn": 8,
+        "Anton": 7,
+        "Noah": 7,
+        "Elias": 7,
+        "Mats": 5,
+        "Emil": 6,
+        "Paul": 6,
+        "Moritz": 6,
+        "Jannik": 5,
+        "Lennart": 5,
+        "Timo": 5,
+        "Niklas": 5,
+        "Karl": 4
+      },
+      "last": {
+        "Muller": 12,
+        "Schmidt": 12,
+        "Schneider": 10,
+        "Fischer": 10,
+        "Weber": 9,
+        "Wagner": 9,
+        "Becker": 8,
+        "Hoffmann": 8,
+        "Klein": 7,
+        "Schroder": 7,
+        "Krause": 6,
+        "Meier": 6,
+        "Zimmermann": 6,
+        "Hartmann": 5,
+        "Neumann": 5,
+        "Braun": 5,
+        "Schwarz": 4,
+        "Vogel": 4
+      }
     },
     "canadian": {
-      "first": {"Liam": 12, "Ethan": 10, "Connor": 10, "Nathan": 9, "Owen": 9, "Logan": 8, "Carter": 8, "Cole": 7, "Ty": 6, "Brett": 6, "Mathieu": 5, "Luc": 5},
-      "last": {"Tremblay": 10, "Gagnon": 9, "Bouchard": 8, "Roy": 8, "Cote": 7, "Lavoie": 7, "Smith": 7, "Brown": 7, "Wilson": 7, "Nguyen": 5, "Singh": 5}
+      "first": {
+        "Liam": 12,
+        "Ethan": 10,
+        "Connor": 10,
+        "Nathan": 9,
+        "Owen": 9,
+        "Logan": 8,
+        "Carter": 8,
+        "Cole": 7,
+        "Ty": 6,
+        "Brett": 6,
+        "Mathieu": 5,
+        "Luc": 5,
+        "Noah": 8,
+        "Jacob": 7,
+        "Dylan": 7,
+        "Mason": 7,
+        "Zachary": 6,
+        "Samuel": 6,
+        "Tristan": 5,
+        "Nolan": 5
+      },
+      "last": {
+        "Tremblay": 10,
+        "Gagnon": 9,
+        "Bouchard": 8,
+        "Roy": 8,
+        "Cote": 7,
+        "Lavoie": 7,
+        "Smith": 7,
+        "Brown": 7,
+        "Wilson": 7,
+        "Nguyen": 5,
+        "Singh": 5,
+        "Lemieux": 6,
+        "Bergeron": 6,
+        "Girard": 6,
+        "Pelletier": 5,
+        "Ouellet": 5,
+        "MacDonald": 5,
+        "Fraser": 5,
+        "Campbell": 5
+      }
     },
     "australian": {
-      "first": {"Lachlan": 12, "Mitchell": 10, "Riley": 10, "Cooper": 9, "Angus": 8, "Hamish": 8, "Callum": 7, "Darcy": 7, "Bailey": 6, "Brodie": 6},
-      "last": {"Smith": 10, "Brown": 10, "Taylor": 9, "Wilson": 9, "Kelly": 8, "O'Connor": 8, "Ryan": 7, "Martin": 7, "Walker": 7, "Faalele": 5}
+      "first": {
+        "Lachlan": 12,
+        "Mitchell": 10,
+        "Riley": 10,
+        "Cooper": 9,
+        "Angus": 8,
+        "Hamish": 8,
+        "Callum": 7,
+        "Darcy": 7,
+        "Bailey": 6,
+        "Brodie": 6,
+        "Jack": 8,
+        "Oliver": 7,
+        "Xavier": 6,
+        "Jaxon": 6,
+        "Flynn": 6,
+        "Jett": 5,
+        "Kade": 5,
+        "Blake": 5
+      },
+      "last": {
+        "Smith": 10,
+        "Brown": 10,
+        "Taylor": 9,
+        "Wilson": 9,
+        "Kelly": 8,
+        "O'Connor": 8,
+        "Ryan": 7,
+        "Martin": 7,
+        "Walker": 7,
+        "Faalele": 5,
+        "Williams": 8,
+        "Harris": 7,
+        "Thompson": 7,
+        "Anderson": 6,
+        "Roberts": 6,
+        "Edwards": 5,
+        "Murray": 5,
+        "Campbell": 5
+      }
     },
     "international_misc": {
-      "first": {"Nico": 8, "Milan": 8, "Rafael": 8, "Kai": 8, "Dante": 7, "Luca": 7, "Enzo": 6, "Mateo": 6, "Sami": 5, "Ilya": 5},
-      "last": {"Moreau": 7, "Silva": 7, "Costa": 7, "Novak": 7, "Petrov": 6, "Ivanov": 6, "Santos": 6, "Diallo": 6, "Larsen": 5, "Andersson": 5}
+      "first": {
+        "Nico": 8,
+        "Milan": 8,
+        "Rafael": 8,
+        "Kai": 8,
+        "Dante": 7,
+        "Luca": 7,
+        "Enzo": 6,
+        "Mateo": 6,
+        "Sami": 5,
+        "Ilya": 5,
+        "Marco": 6,
+        "Hugo": 6,
+        "Thiago": 6,
+        "Ivan": 5,
+        "Soren": 5,
+        "Enrique": 5,
+        "Dario": 4,
+        "Leandro": 4
+      },
+      "last": {
+        "Moreau": 7,
+        "Silva": 7,
+        "Costa": 7,
+        "Novak": 7,
+        "Petrov": 6,
+        "Ivanov": 6,
+        "Santos": 6,
+        "Diallo": 6,
+        "Larsen": 5,
+        "Andersson": 5,
+        "Pereira": 6,
+        "Ferreira": 6,
+        "Almeida": 5,
+        "Ribeiro": 5,
+        "Kovacs": 5,
+        "Horvat": 4,
+        "Marino": 4
+      }
     },
-    "football": {"first": {}, "last": {}},
-    "us_general": {"first": {}, "last": {}}
+    "football": {
+      "first": {},
+      "last": {}
+    },
+    "us_general": {
+      "first": {},
+      "last": {}
+    }
   }
 }

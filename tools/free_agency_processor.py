@@ -198,6 +198,21 @@ CPU_GROUP_SPEND_LIMITS = {
     "ST": 6_000_000,
 }
 
+CPU_ACTIVE_ROOM_SPEND_MULTIPLIER = {
+    "QB": 1.15,
+    "RB": 1.35,
+    "WR": 1.55,
+    "TE": 1.45,
+    "OT": 1.55,
+    "IOL": 1.50,
+    "EDGE": 1.55,
+    "IDL": 1.45,
+    "LB": 1.35,
+    "CB": 1.55,
+    "S": 1.45,
+    "ST": 1.15,
+}
+
 CPU_GROUP_OFFER_COUNT_LIMITS = {
     "QB": 1,
     "RB": 2,
@@ -1969,6 +1984,98 @@ def guarantee_for_preference(player: sqlite3.Row, base_guarantee: int, rng: rand
     )
 
 
+def cpu_signing_bonus_for_offer(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    aav: int,
+    years: int,
+    guarantee_pct: int,
+    rng: random.Random,
+    response_offer: bool = False,
+    own_retention: bool = False,
+) -> int:
+    """Create enough upfront money that newly signed deals are not easy cap-casualty cuts."""
+    if years <= 0 or aav <= 0:
+        return 0
+    tier = normalized_tier(player)
+    group = normalized_group(player)
+    score = true_overall(player)
+    potential = int(row_value(player, "potential", score) or score)
+    total = int(aav) * int(years)
+    if years == 1:
+        low, high = 0.10, 0.22
+    elif tier == "Premium" or cpu_elite_free_agent(player):
+        low, high = 0.30, 0.44
+    elif tier == "Starter":
+        low, high = 0.24, 0.36
+    elif tier == "Rotation":
+        low, high = 0.18, 0.30
+    else:
+        low, high = 0.12, 0.24
+    if group in {"QB", "WR", "OT", "EDGE", "CB"} and (score >= 78 or potential >= 84):
+        low += 0.03
+        high += 0.04
+    if group == "RB" and score < 82:
+        high -= 0.04
+    if response_offer:
+        low += 0.02
+        high += 0.03
+    if own_retention:
+        low -= 0.03
+        high -= 0.02
+    guarantee_bump = clamp((int(guarantee_pct or 0) - 35) / 100.0, -0.04, 0.10)
+    low = clamp(low + guarantee_bump * 0.45, 0.06, 0.50)
+    high = clamp(max(low + 0.03, high + guarantee_bump * 0.60), low, 0.55)
+    return round_to(total * rng.uniform(low, high), 50_000)
+
+
+def need_threshold_for_market_pressure(player: sqlite3.Row | dict[str, Any]) -> float:
+    group = normalized_group(player)
+    if group == "QB":
+        return 68.0
+    if cpu_elite_free_agent(player):
+        return 36.0
+    if normalized_tier(player) == "Premium":
+        return 44.0
+    return 52.0
+
+
+def market_pressure_for_need(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    base_pressure: float,
+    team_need: float,
+) -> float:
+    threshold = need_threshold_for_market_pressure(player)
+    if team_need < threshold:
+        return 0.0
+    return clamp(base_pressure * clamp((team_need - threshold + 18.0) / 46.0, 0.20, 1.0), 0.0, 1.0)
+
+
+def recent_team_release_for_player(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_id: int,
+    since_date: str,
+) -> bool:
+    if not table_exists(con, "transaction_log"):
+        return False
+    row = con.execute(
+        """
+        SELECT 1
+        FROM transaction_log
+        WHERE player_id = ?
+          AND team_id = ?
+          AND transaction_date >= ?
+          AND transaction_type IN ('Release', 'Waiver', 'Contract Termination')
+        LIMIT 1
+        """,
+        (int(player_id), int(team_id), str(since_date)),
+    ).fetchone()
+    return row is not None
+
+
 def cpu_extend_expiring_players(
     con: sqlite3.Connection,
     *,
@@ -2739,6 +2846,60 @@ def load_team_group_counts(con: sqlite3.Connection) -> dict[tuple[int, str], int
     return counts
 
 
+def load_team_active_group_spend(con: sqlite3.Connection) -> dict[tuple[int, str], int]:
+    rows = con.execute(
+        """
+        SELECT
+            p.team_id,
+            p.position,
+            SUM(COALESCE(c.aav, 0)) AS active_aav
+        FROM players p
+        LEFT JOIN contracts c
+          ON c.player_id = p.player_id
+         AND c.is_active = 1
+        WHERE p.team_id IS NOT NULL
+          AND p.status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
+        GROUP BY p.team_id, p.position
+        """
+    ).fetchall()
+    spend: dict[tuple[int, str], int] = {}
+    for row in rows:
+        group = position_group_for(str(row["position"]))
+        key = (int(row["team_id"]), group)
+        spend[key] = spend.get(key, 0) + int(row["active_aav"] or 0)
+    return spend
+
+
+def room_spend_soft_limit(group: str) -> int:
+    base = CPU_GROUP_SPEND_LIMITS.get(group, 24_000_000)
+    multiplier = CPU_ACTIVE_ROOM_SPEND_MULTIPLIER.get(group, 1.45)
+    return int(base * multiplier)
+
+
+def expensive_room_offer_allowed(
+    *,
+    group: str,
+    team_need: float,
+    active_spend: int,
+    pending_spend: int,
+    offer_aav: int,
+    player_score: float,
+    player_potential: int,
+    elite_target: bool,
+) -> bool:
+    projected = int(active_spend) + int(pending_spend) + int(offer_aav)
+    soft_limit = room_spend_soft_limit(group)
+    if projected <= soft_limit:
+        return True
+    if group == "QB":
+        return team_need >= 82 and player_score >= 78
+    if elite_target and team_need >= 42 and projected <= int(soft_limit * 1.28):
+        return True
+    if team_need >= 72 and (player_score >= 76 or player_potential >= 84) and projected <= int(soft_limit * 1.18):
+        return True
+    return False
+
+
 def team_group_room_context(
     con: sqlite3.Connection,
     team_id: int,
@@ -3286,8 +3447,15 @@ def cpu_retain_own_free_agents(
         if cap and int(cap["cap_space"] or 0) - team_spend.get(int(player["previous_team_id"]), 0) < aav:
             continue
         years = preferred_years_for_offer(player, rng, max_years=5)
-        bonus = round_to(aav * years * rng.uniform(0.03, 0.12))
         guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0), rng)
+        bonus = cpu_signing_bonus_for_offer(
+            player,
+            aav=aav,
+            years=years,
+            guarantee_pct=guarantee,
+            rng=rng,
+            own_retention=True,
+        )
         offer_id = submit_offer(
             con,
             league_year=int(period["league_year"]),
@@ -3480,10 +3648,16 @@ def create_cpu_competing_offers(
     ).fetchall()
     rng.shuffle(teams)
     need_scores = load_team_need_scores(con)
+    competition = load_playing_time_competition(con, int(period["league_year"]) - 1)
+    group_counts = load_team_group_counts(con)
+    active_group_spend = load_team_active_group_spend(con)
     player_group = position_group_for(str(row_value(player, "position_group", row_value(player, "position", ""))))
+    player_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+    player_potential = int(row_value(player, "potential", player_score) or player_score)
     best_aav = int(player["best_aav"] or 0)
     ask = int(player["asking_aav"] or player["minimum_aav"] or 0)
     minimum = int(player["minimum_aav"] or 0)
+    cap_reserve = cpu_cap_reserve_for_period(period)
     created = 0
     event_date, event_hour = event_time(period)
     for team in teams:
@@ -3500,12 +3674,40 @@ def create_cpu_competing_offers(
         ).fetchone()
         if duplicate:
             continue
-        low, high = cpu_aav_bounds(player, best_aav=best_aav, response_offer=True)
-        max_room = max(0, int(team["cap_space"] or 0) - 1_000_000)
+        team_need = need_scores.get((int(team["team_id"]), player_group), 0.0)
+        team_id = int(team["team_id"])
+        group_key = (team_id, player_group)
+        if player_group == "QB":
+            qb_fit = qb_backup_reluctance(
+                con,
+                player,
+                team_id=team_id,
+                team_qb_scores=competition.get((team_id, "QB"), []),
+                team_need=team_need,
+                rng=rng,
+            )
+            if qb_fit is None:
+                continue
+        roster_group_count = group_counts.get(group_key, 0)
+        group_depth_limit = CPU_GROUP_DEPTH_COUNT_LIMITS.get(player_group, ROOM_IDEAL_BY_GROUP.get(player_group, 5) + 1)
+        if roster_group_count >= group_depth_limit and team_need < 52:
+            continue
+        response_pressure = market_pressure_for_need(
+            player,
+            base_pressure=0.72 if best_aav >= ask else 0.45,
+            team_need=team_need,
+        )
+        effective_best = best_aav if response_pressure > 0 else 0
+        low, high = cpu_aav_bounds(
+            player,
+            best_aav=effective_best,
+            response_offer=True,
+            market_pressure=response_pressure,
+        )
+        max_room = max(0, int(team["cap_space"] or 0) - cap_reserve)
         if low > max_room:
             continue
         high = min(high, max_room)
-        team_need = need_scores.get((int(team["team_id"]), player_group), 0.0)
         quality_cap = cpu_true_quality_aav_cap(player)
         if team_need < 18:
             if not cpu_elite_free_agent(player):
@@ -3521,9 +3723,27 @@ def create_cpu_competing_offers(
         high = min(high, max(low, quality_cap))
         aav = preference_adjusted_aav(player, round_to(rng.randint(low, high)), rng)
         aav = min(aav, max(low, quality_cap))
+        if not expensive_room_offer_allowed(
+            group=player_group,
+            team_need=team_need,
+            active_spend=active_group_spend.get(group_key, 0),
+            pending_spend=0,
+            offer_aav=aav,
+            player_score=player_score,
+            player_potential=player_potential,
+            elite_target=cpu_elite_free_agent(player),
+        ):
+            continue
         years = preferred_years_for_offer(player, rng, max_years=5)
-        bonus = round_to(aav * years * rng.uniform(0.04, 0.16))
         guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0) + 8, rng)
+        bonus = cpu_signing_bonus_for_offer(
+            player,
+            aav=aav,
+            years=years,
+            guarantee_pct=guarantee,
+            rng=rng,
+            response_offer=True,
+        )
         offer_id = submit_offer(
             con,
             league_year=int(period["league_year"]),
@@ -4381,6 +4601,7 @@ def create_cpu_offers(
     need_scores = load_team_need_scores(con)
     competition = load_playing_time_competition(con, int(period["league_year"]) - 1)
     group_counts = load_team_group_counts(con)
+    active_group_spend = load_team_active_group_spend(con)
     early_wave = str(period["current_stage"] or "") == "day_one_hourly" and int(period["day_count"] or 1) <= 1
     late_market = cpu_late_market(period)
     if late_market:
@@ -4436,12 +4657,17 @@ def create_cpu_offers(
                 )
             )
         slots = cpu_offer_slots_for_player(player, rng)
-        competing_team_count = len(affordable_teams)
-        market_pressure = 0.0
+        pressure_threshold = need_threshold_for_market_pressure(player)
+        serious_bidders = [
+            team for team in affordable_teams
+            if need_scores.get((int(team["team_id"]), player_group), 0.0) >= pressure_threshold
+        ]
+        competing_team_count = len(serious_bidders)
+        base_market_pressure = 0.0
         if normalized_tier(player) == "Premium" or cpu_elite_free_agent(player):
-            market_pressure = clamp((competing_team_count - 1) / 5.0, 0.0, 1.0)
+            base_market_pressure = clamp((competing_team_count - 1) / 4.0, 0.0, 1.0)
         elif normalized_tier(player) == "Starter":
-            market_pressure = clamp((competing_team_count - 2) / 6.0, 0.0, 0.65)
+            base_market_pressure = clamp((competing_team_count - 2) / 5.0, 0.0, 0.65)
         current_best_aav = max(
             int(row_value(player, "best_aav", 0) or 0),
             max(
@@ -4470,8 +4696,16 @@ def create_cpu_offers(
             ):
                 continue
             team_need = need_scores.get((int(team["team_id"]), player_group), 0.0)
+            if recent_team_release_for_player(
+                con,
+                player_id=int(player["player_id"]),
+                team_id=team_id,
+                since_date=f"{int(period['league_year'])}-03-01",
+            ):
+                continue
             group_key = (team_id, player_group)
             group_spend = team_group_spend.get(group_key, 0)
+            active_spend = active_group_spend.get(group_key, 0)
             group_offer_count = team_group_offers.get(group_key, 0)
             group_spend_limit = CPU_GROUP_SPEND_LIMITS.get(player_group, 30_000_000)
             group_count_limit = CPU_GROUP_OFFER_COUNT_LIMITS.get(player_group, 2)
@@ -4527,10 +4761,16 @@ def create_cpu_offers(
             if duplicate:
                 continue
 
+            team_market_pressure = market_pressure_for_need(
+                player,
+                base_pressure=base_market_pressure,
+                team_need=team_need,
+            )
+            effective_best_aav = current_best_aav if team_market_pressure > 0 else 0
             low, high = cpu_aav_bounds(
                 player,
-                best_aav=current_best_aav,
-                market_pressure=market_pressure,
+                best_aav=effective_best_aav,
+                market_pressure=team_market_pressure,
             )
             max_room = max(0, int(team["cap_space"] or 0) - cap_reserve - team_spend.get(int(team["team_id"]), 0))
             max_room = int(max_room * 0.88)
@@ -4569,6 +4809,17 @@ def create_cpu_offers(
             high = min(high, max(low, quality_cap))
             aav = preference_adjusted_aav(player, int(round(rng.randint(low, high) / 50_000) * 50_000), rng)
             aav = min(aav, max(low, quality_cap))
+            if not expensive_room_offer_allowed(
+                group=player_group,
+                team_need=team_need,
+                active_spend=active_spend,
+                pending_spend=group_spend,
+                offer_aav=aav,
+                player_score=player_score,
+                player_potential=int(row_value(player, "potential", player_score) or player_score),
+                elite_target=cpu_elite_free_agent(player),
+            ):
+                continue
             years = preferred_years_for_offer(player, rng, max_years=5)
             if player_group == "QB" and qb_backup_multiplier < 1.0:
                 years = min(years, 1 if qb_backup_multiplier < 0.70 else 2)
@@ -4579,8 +4830,14 @@ def create_cpu_offers(
                 aav = min(aav, max(low, round_to(quality_cap * 0.92, 50_000)))
             if player_group == "RB":
                 years = min(years, 2 if player_score < 78 else 3)
-            bonus = int(round((aav * years * rng.uniform(0.03, 0.18)) / 50_000) * 50_000)
             guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0) + 5, rng)
+            bonus = cpu_signing_bonus_for_offer(
+                player,
+                aav=aav,
+                years=years,
+                guarantee_pct=guarantee,
+                rng=rng,
+            )
             offer_id = submit_offer(
                 con,
                 league_year=int(period["league_year"]),
@@ -4600,8 +4857,8 @@ def create_cpu_offers(
             team_group_offers[group_key] = team_group_offers.get(group_key, 0) + 1
             group_counts[group_key] = group_counts.get(group_key, 0) + 1
             current_best_aav = max(current_best_aav, aav)
-            if market_pressure > 0:
-                market_pressure = min(1.0, market_pressure + 0.08)
+            if team_market_pressure > 0:
+                base_market_pressure = min(1.0, base_market_pressure + 0.08)
             log_event(
                 con,
                 league_year=int(period["league_year"]),
