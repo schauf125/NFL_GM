@@ -17,9 +17,13 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 DEFAULT_PHASE = "Preseason"
 DEFAULT_SOURCE = "initial_database_snapshot"
+_SCHEMA_ENSURED_CONNECTIONS: set[int] = set()
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
+    marker = id(con)
+    if marker in _SCHEMA_ENSURED_CONNECTIONS:
+        return
     con.executescript(
         """
         PRAGMA foreign_keys = ON;
@@ -44,6 +48,10 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             ('Restructure', 'Contract', 'Contract restructured for cap/cash purposes.'),
             ('Option Decision', 'Contract', 'Team or player option exercised or declined.'),
             ('Franchise Tag', 'Contract', 'Franchise or transition tag applied.'),
+            ('Rights Tender', 'Contract', 'Restricted or exclusive-rights free-agent tender applied.'),
+            ('Fifth-Year Option', 'Contract', 'First-round rookie fifth-year option exercised or declined.'),
+            ('Offer Sheet', 'Contract', 'Restricted or transition-tag offer sheet submitted, matched, or declined.'),
+            ('Cap Rollover', 'Cap', 'Unused cap space carried into the next league year.'),
             ('Roster Status Change', 'Status', 'Player moved to Active, IR, PUP, Practice Squad, etc.'),
             ('Retirement', 'Status', 'Player retired.'),
             ('Cap Adjustment', 'Cap', 'Manual cap charge, credit, dead money, or league adjustment.'),
@@ -290,6 +298,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
           ON latest.cap_snapshot_id = line_view.cap_snapshot_id;
         """
     )
+    _SCHEMA_ENSURED_CONNECTIONS.add(marker)
 
 
 def current_season(con: sqlite3.Connection) -> int:

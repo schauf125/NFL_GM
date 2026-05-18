@@ -2755,12 +2755,14 @@ def contract_negotiation_summary(
             "projectedCap": None,
             "currentCap": None,
             "expiring": [],
+            "fifthYearOptions": [],
             "capCasualties": [],
             "restructureCandidates": [],
             "counts": {"total": 0, "priority": 0, "negotiable": 0, "capCasualties": 0, "restructures": 0},
         }
     try:
         expiring = contract_negotiations.expiring_players(conn, user_team, season)
+        fifth_year_options = contract_negotiations.fifth_year_option_candidates(conn, user_team, season + 1)
         current_cap = contract_negotiations.cap_summary(conn, user_team)
         projected_cap = contract_negotiations.projected_cap_summary(conn, user_team, season + 1)
         cap_casualties = contract_negotiations.cap_casualty_candidates(conn, user_team, season + 1)
@@ -2773,6 +2775,7 @@ def contract_negotiation_summary(
             "projectedCap": None,
             "currentCap": None,
             "expiring": [],
+            "fifthYearOptions": [],
             "capCasualties": [],
             "restructureCandidates": [],
             "error": str(exc),
@@ -2786,17 +2789,23 @@ def contract_negotiation_summary(
         "projectedCap": projected_cap,
         "currentCap": current_cap,
         "expiring": expiring,
+        "fifthYearOptions": fifth_year_options,
         "capCasualties": cap_casualties,
         "restructureCandidates": restructure_candidates,
         "counts": {
             "total": len(expiring),
+            "fifthYearOptions": len(fifth_year_options),
             "priority": sum(1 for player in expiring if player.get("priority") == "Priority"),
             "negotiable": sum(1 for player in expiring if player.get("priority") == "Negotiable"),
             "tagCandidates": sum(
                 1
                 for player in expiring
-                if player.get("franchise_tag_aav") and float(player.get("market_score") or 0) >= 76
+                if player.get("rights_type") == "UFA"
+                and player.get("franchise_tag_aav")
+                and float(player.get("market_score") or 0) >= 76
             ),
+            "rfaCandidates": sum(1 for player in expiring if player.get("rights_type") == "RFA"),
+            "erfaCandidates": sum(1 for player in expiring if player.get("rights_type") == "ERFA"),
             "capCasualties": len(cap_casualties),
             "restructures": len(restructure_candidates),
         },

@@ -4377,7 +4377,20 @@ body[data-view="draft"] .draft-side-rail .control-secondary .action-card {
 .action-cell {
   display: inline-flex;
   justify-content: flex-end;
+  align-items: center;
   gap: 6px;
+}
+
+.compact-select {
+  max-width: 168px;
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: rgba(10, 16, 24, 0.96);
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 800;
 }
 
 .compact-list {

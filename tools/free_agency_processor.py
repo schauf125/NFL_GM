@@ -1912,6 +1912,8 @@ def cpu_apply_pre_fa_tags(
         projected = contract_negotiations.projected_cap_summary(con, int(team["team_id"]), league_year) or {}
         cap_space = int(projected.get("cap_space") or 0)
         for player in players:
+            if str(player.get("rights_type") or "UFA").upper() != "UFA":
+                continue
             score = float(player.get("market_score") or 60)
             group = str(player.get("position_group") or "")
             age = int(player.get("age") or 28)
@@ -1953,6 +1955,8 @@ def cpu_apply_pre_fa_tags(
                 tag_type=tag_type,
                 apply=True,
                 force=False,
+                target_player=player,
+                skip_cap_check=True,
                 quiet=True,
                 rebuild_all_contracts=False,
                 sync_cap=False,
@@ -1974,6 +1978,164 @@ def cpu_apply_pre_fa_tags(
     return tagged
 
 
+def cpu_choose_rights_tender(player: dict[str, Any] | sqlite3.Row, rng: random.Random) -> str | None:
+    rights_type = str(row_value(player, "rights_type", "") or "").upper()
+    score = float(row_value(player, "market_score", 60) or 60)
+    group = str(row_value(player, "position_group", "") or "")
+    age = int(row_value(player, "age", 24) or 24)
+    status = str(row_value(player, "status", "") or "")
+    if rights_type == "ERFA":
+        if score >= 55 or status == "Active" or rng.random() < 0.62:
+            return "erfa"
+        return None
+    if rights_type != "RFA":
+        return None
+    if score >= 78 or (group in {"QB", "OT", "EDGE", "CB", "WR"} and score >= 74):
+        return "rfa_first" if rng.random() < 0.55 else "rfa_second"
+    if score >= 70:
+        return "rfa_second" if rng.random() < 0.72 else "rfa_original"
+    if score >= 63:
+        return "rfa_original" if rng.random() < 0.62 else "rfa_rofr"
+    if score >= 58 and age <= 25:
+        return "rfa_rofr"
+    return None
+
+
+def cpu_apply_pre_fa_tenders(
+    con: sqlite3.Connection,
+    *,
+    expiring_season: int,
+    league_year: int,
+    user_team: str | None,
+    seed: int | None = None,
+    write_cap_snapshot: bool = True,
+) -> int:
+    rng = random.Random(seed or f"cpu-rights-tenders:{league_year}")
+    tendered = 0
+    teams = con.execute("SELECT team_id, abbreviation FROM teams ORDER BY team_id").fetchall()
+    for team in teams:
+        abbr = str(team["abbreviation"])
+        if user_team and abbr == user_team:
+            continue
+        try:
+            players = contract_negotiations.expiring_players(con, int(team["team_id"]), expiring_season)
+        except Exception:
+            continue
+        projected = contract_negotiations.projected_cap_summary(con, int(team["team_id"]), league_year) or {}
+        cap_space = int(projected.get("cap_space") or 0)
+        players.sort(
+            key=lambda player: (
+                str(player.get("rights_type") or "") == "RFA",
+                float(player.get("market_score") or 60),
+            ),
+            reverse=True,
+        )
+        for player in players:
+            tender_type = cpu_choose_rights_tender(player, rng)
+            if not tender_type:
+                continue
+            group = str(player.get("position_group") or "")
+            tender_aav = contract_negotiations.tag_tender_aav(group, int(player.get("aav") or 0), tender_type)
+            # Rights tenders should be routine, but avoid burying teams that are already tight.
+            if tender_aav > max(0, cap_space + 2_500_000):
+                continue
+            try:
+                contract_negotiations.apply_tag(
+                    con,
+                    team=abbr,
+                    season=expiring_season,
+                    player_id=int(player["player_id"]),
+                    tag_type=tender_type,
+                    apply=True,
+                    force=False,
+                    target_player=player,
+                    skip_cap_check=True,
+                    quiet=True,
+                    rebuild_all_contracts=False,
+                    sync_cap=False,
+                    write_cap_snapshot=False,
+                )
+            except Exception:
+                continue
+            cap_space -= tender_aav
+            tendered += 1
+    if tendered:
+        sync_team_cap_space(con)
+        if write_cap_snapshot:
+            snapshot_cap_ledger(
+                con,
+                label=f"free_agency_{league_year}_cpu_rights_tenders",
+                phase=PHASE,
+                source=SOURCE,
+                replace=True,
+            )
+    return tendered
+
+
+def cpu_apply_fifth_year_options(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    user_team: str | None,
+    write_cap_snapshot: bool = True,
+) -> int:
+    exercised = 0
+    teams = con.execute("SELECT team_id, abbreviation FROM teams ORDER BY team_id").fetchall()
+    for team in teams:
+        abbr = str(team["abbreviation"])
+        if user_team and abbr == user_team:
+            continue
+        try:
+            candidates = contract_negotiations.fifth_year_option_candidates(con, int(team["team_id"]), league_year)
+        except Exception:
+            continue
+        for player in candidates:
+            score = float(player.get("market_score") or 60)
+            group = str(player.get("position_group") or "")
+            recommendation = str(player.get("recommendation") or "")
+            keep = recommendation == "Exercise" or (group == "QB" and score >= 68)
+            if not keep:
+                try:
+                    contract_negotiations.decline_fifth_year_option(
+                        con,
+                        team=abbr,
+                        league_year=league_year,
+                        player_id=int(player["player_id"]),
+                        apply=True,
+                        quiet=True,
+                    )
+                except Exception:
+                    pass
+                continue
+            try:
+                contract_negotiations.exercise_fifth_year_option(
+                    con,
+                    team=abbr,
+                    league_year=league_year,
+                    player_id=int(player["player_id"]),
+                    apply=True,
+                    force=False,
+                    quiet=True,
+                    rebuild_all_contracts=False,
+                    sync_cap=False,
+                    write_cap_snapshot=False,
+                )
+            except Exception:
+                continue
+            exercised += 1
+    if exercised:
+        sync_team_cap_space(con)
+        if write_cap_snapshot:
+            snapshot_cap_ledger(
+                con,
+                label=f"free_agency_{league_year}_cpu_fifth_year_options",
+                phase=PHASE,
+                source=SOURCE,
+                replace=True,
+            )
+    return exercised
+
+
 def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     sync_active_game_to_date(con, str(args.start_date))
     user_team = cpu_excluded_user_team(con, args)
@@ -1981,12 +2143,33 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     cpu_extensions = 0
     expiration_result = {"processed": 0}
     if not args.skip_expirations:
+        rollover_result = contract_negotiations.process_cap_rollover(
+            con,
+            from_season=int(args.league_year) - 1,
+            to_season=int(args.league_year),
+            apply=True,
+            quiet=True,
+        )
+        cpu_options = cpu_apply_fifth_year_options(
+            con,
+            league_year=int(args.league_year),
+            user_team=user_team,
+            write_cap_snapshot=write_cap_snapshot,
+        )
         cpu_extensions = cpu_extend_expiring_players(
             con,
             expiring_season=int(args.league_year) - 1,
             league_year=int(args.league_year),
             user_team=user_team,
             per_team=args.cpu_resign_per_team,
+            seed=args.seed,
+            write_cap_snapshot=write_cap_snapshot,
+        )
+        cpu_tenders = cpu_apply_pre_fa_tenders(
+            con,
+            expiring_season=int(args.league_year) - 1,
+            league_year=int(args.league_year),
+            user_team=user_team,
             seed=args.seed,
             write_cap_snapshot=write_cap_snapshot,
         )
@@ -2006,7 +2189,10 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             write_cap_snapshot=write_cap_snapshot,
         )
     else:
+        rollover_result = {"teams": []}
+        cpu_options = 0
         cpu_tags = 0
+        cpu_tenders = 0
         contract_negotiations.set_current_contract_year(con, int(args.league_year))
     ensure_market(con, args.league_year)
     con.execute(
@@ -2059,7 +2245,10 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         message=(
             f"{args.league_year} free agency opened. "
             f"Expired contracts processed: {expiration_result['processed']}. "
+            f"Cap rollovers: {sum(1 for row in rollover_result.get('teams', []) if row.get('rollover_amount'))}. "
+            f"CPU fifth-year options: {cpu_options}. "
             f"CPU tags: {cpu_tags}. "
+            f"CPU rights tenders: {cpu_tenders}. "
             f"CPU extensions: {cpu_extensions}. "
             f"CPU restructures: {cpu_restructures}. "
             f"CPU cap releases: {cpu_cap_releases}. "
@@ -3041,6 +3230,10 @@ def cpu_release_bad_contracts_for_fa(
                     post_june1=False,
                     apply=True,
                     force=True,
+                    rebuild_all_contracts=False,
+                    sync_cap=False,
+                    write_cap_snapshot=False,
+                    quiet=True,
                 )
                 released += 1
                 log_event(

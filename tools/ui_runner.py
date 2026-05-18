@@ -75,6 +75,8 @@ PLAYER_EXPORT_ACTIONS = {
     "free_agency_cpu_seed",
     "contract_extend",
     "contract_tag",
+    "contract_option_exercise",
+    "contract_option_decline",
     "contract_release",
     "contract_restructure",
     "depth_chart_set",
@@ -102,6 +104,8 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "draft_finish",
     "contract_extend",
     "contract_tag",
+    "contract_option_exercise",
+    "contract_option_decline",
     "contract_release",
     "contract_restructure",
     "depth_chart_set",
@@ -120,6 +124,8 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
 SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_extend",
     "contract_tag",
+    "contract_option_exercise",
+    "contract_option_decline",
     "contract_release",
     "contract_restructure",
     "roster_release_player",
@@ -1731,8 +1737,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if not player_id:
             raise ValueError("contract_tag requires player_id.")
         tag_type = str(params.get("tag_type") or "franchise").lower()
-        if tag_type not in {"franchise", "exclusive", "transition"}:
-            raise ValueError("contract_tag tag_type must be franchise, exclusive, or transition.")
+        if tag_type not in {"franchise", "exclusive", "transition", "rfa_first", "rfa_second", "rfa_original", "rfa_rofr", "erfa"}:
+            raise ValueError("contract_tag tag_type must be franchise, exclusive, transition, rfa_first, rfa_second, rfa_original, rfa_rofr, or erfa.")
         return play(
             "contract",
             "tag",
@@ -1747,6 +1753,24 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
             "--fast",
         )
+    if action in {"contract_option_exercise", "contract_option_decline"}:
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError(f"{action} requires player_id.")
+        command = [
+            "contract",
+            "option-exercise" if action == "contract_option_exercise" else "option-decline",
+            "--league-year",
+            str(season + 1),
+            "--team",
+            str(user_team),
+            "--player-id",
+            str(int(player_id)),
+            "--apply",
+        ]
+        if action == "contract_option_exercise":
+            command.append("--fast")
+        return play(*command)
     if action == "contract_release":
         player_id = params.get("player_id")
         if not player_id:

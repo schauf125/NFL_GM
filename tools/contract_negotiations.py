@@ -28,6 +28,7 @@ from tools import roster_actions  # noqa: E402
 
 SOURCE = "contract_negotiations"
 PHASE = "Offseason"
+_RIGHTS_SCHEMA_ENSURED_CONNECTIONS: set[int] = set()
 
 POSITION_GROUP = {
     "QB": "QB",
@@ -115,6 +116,47 @@ TRANSITION_TAG_AAV = {
     "ST": 5_000_000,
 }
 
+RFA_TENDER_AAV = {
+    # Simmed 2026 tender levels. These are centralized game constants so yearly
+    # tender tuning stays in one place when the league year data is updated.
+    "first_round": 7_300_000,
+    "second_round": 5_400_000,
+    "original_round": 3_300_000,
+    "rofr": 3_200_000,
+}
+
+ERFA_TENDER_AAV = {
+    "QB": 1_300_000,
+    "RB": 1_100_000,
+    "WR": 1_100_000,
+    "TE": 1_100_000,
+    "OT": 1_200_000,
+    "IOL": 1_150_000,
+    "EDGE": 1_200_000,
+    "IDL": 1_150_000,
+    "LB": 1_100_000,
+    "CB": 1_100_000,
+    "S": 1_100_000,
+    "ST": 1_000_000,
+}
+
+FIFTH_YEAR_OPTION_AAV = {
+    "QB": 27_500_000,
+    "RB": 8_500_000,
+    "WR": 15_500_000,
+    "TE": 10_500_000,
+    "OT": 18_000_000,
+    "IOL": 15_000_000,
+    "EDGE": 19_500_000,
+    "IDL": 17_500_000,
+    "LB": 14_500_000,
+    "CB": 16_000_000,
+    "S": 13_000_000,
+    "ST": 4_000_000,
+}
+
+MAX_SINGLE_YEAR_ROLLOVER = 85_000_000
+
 MIN_AAV = {
     "QB": 1_500_000,
     "RB": 1_000_000,
@@ -158,6 +200,93 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def ensure_contract_rights_schema(con: sqlite3.Connection) -> None:
+    marker = id(con)
+    if marker in _RIGHTS_SCHEMA_ENSURED_CONNECTIONS:
+        return
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS contract_rights_tenders (
+            tender_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            league_year INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            rights_type TEXT NOT NULL,
+            tender_type TEXT NOT NULL,
+            compensation TEXT,
+            aav INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'applied',
+            applied_contract_id INTEGER,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(league_year, team_id, player_id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_contract_rights_tenders_year_team
+            ON contract_rights_tenders(league_year, team_id, status)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fifth_year_option_decisions (
+            decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            league_year INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            rookie_contract_id INTEGER NOT NULL REFERENCES contracts(contract_id) ON DELETE CASCADE,
+            option_contract_id INTEGER REFERENCES contracts(contract_id) ON DELETE SET NULL,
+            decision TEXT NOT NULL,
+            option_salary INTEGER NOT NULL DEFAULT 0,
+            decision_date TEXT NOT NULL,
+            reason TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(league_year, team_id, player_id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_fifth_year_option_decisions_year_team
+            ON fifth_year_option_decisions(league_year, team_id, decision)
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS free_agency_offer_sheets (
+            offer_sheet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            league_year INTEGER NOT NULL,
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            original_team_id INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            offering_team_id INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            tender_type TEXT NOT NULL,
+            compensation TEXT,
+            compensation_round INTEGER,
+            years INTEGER NOT NULL,
+            aav INTEGER NOT NULL,
+            signing_bonus INTEGER NOT NULL DEFAULT 0,
+            guarantee_pct INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending_match',
+            submitted_date TEXT NOT NULL,
+            decision_date TEXT,
+            matched INTEGER,
+            resulting_contract_id INTEGER REFERENCES contracts(contract_id) ON DELETE SET NULL,
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_free_agency_offer_sheets_year_status
+            ON free_agency_offer_sheets(league_year, status, original_team_id)
+        """
+    )
+    _RIGHTS_SCHEMA_ENSURED_CONNECTIONS.add(marker)
 
 
 def current_game_date(con: sqlite3.Connection) -> str:
@@ -444,11 +573,27 @@ def expiring_players(con: sqlite3.Connection, team: str | int, season: int) -> l
         estimate = estimate_offer(row)
         score = player_score(row)
         item = dict(row)
+        group = position_group(row["position"])
+        current_aav = int(row["aav"] or 0)
+        rights_type = rights_type_for_years_exp(row["years_exp"])
+        tender_options: list[dict[str, Any]] = []
+        if rights_type == "RFA":
+            tender_options = rfa_tender_options(group, current_aav)
+        elif rights_type == "ERFA":
+            tender_options = [
+                {
+                    "type": "erfa",
+                    "label": "ERFA Tender",
+                    "aav": tag_tender_aav(group, current_aav, "erfa"),
+                    "compensation": tender_compensation("erfa"),
+                }
+            ]
         item.update(
             {
                 "team_id": int(team["team_id"]),
                 "team": team["abbreviation"],
-                "position_group": position_group(row["position"]),
+                "position_group": group,
+                "rights_type": rights_type,
                 "market_score": round(score, 1),
                 "market_tier": estimate.tier,
                 "priority": estimate.priority,
@@ -457,8 +602,10 @@ def expiring_players(con: sqlite3.Connection, team: str | int, season: int) -> l
                 "asking_aav": estimate.asking_aav,
                 "minimum_aav": estimate.minimum_aav,
                 "guarantee_pct": estimate.guarantee_pct,
-                "franchise_tag_aav": tag_tender_aav(position_group(row["position"]), int(row["aav"] or 0), "franchise"),
-                "transition_tag_aav": tag_tender_aav(position_group(row["position"]), int(row["aav"] or 0), "transition"),
+                "franchise_tag_aav": tag_tender_aav(group, current_aav, "franchise"),
+                "transition_tag_aav": tag_tender_aav(group, current_aav, "transition"),
+                "rfa_tender_options": tender_options,
+                "erfa_tender_aav": tag_tender_aav(group, current_aav, "erfa") if rights_type == "ERFA" else None,
                 "extension_start_year": season + 1,
                 "extension_end_year": season + estimate.suggested_years,
             }
@@ -844,11 +991,31 @@ def tag_label(tag_type: str) -> str:
         return "Exclusive Franchise Tag"
     if value in {"franchise", "non-exclusive", "non-exclusive-franchise", "franchise-tag"}:
         return "Franchise Tag"
-    raise ValueError("Tag type must be franchise, exclusive, or transition.")
+    if value in {"rfa-first", "rfa-first-round", "first-round", "first-round-tender"}:
+        return "RFA First-Round Tender"
+    if value in {"rfa-second", "rfa-second-round", "second-round", "second-round-tender"}:
+        return "RFA Second-Round Tender"
+    if value in {"rfa-original", "rfa-original-round", "original-round", "original-round-tender"}:
+        return "RFA Original-Round Tender"
+    if value in {"rfa-rofr", "rofr", "right-of-first-refusal", "right-of-first-refusal-tender"}:
+        return "RFA Right-of-First-Refusal Tender"
+    if value in {"erfa", "erfa-tender", "exclusive-rights", "exclusive-rights-tender"}:
+        return "ERFA Tender"
+    raise ValueError("Tender type must be franchise, exclusive, transition, rfa_first, rfa_second, rfa_original, rfa_rofr, or erfa.")
 
 
 def tag_tender_aav(group: str, current_aav: int, tag_type: str) -> int:
     label = tag_label(tag_type)
+    if label == "RFA First-Round Tender":
+        return rounded_money(max(RFA_TENDER_AAV["first_round"], int(current_aav * 1.10)))
+    if label == "RFA Second-Round Tender":
+        return rounded_money(max(RFA_TENDER_AAV["second_round"], int(current_aav * 1.10)))
+    if label == "RFA Original-Round Tender":
+        return rounded_money(max(RFA_TENDER_AAV["original_round"], int(current_aav * 1.10)))
+    if label == "RFA Right-of-First-Refusal Tender":
+        return rounded_money(max(RFA_TENDER_AAV["rofr"], int(current_aav * 1.05)))
+    if label == "ERFA Tender":
+        return rounded_money(max(ERFA_TENDER_AAV.get(group, 1_000_000), int(current_aav * 1.03)))
     table = TRANSITION_TAG_AAV if label == "Transition Tag" else FRANCHISE_TAG_AAV
     tender = table.get(group, table.get("ST", 5_000_000))
     if label == "Exclusive Franchise Tag":
@@ -856,6 +1023,88 @@ def tag_tender_aav(group: str, current_aav: int, tag_type: str) -> int:
     # NFL tender rule: the tag is the greater of the positional tender or 120% of
     # the player's prior-year salary. This uses AAV as the practical sim salary.
     return rounded_money(max(tender, int(current_aav * 1.20)))
+
+
+def rights_type_for_years_exp(years_exp: Any) -> str:
+    try:
+        years = int(years_exp or 0)
+    except (TypeError, ValueError):
+        years = 0
+    if years < 3:
+        return "ERFA"
+    if years == 3:
+        return "RFA"
+    return "UFA"
+
+
+def tender_key(tag_type: str) -> str:
+    label = tag_label(tag_type)
+    return {
+        "Franchise Tag": "franchise",
+        "Exclusive Franchise Tag": "exclusive",
+        "Transition Tag": "transition",
+        "RFA First-Round Tender": "rfa_first",
+        "RFA Second-Round Tender": "rfa_second",
+        "RFA Original-Round Tender": "rfa_original",
+        "RFA Right-of-First-Refusal Tender": "rfa_rofr",
+        "ERFA Tender": "erfa",
+    }[label]
+
+
+def tender_compensation(tag_type: str) -> str:
+    label = tag_label(tag_type)
+    return {
+        "Franchise Tag": "Two first-round picks if offer sheet is not matched",
+        "Exclusive Franchise Tag": "No outside negotiation",
+        "Transition Tag": "Right to match; no draft-pick compensation",
+        "RFA First-Round Tender": "First-round pick compensation",
+        "RFA Second-Round Tender": "Second-round pick compensation",
+        "RFA Original-Round Tender": "Original-round pick compensation",
+        "RFA Right-of-First-Refusal Tender": "Right to match; no draft-pick compensation",
+        "ERFA Tender": "Exclusive rights retained",
+    }[label]
+
+
+def tender_contract_type(tag_type: str) -> str:
+    return {
+        "franchise": "FranchiseTag",
+        "exclusive": "ExclusiveFranchiseTag",
+        "transition": "TransitionTag",
+        "rfa_first": "RFAFirstRoundTender",
+        "rfa_second": "RFASecondRoundTender",
+        "rfa_original": "RFAOriginalRoundTender",
+        "rfa_rofr": "RFAROFRTender",
+        "erfa": "ERFATender",
+    }[tender_key(tag_type)]
+
+
+def rfa_tender_options(group: str, current_aav: int) -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "rfa_first",
+            "label": "1st Round Tender",
+            "aav": tag_tender_aav(group, current_aav, "rfa_first"),
+            "compensation": tender_compensation("rfa_first"),
+        },
+        {
+            "type": "rfa_second",
+            "label": "2nd Round Tender",
+            "aav": tag_tender_aav(group, current_aav, "rfa_second"),
+            "compensation": tender_compensation("rfa_second"),
+        },
+        {
+            "type": "rfa_original",
+            "label": "Original Round Tender",
+            "aav": tag_tender_aav(group, current_aav, "rfa_original"),
+            "compensation": tender_compensation("rfa_original"),
+        },
+        {
+            "type": "rfa_rofr",
+            "label": "ROFR Tender",
+            "aav": tag_tender_aav(group, current_aav, "rfa_rofr"),
+            "compensation": tender_compensation("rfa_rofr"),
+        },
+    ]
 
 
 def existing_team_tag(con: sqlite3.Connection, team_id: int, contract_year: int) -> sqlite3.Row | None:
@@ -896,6 +1145,754 @@ def tag_eligible_players(con: sqlite3.Connection, team: str | int, season: int) 
     return players
 
 
+def fifth_year_option_salary(group: str, current_aav: int, score: float) -> int:
+    base = FIFTH_YEAR_OPTION_AAV.get(group, FIFTH_YEAR_OPTION_AAV["ST"])
+    if score >= 90:
+        base = max(base, TRANSITION_TAG_AAV.get(group, base))
+    elif score >= 84:
+        base = int(base * 1.12)
+    elif score >= 76:
+        base = int(base * 1.00)
+    else:
+        base = int(base * 0.78)
+    return rounded_money(max(base, int(current_aav * 1.20)))
+
+
+def fifth_year_option_candidates(con: sqlite3.Connection, team: str | int | None, league_year: int) -> list[dict[str, Any]]:
+    ensure_contract_rights_schema(con)
+    team_sql = ""
+    params: list[Any] = [league_year - 1, league_year - 1, league_year - 3, league_year - 3, league_year]
+    if team is not None:
+        selected = team_row(con, team)
+        team_sql = " AND c.team_id = ?"
+        params.append(int(selected["team_id"]))
+    rows = con.execute(
+        f"""
+        SELECT
+            c.contract_id,
+            c.player_id,
+            c.team_id,
+            t.abbreviation AS team,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            p.age,
+            p.years_exp,
+            p.overall,
+            c.start_year,
+            c.end_year,
+            c.aav,
+            c.total_value,
+            c.option_year,
+            c.option_exercised,
+            (
+                SELECT MAX(role_score)
+                FROM player_role_scores prs
+                WHERE prs.player_id = p.player_id
+                  AND prs.scheme_key = 'default'
+                  AND prs.season = ?
+            ) AS best_role_score,
+            (
+                SELECT AVG(rating_value)
+                FROM player_ratings pr
+                WHERE pr.player_id = p.player_id
+                  AND pr.season = ?
+            ) AS avg_rating
+        FROM contracts c
+        JOIN players p ON p.player_id = c.player_id
+        JOIN teams t ON t.team_id = c.team_id
+        WHERE c.is_active = 1
+          AND c.contract_type = 'RookieScale'
+          AND COALESCE(c.option_year, 0) = 1
+          AND COALESCE(c.option_exercised, 0) = 0
+          AND COALESCE(c.start_year, ?) = ?
+          AND p.team_id = c.team_id
+          AND NOT EXISTS (
+              SELECT 1 FROM fifth_year_option_decisions d
+              WHERE d.league_year = ?
+                AND d.player_id = c.player_id
+                AND d.team_id = c.team_id
+          )
+          {team_sql}
+        ORDER BY t.abbreviation, COALESCE(best_role_score, avg_rating, p.overall, 60) DESC, player_name
+        """,
+        params,
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        score = player_score(row)
+        group = position_group(row["position"])
+        salary = fifth_year_option_salary(group, int(row["aav"] or 0), score)
+        recommendation = "Exercise" if score >= 76 or group == "QB" and score >= 70 else "Decline"
+        result.append(
+            {
+                **dict(row),
+                "position_group": group,
+                "market_score": round(score, 1),
+                "option_salary": salary,
+                "option_season": league_year + 1,
+                "recommendation": recommendation,
+            }
+        )
+    return result
+
+
+def exercise_fifth_year_option(
+    con: sqlite3.Connection,
+    *,
+    team: str | int,
+    league_year: int,
+    player_id: int,
+    apply: bool,
+    force: bool = False,
+    quiet: bool = False,
+    rebuild_all_contracts: bool = False,
+    sync_cap: bool = True,
+    write_cap_snapshot: bool = True,
+) -> int | None:
+    team_row_value = team_row(con, team)
+    candidates = fifth_year_option_candidates(con, int(team_row_value["team_id"]), league_year)
+    target = next((row for row in candidates if int(row["player_id"]) == int(player_id)), None)
+    if not target:
+        raise ValueError("Player is not an eligible fifth-year option candidate for this league year.")
+    option_season = int(target["option_season"])
+    salary = int(target["option_salary"])
+    projected = projected_cap_summary(con, int(team_row_value["team_id"]), option_season) or {}
+    cap_space = int(projected.get("cap_space") or 0)
+    if cap_space < salary and not force:
+        raise ValueError(
+            f"{team_row_value['abbreviation']} lacks projected {option_season} cap room for the fifth-year option "
+            f"({money(salary)}). Use --force to override."
+        )
+    if not apply:
+        print(
+            "Dry run only. Add --apply to exercise "
+            f"{target['player_name']}'s fifth-year option for {option_season} at {money(salary)}."
+        )
+        return None
+
+    setup_contract_years.ensure_schema(con)
+    ensure_contract_rights_schema(con)
+    setup_transactions_cap_ledger.ensure_schema(con)
+    signed_date = current_game_date(con)
+    cur = con.execute(
+        """
+        INSERT INTO contracts (
+            player_id, team_id, signed_date, start_year, end_year,
+            total_value, total_years, aav, signing_bonus,
+            roster_bonus, workout_bonus, is_guaranteed,
+            dead_cap_current, dead_cap_next, no_trade_clause,
+            option_year, option_exercised, franchise_tag, contract_type, is_active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 1, 0, 0, 0, 1, 1, NULL, 'FifthYearOption', 1)
+        """,
+        (
+            player_id,
+            int(team_row_value["team_id"]),
+            signed_date,
+            option_season,
+            option_season,
+            salary,
+            salary,
+        ),
+    )
+    option_contract_id = int(cur.lastrowid)
+    con.execute(
+        "UPDATE contracts SET option_exercised = 1 WHERE contract_id = ?",
+        (int(target["contract_id"]),),
+    )
+    con.execute(
+        """
+        INSERT INTO fifth_year_option_decisions (
+            league_year, team_id, player_id, rookie_contract_id, option_contract_id,
+            decision, option_salary, decision_date, reason
+        )
+        VALUES (?, ?, ?, ?, ?, 'exercised', ?, ?, ?)
+        ON CONFLICT(league_year, team_id, player_id) DO UPDATE SET
+            option_contract_id = excluded.option_contract_id,
+            decision = 'exercised',
+            option_salary = excluded.option_salary,
+            decision_date = excluded.decision_date,
+            reason = excluded.reason
+        """,
+        (
+            league_year,
+            int(team_row_value["team_id"]),
+            player_id,
+            int(target["contract_id"]),
+            option_contract_id,
+            salary,
+            signed_date,
+            f"Projected role score {target['market_score']}; {target['recommendation'].lower()} recommendation.",
+        ),
+    )
+    if rebuild_all_contracts:
+        setup_contract_years.rebuild_contract_years(con)
+    else:
+        setup_contract_years.rebuild_contract_year(con, option_contract_id)
+        setup_contract_years.rebuild_contract_year(con, int(target["contract_id"]))
+    if sync_cap:
+        setup_contract_years.sync_team_cap_space(con)
+    transaction_id, _ = setup_transactions_cap_ledger.insert_transaction(
+        con,
+        transaction_date=signed_date,
+        season=league_year,
+        phase=current_phase(con),
+        transaction_type="Fifth-Year Option",
+        team_id=int(team_row_value["team_id"]),
+        player_id=player_id,
+        contract_id=option_contract_id,
+        to_team_id=int(team_row_value["team_id"]),
+        cap_delta_next=salary,
+        cash_delta=salary,
+        description=f"{team_row_value['abbreviation']} exercised {target['player_name']}'s fifth-year option for {option_season} at {money(salary)}.",
+        source=SOURCE,
+        external_ref=f"fifth_year_option:{league_year}:{team_row_value['team_id']}:{player_id}",
+    )
+    con.execute(
+        """
+        INSERT INTO transaction_assets (
+            transaction_id, asset_type, player_id, contract_id,
+            to_team_id, amount, season, asset_description
+        )
+        VALUES (?, 'PlayerContract', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            transaction_id,
+            player_id,
+            option_contract_id,
+            int(team_row_value["team_id"]),
+            salary,
+            option_season,
+            "Fully guaranteed fifth-year option.",
+        ),
+    )
+    if write_cap_snapshot:
+        setup_transactions_cap_ledger.snapshot_cap_ledger(
+            con,
+            label=f"after_transaction_{transaction_id}_fifth_year_option",
+            phase=current_phase(con),
+            source=SOURCE,
+            replace=True,
+        )
+    if not quiet:
+        print(f"{team_row_value['abbreviation']} exercised {target['player_name']}'s fifth-year option: {money(salary)} for {option_season}.")
+    return option_contract_id
+
+
+def decline_fifth_year_option(
+    con: sqlite3.Connection,
+    *,
+    team: str | int,
+    league_year: int,
+    player_id: int,
+    apply: bool,
+    quiet: bool = False,
+) -> None:
+    team_row_value = team_row(con, team)
+    candidates = fifth_year_option_candidates(con, int(team_row_value["team_id"]), league_year)
+    target = next((row for row in candidates if int(row["player_id"]) == int(player_id)), None)
+    if not target:
+        raise ValueError("Player is not an eligible fifth-year option candidate for this league year.")
+    if not apply:
+        print(f"Dry run only. Add --apply to decline {target['player_name']}'s fifth-year option.")
+        return
+    ensure_contract_rights_schema(con)
+    setup_transactions_cap_ledger.ensure_schema(con)
+    decision_date = current_game_date(con)
+    con.execute(
+        """
+        INSERT INTO fifth_year_option_decisions (
+            league_year, team_id, player_id, rookie_contract_id,
+            decision, option_salary, decision_date, reason
+        )
+        VALUES (?, ?, ?, ?, 'declined', ?, ?, ?)
+        ON CONFLICT(league_year, team_id, player_id) DO UPDATE SET
+            decision = 'declined',
+            option_salary = excluded.option_salary,
+            decision_date = excluded.decision_date,
+            reason = excluded.reason
+        """,
+        (
+            league_year,
+            int(team_row_value["team_id"]),
+            player_id,
+            int(target["contract_id"]),
+            int(target["option_salary"]),
+            decision_date,
+            f"Projected role score {target['market_score']}; {target['recommendation'].lower()} recommendation.",
+        ),
+    )
+    setup_transactions_cap_ledger.insert_transaction(
+        con,
+        transaction_date=decision_date,
+        season=league_year,
+        phase=current_phase(con),
+        transaction_type="Fifth-Year Option",
+        team_id=int(team_row_value["team_id"]),
+        player_id=player_id,
+        contract_id=int(target["contract_id"]),
+        description=f"{team_row_value['abbreviation']} declined {target['player_name']}'s fifth-year option.",
+        source=SOURCE,
+        external_ref=f"fifth_year_option_declined:{league_year}:{team_row_value['team_id']}:{player_id}",
+    )
+    if not quiet:
+        print(f"{team_row_value['abbreviation']} declined {target['player_name']}'s fifth-year option.")
+
+
+def compute_team_cap_space_for_season(con: sqlite3.Connection, team_id: int, season: int) -> dict[str, int]:
+    setup_contract_years.ensure_schema(con)
+    top51_row = con.execute(
+        "SELECT setting_value FROM game_settings WHERE setting_key = 'top_51_count'"
+    ).fetchone()
+    top51_count = int(top51_row["setting_value"]) if top51_row else 51
+    cap_row = con.execute("SELECT COALESCE(salary_cap, 0) AS salary_cap FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+    base_cap = int(cap_row["salary_cap"] if cap_row else 0)
+    rollover_row = con.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0) AS amount
+        FROM salary_cap_rollovers
+        WHERE team_id = ?
+          AND to_season = ?
+          AND elected = 1
+        """,
+        (team_id, season),
+    ).fetchone()
+    rollover = int(rollover_row["amount"] if rollover_row else 0)
+    cap_hits = [
+        int(row["cap_hit"] or 0)
+        for row in con.execute(
+            """
+            SELECT cy.cap_hit
+            FROM contract_years cy
+            JOIN players p ON p.player_id = cy.player_id
+            LEFT JOIN roster_status_types rst ON rst.status_code = p.status
+            WHERE cy.team_id = ?
+              AND cy.season = ?
+              AND cy.is_active = 1
+              AND p.team_id = cy.team_id
+              AND COALESCE(rst.counts_against_top51, 1) = 1
+            ORDER BY cy.cap_hit DESC
+            """,
+            (team_id, season),
+        ).fetchall()
+    ]
+    top51 = sum(cap_hits[:top51_count])
+    charges_row = con.execute(
+        """
+        SELECT COALESCE(SUM(amount), 0) AS amount
+        FROM team_cap_charges
+        WHERE team_id = ?
+          AND season = ?
+        """,
+        (team_id, season),
+    ).fetchone()
+    other = int(charges_row["amount"] if charges_row else 0)
+    salary_cap = base_cap + rollover
+    committed = top51 + other
+    return {
+        "base_salary_cap": base_cap,
+        "rollover_amount": rollover,
+        "salary_cap": salary_cap,
+        "top51_cap_hit": top51,
+        "other_cap_charges": other,
+        "total_committed": committed,
+        "cap_space": salary_cap - committed,
+    }
+
+
+def process_cap_rollover(
+    con: sqlite3.Connection,
+    *,
+    from_season: int,
+    to_season: int | None = None,
+    apply: bool,
+    max_rollover: int = MAX_SINGLE_YEAR_ROLLOVER,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    to_season = int(to_season or from_season + 1)
+    setup_contract_years.ensure_schema(con)
+    setup_transactions_cap_ledger.ensure_schema(con)
+    teams = con.execute("SELECT team_id, abbreviation FROM teams ORDER BY team_id").fetchall()
+    rows: list[dict[str, Any]] = []
+    for team in teams:
+        summary = compute_team_cap_space_for_season(con, int(team["team_id"]), from_season)
+        raw_space = int(summary["cap_space"])
+        rollover = min(max(0, raw_space), int(max_rollover))
+        item = {
+            "team_id": int(team["team_id"]),
+            "team": str(team["abbreviation"]),
+            "from_season": from_season,
+            "to_season": to_season,
+            "cap_space": raw_space,
+            "rollover_amount": rollover,
+        }
+        rows.append(item)
+        if apply:
+            con.execute(
+                """
+                INSERT INTO salary_cap_rollovers (
+                    team_id, from_season, to_season, amount, elected, source, notes
+                )
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(team_id, from_season, to_season) DO UPDATE SET
+                    amount = excluded.amount,
+                    elected = 1,
+                    source = excluded.source,
+                    notes = excluded.notes,
+                    created_at = datetime('now')
+                """,
+                (
+                    int(team["team_id"]),
+                    from_season,
+                    to_season,
+                    rollover,
+                    SOURCE,
+                    f"Unused {from_season} cap carried into {to_season}. Single-year sim cap: {money(max_rollover)}.",
+                ),
+            )
+            if rollover:
+                setup_transactions_cap_ledger.insert_transaction(
+                    con,
+                    transaction_date=current_game_date(con),
+                    season=to_season,
+                    phase=current_phase(con),
+                    transaction_type="Cap Rollover",
+                    team_id=int(team["team_id"]),
+                    cap_delta_current=rollover,
+                    description=f"{team['abbreviation']} rolled {money(rollover)} of unused {from_season} cap into {to_season}.",
+                    source=SOURCE,
+                    external_ref=f"cap_rollover:{from_season}:{to_season}:{team['team_id']}",
+                )
+    if apply:
+        setup_contract_years.sync_team_cap_space(con)
+    if not quiet:
+        mode = "processed" if apply else "dry run"
+        print(f"Cap rollover {mode}: {from_season} -> {to_season}.")
+        for row in rows[:32]:
+            print(f"  {row['team']}: {money(row['rollover_amount'])} from {money(row['cap_space'])} unused space")
+    return {"from_season": from_season, "to_season": to_season, "teams": rows, "applied": apply}
+
+
+def compensation_round_for_tender(tender_type: str) -> int | None:
+    key = tender_key(tender_type)
+    if key == "rfa_first":
+        return 1
+    if key == "rfa_second":
+        return 2
+    if key == "rfa_original":
+        return None
+    return None
+
+
+def active_tender_for_player(con: sqlite3.Connection, player_id: int, league_year: int) -> sqlite3.Row | None:
+    ensure_contract_rights_schema(con)
+    return con.execute(
+        """
+        SELECT rt.*, t.abbreviation AS original_team
+        FROM contract_rights_tenders rt
+        JOIN teams t ON t.team_id = rt.team_id
+        WHERE rt.player_id = ?
+          AND rt.league_year = ?
+          AND rt.status = 'applied'
+        ORDER BY rt.tender_id DESC
+        LIMIT 1
+        """,
+        (player_id, league_year),
+    ).fetchone()
+
+
+def submit_offer_sheet(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    offering_team: str | int,
+    player_id: int,
+    years: int,
+    aav: int,
+    signing_bonus: int,
+    guarantee_pct: int,
+    apply: bool,
+    quiet: bool = False,
+) -> int | None:
+    offering = team_row(con, offering_team)
+    tender = active_tender_for_player(con, player_id, league_year)
+    if not tender:
+        raise ValueError("Player does not have an active RFA or transition tender for this league year.")
+    tender_type = str(tender["tender_type"])
+    if tender_type == "erfa":
+        raise ValueError("ERFA players cannot negotiate with other teams.")
+    if int(tender["team_id"]) == int(offering["team_id"]):
+        raise ValueError("Offering team already controls this player's rights.")
+    if years < 1 or years > 6:
+        raise ValueError("Offer sheet years must be between 1 and 6.")
+    if aav <= 0:
+        raise ValueError("Offer sheet AAV must be positive.")
+    if not apply:
+        print(
+            "Dry run only. Add --apply to submit offer sheet "
+            f"for player {player_id}: {years} yr, {money(aav)} AAV from {offering['abbreviation']}."
+        )
+        return None
+    ensure_contract_rights_schema(con)
+    setup_transactions_cap_ledger.ensure_schema(con)
+    submitted_date = current_game_date(con)
+    comp_round = compensation_round_for_tender(tender_type)
+    cur = con.execute(
+        """
+        INSERT INTO free_agency_offer_sheets (
+            league_year, player_id, original_team_id, offering_team_id,
+            tender_type, compensation, compensation_round, years, aav,
+            signing_bonus, guarantee_pct, status, submitted_date, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_match', ?, ?)
+        """,
+        (
+            league_year,
+            player_id,
+            int(tender["team_id"]),
+            int(offering["team_id"]),
+            tender_type,
+            tender["compensation"],
+            comp_round,
+            years,
+            aav,
+            signing_bonus,
+            guarantee_pct,
+            submitted_date,
+            "Original team has simulated five-day match window.",
+        ),
+    )
+    offer_sheet_id = int(cur.lastrowid)
+    setup_transactions_cap_ledger.insert_transaction(
+        con,
+        transaction_date=submitted_date,
+        season=league_year,
+        phase=current_phase(con),
+        transaction_type="Offer Sheet",
+        team_id=int(offering["team_id"]),
+        secondary_team_id=int(tender["team_id"]),
+        player_id=player_id,
+        description=f"{offering['abbreviation']} submitted an offer sheet for player {player_id}: {years} yr, {money(aav)} AAV.",
+        source=SOURCE,
+        external_ref=f"offer_sheet_submitted:{league_year}:{offer_sheet_id}",
+    )
+    if not quiet:
+        print(f"Offer sheet submitted: id={offer_sheet_id}, {offering['abbreviation']} player={player_id}, {years} yr at {money(aav)} AAV.")
+    return offer_sheet_id
+
+
+def create_contract_from_offer_sheet(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    player_id: int,
+    league_year: int,
+    years: int,
+    aav: int,
+    signing_bonus: int,
+    guarantee_pct: int,
+) -> int:
+    total_value = int(aav) * int(years)
+    cur = con.execute(
+        """
+        INSERT INTO contracts (
+            player_id, team_id, signed_date, start_year, end_year,
+            total_value, total_years, aav, signing_bonus,
+            roster_bonus, workout_bonus, is_guaranteed,
+            dead_cap_current, dead_cap_next, no_trade_clause,
+            option_year, option_exercised, franchise_tag, contract_type, is_active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 0, 0, 0, NULL, 'OfferSheet', 1)
+        """,
+        (
+            player_id,
+            team_id,
+            current_game_date(con),
+            league_year,
+            league_year + int(years) - 1,
+            total_value,
+            years,
+            aav,
+            signing_bonus,
+            1 if int(guarantee_pct or 0) >= 50 else 0,
+        ),
+    )
+    contract_id = int(cur.lastrowid)
+    setup_contract_years.rebuild_contract_year(con, contract_id)
+    return contract_id
+
+
+def award_offer_sheet_compensation(
+    con: sqlite3.Connection,
+    *,
+    from_team_id: int,
+    to_team_id: int,
+    league_year: int,
+    round_number: int | None,
+) -> int | None:
+    if not round_number:
+        return None
+    pick = con.execute(
+        """
+        SELECT pick_id
+        FROM draft_picks
+        WHERE draft_year = ?
+          AND round = ?
+          AND original_team_id = ?
+          AND current_team_id = ?
+          AND COALESCE(is_used, 0) = 0
+        ORDER BY COALESCE(pick_number, pick_id), pick_id
+        LIMIT 1
+        """,
+        (league_year, round_number, from_team_id, from_team_id),
+    ).fetchone()
+    if not pick:
+        return None
+    con.execute(
+        """
+        UPDATE draft_picks
+        SET current_team_id = ?,
+            is_traded = 1,
+            trade_note = ?
+        WHERE pick_id = ?
+        """,
+        (
+            to_team_id,
+            f"Offer sheet compensation, {league_year} round {round_number}.",
+            int(pick["pick_id"]),
+        ),
+    )
+    return int(pick["pick_id"])
+
+
+def resolve_offer_sheet(
+    con: sqlite3.Connection,
+    *,
+    offer_sheet_id: int,
+    match: bool,
+    apply: bool,
+    quiet: bool = False,
+) -> int | None:
+    ensure_contract_rights_schema(con)
+    offer = con.execute(
+        """
+        SELECT os.*, p.team_id AS current_team_id,
+               p.first_name || ' ' || p.last_name AS player_name,
+               orig.abbreviation AS original_team,
+               offer.abbreviation AS offering_team
+        FROM free_agency_offer_sheets os
+        JOIN players p ON p.player_id = os.player_id
+        JOIN teams orig ON orig.team_id = os.original_team_id
+        JOIN teams offer ON offer.team_id = os.offering_team_id
+        WHERE os.offer_sheet_id = ?
+        """,
+        (offer_sheet_id,),
+    ).fetchone()
+    if not offer:
+        raise ValueError("Unknown offer sheet.")
+    if str(offer["status"]) != "pending_match":
+        raise ValueError("Offer sheet has already been resolved.")
+    if not apply:
+        action = "match" if match else "decline"
+        print(f"Dry run only. Add --apply to {action} offer sheet {offer_sheet_id}.")
+        return None
+
+    league_year = int(offer["league_year"])
+    player_id = int(offer["player_id"])
+    original_team_id = int(offer["original_team_id"])
+    offering_team_id = int(offer["offering_team_id"])
+    contract_team_id = original_team_id if match else offering_team_id
+    con.execute(
+        """
+        UPDATE contracts
+        SET is_active = 0
+        WHERE player_id = ?
+          AND team_id = ?
+          AND is_active = 1
+          AND contract_type IN ('RFAFirstRoundTender', 'RFASecondRoundTender', 'RFAOriginalRoundTender', 'RFAROFRTender', 'TransitionTag')
+          AND start_year = ?
+        """,
+        (player_id, original_team_id, league_year),
+    )
+    contract_id = create_contract_from_offer_sheet(
+        con,
+        team_id=contract_team_id,
+        player_id=player_id,
+        league_year=league_year,
+        years=int(offer["years"]),
+        aav=int(offer["aav"]),
+        signing_bonus=int(offer["signing_bonus"] or 0),
+        guarantee_pct=int(offer["guarantee_pct"] or 0),
+    )
+    comp_pick_id = None
+    if not match:
+        con.execute(
+            "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
+            (offering_team_id, player_id),
+        )
+        comp_pick_id = award_offer_sheet_compensation(
+            con,
+            from_team_id=offering_team_id,
+            to_team_id=original_team_id,
+            league_year=league_year,
+            round_number=int(offer["compensation_round"]) if offer["compensation_round"] is not None else None,
+        )
+    else:
+        con.execute(
+            "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
+            (original_team_id, player_id),
+        )
+    con.execute(
+        """
+        UPDATE free_agency_offer_sheets
+        SET status = ?,
+            decision_date = ?,
+            matched = ?,
+            resulting_contract_id = ?,
+            updated_at = datetime('now')
+        WHERE offer_sheet_id = ?
+        """,
+        ("matched" if match else "declined", current_game_date(con), 1 if match else 0, contract_id, offer_sheet_id),
+    )
+    con.execute(
+        """
+        UPDATE contract_rights_tenders
+        SET status = ?
+        WHERE player_id = ?
+          AND league_year = ?
+          AND team_id = ?
+        """,
+        ("matched_offer_sheet" if match else "lost_offer_sheet", player_id, league_year, original_team_id),
+    )
+    setup_contract_years.sync_team_cap_space(con)
+    setup_transactions_cap_ledger.insert_transaction(
+        con,
+        transaction_date=current_game_date(con),
+        season=league_year,
+        phase=current_phase(con),
+        transaction_type="Offer Sheet",
+        team_id=contract_team_id,
+        secondary_team_id=offering_team_id if match else original_team_id,
+        player_id=player_id,
+        contract_id=contract_id,
+        from_team_id=original_team_id if not match else None,
+        to_team_id=contract_team_id,
+        cash_delta=int(offer["aav"]) * int(offer["years"]),
+        description=(
+            f"{offer['original_team']} matched {offer['offering_team']}'s offer sheet for {offer['player_name']}."
+            if match
+            else f"{offer['original_team']} declined to match {offer['offering_team']}'s offer sheet for {offer['player_name']}."
+        ),
+        source=SOURCE,
+        external_ref=f"offer_sheet_resolved:{offer_sheet_id}",
+    )
+    if not quiet:
+        result = "matched" if match else "declined"
+        comp = f"; compensation pick {comp_pick_id}" if comp_pick_id else ""
+        print(f"Offer sheet {offer_sheet_id} {result}; contract_id={contract_id}{comp}.")
+    return contract_id
+
+
 def apply_tag(
     con: sqlite3.Connection,
     *,
@@ -905,6 +1902,8 @@ def apply_tag(
     tag_type: str,
     apply: bool,
     force: bool = False,
+    target_player: dict[str, Any] | sqlite3.Row | None = None,
+    skip_cap_check: bool = False,
     quiet: bool = False,
     rebuild_all_contracts: bool = False,
     sync_cap: bool = True,
@@ -913,22 +1912,23 @@ def apply_tag(
     team = team_row(con, team)
     contract_year = season + 1
     label = tag_label(tag_type)
-    contract_type = (
-        "TransitionTag"
-        if label == "Transition Tag"
-        else "ExclusiveFranchiseTag"
-        if label == "Exclusive Franchise Tag"
-        else "FranchiseTag"
-    )
-    existing = existing_team_tag(con, int(team["team_id"]), contract_year)
-    if existing:
-        raise ValueError(
-            f"{team['abbreviation']} already used a tag on {existing['player_name']} for {contract_year}."
+    tender_type = tender_key(tag_type)
+    contract_type = tender_contract_type(tag_type)
+    is_tag = tender_type in {"franchise", "exclusive", "transition"}
+    if is_tag:
+        existing = existing_team_tag(con, int(team["team_id"]), contract_year)
+        if existing:
+            raise ValueError(
+                f"{team['abbreviation']} already used a tag on {existing['player_name']} for {contract_year}."
+            )
+    target = target_player
+    if target is not None and int(target["player_id"]) != int(player_id):
+        raise ValueError("Preloaded tender target does not match player_id.")
+    if target is None:
+        target = next(
+            (row for row in tag_eligible_players(con, int(team["team_id"]), season) if int(row["player_id"]) == int(player_id)),
+            None,
         )
-    target = next(
-        (row for row in tag_eligible_players(con, int(team["team_id"]), season) if int(row["player_id"]) == int(player_id)),
-        None,
-    )
     if not target:
         raise ValueError("Player is not an eligible expiring contract for this team/season.")
     future = existing_future_contract(con, player_id, season)
@@ -937,18 +1937,28 @@ def apply_tag(
 
     group = str(target["position_group"])
     score = float(target["market_score"] or 60)
+    rights_type = str(target.get("rights_type") or rights_type_for_years_exp(target.get("years_exp")))
+    if tender_type.startswith("rfa_") and rights_type != "RFA" and not force:
+        raise ValueError("RFA tenders are only available for expiring players with three accrued seasons. Use --force to override.")
+    if tender_type == "erfa" and rights_type != "ERFA" and not force:
+        raise ValueError("ERFA tenders are only available for expiring players with fewer than three accrued seasons. Use --force to override.")
+    if is_tag and rights_type != "UFA" and not force:
+        raise ValueError("Franchise and transition tags are reserved for UFA-level expiring players. Use --force to override.")
     tag_aav = tag_tender_aav(group, int(target["aav"] or 0), tag_type)
-    projected = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
-    cap_space = int(projected.get("cap_space") or 0)
-    if cap_space < tag_aav and not force:
-        raise ValueError(
-            f"{team['abbreviation']} lacks projected {contract_year} cap room for a {label} tender "
-            f"({money(tag_aav)}). Use --force to override."
-        )
+    if not skip_cap_check:
+        projected = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+        cap_space = int(projected.get("cap_space") or 0)
+        if cap_space < tag_aav and not force:
+            raise ValueError(
+                f"{team['abbreviation']} lacks projected {contract_year} cap room for a {label} tender "
+                f"({money(tag_aav)}). Use --force to override."
+            )
     if label == "Franchise Tag" and group == "RB" and score < 86 and not force:
         raise ValueError("RB franchise tags are restricted to elite backs. Use --force to override.")
     if label == "Transition Tag" and score < 74 and not force:
         raise ValueError("Transition tags should be reserved for credible starters. Use --force to override.")
+    if tender_type.startswith("rfa_") and score < 58 and not force:
+        raise ValueError("RFA tenders should be reserved for players with a realistic roster path. Use --force to override.")
 
     if not apply:
         print(
@@ -958,9 +1968,10 @@ def apply_tag(
         return None
 
     setup_contract_years.ensure_schema(con)
+    ensure_contract_rights_schema(con)
     setup_transactions_cap_ledger.ensure_schema(con)
     signed_date = current_game_date(con)
-    before = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+    before = {} if skip_cap_check else (projected_cap_summary(con, int(team["team_id"]), contract_year) or {})
     cur = con.execute(
         """
         INSERT INTO contracts (
@@ -983,6 +1994,8 @@ def apply_tag(
             if contract_type == "TransitionTag"
             else "Exclusive"
             if contract_type == "ExclusiveFranchiseTag"
+            else tender_type
+            if tender_type in {"rfa_first", "rfa_second", "rfa_original", "rfa_rofr", "erfa"}
             else "Non-Exclusive",
             contract_type,
         ),
@@ -994,14 +2007,14 @@ def apply_tag(
         setup_contract_years.rebuild_contract_year(con, contract_id)
     if sync_cap:
         setup_contract_years.sync_team_cap_space(con)
-    after = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
-    future_delta = int((after.get("total_committed") or 0) - (before.get("total_committed") or 0))
+    after = {} if skip_cap_check else (projected_cap_summary(con, int(team["team_id"]), contract_year) or {})
+    future_delta = tag_aav if skip_cap_check else int((after.get("total_committed") or 0) - (before.get("total_committed") or 0))
     transaction_id, _ = setup_transactions_cap_ledger.insert_transaction(
         con,
         transaction_date=signed_date,
         season=contract_year,
         phase=current_phase(con),
-        transaction_type="Franchise Tag",
+        transaction_type="Rights Tender" if not is_tag else "Franchise Tag",
         team_id=int(team["team_id"]),
         player_id=player_id,
         contract_id=contract_id,
@@ -1014,6 +2027,33 @@ def apply_tag(
         description=f"{team['abbreviation']} placed the {label} on {target['player_name']} at {money(tag_aav)}.",
         source=SOURCE,
         external_ref=f"tag:{contract_year}:{team['team_id']}:{player_id}:{contract_type}",
+    )
+    con.execute(
+        """
+        INSERT INTO contract_rights_tenders (
+            league_year, team_id, player_id, rights_type, tender_type,
+            compensation, aav, status, applied_contract_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?)
+        ON CONFLICT(league_year, team_id, player_id) DO UPDATE SET
+            rights_type = excluded.rights_type,
+            tender_type = excluded.tender_type,
+            compensation = excluded.compensation,
+            aav = excluded.aav,
+            status = 'applied',
+            applied_contract_id = excluded.applied_contract_id,
+            created_at = datetime('now')
+        """,
+        (
+            contract_year,
+            int(team["team_id"]),
+            player_id,
+            rights_type,
+            tender_type,
+            tender_compensation(tag_type),
+            tag_aav,
+            contract_id,
+        ),
     )
     con.execute(
         """
@@ -1042,7 +2082,8 @@ def apply_tag(
             replace=True,
         )
     if not quiet:
-        print(f"{team['abbreviation']} tagged {target['player_name']}: {label}, {money(tag_aav)} for {contract_year}.")
+        verb = "tagged" if is_tag else "tendered"
+        print(f"{team['abbreviation']} {verb} {target['player_name']}: {label}, {money(tag_aav)} for {contract_year}.")
     return contract_id
 
 
@@ -1195,6 +2236,10 @@ def release_player(
     post_june1: bool,
     apply: bool,
     force: bool,
+    rebuild_all_contracts: bool = True,
+    sync_cap: bool = True,
+    write_cap_snapshot: bool = True,
+    quiet: bool = False,
 ) -> None:
     team = team_row(con, team)
     contract_year = season + 1
@@ -1241,7 +2286,7 @@ def release_player(
         else target["dead_cap_if_cut_pre_june1"]
     )
     dead_next = int(target["dead_cap_if_cut_post_june1_next"] or 0) if post_june1 else 0
-    before = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+    before = (projected_cap_summary(con, int(team["team_id"]), contract_year) or {}) if sync_cap else {}
     if not apply:
         savings = int(target["cap_hit"] or 0) - dead_current
         print(
@@ -1301,10 +2346,20 @@ def release_player(
     if table_exists(con, "depth_charts"):
         con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))
     roster_actions.upsert_basic_free_agent_profile(con, player_id)
-    setup_contract_years.rebuild_contract_years(con)
-    setup_contract_years.sync_team_cap_space(con)
-    after = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
-    cap_delta = int((after.get("total_committed") or 0) - (before.get("total_committed") or 0))
+    if rebuild_all_contracts:
+        setup_contract_years.rebuild_contract_years(con)
+    elif table_exists(con, "contract_years"):
+        con.execute(
+            "UPDATE contract_years SET is_active = 0 WHERE player_id = ? AND team_id = ?",
+            (player_id, int(team["team_id"])),
+        )
+    if sync_cap:
+        setup_contract_years.sync_team_cap_space(con)
+        after = projected_cap_summary(con, int(team["team_id"]), contract_year) or {}
+        cap_delta = int((after.get("total_committed") or 0) - (before.get("total_committed") or 0))
+    else:
+        after = {}
+        cap_delta = dead_current - int(target["cap_hit"] or 0)
     transaction_id, _ = setup_transactions_cap_ledger.insert_transaction(
         con,
         transaction_date=signed_date,
@@ -1344,18 +2399,20 @@ def release_player(
             "Projected offseason cap-casualty release.",
         ),
     )
-    setup_transactions_cap_ledger.snapshot_cap_ledger(
-        con,
-        label=f"after_transaction_{transaction_id}_cap_casualty_release",
-        phase=current_phase(con),
-        source=SOURCE,
-        replace=True,
-    )
-    print(
-        f"Released {target['player_name']} from {team['abbreviation']}. "
-        f"Projected {contract_year} Top 51 delta: {money(cap_delta)}. "
-        f"Projected space: {money(after.get('cap_space'))}."
-    )
+    if write_cap_snapshot:
+        setup_transactions_cap_ledger.snapshot_cap_ledger(
+            con,
+            label=f"after_transaction_{transaction_id}_cap_casualty_release",
+            phase=current_phase(con),
+            source=SOURCE,
+            replace=True,
+        )
+    if not quiet:
+        print(
+            f"Released {target['player_name']} from {team['abbreviation']}. "
+            f"Projected {contract_year} Top 51 delta: {money(cap_delta)}. "
+            f"Projected space: {money(after.get('cap_space'))}."
+        )
 
 
 def recalc_contract_dead_cap(con: sqlite3.Connection, contract_id: int) -> None:
@@ -1935,17 +2992,70 @@ def build_parser() -> argparse.ArgumentParser:
     extend_parser.add_argument("--apply", action="store_true")
     extend_parser.set_defaults(func=action_extend)
 
-    tag_parser = subparsers.add_parser("tag", help="Use a franchise or transition tag on one own-team expiring player.")
+    tag_parser = subparsers.add_parser("tag", help="Use a franchise/transition tag or RFA/ERFA tender on one own-team expiring player.")
     tag_parser.add_argument("--team", help="Team abbreviation. Defaults to active save user team.")
     tag_parser.add_argument("--season", type=int, required=True, help="Season after which the current contract expires.")
     tag_parser.add_argument("--player-id", type=int, required=True)
-    tag_parser.add_argument("--tag-type", choices=["franchise", "exclusive", "transition"], default="franchise")
+    tag_parser.add_argument(
+        "--tag-type",
+        choices=["franchise", "exclusive", "transition", "rfa_first", "rfa_second", "rfa_original", "rfa_rofr", "erfa"],
+        default="franchise",
+    )
     tag_parser.add_argument("--force", action="store_true")
     tag_parser.add_argument("--fast", action="store_true", help="Only rebuild this contract and skip the cap-ledger snapshot.")
     tag_parser.add_argument("--no-full-rebuild", action="store_true", help="Only rebuild this contract's derived rows.")
     tag_parser.add_argument("--no-cap-snapshot", action="store_true")
     tag_parser.add_argument("--apply", action="store_true")
     tag_parser.set_defaults(func=action_tag)
+
+    option_list = subparsers.add_parser("option-list", help="List fifth-year option candidates.")
+    option_list.add_argument("--team", help="Optional team abbreviation. Defaults to all teams.")
+    option_list.add_argument("--league-year", type=int, required=True, help="League year when the option decision is due.")
+    option_list.set_defaults(func=action_option_list)
+
+    option_exercise = subparsers.add_parser("option-exercise", help="Exercise a first-round rookie fifth-year option.")
+    option_exercise.add_argument("--team", help="Team abbreviation. Defaults to active save user team.")
+    option_exercise.add_argument("--league-year", type=int, required=True)
+    option_exercise.add_argument("--player-id", type=int, required=True)
+    option_exercise.add_argument("--force", action="store_true")
+    option_exercise.add_argument("--fast", action="store_true")
+    option_exercise.add_argument("--no-full-rebuild", action="store_true")
+    option_exercise.add_argument("--no-cap-snapshot", action="store_true")
+    option_exercise.add_argument("--apply", action="store_true")
+    option_exercise.set_defaults(func=action_option_exercise)
+
+    option_decline = subparsers.add_parser("option-decline", help="Decline a first-round rookie fifth-year option.")
+    option_decline.add_argument("--team", help="Team abbreviation. Defaults to active save user team.")
+    option_decline.add_argument("--league-year", type=int, required=True)
+    option_decline.add_argument("--player-id", type=int, required=True)
+    option_decline.add_argument("--apply", action="store_true")
+    option_decline.set_defaults(func=action_option_decline)
+
+    rollover_parser = subparsers.add_parser("cap-rollover", help="Carry unused cap room into the next league year.")
+    rollover_parser.add_argument("--from-season", type=int, required=True)
+    rollover_parser.add_argument("--to-season", type=int)
+    rollover_parser.add_argument("--max-rollover", default=str(MAX_SINGLE_YEAR_ROLLOVER))
+    rollover_parser.add_argument("--apply", action="store_true")
+    rollover_parser.set_defaults(func=action_rollover)
+
+    offer_sheet = subparsers.add_parser("offer-sheet", help="Submit an RFA/transition offer sheet.")
+    offer_sheet.add_argument("--league-year", type=int, required=True)
+    offer_sheet.add_argument("--offering-team", required=True)
+    offer_sheet.add_argument("--player-id", type=int, required=True)
+    offer_sheet.add_argument("--years", type=int, required=True)
+    offer_sheet.add_argument("--aav", required=True)
+    offer_sheet.add_argument("--bonus", default="0")
+    offer_sheet.add_argument("--guarantee-pct", type=int, default=0)
+    offer_sheet.add_argument("--apply", action="store_true")
+    offer_sheet.set_defaults(func=action_offer_sheet_submit)
+
+    resolve_sheet = subparsers.add_parser("resolve-offer-sheet", help="Match or decline a pending offer sheet.")
+    resolve_sheet.add_argument("--offer-sheet-id", type=int, required=True)
+    decision = resolve_sheet.add_mutually_exclusive_group(required=True)
+    decision.add_argument("--match", action="store_true")
+    decision.add_argument("--decline", action="store_true")
+    resolve_sheet.add_argument("--apply", action="store_true")
+    resolve_sheet.set_defaults(func=action_offer_sheet_resolve)
 
     expire_parser = subparsers.add_parser("expire", help="Move unextended expired contracts into free agency.")
     expire_parser.add_argument("--team", help="Optional team abbreviation. Defaults to all teams.")
@@ -2017,6 +3127,93 @@ def action_tag(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         force=args.force,
         rebuild_all_contracts=not (args.fast or args.no_full_rebuild),
         write_cap_snapshot=not (args.fast or args.no_cap_snapshot),
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_option_list(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    rows = fifth_year_option_candidates(con, args.team, args.league_year)
+    print(f"Fifth-year option candidates for {args.league_year}: {len(rows)}")
+    for row in rows:
+        print(
+            f"{row['team']:>3} {row['player_id']:>5} {row['player_name']:<24} "
+            f"{row['position']:<4} score {row['market_score']:>4} "
+            f"option {money(row['option_salary']):>8} {row['recommendation']}"
+        )
+
+
+def action_option_exercise(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    exercise_fifth_year_option(
+        con,
+        team=team_arg(con, args.team),
+        league_year=args.league_year,
+        player_id=args.player_id,
+        apply=args.apply,
+        force=args.force,
+        rebuild_all_contracts=not (args.fast or args.no_full_rebuild),
+        write_cap_snapshot=not (args.fast or args.no_cap_snapshot),
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_option_decline(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    decline_fifth_year_option(
+        con,
+        team=team_arg(con, args.team),
+        league_year=args.league_year,
+        player_id=args.player_id,
+        apply=args.apply,
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_rollover(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    process_cap_rollover(
+        con,
+        from_season=args.from_season,
+        to_season=args.to_season,
+        apply=args.apply,
+        max_rollover=parse_money(args.max_rollover) or MAX_SINGLE_YEAR_ROLLOVER,
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_offer_sheet_submit(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    submit_offer_sheet(
+        con,
+        league_year=args.league_year,
+        offering_team=args.offering_team,
+        player_id=args.player_id,
+        years=args.years,
+        aav=parse_money(args.aav) or 0,
+        signing_bonus=parse_money(args.bonus) or 0,
+        guarantee_pct=args.guarantee_pct,
+        apply=args.apply,
+    )
+    if args.apply:
+        con.commit()
+    else:
+        con.rollback()
+
+
+def action_offer_sheet_resolve(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    resolve_offer_sheet(
+        con,
+        offer_sheet_id=args.offer_sheet_id,
+        match=args.match,
+        apply=args.apply,
     )
     if args.apply:
         con.commit()

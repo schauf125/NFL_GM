@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 CURRENT_SEASON = 2026
 TOP_51_COUNT = 51
+_SCHEMA_ENSURED_CONNECTIONS: set[int] = set()
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,9 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
+    marker = id(con)
+    if marker in _SCHEMA_ENSURED_CONNECTIONS:
+        return
     con.executescript(
         """
         PRAGMA foreign_keys = ON;
@@ -179,6 +183,22 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_team_cap_charges_team_season
             ON team_cap_charges(team_id, season);
+
+        CREATE TABLE IF NOT EXISTS salary_cap_rollovers (
+            rollover_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            team_id INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            from_season INTEGER NOT NULL,
+            to_season INTEGER NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            elected INTEGER NOT NULL DEFAULT 1,
+            source TEXT NOT NULL DEFAULT 'cap_rollover',
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(team_id, from_season, to_season)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_salary_cap_rollovers_to_season
+            ON salary_cap_rollovers(to_season, team_id);
 
         CREATE TABLE IF NOT EXISTS contract_restructures (
             restructure_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -310,7 +330,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
                 )
             ) AS season,
             (SELECT setting_value FROM game_settings WHERE setting_key = 'cap_accounting_mode') AS cap_accounting_mode,
-            t.salary_cap,
+            t.salary_cap AS base_salary_cap,
+            COALESCE(MAX(r.amount), 0) AS rollover_amount,
+            t.salary_cap + COALESCE(MAX(r.amount), 0) AS salary_cap,
             COUNT(d.contract_year_id) AS active_contracts,
             COALESCE(SUM(CASE WHEN d.counts_in_top51 = 1 THEN d.cap_hit ELSE 0 END), 0) AS top51_cap_hit,
             COALESCE(SUM(CASE WHEN d.counts_in_top51 = 0 THEN d.cap_hit ELSE 0 END), 0) AS excluded_contract_cap_hit,
@@ -318,7 +340,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             COALESCE(MAX(o.other_cap_charges), 0) AS other_cap_charges,
             COALESCE(SUM(CASE WHEN d.counts_in_top51 = 1 THEN d.cap_hit ELSE 0 END), 0)
                 + COALESCE(MAX(o.other_cap_charges), 0) AS total_committed,
-            t.salary_cap
+            t.salary_cap + COALESCE(MAX(r.amount), 0)
                 - (
                     COALESCE(SUM(CASE WHEN d.counts_in_top51 = 1 THEN d.cap_hit ELSE 0 END), 0)
                     + COALESCE(MAX(o.other_cap_charges), 0)
@@ -328,6 +350,15 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         FROM teams t
         LEFT JOIN detail d ON d.team_id = t.team_id
         LEFT JOIN other_charges o ON o.team_id = t.team_id
+        LEFT JOIN salary_cap_rollovers r
+          ON r.team_id = t.team_id
+         AND r.elected = 1
+         AND r.to_season = (
+                SELECT COALESCE(
+                    (SELECT CAST(setting_value AS INTEGER) FROM game_settings WHERE setting_key = 'current_contract_year'),
+                    (SELECT CAST(setting_value AS INTEGER) FROM game_settings WHERE setting_key = 'current_season')
+                )
+            )
         GROUP BY t.team_id;
 
         DROP VIEW IF EXISTS team_cap_view;
@@ -336,6 +367,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         FROM team_top51_cap_view;
         """
     )
+    _SCHEMA_ENSURED_CONNECTIONS.add(marker)
 
 
 def get_contracts(con: sqlite3.Connection) -> list[Contract]:
@@ -475,7 +507,7 @@ def insert_contract_year_rows(con: sqlite3.Connection, contract: Contract) -> in
                 "guaranteed_salary": guaranteed_salary,
                 "cap_hit": cap_hit,
                 "cash_due": cash_due,
-                "is_option_year": 1 if contract.option_year and index == season_count - 1 else 0,
+                "is_option_year": 1 if contract.option_year and contract.option_exercised and index == season_count - 1 else 0,
                 "option_exercised": contract.option_exercised,
                 "is_void_year": 0,
             }

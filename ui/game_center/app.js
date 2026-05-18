@@ -198,6 +198,8 @@
     "draft_finish",
     "contract_extend",
     "contract_tag",
+    "contract_option_exercise",
+    "contract_option_decline",
     "contract_release",
     "contract_restructure",
     "roster_release_player",
@@ -294,6 +296,8 @@
     "trade_submit",
     "contract_extend",
     "contract_tag",
+    "contract_option_exercise",
+    "contract_option_decline",
     "contract_release",
     "contract_restructure",
     "ai_gm_contract_plan",
@@ -2096,6 +2100,8 @@
       complete_season: "Complete Season",
       contract_extend: "Extend Player",
       contract_tag: "Apply Tag",
+      contract_option_exercise: "Exercise Option",
+      contract_option_decline: "Decline Option",
       contract_release: "Release Player",
       contract_restructure: "Restructure Contract",
       roster_release_player: "Release Player",
@@ -4429,6 +4435,8 @@
       metric("Expiring", String(counts.total || 0), `${contractYear} contract decisions`),
       metric("Priority", String(counts.priority || 0), "Core retain targets", counts.priority ? "warn" : ""),
       metric("Tag Options", String(counts.tagCandidates || 0), "One franchise/transition tag"),
+      metric("5th Options", String(counts.fifthYearOptions || 0), "First-round rookie calls"),
+      metric("RFA / ERFA", `${counts.rfaCandidates || 0}/${counts.erfaCandidates || 0}`, "Rights tenders available"),
       metric("Cap Casualties", String(counts.capCasualties || 0), "Release candidates"),
       metric("Restructures", String(counts.restructures || 0), "Move cap forward"),
       metric("Projected Cap", money(cap.cap_space), `Top 51 ${cap.season || contractYear}`, Number(cap.cap_space || 0) < 0 ? "bad" : ""),
@@ -4453,12 +4461,28 @@
     const commands = data.commands || {};
     const split = node("div", "contract-split");
 
+    if ((talks.fifthYearOptions || []).length) {
+      const optionPanel = panel("Fifth-Year Options", `${(talks.fifthYearOptions || []).length} decision(s)`);
+      const optionBody = panelBody(optionPanel);
+      optionBody.append(table(["Player", "Pos", "Score", "Option Year", "Salary", "Lean", "Action"], (talks.fifthYearOptions || []).map((player) => [
+        playerLink(player.player_id, player.player_name, undefined, { team: talks.team, position: player.position }),
+        player.position,
+        player.market_score || "-",
+        player.option_season || contractYear + 1,
+        money(player.option_salary),
+        player.recommendation || "-",
+        contractOptionButton(player),
+      ])));
+      root.append(optionPanel);
+    }
+
     const expiringPanel = panel("Expiring Players", `${(talks.expiring || []).length} shown`);
     const expiringBody = panelBody(expiringPanel);
-    expiringBody.append(table(["Player", "Pos", "Age", "Role", "Current", "Ask", "Tag", "Priority", "Action"], (talks.expiring || []).map((player) => [
+    expiringBody.append(table(["Player", "Pos", "Age", "Rights", "Role", "Current", "Ask", "Tags / Tenders", "Priority", "Action"], (talks.expiring || []).map((player) => [
       playerLink(player.player_id, player.player_name, undefined, { team: talks.team, position: player.position }),
       player.position,
       whole(player.age),
+      player.rights_type || "UFA",
       player.market_tier || "-",
       money(player.aav),
       money(player.asking_aav),
@@ -4528,6 +4552,39 @@
   function contractTagCell(player) {
     const wrap = node("span", "action-cell");
     const score = Number(player.market_score || 0);
+    const rights = String(player.rights_type || "UFA").toUpperCase();
+    if (rights === "RFA" && Array.isArray(player.rfa_tender_options) && player.rfa_tender_options.length) {
+      const select = node("select", "compact-select");
+      player.rfa_tender_options.forEach((option) => {
+        const opt = node("option", "", `${option.label} ${money(option.aav)}`);
+        opt.value = option.type;
+        select.append(opt);
+      });
+      wrap.append(select);
+      const run = node("button", "run-button", "Tender");
+      run.type = "button";
+      run.disabled = state.runnerBusy || !runnerMode();
+      run.title = "Restricted free-agent tender. Compensation and matching rights are tracked by tender level.";
+      run.addEventListener("click", () => runAction("contract_tag", {
+        player_id: player.player_id,
+        tag_type: select.value || "rfa_rofr",
+      }));
+      wrap.append(run);
+      return wrap;
+    }
+    if (rights === "ERFA") {
+      wrap.append(node("span", "quiet", `ERFA ${money(player.erfa_tender_aav)}`));
+      const run = node("button", "run-button", "Tender");
+      run.type = "button";
+      run.disabled = state.runnerBusy || !runnerMode();
+      run.title = "Exclusive-rights tender keeps the player on a one-year tender.";
+      run.addEventListener("click", () => runAction("contract_tag", {
+        player_id: player.player_id,
+        tag_type: "erfa",
+      }));
+      wrap.append(run);
+      return wrap;
+    }
     const tagText = score >= 82 ? `F ${money(player.franchise_tag_aav)}` : score >= 76 ? `T ${money(player.transition_tag_aav)}` : "-";
     wrap.append(node("span", "quiet", tagText));
     if (runnerMode() && score >= 76) {
@@ -4564,6 +4621,33 @@
         wrap.append(transition);
       }
     }
+    return wrap;
+  }
+
+  function contractOptionButton(player) {
+    const wrap = node("span", "action-cell");
+    if (!runnerMode()) {
+      const disabled = node("button", "run-button", "Unavailable");
+      disabled.type = "button";
+      disabled.disabled = true;
+      wrap.append(disabled);
+      return wrap;
+    }
+    const exercise = node("button", "run-button", state.runnerBusy ? "Running" : "Exercise");
+    exercise.type = "button";
+    exercise.disabled = state.runnerBusy;
+    exercise.title = "Adds a fully guaranteed fifth-year option contract for the option season.";
+    exercise.addEventListener("click", () => runAction("contract_option_exercise", {
+      player_id: player.player_id,
+    }));
+    const decline = node("button", "run-button secondary", "Decline");
+    decline.type = "button";
+    decline.disabled = state.runnerBusy;
+    decline.title = "Records the declined option. The player stays on his rookie deal and can expire normally.";
+    decline.addEventListener("click", () => runAction("contract_option_decline", {
+      player_id: player.player_id,
+    }));
+    wrap.append(exercise, decline);
     return wrap;
   }
 
