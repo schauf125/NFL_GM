@@ -418,6 +418,166 @@ h1 {
   color: var(--muted);
 }
 
+.contract-hero {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.contract-summary-item {
+  min-height: 92px;
+  border: 1px solid rgba(198, 172, 96, 0.28);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(135deg, rgba(198, 172, 96, 0.16), rgba(86, 122, 176, 0.07)),
+    rgba(255, 255, 255, 0.035);
+}
+
+.contract-summary-item span,
+.contract-status-pill,
+.season-badge {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.contract-summary-item span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.contract-summary-item strong {
+  display: block;
+  margin-top: 9px;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.contract-summary-item small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+}
+
+.contract-detail-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.contract-detail-grid .metric {
+  min-height: 74px;
+  padding: 11px 12px;
+}
+
+.contract-detail-grid .metric strong {
+  font-size: 1.28rem;
+}
+
+.contract-breakdown {
+  margin-top: 14px;
+}
+
+.contract-breakdown h3 {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.contract-year-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.contract-year-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+  table-layout: fixed;
+}
+
+.contract-year-table th,
+.contract-year-table td {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 10px 11px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.contract-year-table th {
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.contract-year-table th:nth-child(1),
+.contract-year-table td:nth-child(1) {
+  width: 92px;
+}
+
+.contract-year-table th:nth-child(8),
+.contract-year-table td:nth-child(8) {
+  width: 190px;
+}
+
+.contract-year-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.contract-year-table th.numeric,
+.contract-year-table .numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.contract-year-table .strong-money {
+  color: var(--text);
+  font-weight: 900;
+}
+
+.current-contract-year td {
+  background: rgba(198, 172, 96, 0.075);
+}
+
+.season-badge,
+.contract-status-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.season-badge.current,
+.contract-status-pill:first-child {
+  border-color: rgba(198, 172, 96, 0.65);
+  background: rgba(198, 172, 96, 0.16);
+}
+
+.contract-status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.contract-status-pill.muted {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+}
+
 .fact-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -495,6 +655,11 @@ h1 {
 .rating-great {
   --skill-color: #1fb7a6;
   --skill-glow: rgba(31, 183, 166, 0.26);
+}
+
+.rating-excellent {
+  --skill-color: #3aa7ef;
+  --skill-glow: rgba(58, 167, 239, 0.28);
 }
 
 .rating-elite {
@@ -649,6 +814,11 @@ h1 {
   .grid-row {
     grid-template-columns: 1fr;
   }
+
+  .contract-hero,
+  .contract-detail-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -673,6 +843,11 @@ h1 {
 
   .metric-grid,
   .fact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .contract-hero,
+  .contract-detail-grid {
     grid-template-columns: 1fr;
   }
 

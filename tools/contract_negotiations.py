@@ -730,6 +730,7 @@ def cap_casualty_candidates(
                 p.years_exp,
                 p.status,
                 p.overall,
+                p.potential,
                 ROW_NUMBER() OVER (
                     PARTITION BY cy.team_id, cy.season
                     ORDER BY cy.cap_hit DESC, p.first_name || ' ' || p.last_name, cy.player_id
@@ -1953,10 +1954,54 @@ def apply_tag(
                 f"{team['abbreviation']} lacks projected {contract_year} cap room for a {label} tender "
                 f"({money(tag_aav)}). Use --force to override."
             )
-    if label == "Franchise Tag" and group == "RB" and score < 86 and not force:
-        raise ValueError("RB franchise tags are restricted to elite backs. Use --force to override.")
-    if label == "Transition Tag" and score < 74 and not force:
-        raise ValueError("Transition tags should be reserved for credible starters. Use --force to override.")
+    tag_thresholds = {
+        "franchise": {
+            "QB": 82,
+            "RB": 88,
+            "WR": 84,
+            "OT": 84,
+            "IOL": 87,
+            "EDGE": 84,
+            "IDL": 84,
+            "CB": 84,
+            "TE": 86,
+            "S": 86,
+            "LB": 86,
+        },
+        "exclusive": {
+            "QB": 88,
+            "RB": 90,
+            "WR": 88,
+            "OT": 88,
+            "IOL": 90,
+            "EDGE": 88,
+            "IDL": 88,
+            "CB": 88,
+            "TE": 89,
+            "S": 89,
+            "LB": 89,
+        },
+        "transition": {
+            "QB": 80,
+            "RB": 86,
+            "WR": 84,
+            "OT": 83,
+            "IOL": 86,
+            "EDGE": 83,
+            "IDL": 83,
+            "CB": 82,
+            "TE": 84,
+            "S": 84,
+            "LB": 85,
+        },
+    }
+    if is_tag and not force:
+        minimum_score = tag_thresholds.get(tender_type, {}).get(group, 88)
+        if score < minimum_score:
+            raise ValueError(
+                f"{label} is reserved for higher-end {group} starters "
+                f"({score:.0f} score, needs {minimum_score}+). Use --force to override."
+            )
     if tender_type.startswith("rfa_") and score < 58 and not force:
         raise ValueError("RFA tenders should be reserved for players with a realistic roster path. Use --force to override.")
 

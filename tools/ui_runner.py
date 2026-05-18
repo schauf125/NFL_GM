@@ -104,8 +104,6 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "draft_skip",
     "draft_skip_to_user",
     "draft_finish",
-    "draft_class_generate",
-    "draft_class_import",
     "contract_extend",
     "contract_tag",
     "contract_option_exercise",

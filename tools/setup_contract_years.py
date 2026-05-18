@@ -614,7 +614,7 @@ def insert_contract_year_rows(con: sqlite3.Connection, contract: Contract) -> in
                 row["is_void_year"],
                 contract.is_active,
                 "derived_from_contracts_aav",
-                "Derived from existing contracts table. Restructures are replayed from contract_restructures.",
+                "",
             ),
         )
         inserted += 1

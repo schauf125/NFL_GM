@@ -109,10 +109,12 @@ def clean_hex(value: str | None, fallback: str) -> str:
 def grade_label(value: float | None) -> str:
     if value is None:
         return "Unknown"
-    if value >= 90:
+    if value >= 94:
         return "Elite"
-    if value >= 82:
+    if value >= 88:
         return "Excellent"
+    if value >= 82:
+        return "Very Good"
     if value >= 74:
         return "Strong"
     if value >= 66:
@@ -651,8 +653,12 @@ def contracts_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict
         player_ids,
     ).fetchall()
     contracts: dict[int, dict[str, Any]] = {}
+    contract_ids: list[int] = []
     for row in rows:
+        contract_id = int(row["contract_id"])
+        contract_ids.append(contract_id)
         contracts[int(row["player_id"])] = {
+            "contractId": contract_id,
             "team": row["team"],
             "season": row["season"],
             "yearNumber": row["contract_year_number"],
@@ -675,7 +681,67 @@ def contracts_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict
             "voidYear": bool(row["is_void_year"]),
             "source": row["source"] or "",
             "notes": row["notes"] or "",
+            "years": [],
         }
+    if contract_ids:
+        contract_placeholders = ",".join("?" for _ in contract_ids)
+        year_rows = conn.execute(
+            f"""
+            SELECT
+                cy.contract_id,
+                cy.season,
+                cy.contract_year_number,
+                cy.base_salary,
+                cy.signing_bonus_proration,
+                cy.roster_bonus,
+                cy.workout_bonus,
+                cy.option_bonus_proration,
+                cy.other_bonus,
+                cy.guaranteed_salary,
+                cy.cap_hit,
+                cy.cash_due,
+                cy.dead_cap_if_cut_pre_june1,
+                cy.dead_cap_if_cut_post_june1_current,
+                cy.dead_cap_if_cut_post_june1_next,
+                cy.is_option_year,
+                cy.option_exercised,
+                cy.is_void_year,
+                cy.is_active
+            FROM contract_years cy
+            WHERE cy.contract_id IN ({contract_placeholders})
+            ORDER BY cy.contract_id, cy.season, cy.contract_year_number
+            """,
+            contract_ids,
+        ).fetchall()
+        contracts_by_id = {
+            int(contract["contractId"]): contract
+            for contract in contracts.values()
+            if contract.get("contractId") is not None
+        }
+        for row in year_rows:
+            contract = contracts_by_id.get(int(row["contract_id"]))
+            if not contract:
+                continue
+            contract["years"].append({
+                "season": row["season"],
+                "yearNumber": row["contract_year_number"],
+                "baseSalary": money(row["base_salary"]),
+                "signingBonusProration": money(row["signing_bonus_proration"]),
+                "rosterBonus": money(row["roster_bonus"]),
+                "workoutBonus": money(row["workout_bonus"]),
+                "optionBonusProration": money(row["option_bonus_proration"]),
+                "otherBonus": money(row["other_bonus"]),
+                "guaranteedSalary": money(row["guaranteed_salary"]),
+                "capHit": money(row["cap_hit"]),
+                "cashDue": money(row["cash_due"]),
+                "deadPreJune1": money(row["dead_cap_if_cut_pre_june1"]),
+                "deadPostJune1Current": money(row["dead_cap_if_cut_post_june1_current"]),
+                "deadPostJune1Next": money(row["dead_cap_if_cut_post_june1_next"]),
+                "optionYear": bool(row["is_option_year"]),
+                "optionExercised": bool(row["option_exercised"]),
+                "voidYear": bool(row["is_void_year"]),
+                "active": bool(row["is_active"]),
+            })
     return contracts
 
 

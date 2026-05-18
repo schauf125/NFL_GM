@@ -230,8 +230,8 @@
     { value: 62, color: [224, 169, 52] },
     { value: 72, color: [212, 198, 74] },
     { value: 82, color: [80, 185, 111] },
-    { value: 90, color: [31, 183, 166] },
-    { value: 97, color: [79, 141, 247] },
+    { value: 88, color: [31, 183, 166] },
+    { value: 94, color: [79, 141, 247] },
     { value: 100, color: [96, 166, 255] },
   ];
 
@@ -270,7 +270,8 @@
   function ratingTierClass(value) {
     const rating = Number(value);
     if (!Number.isFinite(rating)) return "rating-unknown";
-    if (rating >= 90) return "rating-elite";
+    if (rating >= 94) return "rating-elite";
+    if (rating >= 88) return "rating-excellent";
     if (rating >= 82) return "rating-great";
     if (rating >= 74) return "rating-good";
     if (rating >= 66) return "rating-solid";
@@ -700,20 +701,35 @@
     const contractPanel = panel("Contract", contract ? contract.type : "No Active Contract");
 
     if (contract) {
-      const metrics = node("section", "metric-grid");
+      const contractRange = `${contract.startYear || "-"}-${contract.endYear || "-"}`;
+      const hero = node("section", "contract-hero");
+      append(hero, [
+        contractSummaryItem("Cap Hit", money(contract.capHit), String(contract.season || "Current")),
+        contractSummaryItem("Total Value", money(contract.totalValue), contractRange),
+        contractSummaryItem("Guaranteed", money(contract.guaranteedSalary), "current year"),
+        contractSummaryItem("Dead Cap", money(contract.deadPreJune1), "pre-June 1"),
+      ]);
+      contractPanel.append(hero);
+
+      const metrics = node("section", "metric-grid contract-detail-grid");
       [
-        ["Cap Hit", money(contract.capHit), String(contract.season)],
         ["Cash Due", money(contract.cashDue), "current year"],
         ["AAV", money(contract.aav), `${contract.startYear || "-"}-${contract.endYear || "-"}`],
-        ["Dead Cap", money(contract.deadPreJune1), "pre-June 1"],
         ["Base Salary", money(contract.baseSalary), ""],
-        ["Guarantee", money(contract.guaranteedSalary), ""],
         ["Signing Proration", money(contract.signingBonusProration), ""],
-        ["Total Value", money(contract.totalValue), ""],
       ].forEach(([label, value, note]) => metrics.append(metric(label, value, note)));
       contractPanel.append(metrics);
       if (contract.notes) {
         contractPanel.append(node("p", "summary-text", contract.notes));
+      }
+      const years = contract.years || [];
+      if (years.length) {
+        const breakdown = node("section", "contract-breakdown");
+        append(breakdown, [
+          node("h3", null, "Year By Year"),
+          contractYearTable(years, contract.season),
+        ]);
+        contractPanel.append(breakdown);
       }
     } else {
       contractPanel.append(node("div", "empty-state", "No current contract year found."));
@@ -737,6 +753,81 @@
     }
 
     refs.view.replaceChildren(root);
+  }
+
+  function contractSummaryItem(label, value, note) {
+    const item = node("article", "contract-summary-item");
+    append(item, [
+      node("span", null, label),
+      node("strong", null, value),
+      node("small", null, note || ""),
+    ]);
+    return item;
+  }
+
+  function contractYearTable(years, currentSeason) {
+    const wrap = node("div", "table-wrap contract-year-table-wrap");
+    const table = node("table", "data-table contract-year-table");
+    const thead = node("thead");
+    const headRow = node("tr");
+    [
+      ["Year", ""],
+      ["Base", "numeric"],
+      ["Bonus", "numeric"],
+      ["Guaranteed", "numeric"],
+      ["Cash", "numeric"],
+      ["Cap Hit", "numeric"],
+      ["Dead Cap", "numeric"],
+      ["Status", ""],
+    ].forEach(([label, className]) => headRow.append(node("th", className, label)));
+    thead.append(headRow);
+    const tbody = node("tbody");
+    years.forEach((year) => {
+      const tr = node("tr", Number(year.season) === Number(currentSeason) ? "current-contract-year" : "");
+      const bonus = Number(year.signingBonusProration || 0)
+        + Number(year.rosterBonus || 0)
+        + Number(year.workoutBonus || 0)
+        + Number(year.optionBonusProration || 0)
+        + Number(year.otherBonus || 0);
+      const notes = [];
+      if (Number(year.season) === Number(currentSeason)) notes.push("Current");
+      if (year.optionYear) notes.push(year.optionExercised ? "Option exercised" : "Option");
+      if (year.voidYear) notes.push("Void");
+      if (!year.active) notes.push("Inactive");
+      const seasonCell = node("td");
+      seasonCell.append(year.season ? seasonBadge(year.season, Number(year.season) === Number(currentSeason)) : "-");
+      const statusCell = node("td");
+      statusCell.append(statusPills(notes));
+      append(tr, [
+        seasonCell,
+        node("td", "numeric", money(year.baseSalary)),
+        node("td", "numeric", money(bonus)),
+        node("td", "numeric", money(year.guaranteedSalary)),
+        node("td", "numeric", money(year.cashDue)),
+        node("td", "numeric strong-money", money(year.capHit)),
+        node("td", "numeric", money(year.deadPreJune1)),
+        statusCell,
+      ]);
+      tbody.append(tr);
+    });
+    table.append(thead, tbody);
+    wrap.append(table);
+    return wrap;
+  }
+
+  function seasonBadge(season, current) {
+    const badge = node("span", current ? "season-badge current" : "season-badge", String(season));
+    return badge;
+  }
+
+  function statusPills(notes) {
+    const wrap = node("div", "contract-status-pills");
+    if (!notes.length) {
+      wrap.append(node("span", "contract-status-pill muted", "Scheduled"));
+      return wrap;
+    }
+    notes.forEach((note) => wrap.append(node("span", "contract-status-pill", note)));
+    return wrap;
   }
 
   function renderHistory(player) {

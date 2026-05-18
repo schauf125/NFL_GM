@@ -5192,7 +5192,10 @@
       const primary = assignments
         .filter((item) => item.rank > 0)
         .sort((a, b) => a.rank - b.rank)[0];
-      const contract = contractMap.get(String(player.player_id)) || {};
+      const alertContract = contractMap.get(String(player.player_id));
+      const contract = alertContract
+        ? { ...(player.contract || {}), ...alertContract, alertType: alertContract.type }
+        : (player.contract || {});
       return {
         ...player,
         assignments,
@@ -5907,7 +5910,7 @@
     const rows = rosterRows(depth);
     const starters = rows.filter((player) => player.primaryAssignment?.rank === 1).length;
     const rookies = rows.filter((player) => player.is_rookie).length;
-    const contractAlerts = rows.filter((player) => player.contract?.type).length;
+    const contractAlerts = rows.filter((player) => player.contract?.alertType).length;
     const summary = panel("Roster Snapshot", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
     if (state.depthChartLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live roster..."));
@@ -6558,11 +6561,55 @@
   }
 
   function selectedDraftProspect(board) {
-    if (!board.length) return null;
+    if (!board.length) return selectedDraftProspectFromDraftData(state.selectedDraftProspectId);
     const selected = board.find((player) => String(player.prospect_id) === String(state.selectedDraftProspectId));
     if (selected) return selected;
+    const selectedFromDraft = selectedDraftProspectFromDraftData(state.selectedDraftProspectId);
+    if (selectedFromDraft) return selectedFromDraft;
     state.selectedDraftProspectId = board[0].prospect_id;
     return board[0];
+  }
+
+  function selectedDraftProspectFromDraftData(prospectId) {
+    const id = String(prospectId || "");
+    if (!id) return null;
+    const queueMatch = (data.draft?.pickQueue || []).find((pick) => String(pick.selected_prospect_id || pick.selectedProspect?.prospect_id || "") === id);
+    if (queueMatch?.selectedProspect) return queueMatch.selectedProspect;
+    if (queueMatch) {
+      return {
+        prospect_id: queueMatch.selected_prospect_id,
+        player_name: queueMatch.selected_player_name || "Selected Player",
+        position: queueMatch.selected_player_position,
+        college: queueMatch.selected_player_college || queueMatch.prospect_college,
+        scout_confidence: queueMatch.scout_confidence || queueMatch.scouting_confidence || "Drafted",
+        status: "Drafted",
+        scouting_summary: `${queueMatch.current_team || "Team"} selected this prospect at pick ${queueMatch.effective_pick_number || queueMatch.pick_number || "-"}.`,
+        scouting_report: "Full draft profile is no longer on the active board, but this is the selected prospect tied to the pick.",
+        details_exported: false,
+      };
+    }
+    const selectionMatch = [...(data.draft?.selections || []), ...(data.draft?.userSelections || [])]
+      .find((selection) => String(selection.prospectId || selection.prospect_id || "") === id);
+    if (!selectionMatch) return null;
+    return {
+      prospect_id: selectionMatch.prospectId || selectionMatch.prospect_id,
+      player_name: selectionMatch.playerName || selectionMatch.player_name || "Selected Player",
+      position: selectionMatch.position,
+      college: selectionMatch.college,
+      height_in: selectionMatch.heightIn,
+      weight_lbs: selectionMatch.weightLbs,
+      scout_grade: selectionMatch.scoutGrade,
+      scout_ceiling: selectionMatch.scoutCeiling,
+      scout_risk: selectionMatch.scoutRisk,
+      primary_role: selectionMatch.primaryRole,
+      archetype: selectionMatch.archetype,
+      public_board_rank: selectionMatch.publicBoardRank,
+      scouting_summary: selectionMatch.scoutingSummary || selectionMatch.publicGradeNote,
+      scouting_projection: selectionMatch.scoutingProjection,
+      scout_confidence: selectionMatch.scoutConfidence || "Drafted",
+      status: "Drafted",
+      details_exported: false,
+    };
   }
 
   function sortedDraftBoard(players) {

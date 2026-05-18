@@ -2219,13 +2219,61 @@ def draft_summary(
                             selected_pick_id AS pick_id,
                             prospect_id,
                             first_name || ' ' || last_name AS prospect_name,
-                            position AS prospect_position
+                            first_name || ' ' || last_name AS player_name,
+                            first_name,
+                            last_name,
+                            position AS prospect_position,
+                            position,
+                            position_group,
+                            college,
+                            college_tier,
+                            college_class,
+                            age,
+                            height_in,
+                            weight_lbs,
+                            arm_length_in,
+                            hand_size_in,
+                            archetype,
+                            primary_role,
+                            secondary_role,
+                            public_board_rank,
+                            scouting_rank,
+                            projected_round,
+                            projected_pick,
+                            scout_lens,
+                            scout_confidence,
+                            scout_grade,
+                            scout_ceiling,
+                            scout_risk,
+                            scouting_summary,
+                            scouting_strengths,
+                            scouting_concerns,
+                            scouting_projection,
+                            scouting_report,
+                            medical_flag,
+                            medical_risk,
+                            interview_trait,
+                            interview_grade,
+                            late_process_status,
+                            late_process_note,
+                            public_board_delta,
+                            senior_bowl_eligible,
+                            senior_bowl_invited,
+                            senior_bowl_accepted,
+                            status
                         FROM draft_prospects
                         WHERE selected_pick_id IN ({placeholders})
                         """,
                         pick_ids,
                     ).fetchall()
                 )
+                scout_attributes = draft_scout_attributes(conn, prospect_rows)
+                for prospect in prospect_rows:
+                    prospect_attributes = scout_attributes.get(int(prospect["prospect_id"]), {})
+                    prospect["scout_attributes"] = prospect_attributes.get("attributes", [])
+                    prospect["scout_strengths"] = prospect_attributes.get("strengths", [])
+                    prospect["scout_concerns"] = prospect_attributes.get("concerns", [])
+                    prospect["details_exported"] = True
                 prospect_by_pick = {int(row["pick_id"]): row for row in prospect_rows if row.get("pick_id") is not None}
                 for pick in queue:
                     prospect = prospect_by_pick.get(int(pick["pick_id"])) if pick.get("pick_id") is not None else None
@@ -2235,6 +2283,7 @@ def draft_summary(
                     pick["selected_prospect_id"] = pick.get("selected_prospect_id") or prospect.get("prospect_id")
                     pick["selected_player_name"] = pick.get("selected_player_name") or prospect.get("prospect_name")
                     pick["selected_player_position"] = pick.get("selected_player_position") or prospect.get("prospect_position")
+                    pick["selectedProspect"] = prospect
         for pick in queue:
             team = pick.get("current_team") or pick.get("team")
             pick["teamLogo"] = logos.get(str(team)) if team else None
@@ -3056,13 +3105,33 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             p.status,
             p.is_rookie,
             p.height_in,
-            p.weight_lbs
+            p.weight_lbs,
+            cy.cap_hit AS contract_cap_hit,
+            cy.cash_due AS contract_cash_due,
+            cy.base_salary AS contract_base_salary,
+            c.contract_id,
+            c.start_year AS contract_start_year,
+            c.end_year AS contract_end_year,
+            c.aav AS contract_aav,
+            c.total_value AS contract_total_value,
+            c.total_years AS contract_total_years,
+            c.contract_type
         FROM players p
+        LEFT JOIN contract_years cy
+          ON cy.player_id = p.player_id
+         AND cy.team_id = p.team_id
+         AND cy.season = ?
+         AND COALESCE(cy.is_active, 1) = 1
+        LEFT JOIN contracts c
+          ON c.contract_id = cy.contract_id
+         AND c.player_id = p.player_id
+         AND c.team_id = p.team_id
+         AND COALESCE(c.is_active, 1) = 1
         WHERE p.team_id = ?
           AND COALESCE(p.status, 'Active') != 'Retired'
         ORDER BY p.position, p.last_name, p.first_name
         """,
-        (team_id,),
+        (season, team_id),
     ).fetchall()
     player_ids = [int(row["player_id"]) for row in roster_rows]
     roles = best_roles(conn, season, player_ids)
@@ -3084,6 +3153,18 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             "height_in": row["height_in"],
             "weight_lbs": row["weight_lbs"],
             "headshot": headshots.get(player_id),
+            "contract": {
+                "contract_id": row["contract_id"],
+                "start_year": row["contract_start_year"],
+                "end_year": row["contract_end_year"],
+                "aav": row["contract_aav"],
+                "total_value": row["contract_total_value"],
+                "total_years": row["contract_total_years"],
+                "cap_hit": row["contract_cap_hit"],
+                "cash_due": row["contract_cash_due"],
+                "base_salary": row["contract_base_salary"],
+                "type": row["contract_type"],
+            } if row["contract_id"] is not None else None,
             "role": roles.get(player_id, {}),
             "flex": flex.get(player_id, []),
         })
