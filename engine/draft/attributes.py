@@ -342,13 +342,13 @@ class DraftAttributeGenerator:
             return clamp(raw_grade, 42, 82)
 
         if tier == "round_1":
-            start, end, sigma = 75, 63, 4.4
+            start, end, sigma = 75.5, 64, 4.25
             span_start, span_end = 1, 32
         elif tier == "round_2_3":
-            start, end, sigma = 66, 58, 4.0
+            start, end, sigma = 67, 59, 3.95
             span_start, span_end = 33, 96
         elif tier == "round_4_5":
-            start, end, sigma = 60, 53, 4.1
+            start, end, sigma = 60.5, 53.5, 4.05
             span_start, span_end = 97, 160
         elif tier == "round_6_7":
             start, end, sigma = 56, 48, 4.0
@@ -424,8 +424,8 @@ class DraftAttributeGenerator:
             return self.rng.uniform(10.0, 15.0)
 
         bust_chances = {
-            "round_1": 0.26,
-            "round_2_3": 0.16,
+            "round_1": 0.25,
+            "round_2_3": 0.15,
             "round_4_5": 0.13,
             "round_6_7": 0.11,
             "leftover": 0.09,
@@ -548,7 +548,7 @@ class DraftAttributeGenerator:
 
         gap_base = {
             "round_1": 7,
-            "round_2_3": 8,
+            "round_2_3": 9,
             "round_4_5": 7,
             "round_6_7": 6,
             "leftover": 5,
@@ -589,8 +589,10 @@ class DraftAttributeGenerator:
             ceiling = max(ceiling, 77 + self.rng.random() * 5)
         elif rank <= 32 and true_grade >= 61 and self.rng.random() < 0.58:
             ceiling = max(ceiling, 73 + self.rng.random() * 5)
-        elif rank <= 64 and true_grade >= 58 and self.rng.random() < 0.52:
+        elif rank <= 64 and true_grade >= 58 and self.rng.random() < 0.60:
             ceiling = max(ceiling, 68 + self.rng.random() * 5)
+        elif rank <= 96 and true_grade >= 58 and self.rng.random() < 0.34:
+            ceiling = max(ceiling, 67 + self.rng.random() * 5)
         if talent_profile == "hidden_unlisted":
             ceiling += self._hidden_ceiling_variance()
         ceiling = self._finished_product_ceiling(

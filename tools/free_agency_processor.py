@@ -1601,8 +1601,14 @@ def cpu_re_sign_probability(player: dict[str, Any] | sqlite3.Row) -> float:
     tier = str(player["market_tier"] if "market_tier" in player.keys() else "").lower()
     group = str(player["position_group"] if "position_group" in player.keys() else "").upper()
     score = float(player["market_score"] or 60)
+    overall = float(row_value(player, "overall", score) or score)
+    potential = float(row_value(player, "potential", overall) or overall)
     age = int(player["age"] or 28) if "age" in player.keys() else 28
-    if score >= 90:
+    if group == "WR" and overall >= 83 and potential >= 86 and age <= 29:
+        base = 0.98
+    elif group == "TE" and overall >= 88 and potential >= 90 and age <= 29:
+        base = 0.96
+    elif score >= 90:
         base = 0.96
     elif score >= 86 and group in {"QB", "WR", "OT", "IOL", "EDGE", "IDL", "CB", "TE"}:
         base = 0.91
@@ -1653,12 +1659,16 @@ def cpu_aav_bounds(
     *,
     best_aav: int = 0,
     response_offer: bool = False,
+    market_pressure: float = 0.0,
 ) -> tuple[int, int]:
+    group = normalized_group(player)
     tier = str(row_value(player, "market_tier", "Depth") or "Depth").title()
     if tier in {"Core", "Franchise"}:
         tier = "Premium"
     asking = max(1, int(row_value(player, "asking_aav", row_value(player, "minimum_aav", 0)) or 0))
     minimum = max(1, int(row_value(player, "minimum_aav", 0) or 0))
+    score = true_overall(player)
+    potential = int(row_value(player, "potential", score) or score)
     if tier == "Premium":
         low_pct, high_pct = 1.00, 1.30
     elif tier == "Starter":
@@ -1672,9 +1682,37 @@ def cpu_aav_bounds(
     if response_offer:
         low_pct += 0.02
         high_pct += 0.08
+    if market_pressure > 0:
+        pressure = clamp(market_pressure, 0.0, 1.0)
+        if tier == "Premium" or cpu_elite_free_agent(player):
+            low_pct += 0.03 * pressure
+            high_pct += 0.16 * pressure
+        elif tier == "Starter":
+            low_pct += 0.02 * pressure
+            high_pct += 0.08 * pressure
     low = max(minimum, int(asking * low_pct), int(best_aav * 0.99))
-    high = max(low, int(asking * high_pct), int(best_aav * (1.16 if response_offer else 1.08)))
+    high = max(
+        low,
+        int(asking * high_pct),
+        int(best_aav * (1.16 if response_offer or market_pressure > 0 else 1.08)),
+    )
     cap = max(minimum, cpu_true_quality_aav_cap(player))
+    if group == "WR":
+        if score >= 88:
+            star_floor = 24_000_000
+        elif score >= 84 and potential >= 87:
+            star_floor = 22_000_000
+        elif score >= 82 and potential >= 86:
+            star_floor = 20_000_000
+        else:
+            star_floor = 0
+        if star_floor:
+            low = max(low, min(star_floor, cap))
+            high = max(high, min(int(star_floor * 1.18), cap))
+    elif group == "TE" and score >= 88:
+        star_floor = 20_000_000 if potential >= 90 else 18_000_000
+        low = max(low, min(star_floor, cap))
+        high = max(high, min(int(star_floor * 1.15), cap))
     if low > cap:
         low = cap
     high = min(high, max(low, cap))
@@ -2041,6 +2079,8 @@ def cpu_apply_pre_fa_tags(
                 eligible = score >= 88 and age <= 27 and franchise <= cap_space - 5_000_000
             elif group == "QB":
                 eligible = score >= 82 and franchise <= cap_space - 10_000_000
+            elif group == "WR" and int(player.get("overall") or score) >= 84 and int(player.get("potential") or score) >= 87 and age <= 29:
+                eligible = franchise <= cap_space - 5_000_000
             elif group in {"WR", "OT", "EDGE", "CB", "IDL"}:
                 eligible = score >= 84 and franchise <= cap_space - 7_500_000
             elif group == "IOL":
@@ -2115,6 +2155,8 @@ def cpu_apply_pre_fa_tags(
 def cpu_choose_rights_tender(player: dict[str, Any] | sqlite3.Row, rng: random.Random) -> str | None:
     rights_type = str(row_value(player, "rights_type", "") or "").upper()
     score = float(row_value(player, "market_score", 60) or 60)
+    overall = int(row_value(player, "overall", score) or score)
+    potential = int(row_value(player, "potential", overall) or overall)
     group = str(row_value(player, "position_group", "") or "")
     age = int(row_value(player, "age", 24) or 24)
     status = str(row_value(player, "status", "") or "")
@@ -2124,13 +2166,14 @@ def cpu_choose_rights_tender(player: dict[str, Any] | sqlite3.Row, rng: random.R
         return None
     if rights_type != "RFA":
         return None
-    if score >= 78 or (group in {"QB", "OT", "EDGE", "CB", "WR"} and score >= 74):
-        return "rfa_first" if rng.random() < 0.55 else "rfa_second"
-    if score >= 70:
-        return "rfa_second" if rng.random() < 0.72 else "rfa_original"
-    if score >= 63:
-        return "rfa_original" if rng.random() < 0.62 else "rfa_rofr"
-    if score >= 58 and age <= 25:
+    premium_group = group in {"QB", "OT", "EDGE", "CB", "WR", "IDL"}
+    if overall >= 78 or (premium_group and overall >= 75 and potential >= 82):
+        return "rfa_first" if overall >= 82 and rng.random() < 0.22 else "rfa_second"
+    if overall >= 73 or (premium_group and overall >= 70 and potential >= 80):
+        return "rfa_second" if rng.random() < 0.38 else "rfa_original"
+    if overall >= 68 or (age <= 25 and potential >= 76 and overall >= 64):
+        return "rfa_original" if rng.random() < 0.42 else "rfa_rofr"
+    if overall >= 62 or (age <= 25 and potential >= 72 and overall >= 58):
         return "rfa_rofr"
     return None
 
@@ -4393,6 +4436,31 @@ def create_cpu_offers(
                 )
             )
         slots = cpu_offer_slots_for_player(player, rng)
+        competing_team_count = len(affordable_teams)
+        market_pressure = 0.0
+        if normalized_tier(player) == "Premium" or cpu_elite_free_agent(player):
+            market_pressure = clamp((competing_team_count - 1) / 5.0, 0.0, 1.0)
+        elif normalized_tier(player) == "Starter":
+            market_pressure = clamp((competing_team_count - 2) / 6.0, 0.0, 0.65)
+        current_best_aav = max(
+            int(row_value(player, "best_aav", 0) or 0),
+            max(
+                (
+                    int(row["best_aav"] or 0)
+                    for row in con.execute(
+                        """
+                        SELECT MAX(aav) AS best_aav
+                        FROM free_agency_offers
+                        WHERE league_year = ?
+                          AND player_id = ?
+                          AND status = 'pending'
+                        """,
+                        (period["league_year"], player["player_id"]),
+                    ).fetchall()
+                ),
+                default=0,
+            ),
+        )
         for team in affordable_teams[:slots]:
             team_id = int(team["team_id"])
             if cpu_should_block_cap_casualty_reunion(
@@ -4459,7 +4527,11 @@ def create_cpu_offers(
             if duplicate:
                 continue
 
-            low, high = cpu_aav_bounds(player)
+            low, high = cpu_aav_bounds(
+                player,
+                best_aav=current_best_aav,
+                market_pressure=market_pressure,
+            )
             max_room = max(0, int(team["cap_space"] or 0) - cap_reserve - team_spend.get(int(team["team_id"]), 0))
             max_room = int(max_room * 0.88)
             if low > max_room:
@@ -4527,6 +4599,9 @@ def create_cpu_offers(
             team_group_spend[group_key] = team_group_spend.get(group_key, 0) + aav
             team_group_offers[group_key] = team_group_offers.get(group_key, 0) + 1
             group_counts[group_key] = group_counts.get(group_key, 0) + 1
+            current_best_aav = max(current_best_aav, aav)
+            if market_pressure > 0:
+                market_pressure = min(1.0, market_pressure + 0.08)
             log_event(
                 con,
                 league_year=int(period["league_year"]),

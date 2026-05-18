@@ -2212,6 +2212,10 @@ def draft_summary(
             pick_ids = [int(pick["pick_id"]) for pick in queue if pick.get("pick_id") is not None]
             if pick_ids:
                 placeholders = ",".join("?" for _ in pick_ids)
+                prospect_columns = relation_columns(conn, "draft_prospects")
+                hometown_columns = []
+                for column in ("hometown", "hometown_city", "hometown_state", "hometown_region"):
+                    hometown_columns.append(column if column in prospect_columns else f"'' AS {column}")
                 prospect_rows = rows_as_dicts(
                     conn.execute(
                         f"""
@@ -2228,6 +2232,7 @@ def draft_summary(
                             college,
                             college_tier,
                             college_class,
+                            {", ".join(hometown_columns)},
                             age,
                             height_in,
                             weight_lbs,
@@ -2330,6 +2335,10 @@ def draft_summary(
             ("scouting_variance", "0"),
             ("discovery_notes", "''"),
             ("college_class", "''"),
+            ("hometown", "''"),
+            ("hometown_city", "''"),
+            ("hometown_state", "''"),
+            ("hometown_region", "''"),
             ("senior_bowl_eligible", "0"),
             ("senior_bowl_invited", "0"),
             ("senior_bowl_accepted", "0"),

@@ -30,6 +30,7 @@ DEFAULT_SEASON = 2026
 DEFAULT_BOARD_LIMIT = 120
 PREMIUM_GROUPS = {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
 LOW_COST_GROUPS = {"K", "P", "LS"}
+ROUND_ONE_NEEDS_CLEANER_VALUE_GROUPS = {"RB", "TE", "LB", "S"}
 ROUND_ONE_PLAN_MIN_GRADE = 68.0
 ROUND_ONE_PLAN_MIN_CEILING = 76.0
 ROUND_TWO_PLAN_MIN_GRADE = 62.0
@@ -640,6 +641,16 @@ def score_prospect(
             early_quality_penalty += 34.0 + ((ROUND_ONE_PLAN_MIN_GRADE - grade) * 2.1)
         if ceiling < ROUND_ONE_PLAN_MIN_CEILING:
             early_quality_penalty += 26.0 + ((ROUND_ONE_PLAN_MIN_CEILING - ceiling) * 1.8)
+        if confidence.lower() in {"high", "very high"} and grade < 66 and ceiling < 73:
+            early_quality_penalty += 72.0
+        elif confidence.lower() in {"high", "very high"} and grade < 68 and ceiling < 75:
+            early_quality_penalty += 34.0
+        if confidence.lower() == "medium" and rank > 20 and ceiling < 73:
+            early_quality_penalty += 26.0
+        if confidence.lower() in {"unscouted", "low"} and rank > 32 and grade < 62:
+            early_quality_penalty += 44.0
+        if group in ROUND_ONE_NEEDS_CLEANER_VALUE_GROUPS and grade < 72 and ceiling < 79 and rank > 12:
+            early_quality_penalty += 24.0
     elif confidence_round == 2:
         if grade < ROUND_TWO_PLAN_MIN_GRADE:
             early_quality_penalty += 18.0 + ((ROUND_TWO_PLAN_MIN_GRADE - grade) * 1.6)

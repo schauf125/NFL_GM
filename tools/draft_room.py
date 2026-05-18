@@ -50,6 +50,7 @@ ROUND_ONE_LATE_MAX_LOW_CEILING_RANK = 48
 ROUND_ONE_MIN_GRADE_FLOOR = 68.0
 ROUND_ONE_MIN_CEILING_FLOOR = 76.0
 ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS = {"QB", "OT", "EDGE", "CB", "IDL"}
+ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS = {"C", "OG", "RB", "TE", "ILB", "FS", "SS", "NB"}
 ROUND_TWO_MIN_GRADE_FLOOR = 62.0
 ROUND_TWO_MIN_CEILING_FLOOR = 68.0
 DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 16, 2: 9, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
@@ -923,7 +924,9 @@ def cpu_early_round_value_penalty(
 
     if round_number == 1:
         early = pick_number <= 16
+        top_ten = pick_number <= 10
         late = pick_number >= 25
+        needs_cleaner_value = position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
         if perceived_grade < ROUND_ONE_MIN_GRADE_FLOOR:
             penalty += (92.0 if early else 58.0) + ((ROUND_ONE_MIN_GRADE_FLOOR - perceived_grade) * 3.6)
         elif perceived_grade < 70.0 and early:
@@ -968,6 +971,22 @@ def cpu_early_round_value_penalty(
             penalty += 72.0
         if late and confidence == "medium" and true_ceiling < 72.0 and position not in ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS:
             penalty += 56.0
+
+        if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and perceived_ceiling < 73.0 and perceived_grade < 66.0:
+            penalty += 115.0 if early else 78.0
+        elif confidence in EARLY_DRAFT_STRONG_CONFIDENCE and perceived_ceiling < 75.0 and perceived_grade < 68.0:
+            penalty += 54.0 if early else 34.0
+        if confidence == "medium" and perceived_ceiling < 73.0 and base_rank > 20:
+            penalty += 46.0 if early else 26.0
+        if confidence in {"unscouted", "low"} and perceived_grade < 62.0 and base_rank > 32:
+            penalty += 70.0 if early else 44.0
+        if needs_cleaner_value:
+            if top_ten and perceived_ceiling < 82.0 and perceived_grade < 75.0:
+                penalty += 64.0
+            elif early and perceived_ceiling < 79.0 and perceived_grade < 72.0 and base_rank > 12:
+                penalty += 34.0
+            elif late and perceived_ceiling < 74.0 and perceived_grade < 68.0:
+                penalty += 20.0
 
         if late and confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
             penalty *= 0.72
@@ -1464,6 +1483,20 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
     for row in candidates:
         base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
         confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+        public_grade = float(row["scout_grade"] or row["overall"] or row["true_grade"] or 50)
+        public_ceiling = float(row["scout_ceiling"] or row["potential"] or row["ceiling_grade"] or public_grade)
+        perceived_grade = cpu_perceived_grade(
+            row,
+            game_id=game_id,
+            draft_year=draft_year,
+            team_id=team_id,
+        )
+        perceived_ceiling = cpu_perceived_ceiling(
+            row,
+            game_id=game_id,
+            draft_year=draft_year,
+            team_id=team_id,
+        )
         if round_number == 1:
             public_escape = base_rank <= ROUND_ONE_PUBLIC_ESCAPE_RANK and confidence in ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE
             in_plan_tier = int(row["prospect_id"]) in plan_tier_ids
@@ -1491,22 +1524,9 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             premium_bonus = 4
         if round_number >= 6 and row["position"] in {"K", "P", "LS"}:
             premium_bonus = 8
-        public_grade = float(row["scout_grade"] or row["overall"] or row["true_grade"] or 50)
-        public_ceiling = float(row["scout_ceiling"] or row["potential"] or row["ceiling_grade"] or public_grade)
-        perceived_grade = cpu_perceived_grade(
-            row,
-            game_id=game_id,
-            draft_year=draft_year,
-            team_id=team_id,
-        )
-        perceived_ceiling = cpu_perceived_ceiling(
-            row,
-            game_id=game_id,
-            draft_year=draft_year,
-            team_id=team_id,
-        )
         if round_number == 1:
             late_pick = overall_pick_number is not None and overall_pick_number >= 25
+            top_ten_pick = overall_pick_number is not None and overall_pick_number <= 10
             late_low_ceiling_reach = (
                 late_pick
                 and (
@@ -1526,6 +1546,32 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 and str(row["position"] or "").upper() not in ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS
             )
             if late_low_ceiling_non_impact:
+                continue
+            known_low_ceiling = perceived_ceiling < 73.0 and perceived_grade < 66.0
+            if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and known_low_ceiling:
+                continue
+            medium_low_ceiling_public_reach = (
+                confidence == "medium"
+                and perceived_ceiling < 73.0
+                and base_rank > 20
+                and str(row["position"] or "").upper() not in ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS
+            )
+            if medium_low_ceiling_public_reach:
+                continue
+            low_confidence_low_grade_reach = (
+                confidence in {"unscouted", "low"}
+                and base_rank > 32
+                and perceived_grade < 62.0
+            )
+            if low_confidence_low_grade_reach:
+                continue
+            top_ten_low_value_reach = (
+                top_ten_pick
+                and str(row["position"] or "").upper() in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+                and perceived_grade < 75.0
+                and perceived_ceiling < 82.0
+            )
+            if top_ten_low_value_reach:
                 continue
         grade_delta = perceived_grade - public_grade
         ceiling_delta = perceived_ceiling - public_ceiling

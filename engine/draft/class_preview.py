@@ -14,6 +14,7 @@ from .appearance import AppearanceGenerator
 from .attributes import DraftAttributeGenerator
 from .combine import CombineGenerator
 from .college import CollegeGenerator
+from .hometown import HometownGenerator
 from .names import NameGenerator, UNITED_STATES
 from .physical import PhysicalProfileGenerator, format_height, format_measurement
 from .scouting import ScoutingReportGenerator
@@ -275,6 +276,10 @@ class DraftClassPreviewRow:
     age: int
     college: str
     college_tier: str
+    hometown: str
+    hometown_city: str
+    hometown_state: str
+    hometown_region: str
     height: str
     height_in: int
     weight_lbs: int
@@ -391,6 +396,7 @@ class DraftClassPreviewGenerator:
         self.physical_generator = PhysicalProfileGenerator(seed=f"{seed}:physical")
         self.appearance_generator = AppearanceGenerator(seed=f"{seed}:appearance")
         self.college_generator = CollegeGenerator(seed=f"{seed}:college")
+        self.hometown_generator = HometownGenerator(seed=f"{seed}:hometown")
         self.attribute_generator = DraftAttributeGenerator(seed=f"{seed}:attributes")
         self.combine_generator = CombineGenerator(seed=f"{seed}:combine")
         self.pro_day_generator = ProDayGenerator(seed=f"{seed}:pro-day")
@@ -457,6 +463,12 @@ class DraftClassPreviewGenerator:
                 tier_weights=HIDDEN_COLLEGE_TIER_WEIGHTS
                 if is_hidden
                 else self._college_tier_weights_for_rank(index),
+            )
+            hometown = self.hometown_generator.generate(
+                college=college.college,
+                college_tier=college.college_tier,
+                birth_country=generated_name.country,
+                is_international=generated_name.is_international,
             )
             appearance = self.appearance_generator.generate(
                 ethnicity_key=generated_name.ethnicity_key,
@@ -557,6 +569,10 @@ class DraftClassPreviewGenerator:
                     age=college.age,
                     college=college.college,
                     college_tier=college.college_tier,
+                    hometown=hometown.label,
+                    hometown_city=hometown.city,
+                    hometown_state=hometown.state,
+                    hometown_region=hometown.region,
                     height=format_height(physical.height_in),
                     height_in=physical.height_in,
                     weight_lbs=physical.weight_lbs,
@@ -1444,6 +1460,7 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
             f"<td>{row.position_group}</td>"
             f"<td>{row.age}</td>"
             f"<td>{html.escape(row.college)}</td>"
+            f"<td>{html.escape(row.hometown)}</td>"
             f"<td>{row.height}</td>"
             f"<td>{row.weight_lbs}</td>"
             f"<td>{row.arm_length}</td>"
@@ -1545,7 +1562,7 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
     <table>
       <thead>
         <tr>
-          <th>Board</th><th>Status</th><th>Discovery</th><th>Scout Var</th><th>Discovery Note</th><th>Proj Rd</th><th>Proj Pick</th><th>Name</th><th>Pos</th><th>Group</th><th>Age</th><th>College</th><th>Ht</th><th>Wt</th><th>Arm</th><th>Hand Size</th><th>Handed</th>
+          <th>Board</th><th>Status</th><th>Discovery</th><th>Scout Var</th><th>Discovery Note</th><th>Proj Rd</th><th>Proj Pick</th><th>Name</th><th>Pos</th><th>Group</th><th>Age</th><th>College</th><th>Hometown</th><th>Ht</th><th>Wt</th><th>Arm</th><th>Hand Size</th><th>Handed</th>
           <th>Combine</th><th>Comb Grade</th><th>Ath Score</th><th>Drills</th><th>40</th><th>10 Split</th><th>Bench</th><th>Vert</th><th>Broad</th><th>3-Cone</th><th>Shuttle</th><th>60 Sh</th><th>Workout</th><th>Combine Summary</th><th>Skipped</th><th>Combine Note</th>
           <th>Pro Day</th><th>Pro Grade</th><th>Pro Ath</th><th>Pro Drills</th><th>Pro 40</th><th>Pro 10</th><th>Pro Bench</th><th>Pro Vert</th><th>Pro Broad</th><th>Pro 3-Cone</th><th>Pro Shuttle</th><th>Pro Workout</th><th>Pro Summary</th><th>Pro Skipped</th><th>Pro Note</th>
           <th>Archetype</th><th>Primary Role</th>

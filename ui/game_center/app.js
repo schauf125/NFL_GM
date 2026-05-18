@@ -6860,6 +6860,7 @@
     append(wrap, [
       node("strong", null, player.college || "-"),
       player.college_tier ? node("small", null, player.college_tier) : null,
+      player.hometown ? node("small", null, player.hometown) : null,
     ]);
     return wrap;
   }
@@ -6949,6 +6950,7 @@
       ["Class", valueOrDash(player.college_class)],
       ["Senior Bowl", seniorBowlLabel(player)],
       ["School", `${player.college || "-"}${player.college_tier ? ` (${player.college_tier})` : ""}`],
+      ["Hometown", valueOrDash(player.hometown)],
       ["Late Buzz", valueOrDash(player.late_process_status)],
       ["Board Move", boardMoveText(player.public_board_delta)],
       ["Height", heightText(player.height_in)],

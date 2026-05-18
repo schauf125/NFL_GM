@@ -64,7 +64,7 @@
     setText("collegeLine", prospect.college);
     setText("prospectName", prospect.name);
     setText("positionLine", `${prospect.position} | ${prospect.archetype}`);
-    setText("classLine", `${prospect.birthCountry} | ${prospect.ethnicity}`);
+    setText("classLine", `${prospect.hometown || prospect.birthCountry} | ${prospect.ethnicity}`);
     setText("archetypeLine", `${prospect.position} ${prospect.archetype}`);
     setText("pickText", `R${prospect.projectedRound} P${prospect.projectedPick}`);
 

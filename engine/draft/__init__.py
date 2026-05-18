@@ -4,6 +4,7 @@ from .appearance import AppearanceGenerator, AppearanceTraits
 from .attributes import DraftAttributeGenerator, DraftProspectAttributes
 from .combine import CombineGenerator, CombineProfile
 from .college import CollegeGenerator, CollegeProfile
+from .hometown import HometownGenerator, HometownProfile
 from .names import GeneratedName, NameGenerator
 from .physical import (
     PhysicalProfileGenerator,
@@ -22,6 +23,8 @@ __all__ = [
     "CombineProfile",
     "CollegeGenerator",
     "CollegeProfile",
+    "HometownGenerator",
+    "HometownProfile",
     "DraftAttributeGenerator",
     "DraftProspectAttributes",
     "NameGenerator",

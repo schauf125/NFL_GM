@@ -1060,8 +1060,23 @@ def upsert_user_pre_draft_medium(
         WHERE prospect_id = ?
         """,
         (
-            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], "Medium"),
-            tighten_displayed_scout_read(prospect["scout_ceiling"], prospect["ceiling_grade"], "Medium", ceiling=True),
+            tighten_displayed_scout_read(
+                prospect["scout_grade"],
+                prospect["true_grade"],
+                "Medium",
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=draft_year,
+            ),
+            tighten_displayed_scout_read(
+                prospect["scout_ceiling"],
+                prospect["ceiling_grade"],
+                "Medium",
+                ceiling=True,
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=draft_year,
+            ),
             int(prospect["prospect_id"]),
         ),
     )
@@ -1847,25 +1862,51 @@ def tighten_displayed_scout_read(
     confidence: str,
     *,
     ceiling: bool = False,
+    public_board_rank: Any = None,
+    prospect_id: Any = None,
+    draft_year: Any = None,
 ) -> int:
     """Move the shared board read toward true value as confidence rises."""
     current = float(current_value or true_value or 50)
     true = float(true_value or current)
+    normalized = normalize_confidence(confidence)
+    try:
+        rank = int(public_board_rank or 9999)
+    except (TypeError, ValueError):
+        rank = 9999
+    early_public_board = 1 <= rank <= 50
     weight = {
         "Low": 0.18,
         "Medium": 0.42,
         "High": 0.74,
         "Very High": 0.90,
-    }.get(normalize_confidence(confidence), 0.18)
+    }.get(normalized, 0.18)
+    if early_public_board and normalized == "High":
+        weight = min(weight, 0.62)
+    elif early_public_board and normalized == "Very High":
+        weight = min(weight, 0.78)
     tightened = current + ((true - current) * weight)
     max_gap = {
         "Low": 18.0 if ceiling else 12.0,
         "Medium": 10.0 if ceiling else 7.0,
         "High": 5.0 if ceiling else 4.0,
         "Very High": 3.0 if ceiling else 2.0,
-    }.get(normalize_confidence(confidence), 12.0)
+    }.get(normalized, 12.0)
+    if early_public_board and normalized in {"High", "Very High"}:
+        max_gap += 2.0 if ceiling else 1.5
     if abs(tightened - true) > max_gap:
         tightened = true + (max_gap if tightened > true else -max_gap)
+    if early_public_board and normalized in {"High", "Very High"} and prospect_id is not None:
+        jitter_sigma = {
+            ("High", False): 1.15,
+            ("High", True): 1.65,
+            ("Very High", False): 0.80,
+            ("Very High", True): 1.15,
+        }[(normalized, ceiling)]
+        jitter_limit = 3.5 if ceiling else 2.5
+        seed = f"early-public-scout-read:{draft_year or ''}:{prospect_id}:{normalized}:{'ceiling' if ceiling else 'grade'}"
+        jitter = random.Random(seed).gauss(0.0, jitter_sigma)
+        tightened += max(-jitter_limit, min(jitter_limit, jitter))
     return int(round(max(20.0, min(99.0, tightened))))
 
 
@@ -1950,12 +1991,22 @@ def advance_prospect_one_tier(
         """,
         (
             new_confidence,
-            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], new_confidence),
+            tighten_displayed_scout_read(
+                prospect["scout_grade"],
+                prospect["true_grade"],
+                new_confidence,
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=draft_year,
+            ),
             tighten_displayed_scout_read(
                 prospect["scout_ceiling"],
                 prospect["ceiling_grade"],
                 new_confidence,
                 ceiling=True,
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=draft_year,
             ),
             int(prospect["prospect_id"]),
         ),
@@ -3288,12 +3339,22 @@ def process_assignments(
             """,
             (
                 confidence,
-                tighten_displayed_scout_read(assignment["scout_grade"], assignment["true_grade"], confidence),
+                tighten_displayed_scout_read(
+                    assignment["scout_grade"],
+                    assignment["true_grade"],
+                    confidence,
+                    public_board_rank=assignment["public_board_rank"],
+                    prospect_id=assignment["prospect_id"],
+                    draft_year=target_year,
+                ),
                 tighten_displayed_scout_read(
                     assignment["scout_ceiling"],
                     assignment["ceiling_grade"],
                     confidence,
                     ceiling=True,
+                    public_board_rank=assignment["public_board_rank"],
+                    prospect_id=assignment["prospect_id"],
+                    draft_year=target_year,
                 ),
                 int(assignment["prospect_id"]),
             ),
@@ -3866,12 +3927,22 @@ def execute_top30_visit(
         """,
         (
             visit_confidence,
-            tighten_displayed_scout_read(prospect["scout_grade"], prospect["true_grade"], visit_confidence),
+            tighten_displayed_scout_read(
+                prospect["scout_grade"],
+                prospect["true_grade"],
+                visit_confidence,
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=target_year,
+            ),
             tighten_displayed_scout_read(
                 prospect["scout_ceiling"],
                 prospect["ceiling_grade"],
                 visit_confidence,
                 ceiling=True,
+                public_board_rank=prospect["public_board_rank"],
+                prospect_id=prospect["prospect_id"],
+                draft_year=target_year,
             ),
             prospect_id,
         ),
@@ -5512,6 +5583,10 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             dp.position_group,
             dp.college,
             dp.college_tier,
+            dp.hometown,
+            dp.hometown_city,
+            dp.hometown_state,
+            dp.hometown_region,
             dp.age,
             dp.college_class,
             dp.senior_bowl_eligible,
