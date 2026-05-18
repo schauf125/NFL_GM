@@ -2834,9 +2834,9 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         response["app_shell_state"] = app_shell_after
         if action in {"new_june1_save", "load_game"} and result.returncode == 0:
             try:
-                after, refreshed_app_shell = write_exports(include_players=True)
-                response["state"] = after
+                _after, refreshed_app_shell = write_exports(include_players=True)
                 response["app_shell_state"] = refreshed_app_shell
+                response["stateDeferred"] = True
             except sqlite3.OperationalError as exc:
                 if "locked" not in str(exc).lower():
                     raise
@@ -3359,6 +3359,7 @@ def main() -> int:
     args = parser.parse_args()
 
     mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("image/webp", ".webp")
     try:
         write_exports()
     except sqlite3.OperationalError as exc:
@@ -3378,4 +3379,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
