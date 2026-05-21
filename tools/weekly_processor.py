@@ -27,6 +27,7 @@ import league_news
 import roster_cutdown
 import scouting
 import season_storylines
+import pro_player_fog
 import trade_engine
 
 
@@ -509,6 +510,19 @@ def create_youth_evaluation_news(
             tags=["development", "depth_chart", "rebuild"],
             is_major=False,
             fingerprint=fingerprint,
+        )
+        pro_player_fog.apply_evaluation_event(
+            con,
+            game_id=game_id,
+            player_id=player_id,
+            team_id=team_id,
+            season=season,
+            event_date=news_date,
+            event_type="youth_evaluation_snaps",
+            signal_strength=0.55,
+            snap_count=primary_snaps,
+            source="weekly_youth_evaluation_pro_fog",
+            notes="Late-season evaluation snaps gave the staff a clearer pro read.",
         )
         created += 1
         seen_teams.add(team_id)

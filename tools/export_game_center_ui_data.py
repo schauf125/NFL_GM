@@ -29,6 +29,8 @@ import roster_rules
 import scouting
 import draft_portrait_assets
 import saved_draft_class_package
+import pro_player_fog
+from engine import depth_packages
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
 
 
@@ -261,7 +263,7 @@ def fallback_draft_trade_details(conn: sqlite3.Connection, event: dict[str, Any]
     buyer_receives: list[dict[str, Any]] = []
     if event.get("pick_id"):
         pick_row = conn.execute(
-            """
+            f"""
             SELECT pick_id, draft_year, round, pick_number
             FROM draft_picks
             WHERE pick_id = ?
@@ -629,7 +631,7 @@ def calendar_game_rows(
     logos = team_logo_map(conn)
     rows = rows_as_dicts(
         conn.execute(
-            """
+            f"""
             SELECT
                 g.game_id,
                 g.season,
@@ -3335,7 +3337,12 @@ def stat_leaders(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
     }
 
 
-def best_roles(conn: sqlite3.Connection, season: int, player_ids: list[int]) -> dict[int, dict[str, Any]]:
+def best_roles(
+    conn: sqlite3.Connection,
+    season: int,
+    player_ids: list[int],
+    evaluations: dict[int, dict[str, Any]] | None = None,
+) -> dict[int, dict[str, Any]]:
     if not player_ids or not table_exists(conn, "player_role_scores"):
         return {}
     placeholders = ",".join("?" for _ in player_ids)
@@ -3352,9 +3359,14 @@ def best_roles(conn: sqlite3.Connection, season: int, player_ids: list[int]) -> 
     for row in rows:
         player_id = int(row["player_id"])
         if player_id not in roles:
+            score = pro_player_fog.fog_role_value(
+                (evaluations or {}).get(player_id),
+                row["role_key"],
+                float(row["role_score"] or 0),
+            )
             roles[player_id] = {
                 "key": row["role_key"],
-                "score": round(float(row["role_score"] or 0), 1),
+                "score": round(float(score or 0), 1),
             }
     return roles
 
@@ -3398,6 +3410,24 @@ def depth_chart_summary(
     if not team_row:
         return {"team": team, "rows": [], "roster": [], "units": []}
     team_id = int(team_row["team_id"])
+    scheme_row = None
+    if table_exists(conn, "team_scheme_identities_view"):
+        scheme_row = conn.execute(
+            """
+            SELECT *
+            FROM team_scheme_identities_view
+            WHERE team_id = ? AND season = ?
+            """,
+            (team_id, season),
+        ).fetchone()
+    scheme = depth_packages.scheme_packages_from_row(scheme_row)
+    active_slots = set(
+        depth_packages.active_depth_slots(
+            list(scheme.get("offensePackages") or ["11", "12"]),
+            list(scheme.get("defensePackages") or ["nickel"]),
+            include_special=True,
+        )
+    )
     contract_year = int(contract_season or season)
     roster_rows = conn.execute(
         """
@@ -3454,18 +3484,31 @@ def depth_chart_summary(
         (contract_year, team_id),
     ).fetchall()
     player_ids = [int(row["player_id"]) for row in roster_rows]
-    roles = best_roles(conn, season, player_ids)
+    game_id = pro_player_fog.active_game_id(conn)
+    evaluations, created_evaluations = pro_player_fog.evaluations_for_players(
+        conn,
+        game_id=game_id,
+        season=season,
+        player_team_ids={player_id: team_id for player_id in player_ids},
+        create_missing=True,
+    )
+    if created_evaluations:
+        conn.commit()
+    roles = best_roles(conn, season, player_ids, evaluations)
     flex = flex_positions(conn, player_ids)
     headshots = export_player_profile_ui_data.headshots(conn)
     roster = []
     for row in roster_rows:
         player_id = int(row["player_id"])
+        evaluation = evaluations.get(player_id)
         roster.append({
             "player_id": player_id,
             "player_name": row["player_name"],
             "position": row["position"],
-            "overall": row["overall"],
-            "potential": row["potential"],
+            "overall": evaluation.get("overall") if evaluation else row["overall"],
+            "potential": evaluation.get("potential") if evaluation else row["potential"],
+            "evaluation": evaluation,
+            "evaluation_confidence": evaluation.get("confidenceLabel") if evaluation else "Cloudy",
             "age": row["age"],
             "jersey_number": row["jersey_number"],
             "status": row["status"] or "Active",
@@ -3492,7 +3535,7 @@ def depth_chart_summary(
 
     depth_rows = rows_as_dicts(
         conn.execute(
-            """
+            f"""
             SELECT
                 dc.depth_chart_id,
                 dc.unit,
@@ -3508,6 +3551,7 @@ def depth_chart_summary(
             FROM depth_charts dc
             JOIN players p ON p.player_id = dc.player_id
             WHERE dc.team_id = ?
+              AND dc.position IN ({",".join("?" for _ in active_slots)})
             ORDER BY
                 CASE dc.unit
                     WHEN 'Offense' THEN 1
@@ -3518,12 +3562,19 @@ def depth_chart_summary(
                 dc.position,
                 dc.depth_rank
             """,
-            (team_id,),
+            (team_id, *sorted(active_slots)),
         ).fetchall()
     )
     units: dict[str, dict[str, Any]] = {}
     for row in depth_rows:
-        row["role"] = roles.get(int(row["player_id"]), {})
+        player_id = int(row["player_id"])
+        evaluation = evaluations.get(player_id)
+        if evaluation:
+            row["overall"] = evaluation.get("overall")
+            row["potential"] = evaluation.get("potential")
+            row["evaluation"] = evaluation
+            row["evaluation_confidence"] = evaluation.get("confidenceLabel")
+        row["role"] = roles.get(player_id, {})
         unit = units.setdefault(row["unit"], {"unit": row["unit"], "slots": {}})
         slot = unit["slots"].setdefault(row["slot"], {"slot": row["slot"], "players": []})
         slot["players"].append(row)
@@ -3536,6 +3587,8 @@ def depth_chart_summary(
     return {
         "team": team_row["abbreviation"],
         "teamName": team_row["team_name"],
+        "scheme": scheme,
+        "activeSlots": sorted(active_slots),
         "rows": depth_rows,
         "roster": roster,
         "units": unit_list,

@@ -65,7 +65,7 @@ from engine.specialist_behavior import (
     profile_from_mapping as specialist_profile_from_mapping,
     specialist_behavior_profile,
 )
-from engine import injury_model
+from engine import depth_packages, injury_model
 
 
 ENGINE_VERSION = "0.1.8"
@@ -589,6 +589,12 @@ class TeamSnapshot:
     losses: int = 0
     ties: int = 0
     point_diff: int = 0
+    offense_scheme_key: str = "balanced_pro_style"
+    offense_scheme: str = "Balanced Pro Style"
+    offense_personnel: str = "11/12 personnel"
+    defense_scheme_key: str = "hybrid_multiple_front"
+    defense_scheme: str = "Hybrid Multiple Front"
+    defense_personnel: str = "multiple"
 
     @property
     def display_name(self) -> str:
@@ -612,6 +618,12 @@ class TeamSnapshot:
 
     def games_played(self) -> int:
         return int(self.wins + self.losses + self.ties)
+
+    def offense_packages(self) -> list[str]:
+        return depth_packages.infer_offense_packages(self.offense_scheme_key, self.offense_personnel)
+
+    def defense_packages(self) -> list[str]:
+        return depth_packages.infer_defense_packages(self.defense_scheme_key, self.defense_personnel)
 
     def win_pct(self) -> float:
         games = self.games_played()
@@ -1479,6 +1491,17 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         """,
         (season, team_id),
     ).fetchone()
+    scheme_row = None
+    if table_exists(con, "team_scheme_identities_view"):
+        scheme_row = con.execute(
+            """
+            SELECT *
+            FROM team_scheme_identities_view
+            WHERE team_id = ? AND season = ?
+            """,
+            (team_id, season),
+        ).fetchone()
+    scheme_info = depth_packages.scheme_packages_from_row(scheme_row)
 
     players_by_id = {}
     roster = []
@@ -1578,6 +1601,12 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         losses=int(record_row["losses"] or 0) if record_row else 0,
         ties=int(record_row["ties"] or 0) if record_row else 0,
         point_diff=int((record_row["points_for"] or 0) - (record_row["points_against"] or 0)) if record_row else 0,
+        offense_scheme_key=str(scheme_info.get("offenseSchemeKey") or "balanced_pro_style"),
+        offense_scheme=str(scheme_info.get("offenseScheme") or "Balanced Pro Style"),
+        offense_personnel=str(scheme_info.get("offensePersonnel") or "11/12 personnel"),
+        defense_scheme_key=str(scheme_info.get("defenseSchemeKey") or "hybrid_multiple_front"),
+        defense_scheme=str(scheme_info.get("defenseScheme") or "Hybrid Multiple Front"),
+        defense_personnel=str(scheme_info.get("defensePersonnel") or "multiple"),
     )
 
 
@@ -2270,17 +2299,41 @@ class MatchEngine:
         players.append(player)
         used.add(player.player_id)
 
+    def offense_package_available(self, offense: TeamSnapshot, package: str) -> bool:
+        package = str(package or "11")
+        if package == "21":
+            return any(player.position == "FB" for player in offense.candidates("FB")[:2])
+        if package == "12":
+            return len({player.player_id for player in offense.candidates("TE") if player.position == "TE"}) >= 2
+        if package == "13":
+            return len({player.player_id for player in offense.candidates("TE") if player.position == "TE"}) >= 3
+        if package == "10":
+            return len({player.player_id for player in offense.candidates("SWR") if player.position == "WR"}) >= 4
+        return True
+
+    def offense_package_for_snap(self, offense: TeamSnapshot, concept: str) -> str:
+        packages = [pkg for pkg in offense.offense_packages() if self.offense_package_available(offense, pkg)]
+        if not packages:
+            packages = ["11"]
+        weights: list[tuple[str, float]] = []
+        for package in packages:
+            weight = 1.0
+            if package in {"12", "13", "21"} and concept in {"inside_zone", "power"}:
+                weight *= 2.2
+            if package in {"10", "11"} and concept in {"quick", "short", "deep", "screen"}:
+                weight *= 1.7
+            if package == "21" and "heavy" in offense.offense_scheme_key:
+                weight *= 1.5
+            if package == "10" and offense.offense_scheme_key in {"spread_rpo", "vertical_air_raid"}:
+                weight *= 1.35
+            if package == "11" and offense.offense_scheme_key not in {"heavy_personnel_run"}:
+                weight *= 1.2
+            weights.append((package, weight))
+        return str(weighted_choice(self.rng, weights))
+
     def offensive_skill_slots(self, offense: TeamSnapshot, concept: str) -> list[str]:
-        fullback = offense.starter("FB")
-        has_fullback = fullback and fullback.position == "FB"
-        if concept in {"inside_zone", "power"}:
-            if has_fullback and self.rng.random() < 0.55:
-                return ["TE", "FB", "LWR", "RWR"]
-            if self.rng.random() < 0.32:
-                return ["TE", "TE", "LWR", "RWR"]
-        if concept == "screen" and self.rng.random() < 0.22:
-            return ["LWR", "RWR", "SWR", "SWR"]
-        return ["TE", "LWR", "RWR", "SWR"]
+        package = self.offense_package_for_snap(offense, concept)
+        return list(depth_packages.OFFENSE_PACKAGE_SNAP_SLOTS.get(package, depth_packages.OFFENSE_PACKAGE_SNAP_SLOTS["11"]))
 
     def offensive_snap_players(
         self,
@@ -2395,13 +2448,23 @@ class MatchEngine:
                 used.add(primary.player_id)
         return selected
 
+    def defense_package_for_snap(self, defense: TeamSnapshot, play_type: str, concept: str) -> str:
+        packages = defense.defense_packages()
+        if not packages:
+            packages = ["nickel"]
+        if play_type == "pass" and "nickel" in packages:
+            return "nickel"
+        if concept in {"inside_zone", "power"}:
+            for preferred in ("base43", "base34"):
+                if preferred in packages:
+                    return preferred
+        if "nickel" in packages:
+            return "nickel"
+        return packages[0]
+
     def defensive_snap_players(self, defense: TeamSnapshot, play_type: str, concept: str) -> list[PlayerSnapshot]:
-        if play_type == "pass":
-            slots = ["LEDGE", "LDL", "RDL", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"]
-        elif concept in {"inside_zone", "power"}:
-            slots = ["LEDGE", "LDL", "NT", "RDL", "REDGE", "MLB", "WLB", "SLB", "LCB", "RCB", "SS"]
-        else:
-            slots = ["LEDGE", "LDL", "NT", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"]
+        package = self.defense_package_for_snap(defense, play_type, concept)
+        slots = list(depth_packages.DEFENSE_PACKAGE_SNAP_SLOTS.get(package, depth_packages.DEFENSE_PACKAGE_SNAP_SLOTS["nickel"]))
         return self.rotated_unique_starters(defense, slots)
 
     def pass_rushers_from_snap(self, defense: TeamSnapshot, defenders: list[PlayerSnapshot]) -> list[PlayerSnapshot]:

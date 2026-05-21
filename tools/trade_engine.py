@@ -28,6 +28,7 @@ from typing import Any
 
 import roster_rules
 import cpu_depth_chart
+import pro_player_fog
 from setup_transactions_cap_ledger import (
     ensure_schema as ensure_transaction_schema,
     insert_transaction,
@@ -834,6 +835,8 @@ def player_trade_value(
     player_id: int,
     season: int,
     chart: str = CHART_JIMMY_JOHNSON,
+    *,
+    evaluator_team_id: int | None = None,
 ) -> float:
     """Estimate a player's trade value in chart-compatible points.
 
@@ -856,6 +859,17 @@ def player_trade_value(
     overall = float(player["overall"] or 50)
     age = float(player["age"] or 27)
     potential = float(player["potential"] or 50)
+    if evaluator_team_id is not None:
+        overall, potential, _read = pro_player_fog.perceived_overall_potential(
+            con,
+            game_id=pro_player_fog.active_game_id(con),
+            season=season,
+            evaluator_team_id=int(evaluator_team_id),
+            player_id=player_id,
+            true_overall=overall,
+            true_potential=potential,
+            create_missing=True,
+        )
     dev_trait = player["dev_trait"] or "Normal"
     position = player["position"] or ""
 
@@ -962,6 +976,8 @@ def total_asset_value(
     chart: str,
     assets: list[dict[str, Any]],
     season: int,
+    *,
+    evaluator_team_id: int | None = None,
 ) -> float:
     """Sum up the chart value of a list of trade assets."""
     total = 0.0
@@ -994,7 +1010,13 @@ def total_asset_value(
         elif asset["asset_type"] == "PlayerContract":
             pid = asset.get("player_id")
             if pid:
-                total += player_trade_value(con, int(pid), season, chart)
+                total += player_trade_value(
+                    con,
+                    int(pid),
+                    season,
+                    chart,
+                    evaluator_team_id=evaluator_team_id,
+                )
     return round(total, 2)
 
 
@@ -1088,8 +1110,20 @@ def create_proposal(
     )
     prop_chart = gm_chart(con, proposing_team_id)
     recv_chart = gm_chart(con, receiving_team_id)
-    prop_value = total_asset_value(con, prop_chart, proposing_assets, season)
-    recv_value = total_asset_value(con, recv_chart, receiving_assets, season)
+    prop_value = total_asset_value(
+        con,
+        prop_chart,
+        proposing_assets,
+        season,
+        evaluator_team_id=proposing_team_id,
+    )
+    recv_value = total_asset_value(
+        con,
+        recv_chart,
+        receiving_assets,
+        season,
+        evaluator_team_id=receiving_team_id,
+    )
 
     cur = con.execute(
         """
@@ -1126,7 +1160,11 @@ def create_proposal(
                 asset_chart_value = pick_value(con, chart, int(asset["pick_number"]))
             elif asset["asset_type"] == "PlayerContract" and asset.get("player_id"):
                 asset_chart_value = player_trade_value(
-                    con, int(asset["player_id"]), season, chart
+                    con,
+                    int(asset["player_id"]),
+                    season,
+                    chart,
+                    evaluator_team_id=proposing_team_id if side == "proposing" else receiving_team_id,
                 )
             con.execute(
                 """
@@ -1271,22 +1309,22 @@ def evaluate_trade_for_team(
         (proposal_id, giving_side),
     ).fetchall())
 
-    value_received = total_asset_value(con, chart, recv_assets, season)
-    value_given = total_asset_value(con, chart, give_assets, season)
+    value_received = total_asset_value(con, chart, recv_assets, season, evaluator_team_id=team_id)
+    value_given = total_asset_value(con, chart, give_assets, season, evaluator_team_id=team_id)
     value_ratio = value_received / value_given if value_given > 0 else 999.0
 
     # Positional need boost: receiving a player at a position of need
     need_boost = 0.0
     weak_positions = team_weak_positions(con, team_id, season)
-    incoming_players = trade_asset_players(con, recv_assets)
-    outgoing_players = trade_asset_players(con, give_assets)
+    incoming_players = trade_asset_players(con, recv_assets, evaluator_team_id=team_id, season=season)
+    outgoing_players = trade_asset_players(con, give_assets, evaluator_team_id=team_id, season=season)
     qb_penalty = 0.0
     depth_penalty = 0.0
     depth_bonus = 0.0
     for player in incoming_players:
         position = str(player.get("position") or "")
         overall = float(player.get("overall") or 0)
-        snapshot = team_position_snapshot(con, team_id, position)
+        snapshot = team_position_snapshot(con, team_id, position, season=season)
         if position in weak_positions:
             need_boost += 0.08 + min(0.10, max(0.0, overall - 68.0) / 100.0)
         if snapshot["best"] and overall >= snapshot["best"] - 2:
@@ -1306,6 +1344,7 @@ def evaluate_trade_for_team(
             con,
             team_id,
             position,
+            season=season,
             exclude_player_id=int(player["player_id"]),
         )
         best_after = float(snapshot.get("best") or 0)
@@ -1377,23 +1416,29 @@ def evaluate_trade_for_team(
 
 def team_weak_positions(con: sqlite3.Connection, team_id: int, season: int) -> set[str]:
     """Identify position groups where a team is thin or low-rated."""
-    weak: set[str] = set()
-    rows = con.execute(
+    position_rows = con.execute(
         """
-        SELECT position, COUNT(*) AS players, ROUND(AVG(overall), 1) AS avg_overall
+        SELECT DISTINCT position
         FROM players
-        WHERE team_id = ? AND position NOT IN ('K', 'P', 'LS')
-        GROUP BY position
-        HAVING COUNT(*) >= 1
-        ORDER BY avg_overall ASC, players ASC
-        LIMIT 4
+        WHERE team_id = ?
+          AND position NOT IN ('K', 'P', 'LS')
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Practice Squad')
         """,
         (team_id,),
     ).fetchall()
-    for row in rows:
-        if int(row["players"]) <= 2 or float(row["avg_overall"] or 70) < 68:
-            weak.add(row["position"])
-    return weak
+    scored: list[tuple[float, int, str]] = []
+    for row in position_rows:
+        position = str(row["position"] or "")
+        snapshot = team_position_snapshot(con, team_id, position, season=season)
+        players = snapshot.get("players", [])
+        if not players:
+            continue
+        avg_overall = sum(float(player.get("overall") or 0) for player in players) / max(1, len(players))
+        count = int(snapshot.get("count") or len(players))
+        if count <= 2 or avg_overall < 68:
+            scored.append((avg_overall, count, position))
+    scored.sort(key=lambda item: (item[0], item[1], item[2]))
+    return {position for _avg, _count, position in scored[:4]}
 
 
 def team_position_snapshot(
@@ -1401,6 +1446,7 @@ def team_position_snapshot(
     team_id: int,
     position: str,
     *,
+    season: int | None = None,
     exclude_player_id: int | None = None,
 ) -> dict[str, Any]:
     rows = con.execute(
@@ -1419,16 +1465,42 @@ def team_position_snapshot(
     ).fetchall()
     if not rows:
         return {"count": 0, "best": 0.0, "second": 0.0, "players": []}
-    values = [float(row["overall"] or 0) for row in rows]
+    players = [dict(row) for row in rows]
+    if season is not None:
+        reads, _created_reads = pro_player_fog.evaluations_for_team(
+            con,
+            game_id=pro_player_fog.active_game_id(con),
+            season=season,
+            evaluator_team_id=team_id,
+            player_ids=[int(player["player_id"]) for player in players],
+            create_missing=True,
+        )
+        for player in players:
+            pro_player_fog.apply_evaluation_to_mapping(player, reads.get(int(player["player_id"])))
+        players.sort(
+            key=lambda player: (
+                float(player.get("overall") or 0),
+                float(player.get("potential") or 0),
+                -float(player.get("age") or 27),
+            ),
+            reverse=True,
+        )
+    values = [float(player.get("overall") or 0) for player in players]
     return {
         "count": len(rows),
         "best": values[0],
         "second": values[1] if len(values) > 1 else 0.0,
-        "players": [dict(row) for row in rows],
+        "players": players,
     }
 
 
-def trade_asset_players(con: sqlite3.Connection, assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def trade_asset_players(
+    con: sqlite3.Connection,
+    assets: list[dict[str, Any]],
+    *,
+    evaluator_team_id: int | None = None,
+    season: int | None = None,
+) -> list[dict[str, Any]]:
     player_ids = [
         int(asset["player_id"])
         for asset in assets
@@ -1437,7 +1509,7 @@ def trade_asset_players(con: sqlite3.Connection, assets: list[dict[str, Any]]) -
     if not player_ids:
         return []
     placeholders = ",".join("?" for _ in player_ids)
-    return rows_as_dicts(
+    players = rows_as_dicts(
         con.execute(
             f"""
             SELECT p.player_id, p.team_id, p.first_name || ' ' || p.last_name AS name,
@@ -1450,6 +1522,18 @@ def trade_asset_players(con: sqlite3.Connection, assets: list[dict[str, Any]]) -
             player_ids,
         ).fetchall()
     )
+    if evaluator_team_id is not None and season is not None:
+        reads, _created_reads = pro_player_fog.evaluations_for_team(
+            con,
+            game_id=pro_player_fog.active_game_id(con),
+            season=season,
+            evaluator_team_id=evaluator_team_id,
+            player_ids=player_ids,
+            create_missing=True,
+        )
+        for player in players:
+            pro_player_fog.apply_evaluation_to_mapping(player, reads.get(int(player["player_id"])))
+    return players
 
 
 # ---------------------------------------------------------------------------
@@ -1601,7 +1685,13 @@ def ai_gm_generate_trade_proposals(
         candidate_id = int(candidate["player_id"])
         if active_trade_exists_for_player(con, game_id=game_id, player_id=candidate_id):
             continue
-        candidate_value = player_trade_value(con, candidate_id, season, chart)
+        candidate_value = player_trade_value(
+            con,
+            candidate_id,
+            season,
+            chart,
+            evaluator_team_id=team_id,
+        )
         if candidate_value <= 0:
             continue
 

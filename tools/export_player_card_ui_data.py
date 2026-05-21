@@ -13,6 +13,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pro_player_fog
 from export_player_profile_ui_data import career_totals_by_player, season_stats_by_player
 
 
@@ -535,6 +536,19 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
         return {"season": season, "playerCount": 0, "players": []}
 
     placeholders = ",".join("?" for _ in player_ids)
+    game_id = pro_player_fog.active_game_id(conn)
+    evaluations, created_evaluations = pro_player_fog.evaluations_for_players(
+        conn,
+        game_id=game_id,
+        season=season,
+        player_team_ids={
+            int(row["player_id"]): int(row["team_id"]) if row["team_id"] is not None else None
+            for row in player_rows
+        },
+        create_missing=True,
+    )
+    if created_evaluations:
+        conn.commit()
 
     definitions = {
         row["rating_key"]: {
@@ -564,11 +578,16 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
     ).fetchall()
     for row in rating_rows:
         definition = definitions.get(row["rating_key"], {})
+        value = pro_player_fog.fog_rating_value(
+            evaluations.get(int(row["player_id"])),
+            str(row["rating_key"]),
+            float(row["rating_value"]),
+        )
         ratings_by_player[int(row["player_id"])][row["rating_key"]] = {
             "key": row["rating_key"],
             "label": definition.get("label", row["rating_key"].replace("_", " ").title()),
             "group": definition.get("group", "general"),
-            "value": float(row["rating_value"]),
+            "value": value,
             "season": int(row["season"]),
         }
 
@@ -596,7 +615,11 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
     for row in role_rows:
         roles = roles_by_player[int(row["player_id"])]
         if len(roles) < 3:
-            score = float(row["role_score"])
+            score = pro_player_fog.fog_role_value(
+                evaluations.get(int(row["player_id"])),
+                row["role_key"],
+                float(row["role_score"]),
+            )
             roles.append({
                 "key": row["role_key"],
                 "label": role_label(row["role_key"]),
@@ -648,6 +671,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
         initials = "".join(part[:1] for part in full_name.split()[:2]).upper()
         stat_rows = stats_by_player.get(player_id, [])
         career = career_by_player.get(player_id, {})
+        evaluation = evaluations.get(player_id)
 
         players.append({
             "id": player_id,
@@ -675,6 +699,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
             },
             "role": primary_role,
             "secondaryRole": roles[1] if len(roles) > 1 else None,
+            "evaluation": evaluation,
             "development": development_label(row["age"], row["is_rookie"], row["dev_trait"], fit_value),
             "risk": risk_label(metrics_by_key, row["age"]),
             "strengths": strengths,

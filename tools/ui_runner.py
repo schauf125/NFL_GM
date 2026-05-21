@@ -640,7 +640,20 @@ def player_search_payload_for_active_db() -> dict[str, Any]:
     player_ids = [int(row["player_id"]) for row in player_rows]
     teams = export_player_profile_ui_data.team_assets(conn)
     shots = export_player_profile_ui_data.headshots(conn)
-    roles = export_player_profile_ui_data.roles_by_player(conn, season, player_ids)
+    game_id = export_player_profile_ui_data.pro_player_fog.active_game_id(conn)
+    evaluations, created_evaluations = export_player_profile_ui_data.pro_player_fog.evaluations_for_players(
+        conn,
+        game_id=game_id,
+        season=season,
+        player_team_ids={
+            int(row["player_id"]): int(row["team_id"]) if row["team_id"] is not None else None
+            for row in player_rows
+        },
+        create_missing=True,
+    )
+    if created_evaluations:
+        conn.commit()
+    roles = export_player_profile_ui_data.roles_by_player(conn, season, player_ids, evaluations)
     season_stats = export_player_profile_ui_data.season_stats_by_player(conn, player_ids)
     career = export_player_profile_ui_data.career_totals_by_player(
         season_stats,

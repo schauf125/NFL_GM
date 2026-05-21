@@ -17,6 +17,7 @@ from typing import Any
 
 import league_news
 import scouting
+import pro_player_fog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,11 +180,20 @@ def emit_user_message(
     title: str,
     body: str,
     event_date: str,
+    season: int,
     player_id: int | None,
     priority: str = "normal",
 ) -> int:
     if not user_team_id or team_id != user_team_id:
         return 0
+    body = pro_player_fog.append_event_read_note(
+        body,
+        con,
+        game_id=game_id,
+        team_id=team_id,
+        player_id=player_id,
+        season=season,
+    )
     scouting.add_inbox_message(
         con,
         game_id=game_id,
@@ -282,6 +292,19 @@ def process_camp_storylines(
                 tags=["camp", "practice", str(player["position"])],
             ):
                 inserted += 1
+                pro_player_fog.apply_evaluation_event(
+                    con,
+                    game_id=game_id,
+                    player_id=int(player["player_id"]),
+                    team_id=team_id,
+                    season=season,
+                    event_date=event_date,
+                    event_type=kind,
+                    signal_strength=momentum + confidence + potential,
+                    snap_count=0,
+                    source="camp_storyline_pro_fog",
+                    notes="Training camp report sharpened the staff evaluation read.",
+                )
                 if emit_messages:
                     inbox += emit_user_message(
                         con,
@@ -291,6 +314,7 @@ def process_camp_storylines(
                         title=title,
                         body=body,
                         event_date=event_date,
+                        season=season,
                         player_id=int(player["player_id"]),
                     )
 
@@ -366,6 +390,19 @@ def process_position_battles_for_team(
             tags=["camp", "position_battle", pos],
         ):
             inserted += 1
+            pro_player_fog.apply_evaluation_event(
+                con,
+                game_id=game_id,
+                player_id=int(winner["player_id"]),
+                team_id=team_id,
+                season=season,
+                event_date=event_date,
+                event_type="position_battle",
+                signal_strength=0.49,
+                snap_count=0,
+                source="position_battle_pro_fog",
+                notes="Position battle reps gave the staff a clearer read.",
+            )
             if emit_messages:
                 inbox += emit_user_message(
                     con,
@@ -375,6 +412,7 @@ def process_position_battles_for_team(
                     title=title,
                     body=body,
                     event_date=event_date,
+                    season=season,
                     player_id=int(winner["player_id"]),
                     priority="high" if team_id == user_team_id else "normal",
                 )
@@ -462,6 +500,7 @@ def process_weekly_storylines(
     inserted = inbox = news = 0
     for _abs_score, score, player, stats in candidates[:10]:
         title, body, kind = weekly_story_text(player, stats, score)
+        event_snaps = pro_player_fog.effective_snap_evidence(stats)
         if insert_storyline(
             con,
             game_id=game_id,
@@ -479,6 +518,19 @@ def process_weekly_storylines(
             tags=["streak", str(player["position"])],
         ):
             inserted += 1
+            pro_player_fog.apply_evaluation_event(
+                con,
+                game_id=game_id,
+                player_id=int(player["player_id"]),
+                team_id=int(player["team_id"]),
+                season=season,
+                event_date=event_date,
+                event_type=kind,
+                signal_strength=score,
+                snap_count=event_snaps,
+                source="weekly_storyline_pro_fog",
+                notes="Game snaps attached to this report sharpened the staff evaluation read.",
+            )
             if emit_messages:
                 inbox += emit_user_message(
                     con,
@@ -488,6 +540,7 @@ def process_weekly_storylines(
                     title=title,
                     body=body,
                     event_date=event_date,
+                    season=season,
                     player_id=int(player["player_id"]),
                 )
             if rng.random() < (0.16 if abs(score) >= 0.8 else 0.06):

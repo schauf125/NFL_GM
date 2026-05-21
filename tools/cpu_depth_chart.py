@@ -14,7 +14,8 @@ DB_PATH = ROOT / "database" / "nfl_gm.db"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from engine import match_engine  # noqa: E402
+from engine import depth_packages, match_engine  # noqa: E402
+import pro_player_fog  # noqa: E402
 
 
 OFFENSE_STARTER_SLOTS = ["QB", "RB", "FB", "TE", "LWR", "RWR", "SWR", "LT", "LG", "C", "RG", "RT"]
@@ -414,6 +415,33 @@ def build_slot_depth(
     return ordered
 
 
+def apply_staff_evaluations_to_team(
+    con: sqlite3.Connection,
+    team: match_engine.TeamSnapshot,
+    *,
+    team_id: int,
+    season: int,
+    create_missing: bool,
+) -> None:
+    reads, _created = pro_player_fog.evaluations_for_team(
+        con,
+        game_id=pro_player_fog.active_game_id(con),
+        season=season,
+        evaluator_team_id=team_id,
+        player_ids=[int(player.player_id) for player in team.roster],
+        create_missing=create_missing,
+    )
+    for player in team.roster:
+        read = reads.get(int(player.player_id))
+        if not read:
+            continue
+        player.metadata["true_overall"] = player.metadata.get("overall")
+        player.metadata["true_potential"] = player.metadata.get("potential")
+        player.metadata["overall"] = int(read.get("overall") or player.metadata.get("overall") or 50)
+        player.metadata["potential"] = int(read.get("potential") or player.metadata.get("potential") or player.metadata["overall"])
+        player.metadata["evaluation_confidence"] = read.get("confidenceLabel") or read.get("confidence")
+
+
 def rebuild_team_depth(
     con: sqlite3.Connection,
     *,
@@ -422,16 +450,37 @@ def rebuild_team_depth(
     apply: bool,
 ) -> dict[str, int | str]:
     team = match_engine.load_team(con, int(team_row["team_id"]), season)
+    apply_staff_evaluations_to_team(
+        con,
+        team,
+        team_id=int(team_row["team_id"]),
+        season=season,
+        create_missing=apply,
+    )
+    active_slots = set(
+        depth_packages.active_depth_slots(
+            team.offense_packages(),
+            team.defense_packages(),
+            include_special=True,
+        )
+    )
     starters: dict[str, match_engine.PlayerSnapshot] = {}
     for group in EXCLUSIVE_STARTER_GROUPS:
-        starters.update(choose_starters(team, group))
+        active_group = [slot for slot in group if slot in active_slots]
+        if active_group:
+            starters.update(choose_starters(team, active_group))
     for slot in ["QB", "RB", "PK", "KO", "PT", "P", "LS", "KR", "PR", "H"]:
-        candidates = legal_candidates(team, slot)
-        if candidates:
-            starters[slot] = candidates[0]
+        if slot in active_slots:
+            candidates = legal_candidates(team, slot)
+            if candidates:
+                starters[slot] = candidates[0]
 
     rows: list[tuple[int, int, str, int, str]] = []
-    all_slots = OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS + SPECIAL_STARTER_SLOTS
+    all_slots = [
+        slot
+        for slot in OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS + SPECIAL_STARTER_SLOTS
+        if slot in active_slots
+    ]
     for slot in all_slots:
         for rank, player in enumerate(build_slot_depth(team, slot, starters.get(slot)), start=1):
             rows.append((int(team_row["team_id"]), int(player.player_id), slot, rank, SLOT_UNITS.get(slot, "Offense")))
@@ -450,15 +499,31 @@ def rebuild_team_depth(
 
 def audit_team_depth(con: sqlite3.Connection, *, team_row: sqlite3.Row, season: int) -> list[dict[str, object]]:
     team = match_engine.load_team(con, int(team_row["team_id"]), season)
+    apply_staff_evaluations_to_team(
+        con,
+        team,
+        team_id=int(team_row["team_id"]),
+        season=season,
+        create_missing=False,
+    )
+    active_slots = set(
+        depth_packages.active_depth_slots(
+            team.offense_packages(),
+            team.defense_packages(),
+            include_special=False,
+        )
+    )
     ideal: dict[str, match_engine.PlayerSnapshot] = {}
     for group in EXCLUSIVE_STARTER_GROUPS:
-        ideal.update(choose_starters(team, group))
+        active_group = [slot for slot in group if slot in active_slots]
+        if active_group:
+            ideal.update(choose_starters(team, active_group))
     for slot in ["QB", "RB", "PK", "KO", "PT", "P", "LS", "KR", "PR", "H"]:
         candidates = legal_candidates(team, slot)
         if candidates:
             ideal[slot] = candidates[0]
     issues: list[dict[str, object]] = []
-    for slot in OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS:
+    for slot in [slot for slot in OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS if slot in active_slots]:
         best = ideal.get(slot)
         if not best:
             continue

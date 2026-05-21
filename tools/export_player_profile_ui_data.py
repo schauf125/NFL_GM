@@ -8,6 +8,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import pro_player_fog
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = PROJECT_ROOT / "database" / "nfl_gm.db"
@@ -234,7 +236,12 @@ def fetch_players(conn: sqlite3.Connection, limit: int | None, player_id: int | 
     return conn.execute(sql, params).fetchall()
 
 
-def ratings_by_player(conn: sqlite3.Connection, season: int, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+def ratings_by_player(
+    conn: sqlite3.Connection,
+    season: int,
+    player_ids: list[int],
+    evaluations: dict[int, dict[str, Any]] | None = None,
+) -> dict[int, list[dict[str, Any]]]:
     if not player_ids:
         return {}
     placeholders = ",".join("?" for _ in player_ids)
@@ -258,7 +265,13 @@ def ratings_by_player(conn: sqlite3.Connection, season: int, player_ids: list[in
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        value = float(row["rating_value"])
+        evaluation = (evaluations or {}).get(int(row["player_id"]))
+        true_value = float(row["rating_value"])
+        value = pro_player_fog.fog_rating_value(
+            evaluation,
+            str(row["rating_key"]),
+            true_value,
+        )
         grouped.setdefault(int(row["player_id"]), []).append({
             "group": row["rating_group"],
             "groupLabel": GROUP_LABELS.get(row["rating_group"], row["rating_group"].replace("_", " ").title()),
@@ -267,14 +280,19 @@ def ratings_by_player(conn: sqlite3.Connection, season: int, player_ids: list[in
             "label": row["display_name"],
             "value": round(max(0, min(100, value)), 1),
             "grade": grade_label(value),
-            "confidence": row["confidence"] or "medium",
+            "confidence": evaluation.get("confidenceLabel") if evaluation else (row["confidence"] or "medium"),
             "source": row["source"] or "",
             "season": int(row["season"]),
         })
     return grouped
 
 
-def roles_by_player(conn: sqlite3.Connection, season: int, player_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+def roles_by_player(
+    conn: sqlite3.Connection,
+    season: int,
+    player_ids: list[int],
+    evaluations: dict[int, dict[str, Any]] | None = None,
+) -> dict[int, list[dict[str, Any]]]:
     if not player_ids:
         return {}
     placeholders = ",".join("?" for _ in player_ids)
@@ -300,7 +318,11 @@ def roles_by_player(conn: sqlite3.Connection, season: int, player_ids: list[int]
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        value = float(row["role_score"])
+        value = pro_player_fog.fog_role_value(
+            (evaluations or {}).get(int(row["player_id"])),
+            row["role_key"],
+            float(row["role_score"]),
+        )
         items = grouped.setdefault(int(row["player_id"]), [])
         if len(items) < 8:
             items.append({
@@ -905,8 +927,22 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
     player_ids = [int(row["player_id"]) for row in players_rows]
     teams = team_assets(conn)
     shots = headshots(conn)
-    ratings = ratings_by_player(conn, season, player_ids)
-    roles = roles_by_player(conn, season, player_ids)
+    game_id = pro_player_fog.active_game_id(conn)
+    player_team_ids = {
+        int(row["player_id"]): int(row["team_id"]) if row["team_id"] is not None else None
+        for row in players_rows
+    }
+    evaluations, created_evaluations = pro_player_fog.evaluations_for_players(
+        conn,
+        game_id=game_id,
+        season=season,
+        player_team_ids=player_team_ids,
+        create_missing=True,
+    )
+    if created_evaluations:
+        conn.commit()
+    ratings = ratings_by_player(conn, season, player_ids, evaluations)
+    roles = roles_by_player(conn, season, player_ids, evaluations)
     flex = flex_by_player(conn, player_ids)
     season_stats = season_stats_by_player(conn, player_ids)
     career = career_totals_by_player(season_stats, career_by_player(conn, player_ids))
@@ -956,6 +992,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
             },
             "roles": player_roles,
             "ratings": player_ratings,
+            "evaluation": evaluations.get(player_id),
             "flex": flex.get(player_id, []),
             "career": career_row,
             "seasonStats": season_stats.get(player_id, []),

@@ -33,6 +33,7 @@
     weightText: document.getElementById("weightText"),
     scoutingText: document.getElementById("scoutingText"),
     currentRead: document.getElementById("currentRead"),
+    evaluationRead: document.getElementById("evaluationRead"),
     developmentRead: document.getElementById("developmentRead"),
     riskRead: document.getElementById("riskRead"),
     statsSeasonLabel: document.getElementById("statsSeasonLabel"),
@@ -323,6 +324,10 @@
     elements.weightText.textContent = player.profile.weight;
     elements.scoutingText.textContent = player.scoutingReport;
     elements.currentRead.textContent = player.role.grade;
+    if (elements.evaluationRead) {
+      elements.evaluationRead.textContent = player.evaluation?.confidenceLabel || "Cloudy";
+      elements.evaluationRead.title = player.evaluation?.confidenceNote || "Limited pro evidence.";
+    }
     elements.developmentRead.textContent = player.development;
     elements.riskRead.textContent = player.risk;
     if (elements.profileLink) {

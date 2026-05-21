@@ -75,7 +75,7 @@ BASE_AAV = {
 MAX_AAV = {
     "QB": 58_000_000,
     "RB": 13_000_000,
-    "WR": 31_000_000,
+    "WR": 38_000_000,
     "TE": 18_000_000,
     "OT": 29_000_000,
     "IOL": 22_000_000,
@@ -90,7 +90,7 @@ MAX_AAV = {
 FRANCHISE_TAG_AAV = {
     "QB": 43_000_000,
     "RB": 13_000_000,
-    "WR": 24_000_000,
+    "WR": 26_500_000,
     "TE": 14_500_000,
     "OT": 23_500_000,
     "IOL": 21_000_000,
@@ -105,7 +105,7 @@ FRANCHISE_TAG_AAV = {
 TRANSITION_TAG_AAV = {
     "QB": 37_500_000,
     "RB": 11_000_000,
-    "WR": 21_000_000,
+    "WR": 23_500_000,
     "TE": 12_500_000,
     "OT": 20_500_000,
     "IOL": 18_000_000,
@@ -1126,6 +1126,24 @@ def existing_team_tag(con: sqlite3.Connection, team_id: int, contract_year: int)
     ).fetchone()
 
 
+def tag_age_fit(group: str, age: int | None, score: float, potential: int | None = None) -> bool:
+    if age is None:
+        return True
+    group = str(group or "").upper()
+    potential = int(potential if potential is not None else score)
+    if group == "QB":
+        return age <= 34 and score >= 84
+    if group == "RB":
+        return age <= 27 and score >= 86
+    if group in {"WR", "TE", "EDGE", "CB", "S", "LB"}:
+        return age <= 30 and (score >= 84 or potential >= 88)
+    if group in {"OT", "IOL", "IDL"}:
+        return age <= 31 and (score >= 84 or potential >= 88)
+    if group == "ST":
+        return False
+    return age <= 30 and score >= 86
+
+
 def tag_eligible_players(con: sqlite3.Connection, team: str | int, season: int) -> list[dict[str, Any]]:
     players = expiring_players(con, team, season)
     for item in players:
@@ -1134,10 +1152,16 @@ def tag_eligible_players(con: sqlite3.Connection, team: str | int, season: int) 
         franchise = tag_tender_aav(group, current_aav, "franchise")
         transition = tag_tender_aav(group, current_aav, "transition")
         score = float(item.get("market_score") or 60)
+        age = int(item.get("age") or 0) or None
+        potential = int(item.get("potential") or score)
+        age_fit = tag_age_fit(group, age, score, potential)
         item["franchise_tag_aav"] = franchise
         item["transition_tag_aav"] = transition
-        item["tag_eligible"] = True
+        item["tag_eligible"] = age_fit
         item["tag_recommendation"] = (
+            "Avoid tag - age/value risk"
+            if not age_fit
+            else
             "Franchise tag candidate"
             if score >= 84 or (group in {"QB", "OT", "EDGE", "WR", "CB"} and score >= 80)
             else "Transition tag candidate"

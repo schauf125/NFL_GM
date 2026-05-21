@@ -17,6 +17,7 @@ from typing import Any
 
 import ai_gm_team_evaluator as team_eval
 import contract_negotiations
+import pro_player_fog
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +28,7 @@ PREMIUM_GROUPS = {"QB", "WR", "OT", "IOL", "EDGE", "IDL", "CB"}
 TAG_ESTIMATES = {
     "QB": 41_000_000,
     "RB": 11_000_000,
-    "WR": 23_000_000,
+    "WR": 26_500_000,
     "TE": 13_000_000,
     "OT": 23_000_000,
     "IOL": 21_000_000,
@@ -196,6 +197,18 @@ def tag_estimate(position_group: str) -> int:
     return TAG_ESTIMATES.get(position_group, 14_000_000)
 
 
+def tag_age_fit(group: str, age: int, score: float, potential: float) -> bool:
+    if group == "QB":
+        return age <= 34 and score >= 84
+    if group == "RB":
+        return age <= 27 and score >= 86
+    if group in {"WR", "TE", "EDGE", "CB", "S", "LB"}:
+        return age <= 30 and (score >= 84 or potential >= 88)
+    if group in {"OT", "IOL", "IDL"}:
+        return age <= 31 and (score >= 84 or potential >= 88)
+    return False
+
+
 def cap_budget(projected_space: int, biases: dict[str, Any]) -> dict[str, int]:
     tolerance = str(biases.get("cap_tolerance") or "").lower()
     reserve = 18_000_000
@@ -246,6 +259,7 @@ def classify_player(
     group = str(player.get("position_group") or "")
     score = as_float(player.get("market_score"))
     age = as_int(player.get("age"), 27)
+    potential = as_float(player.get("potential"), score)
     ask = as_int(player.get("asking_aav"))
     priority = str(player.get("priority") or "")
     value = core_score(player, evaluator_extension)
@@ -268,7 +282,14 @@ def classify_player(
         return "extension_targets", reasons or ["quarterback continuity"], ask
 
     tag_cost = tag_estimate(group)
-    if value >= 88 and group in PREMIUM_GROUPS and tag_cost <= max(1_000_000, budget_remaining + 8_000_000):
+    tag_fit = tag_age_fit(group, age, score, potential)
+    young_elite = age <= 29 and group in {"WR", "OT", "EDGE", "CB", "IDL", "QB"} and (score >= 84 or potential >= 88)
+    if (
+        tag_fit
+        and group in PREMIUM_GROUPS
+        and (value >= 90 or young_elite)
+        and tag_cost <= max(1_000_000, budget_remaining + 8_000_000)
+    ):
         reasons.append("tag protects leverage")
         return "tag_candidates", reasons, tag_cost
 
@@ -345,6 +366,16 @@ def build_contract_plan(
     extension_lookup = candidate_lookup(evaluation.get("extension_candidates", []))
     trade_lookup = candidate_lookup(evaluation.get("trade_block_candidates", []))
     pressure_lookup = candidate_lookup(evaluation.get("contract_pressure", []))
+    staff_reads, created_staff_reads = pro_player_fog.evaluations_for_team(
+        con,
+        game_id=game_id,
+        season=season,
+        evaluator_team_id=team_id,
+        player_ids=[as_int(player.get("player_id")) for player in expiring],
+        create_missing=True,
+    )
+    if created_staff_reads:
+        con.commit()
 
     buckets: dict[str, list[dict[str, Any]]] = {
         "extension_targets": [],
@@ -355,6 +386,20 @@ def build_contract_plan(
     }
     for player in expiring:
         player_id = as_int(player.get("player_id"))
+        read = staff_reads.get(player_id)
+        if read:
+            true_score = as_float(player.get("overall"), as_float(player.get("market_score"), 60.0))
+            perceived_score = as_float(read.get("overall"), true_score)
+            perceived_potential = as_float(read.get("potential"), perceived_score)
+            player["true_overall"] = true_score
+            player["true_potential"] = player.get("potential")
+            player["overall"] = perceived_score
+            player["potential"] = perceived_potential
+            player["evaluation_confidence"] = read.get("confidenceLabel") or read.get("confidence")
+            player["market_score"] = round(
+                max(45.0, as_float(player.get("market_score"), true_score) + (perceived_score - true_score) * 0.75),
+                1,
+            )
         bucket, reasons, estimated_aav = classify_player(
             player,
             evaluator_extension=extension_lookup.get(player_id),

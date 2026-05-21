@@ -12,14 +12,21 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import pro_player_fog
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 DEFAULT_SEASON = 2026
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from engine import depth_packages  # noqa: E402
 
 CONTROLLED_STATUS_EXCLUSIONS = {"Free Agent", "Retired"}
 
@@ -319,24 +326,43 @@ def active_injury_map(con: sqlite3.Connection) -> dict[int, dict[str, Any]]:
     return {as_int(row["player_id"]): dict(row) for row in rows}
 
 
-def depth_rank_map(con: sqlite3.Connection) -> dict[int, int]:
+def depth_rank_map(con: sqlite3.Connection, season: int | None = None) -> dict[int, int]:
     if not table_exists(con, "depth_charts"):
         return {}
+    active_slots_by_team: dict[int, set[str]] = {}
+    if season is not None and table_exists(con, "team_scheme_identities_view"):
+        for row in con.execute("SELECT * FROM team_scheme_identities_view WHERE season = ?", (season,)).fetchall():
+            info = depth_packages.scheme_packages_from_row(row)
+            active_slots_by_team[int(row["team_id"])] = set(
+                depth_packages.active_depth_slots(
+                    list(info.get("offensePackages") or ["11", "12"]),
+                    list(info.get("defensePackages") or ["nickel"]),
+                    include_special=True,
+                )
+            )
     rows = con.execute(
         """
-        SELECT player_id, MIN(depth_rank) AS depth_rank
+        SELECT team_id, player_id, position, depth_rank
         FROM depth_charts
-        GROUP BY player_id
         """
     ).fetchall()
-    return {as_int(row["player_id"]): as_int(row["depth_rank"]) for row in rows}
+    ranks: dict[int, int] = {}
+    for row in rows:
+        team_id = as_int(row["team_id"])
+        slot = str(row["position"] or "").upper()
+        if active_slots_by_team and slot not in active_slots_by_team.get(team_id, {slot}):
+            continue
+        player_id = as_int(row["player_id"])
+        ranks[player_id] = min(ranks.get(player_id, 99), as_int(row["depth_rank"], 99))
+    return ranks
 
 
 def controlled_players(con: sqlite3.Connection, team_id: int, season: int) -> list[dict[str, Any]]:
     roles = role_score_map(con, season)
     injuries = injury_risk_map(con)
     active_injuries = active_injury_map(con)
-    depth = depth_rank_map(con)
+    depth = depth_rank_map(con, season)
+    game_id = pro_player_fog.active_game_id(con)
     rows = con.execute(
         """
         SELECT
@@ -368,10 +394,21 @@ def controlled_players(con: sqlite3.Connection, team_id: int, season: int) -> li
         """,
         (season, team_id),
     ).fetchall()
+    evaluations, created_evaluations = pro_player_fog.evaluations_for_team(
+        con,
+        game_id=game_id,
+        season=season,
+        evaluator_team_id=team_id,
+        player_ids=[as_int(row["player_id"]) for row in rows],
+        create_missing=True,
+    )
+    if created_evaluations:
+        con.commit()
     players: list[dict[str, Any]] = []
     for row in rows:
         player = dict(row)
         player_id = as_int(player["player_id"])
+        pro_player_fog.apply_evaluation_to_mapping(player, evaluations.get(player_id))
         group = position_group(player.get("position"))
         role_score = roles.get(player_id)
         overall = as_float(player.get("overall"), 50.0)

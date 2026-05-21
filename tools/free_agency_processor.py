@@ -26,6 +26,7 @@ import contract_negotiations
 import cpu_depth_chart
 import league_calendar
 import player_personalities
+import pro_player_fog
 from setup_contract_years import rebuild_contract_year, sync_team_cap_space
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger
 
@@ -131,7 +132,7 @@ MARKET_TIER_MULTIPLIERS = {
 MARKET_GROUP_MULTIPLIERS = {
     "QB": 1.08,
     "RB": 1.08,
-    "WR": 1.08,
+    "WR": 1.14,
     "TE": 1.10,
     "OT": 1.12,
     "IOL": 1.02,
@@ -157,7 +158,7 @@ MARKET_TIER_FLOORS = {
 MARKET_GROUP_TIER_FLOORS = {
     ("Premium", "QB"): 12_000_000,
     ("Premium", "RB"): 11_500_000,
-    ("Premium", "WR"): 17_000_000,
+    ("Premium", "WR"): 20_000_000,
     ("Premium", "TE"): 15_000_000,
     ("Premium", "OT"): 18_000_000,
     ("Premium", "IOL"): 13_000_000,
@@ -188,7 +189,7 @@ CPU_FINAL_SIGNING_MIN_BUFFER = 4_000_000
 CPU_GROUP_SPEND_LIMITS = {
     "QB": 30_000_000,
     "RB": 13_000_000,
-    "WR": 32_000_000,
+    "WR": 38_000_000,
     "TE": 19_000_000,
     "OT": 39_000_000,
     "IOL": 24_000_000,
@@ -244,6 +245,12 @@ CPU_GROUP_DEPTH_COUNT_LIMITS = {
     "S": 6,
     "ST": 1,
 }
+
+POST_DRAFT_DEPTH_TEAM_ENTRY_RESERVE = 4_000_000
+POST_DRAFT_DEPTH_CHEAP_DEAL_RESERVE = 4_000_000
+POST_DRAFT_DEPTH_MODEST_DEAL_RESERVE = 6_000_000
+POST_DRAFT_DEPTH_CHEAP_AAV = 2_500_000
+POST_DRAFT_DEPTH_MODEST_AAV = 4_000_000
 
 MINIMUM_AAV_RATIO_BY_TIER = {
     "Premium": 0.70,
@@ -1002,6 +1009,31 @@ def cpu_cap_reserve_for_period(period: sqlite3.Row | dict[str, Any]) -> int:
     return max(CPU_FA_LATE_MARKET_RESERVE, 10_000_000)
 
 
+def cpu_post_draft_depth_team_entry_reserve(period: sqlite3.Row | dict[str, Any]) -> int:
+    return min(cpu_cap_reserve_for_period(period), POST_DRAFT_DEPTH_TEAM_ENTRY_RESERVE)
+
+
+def cpu_post_draft_depth_offer_reserve(
+    period: sqlite3.Row | dict[str, Any],
+    *,
+    group: str,
+    aav: int,
+    years: int,
+    starter_hole: bool,
+    guarantee_pct: int = 0,
+) -> int:
+    base = cpu_cap_reserve_for_period(period)
+    if group == "QB" or years > 1 or guarantee_pct > 35:
+        return base
+    if starter_hole and aav > POST_DRAFT_DEPTH_MODEST_AAV:
+        return base
+    if aav <= POST_DRAFT_DEPTH_CHEAP_AAV:
+        return min(base, POST_DRAFT_DEPTH_CHEAP_DEAL_RESERVE)
+    if aav <= POST_DRAFT_DEPTH_MODEST_AAV:
+        return min(base, POST_DRAFT_DEPTH_MODEST_DEAL_RESERVE)
+    return base
+
+
 def cpu_excluded_user_team(con: sqlite3.Connection, args: argparse.Namespace) -> str | None:
     if bool(getattr(args, "cpu_controls_user_team", False)):
         return None
@@ -1221,6 +1253,18 @@ def cpu_elite_free_agent(row: sqlite3.Row | dict[str, Any]) -> bool:
     return score >= 87 or (score >= 84 and potential >= 88)
 
 
+def cpu_tag_age_fit(group: str, age: int, score: float, overall: int, potential: int) -> bool:
+    if group == "QB":
+        return age <= 34 and overall >= 84 and potential >= 86
+    if group == "RB":
+        return age <= 27 and score >= 88
+    if group in {"WR", "TE", "EDGE", "CB", "S", "LB"}:
+        return age <= 30 and (overall >= 84 or potential >= 88 or score >= 86)
+    if group in {"OT", "IOL", "IDL"}:
+        return age <= 31 and (overall >= 84 or potential >= 88 or score >= 86)
+    return False
+
+
 def cpu_should_block_cap_casualty_reunion(
     player: sqlite3.Row | dict[str, Any],
     team_abbr: str,
@@ -1256,7 +1300,7 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
         "S": [(60, 3_000_000), (64, 4_800_000), (68, 7_500_000), (72, 10_500_000), (74, 12_000_000), (76, 14_500_000), (80, 19_000_000), (99, 24_000_000)],
         "EDGE": [(64, 4_800_000), (68, 7_800_000), (72, 10_800_000), (74, 12_000_000), (76, 15_000_000), (78, 17_500_000), (80, 22_000_000), (99, 34_000_000)],
         "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 10_500_000), (76, 14_000_000), (78, 16_000_000), (80, 20_000_000), (99, 28_000_000)],
-        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 12_000_000), (78, 14_800_000), (80, 24_000_000), (88, 34_000_000), (99, 40_000_000)],
+        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 12_000_000), (78, 14_800_000), (80, 25_500_000), (84, 31_000_000), (88, 37_000_000), (99, 43_000_000)],
         "TE": [(64, 3_500_000), (68, 6_000_000), (72, 8_500_000), (76, 10_800_000), (78, 12_500_000), (80, 16_500_000), (86, 22_000_000), (99, 27_000_000)],
         "OT": [(64, 4_500_000), (68, 8_000_000), (72, 11_500_000), (74, 12_000_000), (76, 17_500_000), (80, 25_000_000), (99, 32_000_000)],
         "IOL": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (74, 11_000_000), (76, 13_000_000), (78, 15_500_000), (82, 20_000_000), (99, 25_000_000)],
@@ -2283,16 +2327,18 @@ def cpu_aav_bounds(
     cap = max(minimum, cpu_true_quality_aav_cap(player))
     if group == "WR":
         if score >= 88:
-            star_floor = 24_000_000
+            star_floor = 29_000_000
+        elif score >= 86 and potential >= 88:
+            star_floor = 27_000_000
         elif score >= 84 and potential >= 87:
-            star_floor = 22_000_000
+            star_floor = 25_000_000
         elif score >= 82 and potential >= 86:
-            star_floor = 20_000_000
+            star_floor = 22_000_000
         else:
             star_floor = 0
         if star_floor:
             low = max(low, min(star_floor, cap))
-            high = max(high, min(int(star_floor * 1.18), cap))
+            high = max(high, min(int(star_floor * 1.24), cap))
     elif group == "TE" and score >= 88:
         star_floor = 20_000_000 if potential >= 90 else 18_000_000
         low = max(low, min(star_floor, cap))
@@ -2829,6 +2875,34 @@ def stale_offer_days_for_period(con: sqlite3.Connection, period: sqlite3.Row | d
     return 21
 
 
+def post_draft_depth_signing_counts_by_group(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+) -> dict[tuple[int, str], int]:
+    if not table_exists(con, "free_agency_offers"):
+        return {}
+    rows = con.execute(
+        """
+        SELECT o.team_id, m.position_group, COUNT(*) AS signed_count
+        FROM free_agency_offers o
+        JOIN free_agency_player_markets m
+          ON m.league_year = o.league_year
+         AND m.player_id = o.player_id
+        WHERE o.league_year = ?
+          AND o.status = 'accepted'
+          AND o.decided_date >= ?
+          AND COALESCE(o.notes, '') LIKE '%post-draft depth%'
+        GROUP BY o.team_id, m.position_group
+        """,
+        (int(league_year), f"{int(league_year)}-04-01"),
+    ).fetchall()
+    return {
+        (int(row["team_id"]), str(row["position_group"])): int(row["signed_count"] or 0)
+        for row in rows
+    }
+
+
 def current_year_fa_contract(
     con: sqlite3.Connection,
     *,
@@ -3025,13 +3099,16 @@ def cpu_apply_pre_fa_tags(
             score = float(player.get("market_score") or 60)
             group = str(player.get("position_group") or "")
             age = int(player.get("age") or 28)
+            overall = int(player.get("overall") or score)
+            potential = int(player.get("potential") or overall)
             franchise = int(player.get("franchise_tag_aav") or 0)
             transition = int(player.get("transition_tag_aav") or 0)
+            age_fit = cpu_tag_age_fit(group, age, score, overall, potential)
+            if not age_fit:
+                continue
             if group == "RB":
                 eligible = score >= 88 and age <= 27 and franchise <= cap_space - 5_000_000
             elif group == "QB":
-                overall = int(player.get("overall") or score)
-                potential = int(player.get("potential") or overall)
                 current_aav = int(player.get("aav") or 0)
                 eligible = (
                     score >= 88
@@ -3062,10 +3139,13 @@ def cpu_apply_pre_fa_tags(
                 "S": 84,
                 "LB": 85,
             }.get(group, 86)
-            transition_ok = score >= transition_threshold and group not in {"RB", "ST"} and transition <= cap_space - 6_000_000
+            transition_ok = (
+                age_fit
+                and score >= transition_threshold
+                and group not in {"RB", "ST"}
+                and transition <= cap_space - 6_000_000
+            )
             if group == "QB":
-                overall = int(player.get("overall") or score)
-                potential = int(player.get("potential") or overall)
                 current_aav = int(player.get("aav") or 0)
                 transition_ok = (
                     transition_ok
@@ -3082,11 +3162,15 @@ def cpu_apply_pre_fa_tags(
                 else:
                     probability = 0.52 + clamp((score - 82) * 0.04, 0.0, 0.28) + clamp(surplus / 12_000_000, 0.0, 0.18)
                 if rng.random() <= min(0.98, probability):
-                    candidates.append((score + surplus / 1_000_000, "franchise", player))
+                    upside = max(0, potential - overall)
+                    age_bonus = max(0, 31 - age) * 0.35
+                    candidates.append((score + upside * 0.45 + age_bonus + surplus / 1_000_000, "franchise", player))
             elif transition_ok:
                 probability = 0.36 + clamp((score - 78) * 0.04, 0.0, 0.26)
                 if rng.random() <= min(0.68, probability):
-                    candidates.append((score, "transition", player))
+                    upside = max(0, potential - overall)
+                    age_bonus = max(0, 31 - age) * 0.20
+                    candidates.append((score + upside * 0.25 + age_bonus, "transition", player))
         if not candidates:
             continue
         candidates.sort(key=lambda item: item[0], reverse=True)
@@ -3608,8 +3692,11 @@ def load_playing_time_competition(
     rows = con.execute(
         """
         SELECT
+            p.player_id,
             p.team_id,
             p.position,
+            COALESCE(p.overall, 50) AS overall,
+            COALESCE(p.potential, p.overall, 50) AS potential,
             COALESCE(role.role_score, p.overall, 50) AS player_score
         FROM players p
         LEFT JOIN (
@@ -3624,10 +3711,30 @@ def load_playing_time_competition(
         """,
         (season,),
     ).fetchall()
+    by_team: dict[int, list[int]] = {}
+    for row in rows:
+        by_team.setdefault(int(row["team_id"]), []).append(int(row["player_id"]))
+    game_id = pro_player_fog.active_game_id(con)
+    reads_by_team: dict[int, dict[int, dict[str, Any]]] = {}
+    for team_id, player_ids in by_team.items():
+        reads, created = pro_player_fog.evaluations_for_team(
+            con,
+            game_id=game_id,
+            season=season,
+            evaluator_team_id=team_id,
+            player_ids=player_ids,
+            create_missing=True,
+        )
+        if created:
+            con.commit()
+        reads_by_team[team_id] = reads
     competition: dict[tuple[int, str], list[float]] = {}
     for row in rows:
-        key = (int(row["team_id"]), position_group_for(str(row["position"])))
-        competition.setdefault(key, []).append(float(row["player_score"] or 50))
+        team_id = int(row["team_id"])
+        key = (team_id, position_group_for(str(row["position"])))
+        read = reads_by_team.get(team_id, {}).get(int(row["player_id"]))
+        score = float(read.get("overall") if read else row["player_score"] or 50)
+        competition.setdefault(key, []).append(score)
     for scores in competition.values():
         scores.sort(reverse=True)
     return competition
@@ -3657,11 +3764,16 @@ def qb_backup_reluctance(
     team_qb_scores: list[float],
     team_need: float,
     rng: random.Random,
+    incoming_score_override: float | None = None,
 ) -> float | None:
     """Return an AAV multiplier for backup-QB offers, or None to skip the fit."""
     if not team_qb_scores:
         return 1.0
-    incoming_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+    incoming_score = (
+        float(incoming_score_override)
+        if incoming_score_override is not None
+        else float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+    )
     incumbent = max(team_qb_scores)
     if incoming_score >= incumbent - 2 or team_need >= 72:
         return 1.0
@@ -3691,21 +3803,44 @@ def qb_backup_reluctance(
 
 
 def load_team_need_scores(con: sqlite3.Connection) -> dict[tuple[int, str], float]:
+    game_id = pro_player_fog.active_game_id(con)
+    season = default_league_year(con)
     rows = con.execute(
         """
         SELECT
+            player_id,
             team_id,
             position,
-            COALESCE(overall, 50) AS overall
+            COALESCE(overall, 50) AS overall,
+            COALESCE(potential, overall, 50) AS potential
         FROM players
         WHERE team_id IS NOT NULL
           AND status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
         """
     ).fetchall()
+    by_team: dict[int, list[int]] = {}
+    for row in rows:
+        by_team.setdefault(int(row["team_id"]), []).append(int(row["player_id"]))
+    reads_by_team: dict[int, dict[int, dict[str, Any]]] = {}
+    for team_id, player_ids in by_team.items():
+        reads, created = pro_player_fog.evaluations_for_team(
+            con,
+            game_id=game_id,
+            season=season,
+            evaluator_team_id=team_id,
+            player_ids=player_ids,
+            create_missing=True,
+        )
+        if created:
+            con.commit()
+        reads_by_team[team_id] = reads
     rooms: dict[tuple[int, str], list[float]] = {}
     for row in rows:
+        team_id = int(row["team_id"])
         group = position_group_for(str(row["position"]))
-        rooms.setdefault((int(row["team_id"]), group), []).append(float(row["overall"] or 50))
+        read = reads_by_team.get(team_id, {}).get(int(row["player_id"]))
+        score = float(read.get("overall") if read else row["overall"] or 50)
+        rooms.setdefault((team_id, group), []).append(score)
     for scores in rooms.values():
         scores.sort(reverse=True)
 
@@ -3809,10 +3944,16 @@ def qb_room_offer_limits(
     team_qb_scores: list[float],
     team_need: float,
     roster_qb_count: int,
+    incoming_score_override: float | None = None,
+    incoming_potential_override: int | None = None,
 ) -> dict[str, Any]:
     """Guard against teams with franchise QBs repeatedly chasing starter-priced backups."""
-    incoming_score = float(true_overall(player))
-    incoming_potential = int(row_value(player, "potential", incoming_score) or incoming_score)
+    incoming_score = float(incoming_score_override) if incoming_score_override is not None else float(true_overall(player))
+    incoming_potential = (
+        int(incoming_potential_override)
+        if incoming_potential_override is not None
+        else int(row_value(player, "potential", incoming_score) or incoming_score)
+    )
     if not team_qb_scores:
         return {"allowed": True, "backup_cap": None}
 
@@ -3820,6 +3961,19 @@ def qb_room_offer_limits(
     backup_history = player_has_backup_qb_history(con, int(row_value(player, "player_id", 0) or 0))
     starter_path = incoming_score >= incumbent - 2 or team_need >= 82
     if starter_path:
+        if (
+            incumbent >= 72
+            and incoming_score <= incumbent + 2
+            and roster_qb_count >= 1
+            and team_need < 88
+        ):
+            if incoming_score >= 74:
+                cap = 8_500_000 if backup_history else 7_000_000
+            elif incoming_score >= 70:
+                cap = 7_000_000 if backup_history else 5_800_000
+            else:
+                cap = 4_800_000
+            return {"allowed": True, "backup_cap": cap}
         return {"allowed": True, "backup_cap": None}
 
     if incumbent >= 86 and incoming_score >= 70 and incoming_score <= incumbent - 3:
@@ -3848,6 +4002,7 @@ def team_group_room_context(
     team_id: int,
     group: str,
     *,
+    season: int | None = None,
     exclude_player_id: int | None = None,
 ) -> dict[str, Any]:
     rows = con.execute(
@@ -3866,13 +4021,25 @@ def team_group_room_context(
         """,
         (int(team_id), exclude_player_id, exclude_player_id),
     ).fetchall()
+    season = int(season or default_league_year(con))
+    reads, created = pro_player_fog.evaluations_for_team(
+        con,
+        game_id=pro_player_fog.active_game_id(con),
+        season=season,
+        evaluator_team_id=team_id,
+        player_ids=[int(row["player_id"]) for row in rows],
+        create_missing=True,
+    )
+    if created:
+        con.commit()
     scores: list[int] = []
     young_upside = 0
     for row in rows:
         if position_group_for(str(row["position"])) != group:
             continue
-        overall = int(row["overall"] or 50)
-        potential = int(row["potential"] or overall)
+        read = reads.get(int(row["player_id"]))
+        overall = int(read.get("overall") if read else row["overall"] or 50)
+        potential = int(read.get("potential") if read else row["potential"] or overall)
         age = int(row["age"] or 28)
         scores.append(overall)
         if age <= 26 and potential >= overall + 6 and potential >= 75:
@@ -3897,6 +4064,8 @@ def rb_starter_stack_block_reason(
     room: dict[str, Any],
     team_need: float,
     offer_aav: int,
+    player_score_override: float | None = None,
+    player_potential_override: int | None = None,
 ) -> str | None:
     """Prevent CPU teams from hoarding multiple lead-back expectation signings.
 
@@ -3906,8 +4075,12 @@ def rb_starter_stack_block_reason(
     """
     if normalized_group(player) != "RB":
         return None
-    score = true_overall(player)
-    potential = int(row_value(player, "potential", score) or score)
+    score = float(player_score_override) if player_score_override is not None else float(true_overall(player))
+    potential = (
+        int(player_potential_override)
+        if player_potential_override is not None
+        else int(row_value(player, "potential", score) or score)
+    )
     tier = normalized_tier(player)
     count = int(room.get("count", 0) or 0)
     best = int(room.get("best", 0) or 0)
@@ -4002,8 +4175,12 @@ def cpu_final_signing_guardrails(
     aav = int(row_value(offer, "aav", 0) or 0)
     years = int(row_value(offer, "years", 1) or 1)
     signing_bonus = int(row_value(offer, "signing_bonus", 0) or 0)
+    guarantee_pct = int(row_value(offer, "guarantee_pct", 0) or 0)
+    notes_text = str(row_value(offer, "notes", "") or "").lower()
+    post_draft_depth_offer = "post-draft depth" in notes_text
     group = position_group_for(str(row_value(market, "position_group", row_value(market, "position", ""))))
-    score = float(row_value(market, "market_score", row_value(market, "overall", 60)) or 60)
+    actual_overall = true_overall(market)
+    score = float(actual_overall) if post_draft_depth_offer else float(row_value(market, "market_score", row_value(market, "overall", 60)) or 60)
     potential = int(row_value(market, "potential", score) or score)
     age = int(row_value(market, "age", 28) or 28)
     team_need = load_team_need_scores(con).get((team_id, group), 0.0)
@@ -4017,7 +4194,21 @@ def cpu_final_signing_guardrails(
     count = int(room["count"])
     best = int(room["best"])
     starter_floor = int(room["starter_floor"])
+    target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
+    starter_hole = count < starter_slots or starter_floor < target_floor - 4
     reserve = max(CPU_FINAL_SIGNING_MIN_BUFFER, cpu_cap_reserve_for_period(period))
+    if post_draft_depth_offer:
+        reserve = max(
+            CPU_FINAL_SIGNING_MIN_BUFFER,
+            cpu_post_draft_depth_offer_reserve(
+                period,
+                group=group,
+                aav=aav,
+                years=years,
+                starter_hole=starter_hole,
+                guarantee_pct=guarantee_pct,
+            ),
+        )
 
     cap = roster_actions.cap_row(con, team_id)
     cap_space = int(cap["cap_space"] or 0) if cap else 0
@@ -4043,7 +4234,6 @@ def cpu_final_signing_guardrails(
         )
     if age >= POSITION_OLD_AGE.get(group, 31) + 2 and score < 76 and aav > int(quality_cap * 0.96):
         return False, "CPU signing blocked: aging low-70s veteran priced too close to ceiling."
-    actual_overall = true_overall(market)
     if (
         group in {"WR", "OT", "EDGE", "CB", "IDL", "TE", "LB", "S", "IOL"}
         and actual_overall <= 73
@@ -4055,12 +4245,34 @@ def cpu_final_signing_guardrails(
         group in {"CB", "S", "IOL"}
         and actual_overall <= 73
         and potential <= 78
-        and aav >= 12_000_000
+        and aav >= 10_000_000
     ):
         return False, "CPU signing blocked: low-70s secondary/interior player above starter price."
+    if (
+        group in {"CB", "S", "IOL", "IDL", "LB"}
+        and actual_overall <= 73
+        and potential <= 80
+        and aav >= 9_750_000
+    ):
+        return False, "CPU signing blocked: low-70s role player priced above his ceiling."
 
     room_scores = [float(value) for value in room.get("scores", [])]
     high_upside_candidate = potential >= max(84, actual_overall + 7) and age <= 26
+    if post_draft_depth_offer and group != "QB":
+        recent_group_signings = post_draft_depth_signing_counts_by_group(
+            con,
+            league_year=int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con)),
+        ).get((team_id, group), 0)
+        meaningful_depth = (
+            actual_overall >= max(58, min(target_floor - 6, starter_floor - 2))
+            or high_upside_candidate
+        )
+        if count >= ideal and not starter_hole and not meaningful_depth:
+            return False, "CPU signing blocked: post-draft depth target would not improve a full room."
+        if count >= ideal and recent_group_signings >= 1 and actual_overall <= starter_floor and team_need < 82:
+            return False, "CPU signing blocked: post-draft room already added depth at this position."
+        if count >= ideal + 1 and actual_overall < max(starter_floor, target_floor - 4) and not starter_hole:
+            return False, "CPU signing blocked: post-draft signing would overfill a full room with replacement depth."
     premium_room_groups = {"WR", "EDGE", "CB", "OT", "IDL", "TE", "IOL", "S", "LB"}
     if group in premium_room_groups and aav >= 12_000_000 and not high_upside_candidate:
         comparable = sum(1 for value in room_scores if value >= actual_overall - 2)
@@ -4107,6 +4319,10 @@ def cpu_final_signing_guardrails(
             return False, f"CPU signing blocked: backup QB cap is {money(int(backup_cap))}."
         if incumbent >= 84 and score <= incumbent - 4 and aav > 8_500_000:
             return False, "CPU signing blocked: starter-priced QB behind established franchise QB."
+        if count >= 1 and actual_overall <= incumbent + 2 and aav >= 10_000_000 and team_need < 88:
+            return False, "CPU signing blocked: parallel bridge QB money without a clear upgrade."
+        if count >= 1 and actual_overall <= incumbent + 1 and years > 1 and not own_retention and team_need < 86:
+            return False, "CPU signing blocked: multi-year QB deal lacks a clear path over the current starter."
         if incumbent >= 82 and actual_overall <= incumbent - 3 and aav >= 8_500_000:
             return False, "CPU signing blocked: actual QB grade is too far behind the established starter."
         if actual_overall <= 72 and aav > 10_000_000:
@@ -4131,6 +4347,14 @@ def cpu_final_signing_guardrails(
         major_upgrade = actual_overall >= best + 4 or (potential >= best + 7 and age <= 25)
         if not (team_need >= 82 and major_upgrade):
             return False, "CPU signing blocked: already has TE1 money or young TE upside in the room."
+    if (
+        group in {"OT", "TE", "S", "RB", "IDL", "IOL", "LB"}
+        and starter_money_count >= starter_slots
+        and aav >= 9_000_000
+        and actual_overall <= starter_floor + 2
+        and not (clear_upgrade or elite_target or team_need >= 82)
+    ):
+        return False, "CPU signing blocked: paid depth would crowd an already covered position group."
     if count >= ideal and score <= starter_floor + 2 and aav >= 8_000_000 and team_need < 66:
         return False, "CPU signing blocked: crowded room and no clear role upgrade."
     if count >= starter_slots and score <= starter_floor + 1 and aav >= 10_000_000 and team_need < 58:
@@ -4399,6 +4623,25 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
         raise ValueError(f"{team['abbreviation']} does not have enough practical cap room for this offer.")
     if str(offer["notes"] or "").startswith("CPU"):
         reserve = cpu_cap_reserve_for_period(period)
+        if "post-draft depth" in str(offer["notes"] or "").lower():
+            group = position_group_for(str(row_value(market, "position_group", row_value(market, "position", ""))))
+            room = team_group_room_context(con, int(team["team_id"]), group, exclude_player_id=int(offer["player_id"]))
+            starter_floor = int(room["starter_floor"] or 0)
+            starter_slots = int(room["starter_slots"] or 1)
+            count = int(room["count"] or 0)
+            target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
+            starter_hole = count < starter_slots or starter_floor < target_floor - 4
+            reserve = max(
+                CPU_FINAL_SIGNING_MIN_BUFFER,
+                cpu_post_draft_depth_offer_reserve(
+                    period,
+                    group=group,
+                    aav=int(offer["aav"] or 0),
+                    years=int(offer["years"] or 1),
+                    starter_hole=starter_hole,
+                    guarantee_pct=int(offer["guarantee_pct"] or 0),
+                ),
+            )
         if int(before["cap_space"] or 0) - reserve < projected_first_year_cost:
             raise ValueError(f"{team['abbreviation']} does not have enough CPU reserve cap room for this offer.")
 
@@ -6309,6 +6552,8 @@ def create_cpu_offers(
     early_wave = str(period["current_stage"] or "") == "day_one_hourly" and int(period["day_count"] or 1) <= 1
     late_market = cpu_late_market(period)
     post_draft_context = is_post_draft_market_context(con, int(period["league_year"]))
+    fog_game_id = pro_player_fog.active_game_id(con)
+    fog_season = int(period["league_year"])
     if late_market:
         candidates.sort(
             key=lambda player: (
@@ -6333,7 +6578,10 @@ def create_cpu_offers(
         )
     for player in candidates:
         player_group = position_group_for(str(row_value(player, "position_group", row_value(player, "position", ""))))
-        player_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+        market_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+        base_player_score = float(true_overall(player)) if post_draft_context else market_score
+        true_player_score = float(true_overall(player))
+        true_player_potential = int(row_value(player, "potential", true_player_score) or true_player_score)
         if not post_draft_strategy_allows_offer(
             con,
             player,
@@ -6400,6 +6648,21 @@ def create_cpu_offers(
         )
         for team in affordable_teams[:slots]:
             team_id = int(team["team_id"])
+            perceived_overall, perceived_potential, _staff_read = pro_player_fog.perceived_overall_potential(
+                con,
+                game_id=fog_game_id,
+                season=fog_season,
+                evaluator_team_id=team_id,
+                player_id=int(player["player_id"]),
+                true_overall=true_player_score,
+                true_potential=true_player_potential,
+                create_missing=True,
+            )
+            if post_draft_context:
+                player_score = float(perceived_overall)
+            else:
+                player_score = max(45.0, float(base_player_score) + (float(perceived_overall) - true_player_score) * 0.70)
+            player_potential = int(round(float(perceived_potential)))
             if not post_draft_strategy_allows_offer(
                 con,
                 player,
@@ -6461,7 +6724,7 @@ def create_cpu_offers(
                     int(room_context.get("young_upside", 0) or 0) > 0
                     and int(room_context.get("best", 0) or 0) >= 70
                     and int(row_value(player, "age", 28) or 28) >= 27
-                    and true_overall(player) <= int(room_context.get("best", 0) or 0) + 3
+                    and player_score <= int(room_context.get("best", 0) or 0) + 3
                     and team_need < 84
                 ):
                     continue
@@ -6471,6 +6734,8 @@ def create_cpu_offers(
                     team_qb_scores=competition.get((team_id, "QB"), []),
                     team_need=team_need,
                     roster_qb_count=roster_group_count,
+                    incoming_score_override=player_score,
+                    incoming_potential_override=player_potential,
                 )
                 if not qb_limits["allowed"]:
                     continue
@@ -6510,6 +6775,7 @@ def create_cpu_offers(
                     team_qb_scores=competition.get((team_id, "QB"), []),
                     team_need=team_need,
                     rng=rng,
+                    incoming_score_override=player_score,
                 )
                 if qb_fit is None:
                     continue
@@ -6585,6 +6851,8 @@ def create_cpu_offers(
                 room=room_context,
                 team_need=team_need,
                 offer_aav=aav,
+                player_score_override=player_score,
+                player_potential_override=player_potential,
             )
             if rb_block and not late_need_exception:
                 continue
@@ -6595,7 +6863,7 @@ def create_cpu_offers(
                 pending_spend=group_spend,
                 offer_aav=aav,
                 player_score=player_score,
-                player_potential=int(row_value(player, "potential", player_score) or player_score),
+                player_potential=player_potential,
                 elite_target=cpu_elite_free_agent(player),
             ):
                 continue
@@ -6608,7 +6876,7 @@ def create_cpu_offers(
                 years = min(years, 1 if qb_backup_multiplier < 0.70 else 2)
             if player_group == "QB" and player_score < 72:
                 years = min(years, 2)
-            if player_group == "QB" and true_overall(player) <= 76 and int(row_value(player, "potential", 0) or 0) < 82:
+            if player_group == "QB" and player_score <= 76 and player_potential < 82:
                 years = min(years, 1)
             if player_group == "QB" and player_score < 75 and team_need < 75:
                 years = min(years, 1)
@@ -6623,7 +6891,7 @@ def create_cpu_offers(
                     years = 1
                 elif player_score < 76 or int(row_value(player, "age", 29) or 29) >= POSITION_OLD_AGE.get(player_group, 31):
                     years = min(years, 1)
-                elif player_score < 78 and int(row_value(player, "potential", player_score) or player_score) < 82:
+                elif player_score < 78 and player_potential < 82:
                     years = min(years, 2)
             guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0) + 5, rng)
             bonus = cpu_signing_bonus_for_offer(
@@ -6789,6 +7057,7 @@ def cpu_post_draft_depth_signings(
     )
     event_date, event_hour = event_time(period)
     cap_reserve = cpu_cap_reserve_for_period(period)
+    entry_reserve = cpu_post_draft_depth_team_entry_reserve(period)
     teams = con.execute(
         """
         SELECT t.team_id, t.abbreviation, COALESCE(cap.cap_space, t.salary_cap) AS cap_space
@@ -6798,7 +7067,7 @@ def cpu_post_draft_depth_signings(
           AND (? IS NULL OR t.abbreviation <> ?)
         ORDER BY t.abbreviation
         """,
-        (cap_reserve + 1_500_000, user_team, user_team),
+        (entry_reserve + 950_000, user_team, user_team),
     ).fetchall()
     if not teams:
         return {"signings": 0, "teams": 0, "specialist_signings": specialist_signings}
@@ -6819,8 +7088,10 @@ def cpu_post_draft_depth_signings(
     signed_teams: set[int] = set()
     total_signed = 0
     need_scores = load_team_need_scores(con)
+    post_draft_group_signings = post_draft_depth_signing_counts_by_group(con, league_year=league_year)
     competition = load_playing_time_competition(con, league_year - 1)
     pressure_groups = active_fa_injury_pressure_groups(con)
+    fog_game_id = pro_player_fog.active_game_id(con)
 
     for team in teams:
         if total_signed >= max_total:
@@ -6848,6 +7119,7 @@ def cpu_post_draft_depth_signings(
             starter_floor = int(context["starter_floor"])
             target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
             need = need_scores.get((team_id, group), 0.0)
+            recent_group_signings = post_draft_group_signings.get((team_id, group), 0)
             starter_hole = count < starters or starter_floor < target_floor - 4
             depth_hole = count < ideal or (count < ideal + 1 and need >= 42)
             if group == "QB":
@@ -6864,6 +7136,15 @@ def cpu_post_draft_depth_signings(
                 and need < 70
                 and starter_floor >= max(62, target_floor - 2)
             ):
+                continue
+            elif (
+                count >= ideal
+                and recent_group_signings >= 1
+                and not starter_hole
+                and need < 82
+            ):
+                continue
+            elif count >= ideal + 1 and not starter_hole:
                 continue
 
             group_recent_rejections = recent_rejected_offer_count_for_group(
@@ -6889,18 +7170,59 @@ def cpu_post_draft_depth_signings(
             ]
             if not group_candidates:
                 continue
+            candidate_player_ids = [
+                int(row_value(player, "player_id", 0) or 0)
+                for player in group_candidates
+            ]
+            staff_reads, _created_staff_reads = pro_player_fog.evaluations_for_team(
+                con,
+                game_id=fog_game_id,
+                season=league_year,
+                evaluator_team_id=team_id,
+                player_ids=candidate_player_ids,
+                create_missing=True,
+            )
+            perceived_candidates: dict[int, tuple[float, int]] = {}
+            for candidate in group_candidates:
+                candidate_id = int(row_value(candidate, "player_id", 0) or 0)
+                true_score = float(true_overall(candidate))
+                true_potential = int(row_value(candidate, "potential", true_score) or true_score)
+                read = staff_reads.get(candidate_id)
+                if read:
+                    perceived_candidates[candidate_id] = (
+                        float(read.get("overall") or true_score),
+                        int(read.get("potential") or true_potential),
+                    )
+                else:
+                    perceived_candidates[candidate_id] = (true_score, true_potential)
             group_candidates.sort(
                 key=lambda player: (
-                    0 if starter_hole and true_overall(player) >= max(64, starter_floor + 2) else 1,
-                    0 if group_recent_rejections < 3 or true_overall(player) >= max(63, starter_floor + 1) else 1,
-                    -min(8, max(0, true_overall(player) - max(starter_floor, 58))),
+                    0 if starter_hole and perceived_candidates.get(int(row_value(player, "player_id", 0) or 0), (true_overall(player), 0))[0] >= max(64, starter_floor + 2) else 1,
+                    0 if group_recent_rejections < 3 or perceived_candidates.get(int(row_value(player, "player_id", 0) or 0), (true_overall(player), 0))[0] >= max(63, starter_floor + 1) else 1,
+                    -min(8, max(0, perceived_candidates.get(int(row_value(player, "player_id", 0) or 0), (true_overall(player), 0))[0] - max(starter_floor, 58))),
                     int(row_value(player, "asking_aav", 0) or 0),
                     rng.random(),
                 )
             )
             for player in group_candidates[:28]:
                 player_id = int(row_value(player, "player_id", 0) or 0)
-                player_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+                player_score, player_potential = perceived_candidates.get(
+                    player_id,
+                    (
+                        float(true_overall(player)),
+                        int(row_value(player, "potential", true_overall(player)) or true_overall(player)),
+                    ),
+                )
+                player_age = int(row_value(player, "age", 29) or 29)
+                young_upside_depth = (
+                    player_age <= 25
+                    and player_potential >= max(target_floor + 2, int(player_score) + 6)
+                )
+                improves_starter_floor = player_score > starter_floor
+                meaningful_depth = (
+                    player_score >= max(58, min(target_floor - 6, starter_floor - 2))
+                    or young_upside_depth
+                )
                 if not post_draft_strategy_allows_offer(
                     con,
                     player,
@@ -6908,10 +7230,23 @@ def cpu_post_draft_depth_signings(
                     pressure_groups=pressure_groups,
                 ):
                     continue
+                candidate_starter_hole = bool(starter_hole)
                 if starter_hole:
-                    if group != "QB" and player_score < max(62, min(target_floor + 2, starter_floor + 5)):
-                        continue
+                    starter_upgrade_floor = max(62, min(target_floor + 2, starter_floor + 5))
+                    if group != "QB" and player_score < starter_upgrade_floor:
+                        if not (count < ideal and meaningful_depth):
+                            continue
+                        candidate_starter_hole = False
                 elif player_score < 58:
+                    continue
+                elif count >= ideal and not meaningful_depth:
+                    continue
+                elif (
+                    count >= ideal
+                    and recent_group_signings >= 1
+                    and not improves_starter_floor
+                    and not (young_upside_depth and need >= 70)
+                ):
                     continue
                 elif count >= ideal and need < 70:
                     continue
@@ -6927,25 +7262,36 @@ def cpu_post_draft_depth_signings(
                         team_qb_scores=competition.get((team_id, "QB"), []),
                         team_need=need,
                         roster_qb_count=count,
+                        incoming_score_override=player_score,
+                        incoming_potential_override=player_potential,
                     )
                     if not qb_limits["allowed"]:
                         continue
                     qb_backup_cap = qb_limits["backup_cap"]
                 cap_row = roster_actions.cap_row(con, team_id)
-                cap_room = int(cap_row["cap_space"] or 0) - cap_reserve
-                if cap_room <= 950_000:
-                    break
-                aav = post_draft_depth_offer_aav(player, starter_hole=starter_hole, rng=rng)
+                cap_space = int(cap_row["cap_space"] or 0)
+                aav = post_draft_depth_offer_aav(player, starter_hole=candidate_starter_hole, rng=rng)
                 if qb_backup_cap:
                     aav = min(aav, int(qb_backup_cap))
                 if group == "QB" and not starter_hole:
                     aav = min(aav, 8_000_000 if player_score >= 70 else 6_000_000)
-                if aav > int(cap_room * 0.86):
-                    continue
                 years = 1
-                if starter_hole and true_overall(player) >= 75 and int(row_value(player, "age", 29) or 29) <= 29:
+                if candidate_starter_hole and player_score >= 75 and player_age <= 29:
                     years = 2
                 guarantee = min(35, int(row_value(player, "guarantee_pct", 0) or 0))
+                effective_reserve = cpu_post_draft_depth_offer_reserve(
+                    period,
+                    group=group,
+                    aav=aav,
+                    years=years,
+                    starter_hole=candidate_starter_hole,
+                    guarantee_pct=guarantee,
+                )
+                cap_room = cap_space - effective_reserve
+                if cap_room <= 950_000:
+                    break
+                if aav > int(cap_room * 0.86):
+                    continue
                 bonus = cpu_signing_bonus_for_offer(
                     player,
                     aav=aav,
@@ -7011,6 +7357,7 @@ def cpu_post_draft_depth_signings(
                     continue
                 signed_players.add(player_id)
                 signed_teams.add(team_id)
+                post_draft_group_signings[(team_id, group)] = post_draft_group_signings.get((team_id, group), 0) + 1
                 total_signed += 1
                 team_signed += 1
                 log_event(

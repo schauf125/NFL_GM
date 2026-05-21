@@ -196,7 +196,7 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
     sync_save(target_game_id)
 
 
-def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str = "MIN") -> None:
+def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str | None = "MIN") -> None:
     target_game_id, db_path = save_db(game_id)
     command = [
         sys.executable,
@@ -206,10 +206,12 @@ def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str 
         "rebuild",
         "--season",
         str(season),
-        "--user-team",
-        user_team,
         "--apply",
     ]
+    if user_team:
+        command.extend(["--user-team", user_team])
+    else:
+        command.append("--include-user")
     subprocess.run(command, check=True)
     sync_save(target_game_id)
 
@@ -240,7 +242,7 @@ def refresh_dirty_cpu_depth_charts(
             if season is None:
                 season = depth_chart_refresh_season(con)
             if user_team is None:
-                user_team = active_user_team(con) or "MIN"
+                user_team = active_user_team(con)
     command = [
         sys.executable,
         str(TOOLS_DIR / "cpu_depth_chart.py"),
@@ -249,10 +251,12 @@ def refresh_dirty_cpu_depth_charts(
         "rebuild-dirty",
         "--season",
         str(season),
-        "--user-team",
-        str(user_team or "MIN"),
         "--apply",
     ]
+    if user_team:
+        command.extend(["--user-team", str(user_team)])
+    else:
+        command.append("--include-user")
     subprocess.run(command, check=True)
     sync_save(target_game_id)
 
@@ -438,7 +442,7 @@ def ensure_regular_season_complete_before_draft(
     target_game_id, _db_path, con = open_save_db(game_id)
     try:
         regular_games, regular_played = regular_season_status(con, season)
-        user_team = active_user_team(con) or "MIN"
+        user_team = active_user_team(con)
     finally:
         con.close()
     if regular_games == 0:
@@ -631,15 +635,16 @@ def maybe_ensure_progression_before_contract_talks(game_id: str | None, contract
 def active_user_team(con) -> str | None:
     if table_exists(con, "active_game_save_view"):
         row = con.execute("SELECT user_team FROM active_game_save_view LIMIT 1").fetchone()
-        if row and row["user_team"]:
-            return str(row["user_team"]).upper()
+        if row:
+            return str(row["user_team"]).upper() if row["user_team"] else None
     if table_exists(con, "game_saves"):
         row = con.execute(
             """
-            SELECT user_team
-            FROM game_saves
-            WHERE status = 'active'
-            ORDER BY updated_at DESC, created_at DESC
+            SELECT t.abbreviation AS user_team
+            FROM game_saves gs
+            LEFT JOIN teams t ON t.team_id = gs.user_team_id
+            WHERE gs.status = 'active'
+            ORDER BY gs.updated_at DESC, gs.created_at DESC
             LIMIT 1
             """
         ).fetchone()
@@ -725,6 +730,8 @@ def gated_calendar_target(
     *,
     auto_roster_cutdown: bool = False,
 ) -> tuple[str, str | None]:
+    if game.user_team_id is None or str(getattr(game, "control_mode", "") or "").lower() == "observe":
+        return requested_target, None
     current = date.fromisoformat(str(game.current_date))
     target = date.fromisoformat(str(requested_target))
     season = int(game.current_league_year)
@@ -825,6 +832,8 @@ def stop_for_user_roster_cutdown_if_due(game_id: str | None, season: int) -> boo
     with game_flow.connect(db_path) as con:
         game = game_flow.active_game(con)
         if not game:
+            return False
+        if game.user_team_id is None or str(getattr(game, "control_mode", "") or "").lower() == "observe":
             return False
         current = date.fromisoformat(str(game.current_date))
         cutdown = calendar_event_date(con, season, "FINAL_ROSTER_CUTDOWN_53")

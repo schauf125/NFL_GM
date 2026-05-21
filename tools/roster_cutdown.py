@@ -24,9 +24,13 @@ DB_PATH = ROOT / "database" / "nfl_gm.db"
 TOOLS_DIR = ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import roster_rules  # noqa: E402
 import cpu_depth_chart  # noqa: E402
+import pro_player_fog  # noqa: E402
+from engine import depth_packages  # noqa: E402
 from setup_contract_years import rebuild_contract_years, sync_team_cap_space  # noqa: E402
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger  # noqa: E402
 
@@ -243,17 +247,43 @@ def rating_average(con: sqlite3.Connection, player_id: int, season: int) -> floa
     return float(row["rating_average"]) if row and row["rating_average"] is not None else None
 
 
-def depth_rank(con: sqlite3.Connection, team_id: int, player_id: int) -> int | None:
-    if not table_exists(con, "depth_charts"):
+def active_depth_slots_for_team(con: sqlite3.Connection, team_id: int, season: int) -> set[str] | None:
+    if not table_exists(con, "team_scheme_identities_view"):
         return None
     row = con.execute(
-        """
+        "SELECT * FROM team_scheme_identities_view WHERE team_id = ? AND season = ?",
+        (team_id, season),
+    ).fetchone()
+    if not row:
+        return None
+    info = depth_packages.scheme_packages_from_row(row)
+    return set(
+        depth_packages.active_depth_slots(
+            list(info.get("offensePackages") or ["11", "12"]),
+            list(info.get("defensePackages") or ["nickel"]),
+            include_special=True,
+        )
+    )
+
+
+def depth_rank(con: sqlite3.Connection, team_id: int, player_id: int, season: int | None = None) -> int | None:
+    if not table_exists(con, "depth_charts"):
+        return None
+    active_slots = active_depth_slots_for_team(con, team_id, season) if season is not None else None
+    slot_filter = ""
+    params: list[object] = [team_id, player_id]
+    if active_slots:
+        slot_filter = f" AND position IN ({','.join('?' for _ in active_slots)})"
+        params.extend(sorted(active_slots))
+    row = con.execute(
+        f"""
         SELECT MIN(depth_rank) AS depth_rank
         FROM depth_charts
         WHERE team_id = ?
           AND player_id = ?
+          {slot_filter}
         """,
-        (team_id, player_id),
+        params,
     ).fetchone()
     return int(row["depth_rank"]) if row and row["depth_rank"] is not None else None
 
@@ -284,6 +314,17 @@ def player_candidate(
     group = POSITION_TO_GROUP.get(position, "OTHER")
     overall = float(row["overall"] or 55)
     potential = float(row["potential"] or overall)
+    if team_id is not None:
+        overall, potential, _read = pro_player_fog.perceived_overall_potential(
+            con,
+            game_id=pro_player_fog.active_game_id(con),
+            season=season,
+            evaluator_team_id=team_id,
+            player_id=int(row["player_id"]),
+            true_overall=overall,
+            true_potential=potential,
+            create_missing=True,
+        )
     contract_aav_value = active_contract_aav(con, int(row["player_id"]))
     role = best_role_score(con, int(row["player_id"]), season)
     avg_rating = rating_average(con, int(row["player_id"]), season)
@@ -292,7 +333,7 @@ def player_candidate(
     else:
         fallback = (overall * 0.7) + (potential * 0.2) + ((avg_rating or overall) * 0.1)
         base = max(float(role) if role is not None else 0.0, fallback)
-    rank = depth_rank(con, team_id, int(row["player_id"])) if team_id is not None else None
+    rank = depth_rank(con, team_id, int(row["player_id"]), season) if team_id is not None else None
     depth_bonus = {1: 22.0, 2: 12.0, 3: 6.0}.get(rank or 0, 0.0)
     youth_bonus = 0.0
     age = int(row["age"] or 26)
@@ -1148,7 +1189,7 @@ def practice_squad_poach_score(
     season: int,
     group_need: float,
 ) -> float:
-    candidate = player_candidate(con, player, season=season, team_id=int(player["team_id"]))
+    candidate = player_candidate(con, player, season=season, team_id=target_team_id)
     target_current = active_group_replacement_level(con, target_team_id, candidate.group, season)
     improvement = candidate.overall - target_current
     youth_value = max(0.0, min(8.0, candidate.potential - candidate.overall)) * 0.8
@@ -1214,7 +1255,7 @@ def external_practice_squad_candidates(
             (target_team_id, *positions, max_per_group),
         ).fetchall()
         for row in group_rows:
-            candidate = player_candidate(con, row, season=season, team_id=int(row["team_id"]))
+            candidate = player_candidate(con, row, season=season, team_id=target_team_id)
             if candidate.position in SPECIALIST_POSITIONS:
                 continue
             if candidate.overall < 58 and candidate.potential < 72:
@@ -1958,7 +1999,7 @@ def process_cpu_practice_squad_poaching(
         ):
             if team_poaches >= max_poaches_per_team:
                 break
-            candidate = player_candidate(con, player, season=season, team_id=int(player["team_id"]))
+            candidate = player_candidate(con, player, season=season, team_id=team_id)
             if has_protected_young_depth(con, team_id=team_id, season=season, group=candidate.group):
                 if active_group_count(con, team_id, candidate.group) >= MIN_ACTIVE_BY_GROUP.get(candidate.group, 0):
                     skipped_prospect_protection += 1

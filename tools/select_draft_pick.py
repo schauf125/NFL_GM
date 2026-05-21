@@ -53,6 +53,7 @@ import player_development_modifiers
 import scheme_fits
 import player_headshot_backfill
 import draft_portrait_assets
+import pro_player_fog
 
 
 SOURCE = "draft_selection"
@@ -100,6 +101,7 @@ def ensure_all_schema(con: sqlite3.Connection) -> None:
     player_personalities.seed_trait_definitions(con)
     player_development_modifiers.seed_master_data(con)
     scheme_fits.seed_master_data(con)
+    pro_player_fog.ensure_schema(con)
     con.execute(
         """
         INSERT INTO transaction_types (transaction_type, category, description)
@@ -1208,6 +1210,15 @@ def convert_undrafted_prospect_to_free_agent(
         season=draft_year,
     )
     foundation = initialize_new_player_foundation(con, player_id=player_id, season=draft_year)
+    pro_player_fog.create_initial_evaluation(
+        con,
+        game_id=active_game_id(con) or "default",
+        evaluator_team_id=pro_player_fog.FA_EVALUATOR_TEAM_ID,
+        player_id=player_id,
+        season=draft_year,
+        source="undrafted_rookie_pro_fog",
+        notes="Initial undrafted rookie read seeded from limited pro evidence.",
+    )
     con.execute(
         """
         UPDATE draft_prospects
@@ -1709,6 +1720,15 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         season=args.draft_year,
     )
     foundation = initialize_new_player_foundation(con, player_id=player_id, season=args.draft_year)
+    pro_player_fog.seed_drafted_player_evaluation(
+        con,
+        game_id=active_game_id(con) or "default",
+        player_id=player_id,
+        team_id=team_id,
+        season=args.draft_year,
+        prospect_id=int(prospect["prospect_id"]),
+        draft_year=args.draft_year,
+    )
     mark_pick_and_prospect(
         con,
         pick=pick,

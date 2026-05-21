@@ -686,6 +686,19 @@
     { slot: "QB", label: "QB", row: 5, col: "7" },
     { slot: "RB", label: "HB", row: 6, col: "7" },
   ];
+  const OFFENSE_10_FORMATION_SLOTS = [
+    { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
+    { slot: "SWR", label: "Slot", row: 4, col: "3 / span 2", rank: 1 },
+    { slot: "LT", label: "LT", row: 3, col: "5" },
+    { slot: "LG", label: "LG", row: 3, col: "6" },
+    { slot: "C", label: "C", row: 3, col: "7" },
+    { slot: "RG", label: "RG", row: 3, col: "8" },
+    { slot: "RT", label: "RT", row: 3, col: "9" },
+    { slot: "SWR", label: "WR4", row: 4, col: "10 / span 2", rank: 2 },
+    { slot: "RWR", label: "Z", row: 3, col: "12 / span 2" },
+    { slot: "QB", label: "QB", row: 5, col: "7" },
+    { slot: "RB", label: "HB", row: 6, col: "7" },
+  ];
   const OFFENSE_12_FORMATION_SLOTS = [
     { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
     { slot: "LT", label: "LT", row: 3, col: "5" },
@@ -711,6 +724,19 @@
     { slot: "QB", label: "QB", row: 5, col: "7" },
     { slot: "FB", label: "FB", row: 6, col: "6" },
     { slot: "RB", label: "HB", row: 7, col: "7" },
+  ];
+  const OFFENSE_13_FORMATION_SLOTS = [
+    { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
+    { slot: "LT", label: "LT", row: 3, col: "5" },
+    { slot: "LG", label: "LG", row: 3, col: "6" },
+    { slot: "C", label: "C", row: 3, col: "7" },
+    { slot: "RG", label: "RG", row: 3, col: "8" },
+    { slot: "RT", label: "RT", row: 3, col: "9" },
+    { slot: "TE", label: "Y", row: 3, col: "10", rank: 1 },
+    { slot: "TE", label: "F", row: 4, col: "11", rank: 2 },
+    { slot: "TE", label: "U", row: 4, col: "3", rank: 3 },
+    { slot: "QB", label: "QB", row: 5, col: "7" },
+    { slot: "RB", label: "HB", row: 6, col: "7" },
   ];
   const DEFENSE_FORMATION_SLOTS = [
     { slot: "LEDGE", label: "LEO", row: 1, col: "4" },
@@ -2210,6 +2236,7 @@
   }
 
   function actionCrossesRosterCutdown(action, params = {}) {
+    if (isObserveMode() || !data.activeSave?.user_team) return false;
     if (
       params.auto_roster_cutdown ||
       params.skip_roster_gate ||
@@ -2338,6 +2365,7 @@
   }
 
   function queueSimAdvancePrompt(action, params = {}) {
+    if (isObserveMode() && action === "advance_to_draft") return false;
     const prompt = simAdvancePromptDetails(action, params);
     if (!prompt) return false;
     state.pendingSimAdvancePrompt = prompt;
@@ -5262,10 +5290,16 @@
   function selectedDepthSlot(depth) {
     const slots = orderedDepthSlots(depth);
     if (!slots.length) return null;
+    const activeSlots = new Set(activeFormationMetas().map((meta) => meta.slot));
     const selected = slots.find((slot) => slot.slot === state.selectedDepthSlot);
     if (selected) return selected;
-    state.selectedDepthSlot = slots[0].slot;
-    return slots[0];
+    if (state.selectedDepthSlot && activeSlots.has(String(state.selectedDepthSlot).toUpperCase())) {
+      return { slot: state.selectedDepthSlot, players: [] };
+    }
+    const active = slots.find((slot) => activeSlots.has(String(slot.slot || "").toUpperCase()));
+    const fallback = active || slots[0];
+    state.selectedDepthSlot = fallback.slot;
+    return fallback;
   }
 
   function depthRoleName(rank) {
@@ -5490,23 +5524,54 @@
 
   function defensePackageSlots() {
     if (state.depthDefensePackage === "base43") return BASE_43_DEFENSE_FORMATION_SLOTS;
-    if (state.depthDefensePackage === "base") return BASE_DEFENSE_FORMATION_SLOTS;
+    if (state.depthDefensePackage === "base" || state.depthDefensePackage === "base34") return BASE_DEFENSE_FORMATION_SLOTS;
     return DEFENSE_FORMATION_SLOTS;
   }
 
   function offensePersonnelSlots() {
+    if (state.depthOffensePersonnel === "10") return OFFENSE_10_FORMATION_SLOTS;
     if (state.depthOffensePersonnel === "12") return OFFENSE_12_FORMATION_SLOTS;
+    if (state.depthOffensePersonnel === "13") return OFFENSE_13_FORMATION_SLOTS;
     if (state.depthOffensePersonnel === "21") return OFFENSE_21_FORMATION_SLOTS;
     return OFFENSE_FORMATION_SLOTS;
   }
 
-  function offensePersonnelToggle() {
+  function offensePersonnelOptions(depth) {
+    const labels = {
+      "10": { label: "10", detail: "4 WR" },
+      "11": { label: "11", detail: "3 WR 1 TE" },
+      "12": { label: "12", detail: "2 WR 2 TE" },
+      "13": { label: "13", detail: "3 TE" },
+      "21": { label: "21", detail: "2 WR FB" },
+    };
+    const packages = depth?.scheme?.offensePackages?.length ? depth.scheme.offensePackages : ["11", "12"];
+    return packages.map((value) => ({ value, ...(labels[value] || { label: value, detail: "Package" }) }));
+  }
+
+  function defensePackageOptions(depth) {
+    const labels = {
+      nickel: { label: "Nickel", detail: "NB + 2 LB" },
+      base34: { label: "3-4", detail: "Odd front" },
+      base43: { label: "4-3", detail: "3 LB" },
+    };
+    const packages = depth?.scheme?.defensePackages?.length ? depth.scheme.defensePackages : ["nickel"];
+    return packages.map((value) => ({ value, ...(labels[value] || { label: value, detail: "Package" }) }));
+  }
+
+  function ensureDepthPackageSelection(depth) {
+    const offenseOptions = offensePersonnelOptions(depth).map((option) => option.value);
+    const defenseOptions = defensePackageOptions(depth).map((option) => option.value);
+    if (!offenseOptions.includes(state.depthOffensePersonnel)) {
+      state.depthOffensePersonnel = depth?.scheme?.defaultOffensePackage || offenseOptions[0] || "11";
+    }
+    if (!defenseOptions.includes(state.depthDefensePackage)) {
+      state.depthDefensePackage = depth?.scheme?.defaultDefensePackage || defenseOptions[0] || "nickel";
+    }
+  }
+
+  function offensePersonnelToggle(depth) {
     const wrap = node("div", "formation-toggle");
-    [
-      { value: "11", label: "11", detail: "3 WR 1 TE" },
-      { value: "12", label: "12", detail: "2 WR 2 TE" },
-      { value: "21", label: "21", detail: "2 WR FB" },
-    ].forEach((option) => {
+    offensePersonnelOptions(depth).forEach((option) => {
       const button = node("button", state.depthOffensePersonnel === option.value ? "active" : "");
       button.type = "button";
       append(button, [
@@ -5515,7 +5580,7 @@
       ]);
       button.addEventListener("click", () => {
         state.depthOffensePersonnel = option.value;
-        if (option.value !== "11" && state.selectedDepthSlot === "SWR") state.selectedDepthSlot = "TE";
+        if (!["10", "11"].includes(option.value) && state.selectedDepthSlot === "SWR") state.selectedDepthSlot = "TE";
         if (option.value !== "21" && state.selectedDepthSlot === "FB") state.selectedDepthSlot = "RB";
         render();
       });
@@ -5524,13 +5589,9 @@
     return wrap;
   }
 
-  function defensePackageToggle() {
+  function defensePackageToggle(depth) {
     const wrap = node("div", "formation-toggle");
-    [
-      { value: "nickel", label: "Nickel", detail: "NB + 2 LB" },
-      { value: "base", label: "3-4", detail: "2 ILB" },
-      { value: "base43", label: "4-3", detail: "3 LB" },
-    ].forEach((option) => {
+    defensePackageOptions(depth).forEach((option) => {
       const button = node("button", state.depthDefensePackage === option.value ? "active" : "");
       button.type = "button";
       append(button, [
@@ -5541,7 +5602,7 @@
         state.depthDefensePackage = option.value;
         if (option.value === "nickel" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "NB";
         if (option.value !== "nickel" && state.selectedDepthSlot === "NB") state.selectedDepthSlot = option.value === "base43" ? "SLB" : "MLB";
-        if (option.value === "base" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "MLB";
+        if (option.value === "base34" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "MLB";
         render();
       });
       wrap.append(button);
@@ -5579,7 +5640,9 @@
 
   function depthFormationPanel(depth, selected) {
     const map = depthSlotMap(depth);
-    const panelNode = panel("Formation Board", "Click a position on the field");
+    const scheme = depth.scheme || {};
+    const schemeText = [scheme.offenseScheme, scheme.defenseScheme].filter(Boolean).join(" | ") || "Click a position on the field";
+    const panelNode = panel("Formation Board", schemeText);
     const body = panelBody(panelNode);
     const unitBlocks = [
       { unit: "Offense", slots: offensePersonnelSlots() },
@@ -5590,7 +5653,7 @@
       const title = node("div", "formation-section-title");
       append(title, [
         node("strong", null, unit.unit),
-        unit.unit === "Defense" ? defensePackageToggle() : offensePersonnelToggle(),
+        unit.unit === "Defense" ? defensePackageToggle(depth) : offensePersonnelToggle(depth),
       ]);
       const field = node("div", `formation-field ${unit.unit === "Defense" ? "defense" : "offense"}`);
       unit.slots.forEach((meta) => {
@@ -5674,6 +5737,7 @@
     if (key === "number") return Number(player.jersey_number ?? 999);
     if (key === "overall") return Number(player.overall || 0);
     if (key === "potential") return Number(player.potential || 0);
+    if (key === "confidence") return confidenceSortValue(player.evaluation_confidence || player.evaluation?.confidenceLabel || "");
     if (key === "contract") return Number(player.contract?.cap_hit || player.contract?.asking_aav || 0);
     if (key === "status") return String(player.status || "");
     if (key === "depth") return Number(player.primaryAssignment?.rank || 99);
@@ -5852,6 +5916,7 @@
       rosterTableHeader("Pos", "pos"),
       rosterTableHeader("OVR", "overall"),
       rosterTableHeader("POT", "potential"),
+      rosterTableHeader("Read", "confidence"),
       rosterTableHeader("Age", "age"),
       rosterTableHeader("Depth", "depth"),
       rosterTableHeader("Role", "role"),
@@ -5891,6 +5956,7 @@
         node("td", "numeric", player.position || "-"),
         node("td", "numeric rating-cell", player.overall ?? "-"),
         node("td", "numeric rating-cell", player.potential ?? "-"),
+        node("td", "numeric", player.evaluation_confidence || player.evaluation?.confidenceLabel || "-"),
         node("td", "numeric", player.age ?? "-"),
         node("td", null, assignment ? `${assignment.slot} #${assignment.rank}` : "-"),
         node("td", null, player.role?.key ? `${roleLabel(player.role.key)} ${oneDecimal(player.roleScore)}` : "-"),
@@ -5956,7 +6022,7 @@
     ]);
     const facts = node("section", "metric-grid roster-card-facts roster-action-facts");
     append(facts, [
-      metric("Overall", player.overall ?? "-", `Potential ${player.potential ?? "-"}`),
+      metric("Staff Read", player.overall ?? "-", `Potential ${player.potential ?? "-"} | ${player.evaluation_confidence || player.evaluation?.confidenceLabel || "Cloudy"}`),
       metric("Depth", assignment ? `${assignment.slot} #${assignment.rank}` : "Unassigned", assignment?.unit || "No room"),
       metric("Role Fit", player.roleScore ? oneDecimal(player.roleScore) : "-", player.role?.key ? roleLabel(player.role.key) : "No role read"),
       metric(
@@ -6435,6 +6501,7 @@
     setHeader("Depth Chart", `Set ${team}'s depth chart from the offensive and defensive formations you are running.`);
     const root = document.createDocumentFragment();
     const depth = data.depthChart || { rows: [], roster: [], units: [] };
+    ensureDepthPackageSelection(depth);
     const selected = selectedDepthSlot(depth);
     if (runnerMode() && state.depthChartLiveKey !== depthChartLiveKey() && !state.depthChartLoading) {
       loadLiveDepthChart().then(render);

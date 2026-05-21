@@ -413,6 +413,7 @@
       player.profile.weight,
       player.profile.experience,
       currentRead(player),
+      player.evaluation?.confidenceLabel ? `${player.evaluation.confidenceLabel} eval` : null,
       player.profile.status,
     ].forEach((value) => {
       if (value && value !== "--") {
@@ -473,6 +474,7 @@
     const metrics = node("section", "metric-grid");
     append(metrics, [
       metric("Current Read", currentRead(player), bestRole(player).label),
+      metric("Evaluation", player.evaluation?.confidenceLabel || "Cloudy", player.evaluation?.confidenceNote || "Limited pro evidence."),
       metric("Career Games", fmt(career.career_games), `${fmt(career.first_season)}-${fmt(career.last_season)}`),
       metric("Cap Hit", contract ? money(contract.capHit) : "-", contract ? `through ${contract.endYear || "-"}` : "No active contract"),
       metric("Development", player.profile.devTrait, player.profile.isRookie ? "Rookie" : "Veteran"),

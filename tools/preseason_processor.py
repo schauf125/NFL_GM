@@ -25,6 +25,7 @@ import injury_notifications
 import league_schedule
 import league_news
 import player_personalities
+import pro_player_fog
 import season_storylines
 import scouting
 
@@ -773,12 +774,32 @@ def process_training_camp(
                 details=details,
             ):
                 inserted += 1
+                pro_player_fog.apply_evaluation_event(
+                    con,
+                    game_id=game_id,
+                    player_id=player_id,
+                    team_id=int(player["team_id"]),
+                    season=season,
+                    event_date=event_date,
+                    event_type=event_type if not trait_revealed else f"{event_type}_trait_reveal",
+                    signal_strength=delta + potential_delta,
+                    snap_count=0,
+                    source="training_camp_pro_fog",
+                    notes="Training camp report sharpened the staff evaluation read.",
+                )
                 if emit_messages and int(player["team_id"]) == user_team_id:
                     scouting.add_inbox_message(
                         con,
                         game_id=game_id,
                         title=title,
-                        body=details,
+                        body=pro_player_fog.append_event_read_note(
+                            details,
+                            con,
+                            game_id=game_id,
+                            team_id=int(player["team_id"]),
+                            player_id=player_id,
+                            season=season,
+                        ),
                         category="Player Development",
                         priority="high" if abs(delta) >= 0.85 or trait_revealed else "normal",
                         source="Coaching Staff",
@@ -1038,6 +1059,26 @@ def process_preseason_week(
                 continue
             snap_rows += 1
             total_snaps = off_snaps + def_snaps + st_snaps
+            fog_snaps = pro_player_fog.effective_snap_evidence_from_counts(
+                off_snaps,
+                def_snaps,
+                st_snaps,
+                preseason=True,
+            )
+            if fog_snaps >= 6.0 or abs(perf) >= 0.42:
+                pro_player_fog.apply_evaluation_event(
+                    con,
+                    game_id=game_id,
+                    player_id=int(player["player_id"]),
+                    team_id=int(player["team_id"]),
+                    season=season,
+                    event_date=event_date,
+                    event_type=f"preseason_week_{preseason_week}_evaluation",
+                    signal_strength=perf,
+                    snap_count=fog_snaps,
+                    source="preseason_pro_fog",
+                    notes="Preseason reps gave the staff a discounted evaluation signal.",
+                )
             if emit_messages and int(player["team_id"]) == user_team_id and (abs(perf) >= 0.42 or total_snaps >= 38):
                 player_name = str(player["player_name"])
                 title = f"Preseason read: {player_name}"
@@ -1049,7 +1090,14 @@ def process_preseason_week(
                     con,
                     game_id=game_id,
                     title=title,
-                    body=body,
+                    body=pro_player_fog.append_event_read_note(
+                        body,
+                        con,
+                        game_id=game_id,
+                        team_id=int(player["team_id"]),
+                        player_id=int(player["player_id"]),
+                        season=season,
+                    ),
                     category="Player Development",
                     priority="normal",
                     source="Coaching Staff",

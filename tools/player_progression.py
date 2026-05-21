@@ -26,13 +26,17 @@ SOURCE = "player_progression"
 PROGRESSION_COACH_NOTE_TYPE = "PROGRESSION_COACH_NOTE"
 if str(ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(ROOT / "tools"))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import apply_new_game_variance  # noqa: E402
 import rating_profile_caps  # noqa: E402
 import league_news  # noqa: E402
 import player_development_modifiers  # noqa: E402
+import pro_player_fog  # noqa: E402
 import scheme_fits  # noqa: E402
 import season_storylines  # noqa: E402
+from engine import depth_packages  # noqa: E402
 
 
 POSITION_GROUP = {
@@ -720,8 +724,14 @@ def load_preseason_development_context(con: sqlite3.Connection, *, game_id: str,
             """
             SELECT
                 player_id,
-                SUM(COALESCE(offensive_snaps, 0) + COALESCE(defensive_snaps, 0) + COALESCE(special_teams_snaps, 0)) AS total_snaps,
-                SUM(COALESCE(offensive_snaps, 0) + COALESCE(defensive_snaps, 0)) AS unit_snaps,
+                SUM(
+                    (
+                        COALESCE(offensive_snaps, 0)
+                        + COALESCE(defensive_snaps, 0)
+                        + COALESCE(special_teams_snaps, 0) * 0.125
+                    ) * 0.25
+                ) AS weighted_snaps,
+                SUM((COALESCE(offensive_snaps, 0) + COALESCE(defensive_snaps, 0)) * 0.25) AS weighted_unit_snaps,
                 AVG(COALESCE(performance_delta, 0)) AS avg_performance,
                 COUNT(*) AS weeks
             FROM preseason_player_snaps
@@ -732,8 +742,8 @@ def load_preseason_development_context(con: sqlite3.Connection, *, game_id: str,
         ).fetchall()
         for row in rows:
             player_context = context.setdefault(int(row["player_id"]), {})
-            player_context["preseason_snaps"] = float(row["total_snaps"] or 0.0)
-            player_context["preseason_unit_snaps"] = float(row["unit_snaps"] or 0.0)
+            player_context["preseason_snaps"] = float(row["weighted_snaps"] or 0.0)
+            player_context["preseason_unit_snaps"] = float(row["weighted_unit_snaps"] or 0.0)
             player_context["preseason_performance"] = float(row["avg_performance"] or 0.0)
             player_context["preseason_weeks"] = float(row["weeks"] or 0.0)
     return context
@@ -764,7 +774,7 @@ def preseason_development_score(
         snap_bonus *= 0.45
     score = camp_delta * 0.72
     score += potential_delta * 0.22
-    score += performance * 0.85
+    score += performance * 0.85 * pro_player_fog.PRESEASON_SNAP_WEIGHT
     score += snap_bonus * young_factor
     if potential_gap >= 8 and band in {"rookie", "young"} and snaps >= 45:
         score += min(0.22, potential_gap * 0.012)
@@ -870,17 +880,43 @@ def load_injury_context(con: sqlite3.Connection, season: int) -> dict[int, dict[
     return injuries
 
 
-def load_depth_rank(con: sqlite3.Connection) -> dict[int, int]:
+def load_depth_rank(con: sqlite3.Connection, season: int | None = None) -> dict[int, int]:
     if not table_exists(con, "depth_charts"):
         return {}
+    active_slots_by_team: dict[int, set[str]] = {}
+    if season is not None and table_exists(con, "team_scheme_identities_view"):
+        for row in con.execute(
+            """
+            SELECT *
+            FROM team_scheme_identities_view
+            WHERE season = ?
+            """,
+            (season,),
+        ).fetchall():
+            info = depth_packages.scheme_packages_from_row(row)
+            active_slots_by_team[int(row["team_id"])] = set(
+                depth_packages.active_depth_slots(
+                    list(info.get("offensePackages") or ["11", "12"]),
+                    list(info.get("defensePackages") or ["nickel"]),
+                    include_special=True,
+                )
+            )
     rows = con.execute(
         """
-        SELECT player_id, MIN(depth_rank) AS best_rank
+        SELECT team_id, player_id, position, depth_rank
         FROM depth_charts
-        GROUP BY player_id
         """
     ).fetchall()
-    return {int(row["player_id"]): int(row["best_rank"] or 99) for row in rows}
+    ranks: dict[int, int] = {}
+    for row in rows:
+        team_id = int(row["team_id"])
+        slot = str(row["position"] or "").upper()
+        if active_slots_by_team and slot not in active_slots_by_team.get(team_id, {slot}):
+            continue
+        player_id = int(row["player_id"])
+        rank = int(row["depth_rank"] or 99)
+        ranks[player_id] = min(ranks.get(player_id, 99), rank)
+    return ranks
 
 
 def load_scheme_context(con: sqlite3.Connection, season: int) -> dict[int, sqlite3.Row]:
@@ -1317,7 +1353,8 @@ def usage_score(
         snap_component = clamp(primary_snaps / full_time * 4.2 - 1.1, -1.5, 3.4)
         st_component = 0.0
         if position_group(position) != "ST" and special_snaps > 0:
-            st_component = clamp(special_snaps / 320.0 * 1.15, 0.0, 1.15)
+            effective_special_snaps = special_snaps * pro_player_fog.SPECIAL_TEAMS_SNAP_WEIGHT
+            st_component = clamp(effective_special_snaps / 320.0 * 1.15, 0.0, 0.24)
             if primary_snaps <= 0:
                 st_component *= 0.80
             if int(player["overall"] or 50) >= 76:
@@ -1532,7 +1569,8 @@ def personality_circumstance_score(
     special_snaps = stat_value(stats, "special_teams_snaps")
     primary_snaps, _full_time = primary_snap_context(str(player["position"]), stats)
     if is_rostered and special_snaps >= 120 and primary_snaps < 220:
-        st_role = clamp((special_snaps - 100.0) / 340.0, 0.0, 1.0)
+        effective_st_snaps = special_snaps * pro_player_fog.SPECIAL_TEAMS_SNAP_WEIGHT
+        st_role = clamp(effective_st_snaps / 340.0, 0.0, 0.35)
         st_response = competition_response * 0.006 + adversity_response * 0.006
         st_response += lunch * 0.16 + film * 0.12 + chip * 0.12
         st_response -= distraction * 0.16 + off_field * 0.20
@@ -2507,7 +2545,7 @@ def build_contexts(
     )
     stats_by_player = load_stats(con, from_season)
     injuries_by_player = load_injury_context(con, from_season)
-    depth = load_depth_rank(con)
+    depth = load_depth_rank(con, from_season)
     scheme_context = load_scheme_context(con, from_season)
     team_success = load_team_success(con, from_season)
     contract_context = load_contract_context(con, from_season)
@@ -3263,7 +3301,7 @@ def coach_note_candidate(
     *,
     traits: dict[str, int],
     stats: dict[str, float],
-) -> tuple[float, str, str] | None:
+) -> tuple[float, str, str, int, int | None] | None:
     c = result.context
     if c.status != "Active" or c.team_id is None:
         return None
@@ -3358,7 +3396,7 @@ def coach_note_candidate(
         score *= 0.55
     if c.position in {"K", "P", "LS"}:
         score *= 0.55
-    return score, title, templates[0]
+    return score, title, templates[0], c.player_id, c.team_id
 
 
 def create_progression_coach_notes(
@@ -3378,7 +3416,7 @@ def create_progression_coach_notes(
     traits_by_player = player_development_modifiers.load_personality_traits(con, game_id=game_id, season=from_season)
     stats_by_player = load_stats(con, from_season)
     rng = random.Random(seed ^ (run_id * 1000003) ^ 0xC04C4E)
-    candidates: list[tuple[float, str, str]] = []
+    candidates: list[tuple[float, str, str, int, int | None]] = []
     for result in results:
         if result.context.team_id != user_team_id:
             continue
@@ -3389,15 +3427,15 @@ def create_progression_coach_notes(
         )
         if not candidate:
             continue
-        score, title, message = candidate
+        score, title, message, player_id, team_id = candidate
         score += rng.uniform(-0.35, 0.45)
         if score >= 1.25:
-            candidates.append((score, title, message))
+            candidates.append((score, title, message, player_id, team_id))
     if not candidates:
         return 0
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    selected: list[tuple[float, str, str]] = []
+    selected: list[tuple[float, str, str, int, int | None]] = []
     limit = min(5, max(2, 2 + len(candidates) // 9))
     for item in candidates:
         if len(selected) >= limit:
@@ -3409,7 +3447,7 @@ def create_progression_coach_notes(
         selected = candidates[: min(2, len(candidates))]
 
     created = 0
-    for _score, title, message in selected:
+    for _score, title, message, player_id, team_id in selected:
         if alert_already_exists(
             con,
             game_id=game_id,
@@ -3419,6 +3457,14 @@ def create_progression_coach_notes(
             title=title,
         ):
             continue
+        message_with_read = pro_player_fog.append_event_read_note(
+            message,
+            con,
+            game_id=game_id,
+            team_id=team_id,
+            player_id=player_id,
+            season=to_season,
+        )
         con.execute(
             """
             INSERT INTO game_alerts (
@@ -3433,7 +3479,7 @@ def create_progression_coach_notes(
                 PROGRESSION_COACH_NOTE_TYPE,
                 user_team_id,
                 title,
-                f"{message} [Progression review {from_season}->{to_season}]",
+                f"{message_with_read} [Progression review {from_season}->{to_season}]",
                 alert_date,
             ),
         )
@@ -3918,6 +3964,12 @@ def apply_progression(
             for result in results
         ],
     )
+    pro_fog_updates = pro_player_fog.advance_year_end_evaluations(
+        con,
+        game_id=game_id,
+        from_season=from_season,
+        to_season=to_season,
+    )
     copy_role_assignments(con, from_season, to_season)
     role_updates = apply_new_game_variance.recalculate_role_scores(con, season=to_season, source=source)
     scheme_result = scheme_fits.seed_all(con, season=to_season, dry_run=False)
@@ -3956,6 +4008,7 @@ def apply_progression(
         "scheme_fit_rows": scheme_result["player_fits"],
         "hidden_modifier_rows": hidden_rows,
         "hidden_foundation_rows": hidden_foundation_rows,
+        "pro_fog_updates": pro_fog_updates,
         "coach_note_alerts": coach_note_alerts,
         "league_news_items": league_news_items,
     }
@@ -3974,6 +4027,8 @@ def print_run_summary(result: dict[str, Any], *, game_id: str, from_season: int,
     print(f"Hidden modifier rows created/rolled: {result['hidden_modifier_rows'] if not dry_run else '(dry run)'}")
     if not dry_run and result.get("hidden_foundation_rows"):
         print(f"Missing foundation rows seeded: {result['hidden_foundation_rows']}")
+    if not dry_run and result.get("pro_fog_updates"):
+        print(f"Staff evaluation reads updated: {result['pro_fog_updates']}")
     if result["run_id"]:
         print(f"Progression run id: {result['run_id']}")
     if not dry_run and result.get("coach_note_alerts"):

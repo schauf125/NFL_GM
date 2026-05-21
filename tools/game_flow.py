@@ -26,6 +26,7 @@ import event_generator
 import league_calendar
 import player_development_modifiers
 import player_personalities
+import pro_player_fog
 import preseason_processor
 import roster_rules
 import scouting
@@ -97,6 +98,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     player_personalities.seed_master_data(con)
     scheme_fits.seed_master_data(con)
     player_development_modifiers.seed_master_data(con)
+    pro_player_fog.ensure_schema(con)
     daily_processor.ensure_schema(con)
     event_generator.ensure_schema(con)
     con.executescript(
@@ -444,6 +446,13 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     else:
         development_details = "Hidden development modifiers skipped."
 
+    pro_fog_rows = pro_player_fog.seed_existing_player_evaluations(
+        con,
+        game_id=args.game_id,
+        season=args.start_year,
+    )
+    pro_fog_details = f"Seeded staff evaluation fog for {pro_fog_rows} rostered players."
+
     if not getattr(args, "no_draft_class_generation", True):
         draft_year = args.start_year + 1
         draft_result = draft_class_bootstrap.ensure_draft_class(
@@ -553,7 +562,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         title="Game started",
         details=(
             f"{scheme_details} {variance_details} {personality_details} "
-            f"{development_details} {draft_class_details} {preseason_details}"
+            f"{development_details} {pro_fog_details} {draft_class_details} {preseason_details}"
         ),
     )
     for event in events_on_date(con, start_date):
@@ -581,6 +590,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         print(personality_details)
     if not getattr(args, "no_development_modifiers", False):
         print(development_details)
+    print(pro_fog_details)
     print(scheme_details)
     print(draft_class_details)
     print(preseason_details)
