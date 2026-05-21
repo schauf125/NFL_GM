@@ -318,10 +318,11 @@ def load_football_names(
         first_entry.football_count += 1
         first_entry.football_active_count += is_active
 
-        last_key = normalize_name_key(last)
-        last_entry = last_names.setdefault(last_key, LastNameStats(name=last))
-        last_entry.football_count += 1
-        last_entry.football_active_count += is_active
+        if "-" not in last:
+            last_key = normalize_name_key(last)
+            last_entry = last_names.setdefault(last_key, LastNameStats(name=last))
+            last_entry.football_count += 1
+            last_entry.football_active_count += is_active
 
         rows.append(
             {
@@ -399,9 +400,9 @@ def load_diversity_config(
 def first_name_weight(row: FirstNameStats) -> int:
     football_bonus = 0
     if row.ssa_births >= 250 or row.ssa_peak_year_births >= 40:
-        football_bonus = row.football_count * 120 + row.football_active_count * 220
+        football_bonus = row.football_count * 45 + row.football_active_count * 80
     elif row.ssa_births > 0:
-        football_bonus = row.football_count * 25 + row.football_active_count * 40
+        football_bonus = row.football_count * 10 + row.football_active_count * 16
     return max(
         1,
         int(row.ssa_recent_births * 1.20 + row.ssa_births * 0.20 + row.ssa_peak_year_births * 6)
@@ -413,8 +414,8 @@ def last_name_weight(row: LastNameStats) -> int:
     return max(
         1,
         row.census_count
-        + row.football_count * 2500
-        + row.football_active_count * 5000,
+        + row.football_count * 900
+        + row.football_active_count * 1800,
     )
 
 
@@ -424,11 +425,11 @@ def first_name_football_weight(row: FirstNameStats) -> int:
     if row.ssa_births < 100 and row.ssa_peak_year_births < 20:
         return max(0, row.football_count * 2 + row.football_active_count * 4)
     commonality = min(1.0, row.ssa_births / 3000.0)
-    return max(0, round((row.football_count * 35 + row.football_active_count * 75) * (0.35 + commonality)))
+    return max(0, round((row.football_count * 14 + row.football_active_count * 30) * (0.35 + commonality)))
 
 
 def football_weight(count: int, active_count: int) -> int:
-    return max(0, count * 100 + active_count * 250)
+    return max(0, count * 40 + active_count * 100)
 
 
 def source_flags(*, has_us: bool, football_count: int) -> str:
@@ -957,7 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
     sample_parser = subparsers.add_parser("sample", help="Generate sample names")
     sample_parser.add_argument("--count", type=int, default=20)
     sample_parser.add_argument("--seed")
-    sample_parser.add_argument("--football-bias", type=float, default=0.24)
+    sample_parser.add_argument("--football-bias", type=float, default=0.08)
     sample_parser.add_argument("--international-chance", type=float, default=0.035)
     sample_parser.add_argument("--show-meta", action="store_true")
     sample_parser.set_defaults(func=cmd_sample)

@@ -28,6 +28,7 @@ class Contract:
     contract_id: int
     player_id: int
     team_id: int
+    signed_date: str
     start_year: int
     end_year: int
     total_value: int
@@ -37,8 +38,10 @@ class Contract:
     roster_bonus: int
     workout_bonus: int
     is_guaranteed: int
+    guarantee_pct: int
     option_year: int
     option_exercised: int
+    salary_structure: str
     contract_type: str
     is_active: int
 
@@ -55,6 +58,18 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
         (name,),
     ).fetchone()
     return row is not None
+
+
+def relation_columns(con: sqlite3.Connection, name: str) -> set[str]:
+    try:
+        return {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in con.execute(f"PRAGMA table_info({name})")}
+    except sqlite3.Error:
+        return set()
+
+
+def ensure_column(con: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    if column not in relation_columns(con, table):
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -367,6 +382,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         FROM team_top51_cap_view;
         """
     )
+    if table_exists(con, "contracts"):
+        ensure_column(con, "contracts", "guarantee_pct", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(con, "contracts", "salary_structure", "TEXT NOT NULL DEFAULT 'balanced'")
     _SCHEMA_ENSURED_CONNECTIONS.add(marker)
 
 
@@ -377,6 +395,7 @@ def get_contracts(con: sqlite3.Connection) -> list[Contract]:
             contract_id,
             player_id,
             team_id,
+            COALESCE(signed_date, '') AS signed_date,
             COALESCE(start_year, ?) AS start_year,
             COALESCE(end_year, ?) AS end_year,
             COALESCE(total_value, 0) AS total_value,
@@ -386,8 +405,10 @@ def get_contracts(con: sqlite3.Connection) -> list[Contract]:
             COALESCE(roster_bonus, 0) AS roster_bonus,
             COALESCE(workout_bonus, 0) AS workout_bonus,
             COALESCE(is_guaranteed, 0) AS is_guaranteed,
+            COALESCE(guarantee_pct, CASE WHEN COALESCE(is_guaranteed, 0) THEN 100 ELSE 0 END) AS guarantee_pct,
             COALESCE(option_year, 0) AS option_year,
             COALESCE(option_exercised, 0) AS option_exercised,
+            COALESCE(salary_structure, contract_type, 'balanced') AS salary_structure,
             COALESCE(contract_type, 'Standard') AS contract_type,
             COALESCE(is_active, 1) AS is_active
         FROM contracts
@@ -405,6 +426,7 @@ def get_contract(con: sqlite3.Connection, contract_id: int) -> Contract | None:
             contract_id,
             player_id,
             team_id,
+            COALESCE(signed_date, '') AS signed_date,
             COALESCE(start_year, ?) AS start_year,
             COALESCE(end_year, ?) AS end_year,
             COALESCE(total_value, 0) AS total_value,
@@ -414,8 +436,10 @@ def get_contract(con: sqlite3.Connection, contract_id: int) -> Contract | None:
             COALESCE(roster_bonus, 0) AS roster_bonus,
             COALESCE(workout_bonus, 0) AS workout_bonus,
             COALESCE(is_guaranteed, 0) AS is_guaranteed,
+            COALESCE(guarantee_pct, CASE WHEN COALESCE(is_guaranteed, 0) THEN 100 ELSE 0 END) AS guarantee_pct,
             COALESCE(option_year, 0) AS option_year,
             COALESCE(option_exercised, 0) AS option_exercised,
+            COALESCE(salary_structure, contract_type, 'balanced') AS salary_structure,
             COALESCE(contract_type, 'Standard') AS contract_type,
             COALESCE(is_active, 1) AS is_active
         FROM contracts
@@ -432,6 +456,7 @@ def row_to_contract(row: sqlite3.Row) -> Contract:
         contract_id=int_or_zero(row["contract_id"]),
         player_id=int_or_zero(row["player_id"]),
         team_id=int_or_zero(row["team_id"]),
+        signed_date=str(row["signed_date"] or ""),
         start_year=int_or_zero(row["start_year"]),
         end_year=int_or_zero(row["end_year"]),
         total_value=int_or_zero(row["total_value"]),
@@ -441,8 +466,10 @@ def row_to_contract(row: sqlite3.Row) -> Contract:
         roster_bonus=int_or_zero(row["roster_bonus"]),
         workout_bonus=int_or_zero(row["workout_bonus"]),
         is_guaranteed=int_or_zero(row["is_guaranteed"]),
+        guarantee_pct=int_or_zero(row["guarantee_pct"]),
         option_year=int_or_zero(row["option_year"]),
         option_exercised=int_or_zero(row["option_exercised"]),
+        salary_structure=str(row["salary_structure"] or "balanced"),
         contract_type=str(row["contract_type"] or "Standard"),
         is_active=int_or_zero(row["is_active"]),
     )
@@ -467,6 +494,81 @@ def distribute_evenly(total: int, count: int) -> list[int]:
     return values
 
 
+def salary_structure_weights(structure: str, count: int) -> list[float]:
+    if count <= 0:
+        return []
+    label = str(structure or "balanced").strip().lower().replace("_", "-")
+    if count == 1 or label in {"", "standard", "balanced", "level"}:
+        return [1.0 for _ in range(count)]
+    if label in {"backloaded", "back-loaded", "backload"}:
+        base = [0.72, 0.90, 1.08, 1.24, 1.38, 1.52]
+    elif label in {"frontloaded", "front-loaded", "frontload"}:
+        base = [1.34, 1.18, 1.02, 0.90, 0.80, 0.72]
+    elif label in {"bonus-heavy", "bonus_heavy", "low-year-one", "low-year-1"}:
+        base = [0.62, 0.92, 1.12, 1.28, 1.42, 1.56]
+    else:
+        return [1.0 for _ in range(count)]
+    weights = [base[index] if index < len(base) else base[-1] + (index - len(base) + 1) * 0.08 for index in range(count)]
+    average = sum(weights) / len(weights)
+    return [weight / average for weight in weights]
+
+
+def distribute_weighted(total: int, weights: list[float], *, round_to: int = 50_000) -> list[int]:
+    if not weights:
+        return []
+    if total <= 0:
+        return [0 for _ in weights]
+    raw = [total * (weight / sum(weights)) for weight in weights]
+    values = [max(0, int(round(value / round_to) * round_to)) for value in raw]
+    delta = total - sum(values)
+    index = len(values) - 1
+    while delta:
+        step = round_to if abs(delta) >= round_to else abs(delta)
+        signed = step if delta > 0 else -step
+        values[index] = max(0, values[index] + signed)
+        delta -= signed
+        index = (index - 1) % len(values)
+        if abs(delta) < round_to:
+            values[-1] = max(0, values[-1] + delta)
+            break
+    return values
+
+
+def guaranteed_base_by_year(contract: Contract, base_salaries: list[int]) -> list[int]:
+    guaranteed_total = int((contract.total_value or 0) * max(0, min(100, contract.guarantee_pct)) / 100)
+    if contract.is_guaranteed and contract.guarantee_pct <= 0:
+        guaranteed_total = contract.total_value or sum(base_salaries) + contract.signing_bonus
+    remaining = max(0, guaranteed_total - max(0, contract.signing_bonus))
+    guarantees: list[int] = []
+    for base in base_salaries:
+        guaranteed = min(base, remaining)
+        guarantees.append(guaranteed)
+        remaining -= guaranteed
+    return guarantees
+
+
+def signed_in_contract_start_year(contract: Contract) -> bool:
+    try:
+        signed_year = int(str(contract.signed_date or "")[:4])
+    except (TypeError, ValueError):
+        return False
+    return signed_year == int(contract.start_year or 0)
+
+
+def practical_first_year_guarantee_required(contract: Contract) -> bool:
+    """Model FA practical guarantees so same-year cuts do not create cap room."""
+    contract_type = str(contract.contract_type or "").strip().lower().replace(" ", "")
+    if contract_type in {"minimum", "vetmin", "udfamin", "udfa", "rookiescale", "fifthyearoption", "franchisetag", "transitiontag"}:
+        return False
+    if int(contract.aav or 0) <= 1_500_000 and int(contract.signing_bonus or 0) <= 0 and int(contract.guarantee_pct or 0) <= 0:
+        return False
+    if contract_type in {"freeagent", "offersheet"}:
+        return True
+    if contract_type == "standard" and signed_in_contract_start_year(contract):
+        return str(contract.signed_date or "") >= f"{int(contract.start_year or 0):04d}-03-01"
+    return False
+
+
 def insert_contract_year_rows(con: sqlite3.Connection, contract: Contract) -> int:
     inserted = 0
 
@@ -475,21 +577,20 @@ def insert_contract_year_rows(con: sqlite3.Connection, contract: Contract) -> in
     prorated_count = min(5, season_count) if contract.signing_bonus else 0
     proration_by_index = distribute_evenly(contract.signing_bonus, prorated_count)
 
+    recurring_bonuses = (contract.roster_bonus + contract.workout_bonus) * season_count
+    base_pool = max(0, (contract.total_value or contract.aav * season_count) - contract.signing_bonus - recurring_bonuses)
+    base_salaries = distribute_weighted(base_pool, salary_structure_weights(contract.salary_structure, season_count))
+    guaranteed_bases = guaranteed_base_by_year(contract, base_salaries)
+
     year_rows: list[dict[str, int]] = []
     for index, season in enumerate(seasons):
         signing_proration = proration_by_index[index] if index < prorated_count else 0
         roster_bonus = contract.roster_bonus
         workout_bonus = contract.workout_bonus
         other_bonus = 0
-        target_cap_hit = contract.aav or (
-            contract.total_value // max(1, contract.total_years or season_count)
-        )
-        base_salary = max(
-            0,
-            target_cap_hit - signing_proration - roster_bonus - workout_bonus - other_bonus,
-        )
+        base_salary = base_salaries[index] if index < len(base_salaries) else max(0, contract.aav - signing_proration)
         cap_hit = base_salary + signing_proration + roster_bonus + workout_bonus + other_bonus
-        guaranteed_salary = base_salary if contract.is_guaranteed else 0
+        guaranteed_salary = guaranteed_bases[index] if index < len(guaranteed_bases) else 0
         cash_due = base_salary + roster_bonus + workout_bonus
         if index == 0:
             cash_due += contract.signing_bonus
@@ -556,6 +657,12 @@ def insert_contract_year_rows(con: sqlite3.Connection, contract: Contract) -> in
                     + row["workout_bonus"]
                     + row["other_bonus"]
                 )
+
+    if practical_first_year_guarantee_required(contract) and year_rows:
+        year_rows[0]["guaranteed_salary"] = max(
+            int(year_rows[0]["guaranteed_salary"] or 0),
+            int(year_rows[0]["base_salary"] or 0),
+        )
 
     for index, row in enumerate(year_rows):
         remaining_rows = year_rows[index:]

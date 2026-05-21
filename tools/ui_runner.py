@@ -168,7 +168,7 @@ CALENDAR_RUN_ACTIONS = {
     "auto_cutdown_continue",
 }
 INJURY_ALERT_ACTIONS = {"sim_week", "sim_season"}
-SIM_CANCEL_ACTIONS = {"sim_week", "sim_season", "advance_to_draft"}
+SIM_CANCEL_ACTIONS = {"sim_week", "sim_season", "advance_to_draft", "draft_skip", "draft_skip_to_user", "draft_finish"}
 ACTION_TIMEOUT_DEFAULTS = {
     "advance_to_draft": 6 * 60 * 60,
     "auto_cutdown_continue": 6 * 60 * 60,
@@ -291,9 +291,15 @@ def game_context(db_path: Path) -> dict[str, Any]:
             or game_settings.get("current_season")
             or 2026
         )
+        current_contract_year = int(
+            game_settings.get("current_contract_year")
+            or game_settings.get("current_league_year")
+            or current_season
+        )
+        active_date = str((active or {}).get("current_date") or "")
+        setting_date = str(game_settings.get("current_game_date") or "")
         current_date = (
-            (active or {}).get("current_date")
-            or game_settings.get("current_game_date")
+            max([value for value in (active_date, setting_date) if value], default="")
             or f"{current_season}-06-01"
         )
         phase = (
@@ -316,6 +322,7 @@ def game_context(db_path: Path) -> dict[str, Any]:
             "settings": game_settings,
             "activeSave": active,
             "currentSeason": current_season,
+            "currentContractYear": current_contract_year,
             "currentDate": current_date,
             "currentPhase": phase,
             "userTeam": user_team,
@@ -344,6 +351,7 @@ def contract_state_patch(db_path: Path) -> dict[str, Any]:
     return {
         "currentDate": context["currentDate"],
         "currentSeason": context["currentSeason"],
+        "currentContractYear": context["currentContractYear"],
         "currentPhase": context["currentPhase"],
         "settings": context["settings"],
         "activeSave": context["activeSave"],
@@ -361,6 +369,7 @@ def depth_chart_state_patch(db_path: Path) -> dict[str, Any]:
             con,
             target_team,
             int(context["currentSeason"]),
+            int(context["currentContractYear"]),
         )
         commands = export_game_center_ui_data.command_set(
             int(context["currentSeason"]),
@@ -371,6 +380,7 @@ def depth_chart_state_patch(db_path: Path) -> dict[str, Any]:
     return {
         "currentDate": context["currentDate"],
         "currentSeason": context["currentSeason"],
+        "currentContractYear": context["currentContractYear"],
         "currentPhase": context["currentPhase"],
         "settings": context["settings"],
         "activeSave": context["activeSave"],
@@ -456,9 +466,10 @@ def lightweight_action_state() -> dict[str, Any]:
         or settings.get("current_season")
         or 2026
     )
+    active_date = str(active.get("current_date") or "")
+    setting_date = str(settings.get("current_game_date") or "")
     current_date = (
-        active.get("current_date")
-        or settings.get("current_game_date")
+        max([value for value in (active_date, setting_date) if value], default="")
         or f"{current_season}-06-01"
     )
     draft_year = export_game_center_ui_data.draft_year(con, current_season)
@@ -469,18 +480,19 @@ def lightweight_action_state() -> dict[str, Any]:
         draft_year_value=draft_year,
         game_settings=settings,
     )
+    control_mode = str(active.get("control_mode") or settings.get("control_mode") or "team")
     user_team = (
         active.get("user_team")
         or settings.get("user_team")
         or settings.get("active_user_team")
-        or "MIN"
+        or (None if control_mode == "observe" else "MIN")
     )
     return {
         "database": str(db_path),
         "currentSeason": current_season,
         "currentDate": str(current_date),
         "settings": settings,
-        "activeSave": {**active, "user_team": user_team},
+        "activeSave": {**active, "user_team": user_team, "control_mode": control_mode},
         "draft": {"year": draft_year},
         "freeAgency": {"leagueYear": free_agency_year},
     }
@@ -1344,16 +1356,27 @@ def contracts_payload_for_active_db(season: int | None = None) -> dict[str, Any]
     }
 
 
-def depth_chart_payload_for_active_db(season: int | None = None, team: str | None = None) -> dict[str, Any]:
+def depth_chart_payload_for_active_db(
+    season: int | None = None,
+    team: str | None = None,
+    contract_season: int | None = None,
+) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
     target_season = int(season or context["currentSeason"])
+    target_contract_season = int(contract_season or context["currentContractYear"])
     target_team = team or context.get("userTeam") or "MIN"
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
-        depth_chart = export_game_center_ui_data.depth_chart_summary(conn, target_team, target_season)
+        depth_chart = export_game_center_ui_data.depth_chart_summary(
+            conn,
+            target_team,
+            target_season,
+            target_contract_season,
+        )
     return {
         "season": target_season,
+        "contractSeason": target_contract_season,
         "team": target_team,
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
         "depthChart": depth_chart,
@@ -1622,10 +1645,12 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
     season = int(state.get("currentSeason") or 2026)
     draft_year = int(state.get("draft", {}).get("year") or season + 1)
     free_agency_year = int((state.get("freeAgency") or {}).get("leagueYear") or season)
+    active_save = state.get("activeSave") or {}
+    control_mode = str(active_save.get("control_mode") or state.get("settings", {}).get("control_mode") or "team").lower()
     user_team = (
-        (state.get("activeSave") or {}).get("user_team")
+        active_save.get("user_team")
         or params.get("user_team")
-        or "MIN"
+        or (None if control_mode == "observe" else "MIN")
     )
 
     def play(*args: str) -> list[str]:
@@ -1637,21 +1662,27 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         return play("preflight")
     if action == "new_june1_save":
         start_year = int(params.get("start_year") or season or 2026)
-        team = str(params.get("user_team") or user_team or "MIN").upper()
+        new_control_mode = str(params.get("control_mode") or ("observe" if params.get("observe_mode") else "team")).lower()
+        observe_mode = new_control_mode == "observe"
+        team = "" if observe_mode else str(params.get("user_team") or user_team or "MIN").upper()
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        game_id = str(params.get("game_id") or f"{team.lower()}_{start_year}_june1_{stamp}")
-        name = str(params.get("name") or f"{team} June 1 Start")
+        game_id = str(params.get("game_id") or f"{'observe' if observe_mode else team.lower()}_{start_year}_june1_{stamp}")
+        name = str(params.get("name") or ("Observe June 1 Start" if observe_mode else f"{team} June 1 Start"))
         command = [
             "new",
             "--game-id",
             game_id,
             "--name",
             name,
-            "--user-team",
-            team,
+            "--control-mode",
+            "observe" if observe_mode else "team",
             "--start-year",
             str(start_year),
         ]
+        if observe_mode:
+            command.append("--observe-mode")
+        else:
+            command.extend(["--user-team", team])
         if params.get("seed") is not None:
             command.extend(["--seed", str(int(params["seed"]))])
         if params.get("no_variance"):
@@ -1674,6 +1705,11 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if stopped:
             print(f"Stopped {len(stopped)} process(es) using save {game_id}: {', '.join(str(pid) for pid in stopped)}")
         return play("delete-save", game_id)
+    if action == "take_over_team":
+        team = str(params.get("team") or "").strip().upper()
+        if not team:
+            raise ValueError("take_over_team requires team.")
+        return play("take-over-team", "--team", team)
     if action == "draft_class_generate":
         draft_year = int(params.get("draft_year") or draft_year)
         command = [
@@ -2004,6 +2040,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "free_agency_offer":
+        if not user_team:
+            raise ValueError("Free-agent offers require a team-controlled save.")
         player_id = params.get("player_id")
         if not player_id:
             raise ValueError("free_agency_offer requires player_id.")
@@ -2028,6 +2066,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(params.get("bonus") or 0)),
             "--guarantee-pct",
             str(int(params.get("guarantee_pct") or 0)),
+            "--structure",
+            str(params.get("structure") or "balanced"),
             "--apply",
         ]
         if params.get("cpu_response_offers") is not None:
@@ -2045,7 +2085,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "advance_to_draft":
-        command = play("advance-to-draft", "--draft-year", str(draft_year), "--user-team", str(user_team))
+        command = play("advance-to-draft", "--draft-year", str(draft_year))
+        if user_team:
+            command.extend(["--user-team", str(user_team)])
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
         return command
@@ -2055,7 +2097,10 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             command.append("--auto-roster-cutdown")
         return command
     if action == "draft_start":
-        return play("draft-room", "start", "--draft-year", str(draft_year), "--user-team", str(user_team), "--paused", "--apply")
+        command = ["draft-room", "start", "--draft-year", str(draft_year), "--paused", "--apply"]
+        if user_team:
+            command.extend(["--user-team", str(user_team)])
+        return play(*command)
     if action == "draft_skip":
         return play(
             "draft-room",
@@ -2124,6 +2169,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--apply",
         )
     if action == "draft_user_trade":
+        if not user_team:
+            raise ValueError("User draft trades require a team-controlled save.")
         target_pick_id = params.get("target_pick_id")
         if not target_pick_id:
             raise ValueError("draft_user_trade requires target_pick_id.")
@@ -3030,7 +3077,11 @@ def request_runner_cancel(action: str | None = None) -> dict[str, Any]:
     )
     return {
         "status": "requested",
-        "message": "Stop requested. The sim will pause after the current game or weekly hook finishes.",
+        "message": (
+            "Pause requested. The draft will stop after the current pick."
+            if str(action or "").startswith("draft_")
+            else "Stop requested. The sim will pause after the current game or weekly hook finishes."
+        ),
         "marker": str(marker),
     }
 
@@ -3315,10 +3366,16 @@ class UiHandler(SimpleHTTPRequestHandler):
             try:
                 params = parse_qs(parsed.query)
                 requested_season = params.get("season")
+                requested_contract_season = params.get("contractSeason")
                 requested_team = params.get("team")
                 season = int(requested_season[0]) if requested_season and requested_season[0] else None
+                contract_season = (
+                    int(requested_contract_season[0])
+                    if requested_contract_season and requested_contract_season[0]
+                    else None
+                )
                 team = requested_team[0] if requested_team and requested_team[0] else None
-                self.write_json(HTTPStatus.OK, depth_chart_payload_for_active_db(season, team))
+                self.write_json(HTTPStatus.OK, depth_chart_payload_for_active_db(season, team, contract_season))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return

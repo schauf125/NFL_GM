@@ -25,10 +25,10 @@ from engine.draft.validation import write_preview_report
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--year", type=int, default=2027)
-    parser.add_argument("--count", type=int, default=330)
+    parser.add_argument("--count", type=int, default=310)
     parser.add_argument("--hidden-count", type=int, help="Exact number of off-public-board prospects to add.")
-    parser.add_argument("--hidden-min", type=int, default=50)
-    parser.add_argument("--hidden-max", type=int, default=70)
+    parser.add_argument("--hidden-min", type=int, default=36)
+    parser.add_argument("--hidden-max", type=int, default=44)
     parser.add_argument("--no-hidden-prospects", action="store_true", help="Generate only the public board.")
     parser.add_argument("--seed", default="2027-preview")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT_DIR)

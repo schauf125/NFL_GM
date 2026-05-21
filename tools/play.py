@@ -214,6 +214,49 @@ def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str 
     sync_save(target_game_id)
 
 
+def depth_chart_refresh_season(con) -> int:
+    for key in ("current_contract_year", "current_league_year", "current_season"):
+        row = con.execute(
+            "SELECT setting_value FROM game_settings WHERE setting_key = ?",
+            (key,),
+        ).fetchone()
+        if row and row["setting_value"]:
+            try:
+                return int(row["setting_value"])
+            except ValueError:
+                continue
+    return game_flow.DEFAULT_START_YEAR
+
+
+def refresh_dirty_cpu_depth_charts(
+    game_id: str | None,
+    *,
+    season: int | None = None,
+    user_team: str | None = None,
+) -> None:
+    target_game_id, db_path = save_db(game_id)
+    if season is None or user_team is None:
+        with game_flow.connect(db_path) as con:
+            if season is None:
+                season = depth_chart_refresh_season(con)
+            if user_team is None:
+                user_team = active_user_team(con) or "MIN"
+    command = [
+        sys.executable,
+        str(TOOLS_DIR / "cpu_depth_chart.py"),
+        "--db",
+        str(db_path),
+        "rebuild-dirty",
+        "--season",
+        str(season),
+        "--user-team",
+        str(user_team or "MIN"),
+        "--apply",
+    ]
+    subprocess.run(command, check=True)
+    sync_save(target_game_id)
+
+
 def table_exists(con, name: str) -> bool:
     row = con.execute(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
@@ -705,7 +748,7 @@ def gated_calendar_target(
     if practice_squad and kickoff and not auto_roster_cutdown:
         practice_squad_date = date.fromisoformat(practice_squad)
         kickoff_date = date.fromisoformat(kickoff)
-        if current >= practice_squad_date and target >= kickoff_date:
+        if current >= practice_squad_date and current <= kickoff_date <= target:
             gate_message = user_roster_gate_message(con, season)
             if gate_message:
                 raise ValueError(gate_message)
@@ -717,6 +760,7 @@ def apply_cpu_roster_cutdowns_if_due(
     target_date: str,
     *,
     include_user_team: bool = False,
+    from_date: str | None = None,
 ) -> None:
     target_game_id, db_path = save_db(game_id)
     with game_flow.connect(db_path) as con:
@@ -724,7 +768,15 @@ def apply_cpu_roster_cutdowns_if_due(
         if not game:
             return
         cutdown = calendar_event_date(con, int(game.current_league_year), "FINAL_ROSTER_CUTDOWN_53")
-        if not cutdown or date.fromisoformat(str(target_date)) < date.fromisoformat(cutdown):
+        if not cutdown:
+            return
+        target = date.fromisoformat(str(target_date))
+        cutdown_date = date.fromisoformat(cutdown)
+        if from_date:
+            current = date.fromisoformat(str(from_date))
+            if not (current < cutdown_date <= target):
+                return
+        elif target < cutdown_date:
             return
         roster_rules.ensure_schema(con)
         roster_rules.seed_rules(con)
@@ -954,6 +1006,131 @@ def finish_draft_before_calendar_advance(game_id: str | None, target_date: str) 
     )
 
 
+def post_draft_followup_candidates(con: sqlite3.Connection, target_date: str) -> list[dict[str, str]]:
+    if (
+        not table_exists(con, "draft_room_state")
+        or not table_exists(con, "draft_room_events")
+        or not table_exists(con, "league_calendar_events")
+    ):
+        return []
+    rows = con.execute(
+        """
+        SELECT
+            s.draft_year,
+            COALESCE(e.event_end_date, e.event_start_date) AS draft_end_date
+        FROM draft_room_state s
+        JOIN league_calendar_events e
+          ON e.event_code = 'NFL_DRAFT'
+         AND (e.league_year = s.draft_year - 1 OR e.event_name = printf('%d NFL Draft', s.draft_year))
+        WHERE s.status IN ('complete', 'completed')
+          AND date(COALESCE(e.event_end_date, e.event_start_date)) < date(?)
+          AND date(COALESCE(e.event_end_date, e.event_start_date)) >= date(?, '-45 days')
+        ORDER BY s.draft_year DESC
+        """,
+        (target_date, target_date),
+    ).fetchall()
+    checkpoints: list[dict[str, str]] = []
+    target = date.fromisoformat(target_date)
+    for row in rows:
+        draft_year = int(row["draft_year"])
+        draft_end = date.fromisoformat(str(row["draft_end_date"]))
+        if target <= draft_end:
+            continue
+        followup_dates: list[date] = []
+        checkpoint = draft_end + timedelta(days=7)
+        cutoff = min(target, draft_end + timedelta(days=45))
+        while checkpoint <= cutoff:
+            followup_dates.append(checkpoint)
+            checkpoint += timedelta(days=7)
+        if target >= draft_end + timedelta(days=3) and target <= draft_end + timedelta(days=45):
+            if not followup_dates or followup_dates[-1] != target:
+                followup_dates.append(target)
+        for followup_date in followup_dates:
+            followup_text = followup_date.isoformat()
+            already_ran = con.execute(
+                """
+                SELECT 1
+                FROM draft_room_events
+                WHERE draft_year = ?
+                  AND event_type = 'post_draft_depth_free_agency_followup'
+                  AND COALESCE(event_details, '') LIKE ?
+                LIMIT 1
+                """,
+                (draft_year, f'%"followup_date":"{followup_text}"%'),
+            ).fetchone()
+            if already_ran:
+                continue
+            checkpoints.append(
+                {
+                    "draft_year": str(draft_year),
+                    "draft_end_date": str(row["draft_end_date"]),
+                    "followup_date": followup_text,
+                }
+            )
+    return checkpoints
+
+
+def run_post_draft_free_agency_followups(con: sqlite3.Connection, *, target_date: str) -> list[str]:
+    candidates = post_draft_followup_candidates(con, target_date)
+    if not candidates:
+        return []
+
+    import draft_room
+    import free_agency_processor
+
+    draft_room.ensure_schema(con)
+    messages: list[str] = []
+    user_team = active_user_team(con)
+    for candidate in candidates:
+        draft_year = int(candidate["draft_year"])
+        followup_date = str(candidate["followup_date"])
+        free_agency_processor.reconcile_market_state(con, draft_year, stale_offer_days=7)
+        try:
+            result = free_agency_processor.cpu_post_draft_depth_signings(
+                con,
+                draft_year,
+                user_team=user_team,
+                max_per_team=2,
+                max_total=40,
+                seed=f"post-draft-followup:{draft_year}:{followup_date}",
+                fill_specialists=True,
+                event_date_override=followup_date,
+            )
+        except Exception as exc:
+            message = f"Post-draft free-agency follow-up skipped: {exc}."
+        else:
+            message = (
+                "Post-draft free-agency follow-up: "
+                f"{result.get('signings', 0)} signing(s) across "
+                f"{result.get('teams', 0)} team(s); "
+                f"{result.get('specialist_signings', 0)} specialist spot(s) filled."
+            )
+        draft_room.log_event(
+            con,
+            draft_year=draft_year,
+            event_type="post_draft_depth_free_agency_followup",
+            message=message,
+            event_details={
+                "followup_date": followup_date,
+                "target_date": target_date,
+                "draft_end_date": str(candidate["draft_end_date"]),
+            },
+        )
+        messages.append(message)
+    return messages
+
+
+def ensure_post_draft_free_agency_after_calendar_advance(game_id: str | None, target_date: str) -> None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        messages = run_post_draft_free_agency_followups(con, target_date=target_date)
+        con.commit()
+    for message in messages:
+        print(message)
+    if messages:
+        sync_save(target_game_id)
+
+
 def free_agency_days_to_draft(con, draft_year: int, draft_date: str) -> int | None:
     if not table_exists(con, "free_agency_periods"):
         return None
@@ -1147,6 +1324,8 @@ def action_new(args: argparse.Namespace) -> None:
         game_id=args.game_id,
         name=args.name,
         user_team=args.user_team,
+        control_mode=getattr(args, "control_mode", None),
+        observe_mode=getattr(args, "observe_mode", False),
         start_year=args.start_year,
         calendar_years=args.calendar_years,
         seed=args.seed,
@@ -1166,6 +1345,16 @@ def action_new(args: argparse.Namespace) -> None:
         young_age_cutoff=args.young_age_cutoff,
     )
     save_manager.create_save(create_args)
+
+
+def action_take_over_team(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
+    game_id, _db_path, con = open_save_db(args.game_id)
+    try:
+        game_flow.action_take_over_team(con, SimpleNamespace(team=args.team))
+    finally:
+        con.close()
+    sync_save(game_id)
 
 
 def active_game_id_from_db(con: sqlite3.Connection, fallback: str | None = None) -> str | None:
@@ -1293,6 +1482,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
         game = game_flow.active_game(con)
         if not game:
             raise ValueError("No active game. Run start first.")
+        start_date = str(game.current_date)
         target_date = (date.fromisoformat(str(game.current_date)) + timedelta(days=args.days)).isoformat()
         target_date, gate_message = gated_calendar_target(
             con,
@@ -1309,7 +1499,14 @@ def action_advance_day(args: argparse.Namespace) -> None:
         game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
     finally:
         con.close()
-    apply_cpu_roster_cutdowns_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
+    ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
+    apply_cpu_roster_cutdowns_if_due(
+        game_id,
+        target_date,
+        include_user_team=args.auto_roster_cutdown,
+        from_date=start_date,
+    )
+    refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
 
@@ -1320,6 +1517,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
         game = game_flow.active_game(con)
         if not game:
             raise ValueError("No active game. Run start first.")
+        start_date = str(game.current_date)
         events = game_flow.upcoming_events(con, game.current_date, limit=1, strict=True)
         if not events:
             raise ValueError("No future calendar events found.")
@@ -1339,7 +1537,14 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
         game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
     finally:
         con.close()
-    apply_cpu_roster_cutdowns_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
+    ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
+    apply_cpu_roster_cutdowns_if_due(
+        game_id,
+        target_date,
+        include_user_team=args.auto_roster_cutdown,
+        from_date=start_date,
+    )
+    refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
 
@@ -1350,6 +1555,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         game = game_flow.active_game(con)
         if not game:
             raise ValueError("No active game. Run start first.")
+        start_date = str(game.current_date)
         target_date, gate_message = gated_calendar_target(
             con,
             game,
@@ -1365,7 +1571,14 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
     finally:
         con.close()
-    apply_cpu_roster_cutdowns_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
+    ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
+    apply_cpu_roster_cutdowns_if_due(
+        game_id,
+        target_date,
+        include_user_team=args.auto_roster_cutdown,
+        from_date=start_date,
+    )
+    refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
 
@@ -1395,7 +1608,14 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
             game_flow.action_advance_to_date(con, SimpleNamespace(date=gated_target))
         finally:
             con.close()
-        apply_cpu_roster_cutdowns_if_due(target_game_id, gated_target, include_user_team=args.auto_roster_cutdown)
+        ensure_post_draft_free_agency_after_calendar_advance(target_game_id, gated_target)
+        apply_cpu_roster_cutdowns_if_due(
+            target_game_id,
+            gated_target,
+            include_user_team=args.auto_roster_cutdown,
+            from_date=current_date,
+        )
+        refresh_dirty_cpu_depth_charts(target_game_id)
         sync_save(target_game_id)
         return
 
@@ -1413,7 +1633,14 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
             print(f"Advanced {target_game_id} from {current_date} to {event_name} ({target_date}).")
     finally:
         con.close()
-    apply_cpu_roster_cutdowns_if_due(target_game_id, target_date, include_user_team=args.auto_roster_cutdown)
+    ensure_post_draft_free_agency_after_calendar_advance(target_game_id, target_date)
+    apply_cpu_roster_cutdowns_if_due(
+        target_game_id,
+        target_date,
+        include_user_team=args.auto_roster_cutdown,
+        from_date=current_date,
+    )
+    refresh_dirty_cpu_depth_charts(target_game_id)
     sync_save(game_id)
 
 
@@ -1427,12 +1654,24 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         current_season = int(settings_row["setting_value"]) if settings_row else None
         draft_year = int(args.draft_year or next_draft_year(con, current_season))
         draft_date = draft_event_date(con, draft_year)
-        user_team = (args.user_team or active_user_team(con) or "MIN").upper()
+        user_team = (args.user_team or active_user_team(con) or "")
+        user_team = user_team.upper() if user_team else None
         if not draft_class_exists(con, draft_year):
             raise ValueError(
                 f"No {draft_year} draft class is loaded yet. "
                 "Choose Generate or Import Draft Class before advancing to the draft."
             )
+        current_date = active_game_current_date(con)
+        if (
+            date.fromisoformat(current_date) >= date.fromisoformat(draft_date)
+            and draft_remaining_picks(con, draft_year) <= 0
+            and draft_room_already_started(con, draft_year)
+        ):
+            print(
+                f"The {draft_year} NFL Draft is already complete. "
+                "Use Advance To Next Date or Advance To Next League Year to continue the offseason."
+            )
+            return
 
     ensure_regular_season_complete_before_draft(
         args.game_id,
@@ -1479,6 +1718,7 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
             print(f"Already at or past the {draft_year} draft date ({draft_date}).")
     finally:
         con.close()
+    refresh_dirty_cpu_depth_charts(target_game_id, season=draft_year)
     sync_save(game_id)
 
     room_started = False
@@ -1493,11 +1733,10 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
                 "start",
                 "--draft-year",
                 str(draft_year),
-                "--user-team",
-                user_team,
                 "--paused",
                 "--apply",
-            ],
+            ]
+            + (["--user-team", user_team] if user_team else []),
         )
     elif room_started:
         print(f"Draft room already started for {draft_year}.")
@@ -1604,6 +1843,25 @@ def action_roster_rules(args: argparse.Namespace) -> None:
     if not args.roster_rule_args:
         raise ValueError("Provide a roster-rules command, for example: roster-rules waiver-wire")
     run_tool_script(args.game_id, "roster_rules.py", args.roster_rule_args)
+
+
+def action_prune_unsigned(args: argparse.Namespace) -> None:
+    script_args: list[str] = []
+    if args.league_year is not None:
+        script_args.extend(["--league-year", str(args.league_year)])
+    if args.min_unsigned_years is not None:
+        script_args.extend(["--min-unsigned-years", str(args.min_unsigned_years)])
+    if args.max_overall is not None:
+        script_args.extend(["--max-overall", str(args.max_overall)])
+    if args.include_historical:
+        script_args.append("--include-historical")
+    if args.include_drafted:
+        script_args.append("--include-drafted")
+    if args.limit is not None:
+        script_args.extend(["--limit", str(args.limit)])
+    if args.apply:
+        script_args.append("--apply")
+    run_tool_script(args.game_id, "prune_unsigned_players.py", script_args)
 
 
 def action_depth_chart(args: argparse.Namespace) -> None:
@@ -1862,6 +2120,8 @@ def action_trade(args: argparse.Namespace) -> None:
     if not args.trade_args:
         raise ValueError("Provide a trade command, for example: trade setup")
     run_tool_script(args.game_id, "trade_engine.py", args.trade_args)
+    if "--apply" in args.trade_args:
+        refresh_dirty_cpu_depth_charts(args.game_id)
 
 
 def action_history(args: argparse.Namespace) -> None:
@@ -2000,6 +2260,17 @@ def action_free_agency(args: argparse.Namespace) -> None:
         raise ValueError("Provide free-agency args, for example: free-agency status --league-year 2027")
     maybe_ensure_progression_before_free_agency(args.game_id, list(args.free_agency_args))
     run_tool_script(args.game_id, "free_agency_processor.py", args.free_agency_args)
+    if "--apply" in args.free_agency_args:
+        refresh_dirty_cpu_depth_charts(args.game_id)
+
+
+def action_free_agency_audit(args: argparse.Namespace) -> None:
+    script_args: list[str] = []
+    if args.league_year is not None:
+        script_args.extend(["--league-year", str(args.league_year)])
+    if args.fail:
+        script_args.append("--fail")
+    run_tool_script(args.game_id, "free_agency_audit.py", script_args)
 
 
 def action_contract(args: argparse.Namespace) -> None:
@@ -2061,6 +2332,8 @@ def add_new_save_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--game-id", required=True)
     parser.add_argument("--name")
     parser.add_argument("--user-team")
+    parser.add_argument("--control-mode", choices=("team", "observe"))
+    parser.add_argument("--observe-mode", action="store_true")
     parser.add_argument("--start-year", type=int, default=game_flow.DEFAULT_START_YEAR)
     parser.add_argument("--calendar-years", type=int, default=game_flow.DEFAULT_CALENDAR_YEARS)
     parser.add_argument("--seed", type=int)
@@ -2079,7 +2352,7 @@ def add_new_save_args(parser: argparse.ArgumentParser) -> None:
         dest="no_draft_class_generation",
         action="store_false",
     )
-    parser.add_argument("--draft-class-count", type=int, default=330)
+    parser.add_argument("--draft-class-count", type=int, default=310)
     parser.add_argument("--draft-hidden-count", type=int)
     parser.add_argument("--no-hidden-draft-prospects", action="store_true")
     parser.add_argument("--draft-class-strength", type=int, default=50)
@@ -2122,6 +2395,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_save_selector(status_parser)
     status_parser.add_argument("--limit", type=int, default=8)
     status_parser.set_defaults(func=action_status)
+
+    takeover_parser = subparsers.add_parser("take-over-team", help="Take over a team in an observe save.")
+    add_save_selector(takeover_parser)
+    takeover_parser.add_argument("--team", required=True, help="Team abbreviation to control.")
+    takeover_parser.set_defaults(func=action_take_over_team)
 
     events_parser = subparsers.add_parser("events", help="Show upcoming calendar events.")
     add_save_selector(events_parser)
@@ -2235,6 +2513,20 @@ def build_parser() -> argparse.ArgumentParser:
     add_save_selector(roster_rules_parser)
     roster_rules_parser.add_argument("roster_rule_args", nargs=argparse.REMAINDER)
     roster_rules_parser.set_defaults(func=action_roster_rules)
+
+    prune_parser = subparsers.add_parser(
+        "prune-unsigned",
+        help="Preview or delete stale unsigned under-60 players who never played a snap.",
+    )
+    add_save_selector(prune_parser)
+    prune_parser.add_argument("--league-year", type=int)
+    prune_parser.add_argument("--min-unsigned-years", type=int, default=2)
+    prune_parser.add_argument("--max-overall", type=int, default=60)
+    prune_parser.add_argument("--include-historical", action="store_true")
+    prune_parser.add_argument("--include-drafted", action="store_true")
+    prune_parser.add_argument("--limit", type=int, default=50)
+    prune_parser.add_argument("--apply", action="store_true")
+    prune_parser.set_defaults(func=action_prune_unsigned)
 
     depth_chart_parser = subparsers.add_parser("depth-chart", help="Show or edit the active-save depth chart.")
     add_save_selector(depth_chart_parser)
@@ -2510,6 +2802,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_save_selector(free_agency_parser)
     free_agency_parser.add_argument("free_agency_args", nargs=argparse.REMAINDER)
     free_agency_parser.set_defaults(func=action_free_agency)
+
+    free_agency_audit_parser = subparsers.add_parser("free-agency-audit", help="Audit CPU free-agency outcomes for cap, QB, and value issues.")
+    add_save_selector(free_agency_audit_parser)
+    free_agency_audit_parser.add_argument("--league-year", type=int)
+    free_agency_audit_parser.add_argument("--fail", action="store_true")
+    free_agency_audit_parser.set_defaults(func=action_free_agency_audit)
 
     contract_parser = subparsers.add_parser("contract", help="Pass through to contract_negotiations.py for own-team contract talks.")
     add_save_selector(contract_parser)

@@ -260,6 +260,161 @@ def check_draft(con: sqlite3.Connection, checks: list[Check], season: int, *, ha
         add(checks, "Draft board view", "WARN", "draft_room_board_ui_view missing.")
 
 
+def check_year_to_year_flow(
+    con: sqlite3.Connection,
+    checks: list[Check],
+    game: sqlite3.Row | None,
+    season: int,
+) -> None:
+    if not game:
+        add(checks, "Year-to-year flow", "WARN", "No active save to inspect for rollover readiness.")
+        return
+
+    game_id = str(game["game_id"] if "game_id" in game.keys() else "")
+    current_date = str(game["current_date"] if "current_date" in game.keys() else "")
+    start_year = int(game["start_league_year"] or season) if "start_league_year" in game.keys() else season
+
+    pending_year = scalar(
+        con,
+        "SELECT setting_value FROM game_settings WHERE setting_key = 'draft_class_setup_pending_year'",
+        fallback=None,
+    ) if table_exists(con, "game_settings") else None
+    if pending_year:
+        prospects = scalar(
+            con,
+            """
+            SELECT COUNT(dp.prospect_id)
+            FROM draft_classes dc
+            LEFT JOIN draft_prospects dp ON dp.draft_class_id = dc.draft_class_id
+            WHERE dc.draft_year = ?
+            """,
+            (int(pending_year),),
+            fallback=0,
+        )
+        if int(prospects or 0) > 0:
+            add(checks, "Draft class gate", "WARN", f"{pending_year} draft class exists but setup is still marked pending.")
+        else:
+            add(checks, "Draft class gate", "OK", f"{pending_year} draft class setup is pending and should block calendar advance.")
+    else:
+        add(checks, "Draft class gate", "OK", "No stale draft class setup gate.")
+
+    rating_count = scalar(
+        con,
+        "SELECT COUNT(DISTINCT player_id) FROM player_ratings WHERE season = ?",
+        (season,),
+        fallback=0,
+    )
+    add(
+        checks,
+        "Current-year ratings",
+        "OK" if int(rating_count or 0) >= 2000 else "WARN",
+        f"{season}: {int(rating_count or 0)} player rating row(s).",
+    )
+
+    if season > start_year and table_exists(con, "player_progression_runs"):
+        previous = season - 1
+        run = scalar(
+            con,
+            """
+            SELECT COUNT(*)
+            FROM player_progression_runs
+            WHERE game_id = ?
+              AND from_season = ?
+              AND to_season = ?
+            """,
+            (game_id, previous, season),
+            fallback=0,
+        )
+        status = "OK" if int(run or 0) > 0 else "WARN"
+        add(checks, "Progression rollover", status, f"{previous}->{season}: {int(run or 0)} progression run(s).")
+    elif season > start_year:
+        add(checks, "Progression rollover", "WARN", "player_progression_runs table missing.")
+    else:
+        add(checks, "Progression rollover", "OK", "Still in the first league year.")
+
+    next_draft_year = season + 1
+    if table_exists(con, "draft_classes"):
+        class_row = con.execute(
+            """
+            SELECT dc.draft_class_id, COUNT(dp.prospect_id) AS prospects
+            FROM draft_classes dc
+            LEFT JOIN draft_prospects dp ON dp.draft_class_id = dc.draft_class_id
+            WHERE dc.draft_year = ?
+            GROUP BY dc.draft_class_id
+            """,
+            (next_draft_year,),
+        ).fetchone()
+    else:
+        class_row = None
+    if class_row and int(class_row["prospects"] or 0) > 0 and table_exists(con, "scouting_prospect_progress"):
+        user_progress = scalar(
+            con,
+            """
+            SELECT COUNT(*)
+            FROM scouting_prospect_progress
+            WHERE game_id = ?
+              AND draft_year = ?
+            """,
+            (game_id, next_draft_year),
+            fallback=0,
+        )
+        cpu_progress = scalar(
+            con,
+            """
+            SELECT COUNT(*)
+            FROM cpu_scouting_prospect_progress
+            WHERE game_id = ?
+              AND draft_year = ?
+            """,
+            (game_id, next_draft_year),
+            fallback=0,
+        ) if table_exists(con, "cpu_scouting_prospect_progress") else 0
+        status = "OK" if int(user_progress or 0) > 0 else "WARN"
+        add(
+            checks,
+            "Scouting reset",
+            status,
+            f"{next_draft_year}: {int(user_progress or 0)} user report row(s), {int(cpu_progress or 0)} CPU report row(s).",
+        )
+    else:
+        add(checks, "Scouting reset", "OK", f"{next_draft_year} draft class not loaded yet.")
+
+    duplicate_contracts = 0
+    if table_exists(con, "contracts"):
+        duplicate_contracts = scalar(
+            con,
+            """
+            SELECT COUNT(*)
+            FROM (
+                SELECT player_id
+                FROM contracts
+                WHERE COALESCE(is_active, 1) = 1
+                  AND start_year <= ?
+                  AND end_year >= ?
+                GROUP BY player_id
+                HAVING COUNT(*) > 1
+            )
+            """,
+            (season, season),
+            fallback=0,
+        )
+    add(
+        checks,
+        "Active contracts",
+        "OK" if int(duplicate_contracts or 0) == 0 else "FAIL",
+        f"{int(duplicate_contracts or 0)} player(s) have duplicate active contracts for {season}.",
+    )
+
+    if current_date and table_exists(con, "game_saves") and table_exists(con, "game_settings"):
+        settings_date = scalar(con, "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'", fallback=current_date)
+        add(
+            checks,
+            "Date sync",
+            "OK" if str(settings_date) == current_date else "WARN",
+            f"save={current_date}, settings={settings_date}.",
+        )
+
+
 def check_system_hooks(con: sqlite3.Connection, checks: list[Check]) -> None:
     hook_tables = {
         "Weekly hooks": "game_weekly_processing_runs",
@@ -306,6 +461,7 @@ def run_checks(db_path: Path) -> dict[str, Any]:
         check_teams_and_rosters(con, checks)
         check_schedule(con, checks, season)
         check_draft(con, checks, season, has_active_save=game is not None)
+        check_year_to_year_flow(con, checks, game, season)
         check_system_hooks(con, checks)
     check_ui_export(db_path, checks)
     counts = {

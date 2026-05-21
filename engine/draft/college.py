@@ -17,6 +17,77 @@ AGE_BUCKET_END_RANKS = {
     "round_6_7": 256,
 }
 
+ELITE_DRAFT_PIPELINE_COLLEGES = {
+    "Alabama",
+    "Georgia",
+    "Ohio State",
+    "LSU",
+    "Michigan",
+    "Oregon",
+    "Texas",
+    "Penn State",
+    "Notre Dame",
+    "Clemson",
+    "USC",
+    "Oklahoma",
+    "Florida State",
+    "Miami",
+    "Tennessee",
+    "Texas A&M",
+}
+
+BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES = {
+    "Alabama",
+    "Georgia",
+    "Ohio State",
+    "Oregon",
+    "USC",
+    "Penn State",
+    "Notre Dame",
+    "LSU",
+    "Michigan",
+    "Texas",
+    "Clemson",
+    "Oklahoma",
+    "Florida State",
+}
+
+STRONG_DRAFT_PIPELINE_COLLEGES = {
+    "Florida",
+    "Auburn",
+    "Mississippi",
+    "Washington",
+    "Iowa",
+    "Wisconsin",
+    "Utah",
+    "South Carolina",
+    "Missouri",
+    "North Carolina",
+    "UCLA",
+    "Arkansas",
+    "TCU",
+    "Kentucky",
+    "Mississippi State",
+    "Nebraska",
+}
+
+POSITION_FACTORY_COLLEGES = {
+    "QB": {"Alabama", "Georgia", "Ohio State", "LSU", "Oregon", "Texas", "USC", "Oklahoma", "Tennessee", "Miami"},
+    "RB": {"Alabama", "Georgia", "Ohio State", "Texas", "Penn State", "Wisconsin", "LSU", "Oregon"},
+    "WR": {"Alabama", "Ohio State", "LSU", "USC", "Oregon", "Texas", "Georgia", "Washington", "Mississippi"},
+    "TE": {"Georgia", "Notre Dame", "Iowa", "Penn State", "Michigan", "Miami", "Utah"},
+    "OT": {"Notre Dame", "Alabama", "Georgia", "Ohio State", "Penn State", "Oregon", "Texas", "Iowa", "Wisconsin"},
+    "OG": {"Alabama", "Georgia", "Michigan", "Notre Dame", "LSU", "Iowa", "Wisconsin", "Oregon"},
+    "C": {"Iowa", "Wisconsin", "Georgia", "Michigan", "Alabama", "Notre Dame", "Oregon"},
+    "IDL": {"Georgia", "Alabama", "Michigan", "Ohio State", "LSU", "Texas", "Clemson", "Florida State"},
+    "EDGE": {"Alabama", "Georgia", "Ohio State", "Penn State", "Florida State", "Clemson", "LSU", "Texas A&M", "Tennessee"},
+    "ILB": {"Alabama", "Georgia", "LSU", "Penn State", "Iowa", "Clemson", "Notre Dame", "Michigan"},
+    "CB": {"Alabama", "Georgia", "LSU", "Ohio State", "Florida State", "Texas", "Oregon", "Clemson", "Miami"},
+    "NB": {"Alabama", "Georgia", "LSU", "Ohio State", "Florida State", "Texas", "Oregon", "Clemson", "Miami"},
+    "FS": {"Alabama", "Georgia", "LSU", "Notre Dame", "Iowa", "Penn State", "Ohio State", "Texas"},
+    "SS": {"Alabama", "Georgia", "LSU", "Notre Dame", "Iowa", "Penn State", "Ohio State", "Texas"},
+}
+
 
 @dataclass(frozen=True)
 class CollegeProfile:
@@ -52,13 +123,19 @@ class CollegeGenerator:
         international_college_chance: float = 0.28,
         age: int | None = None,
         tier_weights: dict[str, float] | None = None,
+        position: str | None = None,
     ) -> CollegeProfile:
         if age is None:
             age = self._choose_age(rank)
         if is_international and self.rng.random() < international_college_chance:
             source = self._weighted_choice(self.international_sources)
             return CollegeProfile(age=age, college=source, college_tier="International")
-        college_row = self._weighted_choice_row(self.colleges, tier_weights=tier_weights)
+        college_row = self._weighted_choice_row(
+            self.colleges,
+            tier_weights=tier_weights,
+            rank=rank,
+            position=position,
+        )
         return CollegeProfile(
             age=age,
             college=str(college_row["college"]),
@@ -164,12 +241,109 @@ class CollegeGenerator:
         rows: list[dict[str, object]],
         *,
         tier_weights: dict[str, float] | None = None,
+        rank: int | None = None,
+        position: str | None = None,
     ) -> dict[str, object]:
         weights = [
-            float(row["weight"]) * float((tier_weights or {}).get(str(row.get("tier")), 1.0))
+            float(row["weight"])
+            * float((tier_weights or {}).get(str(row.get("tier")), 1.0))
+            * self._program_rank_multiplier(row, rank=rank, position=position)
             for row in rows
         ]
         return self.rng.choices(rows, weights=weights, k=1)[0]
+
+    @staticmethod
+    def _program_rank_multiplier(
+        row: dict[str, object],
+        *,
+        rank: int | None,
+        position: str | None,
+    ) -> float:
+        college = str(row.get("college") or "")
+        tier = str(row.get("tier") or "")
+        if rank is None:
+            return 1.0
+        if rank <= 20:
+            if college in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 8.50
+            elif college in ELITE_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 5.75
+            elif college in STRONG_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 2.40
+            elif tier == "Power":
+                multiplier = 0.20
+            elif tier == "Regular":
+                multiplier = 0.018
+            else:
+                multiplier = 0.0012
+        elif rank <= 50:
+            if college in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 6.00
+            elif college in ELITE_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 4.40
+            elif college in STRONG_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 2.15
+            elif tier == "Power":
+                multiplier = 0.28
+            elif tier == "Regular":
+                multiplier = 0.030
+            else:
+                multiplier = 0.0025
+        elif rank <= 96:
+            if college in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 3.10
+            elif college in ELITE_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 2.65
+            elif college in STRONG_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.70
+            elif tier == "Power":
+                multiplier = 0.50
+            elif tier == "Regular":
+                multiplier = 0.09
+            else:
+                multiplier = 0.012
+        elif rank <= 160:
+            if college in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.75
+            elif college in ELITE_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.55
+            elif college in STRONG_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.25
+            elif tier == "Power":
+                multiplier = 0.78
+            elif tier == "Regular":
+                multiplier = 0.33
+            else:
+                multiplier = 0.07
+        elif rank <= 256:
+            if college in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.10
+            elif college in ELITE_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.08
+            elif college in STRONG_DRAFT_PIPELINE_COLLEGES:
+                multiplier = 1.05
+            elif tier == "Power":
+                multiplier = 0.95
+            elif tier == "Regular":
+                multiplier = 0.85
+            else:
+                multiplier = 0.44
+        else:
+            if tier == "Power":
+                multiplier = 0.80
+            elif tier == "Regular":
+                multiplier = 1.12
+            else:
+                multiplier = 1.35
+        position_key = (position or "").upper()
+        if college in POSITION_FACTORY_COLLEGES.get(position_key, set()):
+            if rank <= 50:
+                multiplier *= 1.22
+            elif rank <= 96:
+                multiplier *= 1.16
+            elif rank <= 160:
+                multiplier *= 1.08
+        return multiplier
 
     def _weighted_choice(self, weights: dict[str, float]) -> str:
         names = list(weights)

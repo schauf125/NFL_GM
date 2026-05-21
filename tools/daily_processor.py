@@ -23,6 +23,7 @@ from pathlib import Path
 import league_calendar
 import ai_gm
 import contract_negotiations
+import cpu_depth_chart
 import draft_class_bootstrap
 import preseason_processor
 import roster_rules
@@ -44,6 +45,16 @@ KEY_REMINDER_EVENTS = {
     "TRADE_DEADLINE",
     "NFL_DRAFT",
     "NEXT_NFL_LEAGUE_YEAR_START",
+}
+
+DEPTH_CHART_REFRESH_EVENTS = {
+    "PRESEASON_WEEK_1",
+    "PRESEASON_WEEK_2",
+    "PRESEASON_WEEK_3",
+    "FINAL_ROSTER_CUTDOWN_53",
+    "PRACTICE_SQUADS_ESTABLISHED",
+    "REGULAR_SEASON_KICKOFF",
+    "TRADE_DEADLINE",
 }
 
 AI_GM_EVENT_PHASES = {
@@ -80,7 +91,15 @@ AI_GM_EVENT_REVIEW_LIMITS = {
 EVENT_SETTING_ACTIONS = {
     "SIM_YEAR_START": {
         "roster_limits_enforced": "0",
+        "roster_rule_phase": "",
         "practice_squads_enabled": "0",
+        "trade_window_open": "1",
+    },
+    "NEXT_NFL_LEAGUE_YEAR_START": {
+        "roster_limits_enforced": "0",
+        "roster_rule_phase": "",
+        "practice_squads_enabled": "0",
+        "regular_season_statuses_enabled": "0",
         "trade_window_open": "1",
     },
     "VETERAN_TRAINING_CAMP_REPORTING": {
@@ -108,10 +127,17 @@ EVENT_SETTING_ACTIONS = {
     },
     "POST_SUPER_BOWL_OFFSEASON_START": {
         "roster_limits_enforced": "0",
+        "roster_rule_phase": "",
         "practice_squads_enabled": "0",
         "regular_season_statuses_enabled": "0",
         "trade_window_open": "1",
     },
+}
+
+PRACTICE_SQUAD_OFFSEASON_RESET_EVENTS = {
+    "POST_SUPER_BOWL_OFFSEASON_START",
+    "NEXT_NFL_LEAGUE_YEAR_START",
+    "SIM_YEAR_START",
 }
 
 
@@ -474,6 +500,42 @@ def apply_event_settings(con: sqlite3.Connection, event: sqlite3.Row) -> list[st
     return applied
 
 
+def normalize_practice_squads_for_offseason(con: sqlite3.Connection, event: sqlite3.Row) -> int:
+    """Move prior practice-squad players onto offseason rosters when PS closes."""
+    if str(event["event_code"]) not in PRACTICE_SQUAD_OFFSEASON_RESET_EVENTS:
+        return 0
+    roster_rules.ensure_schema(con)
+    players = con.execute(
+        """
+        SELECT *
+        FROM players
+        WHERE status = ?
+          AND team_id IS NOT NULL
+        ORDER BY team_id, last_name, first_name
+        """,
+        (roster_rules.PRACTICE_SQUAD_STATUS,),
+    ).fetchall()
+    if not players:
+        return 0
+
+    event_date = str(event["event_start_date"])
+    try:
+        season = parse_date(event_date).year
+    except ValueError:
+        season = int(event["league_year"])
+    reason = "Practice squad converted to offseason roster status."
+    for player in players:
+        roster_rules.set_player_status(
+            con,
+            player=player,
+            team_id=int(player["team_id"]),
+            new_status="Active",
+            season=season,
+            reason=reason,
+        )
+    return len(players)
+
+
 def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sqlite3.Row) -> str | None:
     event_code = str(event["event_code"])
     phase = AI_GM_EVENT_PHASES.get(event_code)
@@ -574,7 +636,14 @@ def run_ai_gm_injury_reactions(
             skipped += 1
             continue
         counts = result.get("counts") or {}
-        applied += int(counts.get("applied", 0))
+        applied_count = int(counts.get("applied", 0))
+        if applied_count:
+            cpu_depth_chart.mark_depth_chart_stale(
+                con,
+                str(team["abbreviation"]),
+                reason="AI GM injury reaction changed or reviewed the roster.",
+            )
+        applied += applied_count
         planned += int(counts.get("planned", 0))
         skipped += int(counts.get("skipped", 0))
     status = "applied" if applied else "planned" if planned else "no_new_ops"
@@ -596,6 +665,12 @@ def process_calendar_events(
             continue
         applied = apply_event_settings(con, event)
         details = event["notes"] or ""
+        offseason_ps_reset = normalize_practice_squads_for_offseason(con, event)
+        if offseason_ps_reset:
+            details = (
+                f"{details} {offseason_ps_reset} practice-squad player(s) moved "
+                "onto offseason rosters."
+            ).strip()
         if event["event_code"] == "NEXT_NFL_LEAGUE_YEAR_START":
             contract_year = parse_date(event["event_start_date"]).year
             expiration_result = contract_negotiations.process_expired_contracts(
@@ -636,6 +711,13 @@ def process_calendar_events(
         )
         if preseason_result is not None:
             details = f"{details} {preseason_processor.result_summary(preseason_result)}".strip()
+        if event["event_code"] in DEPTH_CHART_REFRESH_EVENTS:
+            marked = cpu_depth_chart.mark_all_cpu_depth_charts_stale(
+                con,
+                reason=f"{event['event_name']} reached.",
+            )
+            if marked:
+                details = f"{details} {marked} CPU depth chart(s) queued for refresh.".strip()
         if process_ai_gm:
             ai_gm_note = run_ai_gm_event_reviews(con, game_id=game_id, event=event)
             if ai_gm_note:
@@ -821,6 +903,11 @@ def process_date(
         game_id=game_id,
         target_date=target_date,
         phase=phase,
+    )
+    cpu_depth_chart.rebuild_dirty_depth_charts(
+        con,
+        season=int(phase["league_year"]),
+        apply=True,
     )
     alerts = event_alerts + reminder_alerts + roster_alerts
 

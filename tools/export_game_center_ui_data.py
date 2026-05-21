@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -26,6 +27,7 @@ import export_player_profile_ui_data
 import league_news
 import roster_rules
 import scouting
+import draft_portrait_assets
 import saved_draft_class_package
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
 
@@ -221,6 +223,117 @@ def parse_json_object(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def draft_trade_pick_detail(row: sqlite3.Row | dict[str, Any], *, fallback_year: int) -> dict[str, Any]:
+    getter = row.get if isinstance(row, dict) else row.__getitem__
+    draft_year = int(getter("draft_year") or fallback_year)
+    round_number = int(getter("round") or 0)
+    pick_number = getter("pick_number")
+    try:
+        pick_number_int = int(pick_number) if pick_number else None
+    except (TypeError, ValueError):
+        pick_number_int = None
+    label = f"{draft_year} Round {round_number}" if round_number else str(draft_year)
+    if draft_year == fallback_year and pick_number_int:
+        label = f"{draft_year} R{round_number}, Pick {pick_number_int}"
+    elif round_number:
+        label = f"{draft_year} R{round_number}"
+    return {
+        "pickId": int(getter("pick_id")) if getter("pick_id") else None,
+        "draftYear": draft_year,
+        "round": round_number,
+        "pickNumber": pick_number_int,
+        "label": label,
+    }
+
+
+def fallback_draft_trade_details(conn: sqlite3.Connection, event: dict[str, Any], draft_year: int) -> dict[str, Any]:
+    message = str(event.get("message") or "")
+    buyer = str(event.get("team") or "")
+    seller = str(event.get("original_team") or "")
+    match = re.search(r"^([A-Z]{2,3}) traded up with ([A-Z]{2,3})", message)
+    if match:
+        buyer, seller = match.group(1), match.group(2)
+    else:
+        match = re.search(r"^([A-Z]{2,3}) acquired pick #[0-9]+ from ([A-Z]{2,3})", message)
+        if match:
+            buyer, seller = match.group(1), match.group(2)
+
+    buyer_receives: list[dict[str, Any]] = []
+    if event.get("pick_id"):
+        pick_row = conn.execute(
+            """
+            SELECT pick_id, draft_year, round, pick_number
+            FROM draft_picks
+            WHERE pick_id = ?
+            """,
+            (event["pick_id"],),
+        ).fetchone()
+        if pick_row:
+            buyer_receives.append(draft_trade_pick_detail(pick_row, fallback_year=draft_year))
+    elif event.get("pick_number") or event.get("round"):
+        buyer_receives.append(
+            draft_trade_pick_detail(
+                {
+                    "pick_id": None,
+                    "draft_year": draft_year,
+                    "round": event.get("round"),
+                    "pick_number": event.get("pick_number"),
+                },
+                fallback_year=draft_year,
+            )
+        )
+
+    seller_receives: list[dict[str, Any]] = []
+    if buyer and seller:
+        compensation_rows = conn.execute(
+            """
+            SELECT dp.pick_id, dp.draft_year, dp.round, dp.pick_number
+            FROM draft_picks dp
+            JOIN teams current_team ON current_team.team_id = dp.current_team_id
+            WHERE current_team.abbreviation = ?
+              AND COALESCE(dp.trade_note, '') LIKE ?
+            ORDER BY dp.draft_year, dp.round, COALESCE(dp.pick_number, 9999), dp.pick_id
+            """,
+            (seller, f"{buyer} -> {seller}: compensation for {draft_year} draft-room trade%"),
+        ).fetchall()
+        seller_receives = [draft_trade_pick_detail(row, fallback_year=draft_year) for row in compensation_rows]
+
+    if not seller_receives:
+        sent_match = re.search(r"\bSent\s+(.+?)(?:\s+\(value|\.\s|$)", message)
+        if sent_match:
+            for token in re.findall(r"(\d{4})\s+R(\d)", sent_match.group(1)):
+                seller_receives.append(
+                    draft_trade_pick_detail(
+                        {
+                            "pick_id": None,
+                            "draft_year": int(token[0]),
+                            "round": int(token[1]),
+                            "pick_number": None,
+                        },
+                        fallback_year=draft_year,
+                    )
+                )
+
+    value_match = re.search(r"\(value\s+([0-9.]+)\s+vs\s+([0-9.]+)\)", message)
+    details: dict[str, Any] = {
+        "buyer": buyer,
+        "seller": seller,
+        "buyerReceives": buyer_receives,
+        "sellerReceives": seller_receives,
+        "legacyReconstructed": True,
+    }
+    if value_match:
+        details["offerValue"] = float(value_match.group(1))
+        details["targetValue"] = float(value_match.group(2))
+    if event.get("prospect_name"):
+        details["target"] = {
+            "prospectId": event.get("prospect_id"),
+            "name": event.get("prospect_name"),
+            "position": event.get("prospect_position"),
+        }
+    return details
+
+
 def ai_gm_review_result_summary(row: dict[str, Any]) -> str:
     result = parse_json_object(row.get("apply_result_json"))
     status = str(row.get("lifecycle_status") or "")
@@ -370,6 +483,7 @@ def save_registry() -> dict[str, Any]:
                 "gameId": game_id,
                 "name": record.get("name") or game_id,
                 "userTeam": record.get("user_team"),
+                "controlMode": record.get("control_mode", "team"),
                 "currentDate": record.get("current_date"),
                 "phase": record.get("current_phase_code"),
                 "status": record.get("status"),
@@ -632,6 +746,10 @@ def calendar_news_rows(
             WHERE ln.game_id IN (?, 'default')
               AND date(ln.news_date) BETWEEN date(?) AND date(?)
               AND LOWER(COALESCE(ln.category, '')) <> 'injuries'
+              AND (
+                    COALESCE(ln.is_major, 0) = 1
+                    OR LOWER(COALESCE(ln.priority, '')) IN ('high', 'urgent')
+                  )
             ORDER BY ln.news_date, ln.is_major DESC, ln.news_id DESC
             """,
             (game_id or "default", start_date, end_date),
@@ -928,10 +1046,59 @@ def league_transactions_summary(conn: sqlite3.Connection, *, limit: int = 400, i
     if not table_exists(conn, "transaction_log_view"):
         return {"items": [], "counts": {"total": 0}, "categories": [], "includeBaseline": include_baseline}
     baseline_filter = "" if include_baseline else "WHERE COALESCE(transaction_category, '') != 'Baseline'"
+    transaction_select = "SELECT * FROM transaction_log_view"
+    if table_exists(conn, "draft_room_events"):
+        transaction_select = f"""
+        SELECT * FROM transaction_log_view
+        UNION ALL
+        SELECT
+            -dre.event_id AS transaction_id,
+            date(dre.created_at) AS transaction_date,
+            dre.draft_year AS season,
+            'Draft' AS phase,
+            NULL AS week,
+            'Draft Pick Move' AS transaction_type,
+            'Draft' AS transaction_category,
+            dre.team_id,
+            team.abbreviation AS team,
+            original_team.team_id AS secondary_team_id,
+            original_team.abbreviation AS secondary_team,
+            NULL AS player_id,
+            NULL AS player_name,
+            NULL AS player_position,
+            NULL AS contract_id,
+            original_team.team_id AS from_team_id,
+            original_team.abbreviation AS from_team,
+            dre.team_id AS to_team_id,
+            team.abbreviation AS to_team,
+            NULL AS old_status,
+            NULL AS new_status,
+            0 AS cap_delta_current,
+            0 AS cap_delta_next,
+            0 AS cash_delta,
+            dre.message AS description,
+            'draft_room_processor' AS source,
+            'draft_room_event:' || dre.event_id AS external_ref,
+            dre.created_at
+        FROM draft_room_events dre
+        LEFT JOIN draft_picks dp ON dp.pick_id = dre.pick_id
+        LEFT JOIN teams team ON team.team_id = dre.team_id
+        LEFT JOIN teams original_team ON original_team.team_id = dp.original_team_id
+        WHERE dre.event_type IN ('draft_trade', 'user_draft_trade')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM transaction_log tl
+              WHERE tl.source = 'draft_room_processor'
+                AND tl.external_ref IN (
+                    dre.event_type || ':' || dre.draft_year || ':' || COALESCE(dre.pick_id, 0),
+                    'draft_room_event:' || dre.event_id
+                )
+          )
+        """
     rows = conn.execute(
         f"""
         SELECT *
-        FROM transaction_log_view
+        FROM ({transaction_select})
         {baseline_filter}
         ORDER BY date(transaction_date) DESC, transaction_id DESC
         LIMIT ?
@@ -941,7 +1108,7 @@ def league_transactions_summary(conn: sqlite3.Connection, *, limit: int = 400, i
     count_rows = conn.execute(
         f"""
         SELECT COALESCE(transaction_category, 'Other') AS category, COUNT(*) AS count
-        FROM transaction_log_view
+        FROM ({transaction_select})
         {baseline_filter}
         GROUP BY COALESCE(transaction_category, 'Other')
         ORDER BY count DESC, category
@@ -1448,6 +1615,8 @@ def draft_class_setup(conn: sqlite3.Connection, season: int, year: int, *, activ
         ).fetchone()
         if class_row:
             prospect_count = int(class_row["prospect_count"] or 0)
+    if prospect_count > 0 and pending_year and str(pending_year) == str(year):
+        pending_year = None
     packages: list[dict[str, Any]] = []
     try:
         packages = saved_draft_class_package.list_packages()
@@ -1620,6 +1789,38 @@ def slim_draft_board_rows(board: list[dict[str, Any]], detail_limit: int = DRAFT
         prospect["scout_concerns"] = []
 
 
+def draft_prospect_portrait_urls(conn: sqlite3.Connection, prospect_ids: list[int]) -> dict[int, str]:
+    if not prospect_ids or not table_exists(conn, "draft_prospect_graphics_assets"):
+        return {}
+    unique_ids = sorted(set(int(pid) for pid in prospect_ids if pid is not None))
+    if not unique_ids:
+        return {}
+    placeholders = ",".join("?" for _ in unique_ids)
+    rows = conn.execute(
+        f"""
+        SELECT prospect_id, local_path
+        FROM draft_prospect_graphics_assets
+        WHERE asset_key = ?
+          AND prospect_id IN ({placeholders})
+        """,
+        (draft_portrait_assets.ASSET_KEY, *unique_ids),
+    ).fetchall()
+    return {
+        int(row["prospect_id"]): export_player_profile_ui_data.relative_ui_path(row["local_path"])
+        for row in rows
+    }
+
+
+def attach_draft_portrait_urls(conn: sqlite3.Connection, prospects: list[dict[str, Any]]) -> None:
+    portrait_urls = draft_prospect_portrait_urls(
+        conn,
+        [int(row["prospect_id"]) for row in prospects if row.get("prospect_id") is not None],
+    )
+    for prospect in prospects:
+        prospect_id = prospect.get("prospect_id")
+        prospect["portrait"] = portrait_urls.get(int(prospect_id)) if prospect_id is not None else None
+
+
 def mask_draft_workouts_for_calendar(
     conn: sqlite3.Connection,
     board: list[dict[str, Any]],
@@ -1681,6 +1882,31 @@ def team_logo_map(conn: sqlite3.Connection) -> dict[str, str]:
         row["abbreviation"]: "/" + str(row["local_path"]).replace("\\", "/").lstrip("/")
         for row in rows
     }
+
+
+def team_options(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not table_exists(conn, "teams"):
+        return []
+    logos = team_logo_map(conn)
+    rows = rows_as_dicts(
+        conn.execute(
+            """
+            SELECT
+                team_id,
+                abbreviation,
+                city,
+                nickname,
+                city || ' ' || nickname AS team_name,
+                conference,
+                division
+            FROM teams
+            ORDER BY conference, division, city, nickname
+            """
+        ).fetchall()
+    )
+    for row in rows:
+        row["teamLogo"] = logos.get(str(row.get("abbreviation")))
+    return rows
 
 
 def public_need_group(position: str | None) -> str:
@@ -2216,6 +2442,18 @@ def draft_summary(
                 hometown_columns = []
                 for column in ("hometown", "hometown_city", "hometown_state", "hometown_region"):
                     hometown_columns.append(column if column in prospect_columns else f"'' AS {column}")
+                name_story_columns = []
+                for column in (
+                    "display_name",
+                    "preferred_name",
+                    "name_pronunciation_note",
+                    "name_background_note",
+                    "family_football_type",
+                    "family_football_background",
+                    "name_storyline_note",
+                ):
+                    fallback = "first_name || ' ' || last_name" if column == "display_name" else "''"
+                    name_story_columns.append(column if column in prospect_columns else f"{fallback} AS {column}")
                 prospect_rows = rows_as_dicts(
                     conn.execute(
                         f"""
@@ -2226,6 +2464,7 @@ def draft_summary(
                             first_name || ' ' || last_name AS player_name,
                             first_name,
                             last_name,
+                            {", ".join(name_story_columns)},
                             position AS prospect_position,
                             position,
                             position_group,
@@ -2273,6 +2512,7 @@ def draft_summary(
                     ).fetchall()
                 )
                 scout_attributes = draft_scout_attributes(conn, prospect_rows)
+                attach_draft_portrait_urls(conn, prospect_rows)
                 for prospect in prospect_rows:
                     prospect_attributes = scout_attributes.get(int(prospect["prospect_id"]), {})
                     prospect["scout_attributes"] = prospect_attributes.get("attributes", [])
@@ -2305,18 +2545,52 @@ def draft_summary(
         current_pick_number=current_pick_number,
     )
     if table_exists(conn, "draft_room_events"):
+        event_columns = relation_columns(conn, "draft_room_events")
+        event_details_expr = "dre.event_details" if "event_details" in event_columns else "NULL AS event_details"
         events = rows_as_dicts(
             conn.execute(
-                """
-                SELECT event_type, pick_number, round, message, created_at
-                FROM draft_room_events
-                WHERE draft_year = ?
-                ORDER BY event_id DESC
+                f"""
+                SELECT
+                    dre.event_id,
+                    dre.event_type,
+                    dre.pick_id,
+                    dre.pick_number,
+                    dre.round,
+                    dre.team_id,
+                    team.abbreviation AS team,
+                    team.city || ' ' || team.nickname AS team_name,
+                    original_team.abbreviation AS original_team,
+                    original_team.city || ' ' || original_team.nickname AS original_team_name,
+                    dre.prospect_id,
+                    dp.first_name || ' ' || dp.last_name AS prospect_name,
+                    dp.position AS prospect_position,
+                    dp.college AS prospect_college,
+                    dre.message,
+                    {event_details_expr},
+                    dre.created_at
+                FROM draft_room_events dre
+                LEFT JOIN teams team ON team.team_id = dre.team_id
+                LEFT JOIN draft_picks pick ON pick.pick_id = dre.pick_id
+                LEFT JOIN teams original_team ON original_team.team_id = pick.original_team_id
+                LEFT JOIN draft_prospects dp ON dp.prospect_id = dre.prospect_id
+                WHERE dre.draft_year = ?
+                ORDER BY dre.event_id DESC
                 LIMIT 24
                 """,
                 (year,),
             ).fetchall()
         )
+        for event in events:
+            event["details"] = parse_json_object(event.pop("event_details", None))
+            if (
+                event["event_type"] in {"draft_trade", "user_draft_trade"}
+                and not event["details"].get("sellerReceives")
+            ):
+                fallback_details = fallback_draft_trade_details(conn, event, year)
+                if event["details"]:
+                    fallback_details.update(event["details"])
+                    fallback_details.setdefault("legacyReconstructed", True)
+                event["details"] = fallback_details
     if table_exists(conn, "draft_room_board_ui_view"):
         board_columns = relation_columns(conn, "draft_room_board_ui_view")
         draft_date_value = draft_event_date(conn, year)
@@ -2336,6 +2610,13 @@ def draft_summary(
             ("discovery_notes", "''"),
             ("development_pathway", "'Traditional pipeline'"),
             ("pipeline_note", "''"),
+            ("display_name", "first_name || ' ' || last_name"),
+            ("preferred_name", "first_name"),
+            ("name_pronunciation_note", "''"),
+            ("name_background_note", "''"),
+            ("family_football_type", "''"),
+            ("family_football_background", "''"),
+            ("name_storyline_note", "''"),
             ("college_class", "''"),
             ("hometown", "''"),
             ("hometown_city", "''"),
@@ -2366,6 +2647,11 @@ def draft_summary(
             ("private_workout_note", "''"),
         ):
             process_columns.append(column if column in board_columns else f"{fallback} AS {column}")
+        player_name_expr = (
+            "COALESCE(NULLIF(display_name, ''), first_name || ' ' || last_name)"
+            if "display_name" in board_columns
+            else "first_name || ' ' || last_name"
+        )
         visibility_filter = ""
         params: list[Any] = [year]
         if not draft_day_reveal:
@@ -2397,7 +2683,7 @@ def draft_summary(
                     {", ".join(discovery_columns)},
                     projected_round,
                     projected_pick,
-                    first_name || ' ' || last_name AS player_name,
+                    {player_name_expr} AS player_name,
                     first_name,
                     last_name,
                     position,
@@ -2458,6 +2744,7 @@ def draft_summary(
         )
         detailed_board = board[:DRAFT_BOARD_DETAIL_LIMIT]
         scout_attributes = draft_scout_attributes(conn, detailed_board)
+        attach_draft_portrait_urls(conn, board)
         for prospect in board:
             prospect_attributes = scout_attributes.get(int(prospect["prospect_id"]), {})
             prospect["scout_attributes"] = prospect_attributes.get("attributes", [])
@@ -2517,6 +2804,7 @@ def enrich_scouting_payload_with_draft_board(scouting_payload: dict[str, Any], d
         if row.get("prospect_id") is not None
     }
     detail_fields = [
+        "portrait",
         "first_name",
         "last_name",
         "arm_length_in",
@@ -3095,7 +3383,12 @@ def flex_positions(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int,
     return grouped
 
 
-def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int) -> dict[str, Any]:
+def depth_chart_summary(
+    conn: sqlite3.Connection,
+    team: str | None,
+    season: int,
+    contract_season: int | None = None,
+) -> dict[str, Any]:
     if not team or not table_exists(conn, "depth_charts"):
         return {"team": team, "rows": [], "roster": [], "units": []}
     team_row = conn.execute(
@@ -3105,8 +3398,24 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
     if not team_row:
         return {"team": team, "rows": [], "roster": [], "units": []}
     team_id = int(team_row["team_id"])
+    contract_year = int(contract_season or season)
     roster_rows = conn.execute(
         """
+        WITH active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT
             p.player_id,
             p.first_name || ' ' || p.last_name AS player_name,
@@ -3130,11 +3439,9 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
             c.total_years AS contract_total_years,
             c.contract_type
         FROM players p
-        LEFT JOIN contract_years cy
+        LEFT JOIN active_contract_years cy
           ON cy.player_id = p.player_id
          AND cy.team_id = p.team_id
-         AND cy.season = ?
-         AND COALESCE(cy.is_active, 1) = 1
         LEFT JOIN contracts c
           ON c.contract_id = cy.contract_id
          AND c.player_id = p.player_id
@@ -3144,7 +3451,7 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
           AND COALESCE(p.status, 'Active') != 'Retired'
         ORDER BY p.position, p.last_name, p.first_name
         """,
-        (season, team_id),
+        (contract_year, team_id),
     ).fetchall()
     player_ids = [int(row["player_id"]) for row in roster_rows]
     roles = best_roles(conn, season, player_ids)
@@ -3173,6 +3480,7 @@ def depth_chart_summary(conn: sqlite3.Connection, team: str | None, season: int)
                 "aav": row["contract_aav"],
                 "total_value": row["contract_total_value"],
                 "total_years": row["contract_total_years"],
+                "season": contract_year,
                 "cap_hit": row["contract_cap_hit"],
                 "cash_due": row["contract_cash_due"],
                 "base_salary": row["contract_base_salary"],
@@ -3717,15 +4025,25 @@ def command_set(
     free_agency_date: str | None = None,
     free_agency_year: int | None = None,
 ) -> dict[str, str]:
-    team = user_team or "MIN"
+    observe_mode = not bool(user_team)
+    team = user_team or "OBS"
     next_week = "<week>"
     fa_year = int(free_agency_year or draft_year_value)
     fa_start = free_agency_date or f"{fa_year}-03-10"
     return {
-        "newGame": f'python tools\\play.py new --game-id my_save --name "My Save" --user-team {team} --start-year {season}',
-        "newJune1Save": f'python tools\\play.py new --game-id {team.lower()}_{season}_june1 --name "{team} June 1 Start" --user-team {team} --start-year {season}',
+        "newGame": (
+            f'python tools\\play.py new --game-id my_save --name "Observe Save" --control-mode observe --observe-mode --start-year {season}'
+            if observe_mode
+            else f'python tools\\play.py new --game-id my_save --name "My Save" --user-team {team} --start-year {season}'
+        ),
+        "newJune1Save": (
+            f'python tools\\play.py new --game-id observe_{season}_june1 --name "Observe June 1 Start" --control-mode observe --observe-mode --start-year {season}'
+            if observe_mode
+            else f'python tools\\play.py new --game-id {team.lower()}_{season}_june1 --name "{team} June 1 Start" --user-team {team} --start-year {season}'
+        ),
         "status": "python tools\\play.py status",
         "preflight": "python tools\\play.py preflight",
+        "takeOverTeam": "python tools\\play.py take-over-team --team <TEAM>",
         "advanceNextEvent": "python tools\\play.py advance-to-next-event",
         "advanceNextLeagueYear": "python tools\\play.py advance-to-next-league-year",
         "processEvents": "python tools\\play.py process-events --from-date <from> --to-date <to> --include-start --apply",
@@ -3750,8 +4068,16 @@ def command_set(
         "draftClassGenerate": f"python tools\\play.py draft-class generate --draft-year {draft_year_value}",
         "draftClassImport": f"python tools\\play.py draft-class import --draft-year {draft_year_value} --package <saved_class_folder>",
         "draftValidate": f"python tools\\play.py validate-draft db --draft-year {draft_year_value}",
-        "advanceToDraft": f"python tools\\play.py advance-to-draft --draft-year {draft_year_value} --user-team {team}",
-        "draftStart": f"python tools\\play.py draft-room start --draft-year {draft_year_value} --user-team {team} --paused --apply",
+        "advanceToDraft": (
+            f"python tools\\play.py advance-to-draft --draft-year {draft_year_value}"
+            if observe_mode
+            else f"python tools\\play.py advance-to-draft --draft-year {draft_year_value} --user-team {team}"
+        ),
+        "draftStart": (
+            f"python tools\\play.py draft-room start --draft-year {draft_year_value} --paused --apply"
+            if observe_mode
+            else f"python tools\\play.py draft-room start --draft-year {draft_year_value} --user-team {team} --paused --apply"
+        ),
         "draftSkipOne": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 1 --until-user-pick --no-cap-snapshot --apply",
         "draftSkipToUser": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --until-user-pick --no-cap-snapshot --apply",
         "draftSkip": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --until-user-pick --no-cap-snapshot --apply",
@@ -3858,6 +4184,11 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             or game_settings.get("current_season")
             or 2026
         )
+        current_contract_year = int(
+            game_settings.get("current_contract_year")
+            or game_settings.get("current_league_year")
+            or current_season
+        )
         current_date = (
             (active or {}).get("current_date")
             or game_settings.get("current_game_date")
@@ -3896,9 +4227,11 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "database": str(db_path),
             "currentDate": current_date,
             "currentSeason": current_season,
+            "currentContractYear": current_contract_year,
             "currentPhase": phase,
             "settings": game_settings,
             "activeSave": active,
+            "teams": team_options(conn),
             "registry": save_registry(),
             "events": upcoming_events(conn),
             "calendar": calendar_summary(
@@ -3917,7 +4250,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "injuries": injury_center_summary(conn, current_date=current_date, user_team_id=user_team_id),
             "leagueNews": league_news.build_ui_payload(conn, limit=80),
             "contractNegotiations": contract_negotiation_summary(conn, current_season, user_team),
-            "depthChart": depth_chart_summary(conn, user_team, current_season),
+            "depthChart": depth_chart_summary(conn, user_team, current_season, current_contract_year),
             "draft": draft_payload,
             "draftClassSetup": draft_class_setup(conn, current_season, draft_year_value, active_game=bool(active)),
             "rookieClass": {
@@ -3926,7 +4259,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             },
             "scouting": scouting_payload,
             "freeAgency": free_agency_summary(conn, fa_league_year),
-            "aiGm": ai_gm_summary(conn, user_team or "MIN", game_id, current_season),
+            "aiGm": ai_gm_summary(conn, user_team, game_id, current_season),
             "commands": command_set(
                 current_season,
                 draft_year_value,

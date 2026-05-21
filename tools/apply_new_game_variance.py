@@ -79,6 +79,20 @@ def clipped_gaussian(rng: random.Random, max_abs_delta: float) -> float:
     return max(-max_abs_delta, min(max_abs_delta, value))
 
 
+def normalize_delta_cap(value: float, *, label: str) -> float:
+    """Accept either fractions (0.20) or whole percentages (20) for CLI/UI caps."""
+    normalized = float(value)
+    if normalized > 1.0:
+        normalized /= 100.0
+    if normalized < 0:
+        raise ValueError(f"{label} must be non-negative.")
+    if normalized > 0.50:
+        raise ValueError(
+            f"{label} is {normalized:.0%}; refusing to apply more than 50% rating variance."
+        )
+    return normalized
+
+
 def ensure_tables(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -421,6 +435,15 @@ def apply_variance(
     notes: str | None,
     dry_run: bool,
 ) -> tuple[list[PlayerVariance], int]:
+    rating_max_delta = normalize_delta_cap(rating_max_delta, label="rating_max_delta")
+    rookie_potential_max_delta = normalize_delta_cap(
+        rookie_potential_max_delta,
+        label="rookie_potential_max_delta",
+    )
+    young_potential_max_delta = normalize_delta_cap(
+        young_potential_max_delta,
+        label="young_potential_max_delta",
+    )
     rng = random.Random(seed)
     player_results, rating_details = build_variance(
         conn,

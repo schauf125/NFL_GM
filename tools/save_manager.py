@@ -155,12 +155,14 @@ def read_game_state(db_path: Path) -> dict[str, Any] | None:
     con.row_factory = sqlite3.Row
     try:
         cols = {row["name"] for row in con.execute("PRAGMA table_info(game_saves)").fetchall()}
+        control_mode_expr = "gs.control_mode" if "control_mode" in cols else "'team' AS control_mode"
         personality_expr = "gs.personality_run_id" if "personality_run_id" in cols else "NULL AS personality_run_id"
         development_expr = "gs.development_run_id" if "development_run_id" in cols else "NULL AS development_run_id"
         row = con.execute(
             f"""
             SELECT gs.game_id, gs.display_name, gs."current_date", gs.current_league_year,
                    gs.current_phase_code, gs.status, gs.rng_seed, gs.rating_variance_run_id,
+                   {control_mode_expr},
                    {personality_expr},
                    {development_expr},
                    t.abbreviation AS user_team
@@ -231,6 +233,7 @@ def sync_manifest_from_db(game_id: str) -> dict[str, Any]:
                 "game_id": game_id,
                 "name": state["display_name"],
                 "user_team": state["user_team"],
+                "control_mode": state.get("control_mode", "team"),
                 "current_date": state["current_date"],
                 "current_league_year": state["current_league_year"],
                 "current_phase_code": state["current_phase_code"],
@@ -266,6 +269,7 @@ def register_save(manifest: dict[str, Any], *, activate: bool) -> None:
         "game_id": game_id,
         "name": manifest.get("name") or game_id,
         "user_team": manifest.get("user_team"),
+        "control_mode": manifest.get("control_mode", "team"),
         "db_path": manifest["db_path"],
         "manifest_path": manifest["manifest_path"],
         "current_date": manifest.get("current_date"),
@@ -305,6 +309,8 @@ def create_save(args: argparse.Namespace) -> None:
             game_id=game_id,
             name=args.name or game_id,
             user_team=args.user_team,
+            control_mode=getattr(args, "control_mode", None),
+            observe_mode=getattr(args, "observe_mode", False),
             start_year=args.start_year,
             calendar_years=args.calendar_years,
             seed=args.seed,
@@ -336,6 +342,8 @@ def create_save(args: argparse.Namespace) -> None:
         "game_id": game_id,
         "name": (state or {}).get("display_name") or args.name or game_id,
         "user_team": (state or {}).get("user_team") or (args.user_team.upper() if args.user_team else None),
+        "control_mode": (state or {}).get("control_mode")
+        or ("observe" if getattr(args, "observe_mode", False) or not args.user_team else "team"),
         "start_year": args.start_year,
         "current_date": (state or {}).get("current_date"),
         "current_league_year": (state or {}).get("current_league_year"),
@@ -395,7 +403,8 @@ def list_saves(args: argparse.Namespace) -> None:
         state = read_game_state(db_path)
         current_date = (state or {}).get("current_date") or record.get("current_date") or "-"
         phase = (state or {}).get("current_phase_code") or record.get("current_phase_code") or "-"
-        team = (state or {}).get("user_team") or record.get("user_team") or "-"
+        mode = (state or {}).get("control_mode") or record.get("control_mode") or "team"
+        team = (state or {}).get("user_team") or record.get("user_team") or ("OBS" if mode == "observe" else "-")
         print(f"{marker} {game_id:<24} {team:<3} {current_date:<10} {phase:<26} {record.get('name')}")
     print("* = active save")
 
@@ -443,9 +452,11 @@ def print_active(args: argparse.Namespace) -> None:
     game_id, record = get_save_record(None)
     db_path = ROOT / record["db_path"]
     state = read_game_state(db_path)
+    mode = (state or {}).get("control_mode") or record.get("control_mode") or "team"
     print(f"Active save: {game_id}")
     print(f"Name: {(state or {}).get('display_name') or record.get('name')}")
-    print(f"Team: {(state or {}).get('user_team') or record.get('user_team') or '-'}")
+    print(f"Mode: {mode}")
+    print(f"Team: {(state or {}).get('user_team') or record.get('user_team') or ('Observe' if mode == 'observe' else '-')}")
     print(f"Date: {(state or {}).get('current_date') or record.get('current_date') or '-'}")
     print(f"Phase: {(state or {}).get('current_phase_code') or record.get('current_phase_code') or '-'}")
     print(f"DB: {db_path}")
@@ -476,6 +487,8 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--game-id", required=True)
     create_parser.add_argument("--name")
     create_parser.add_argument("--user-team")
+    create_parser.add_argument("--control-mode", choices=("team", "observe"))
+    create_parser.add_argument("--observe-mode", action="store_true")
     create_parser.add_argument("--start-year", type=int, default=game_flow.DEFAULT_START_YEAR)
     create_parser.add_argument("--calendar-years", type=int, default=game_flow.DEFAULT_CALENDAR_YEARS)
     create_parser.add_argument("--seed", type=int)

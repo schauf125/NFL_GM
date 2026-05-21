@@ -26,6 +26,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import roster_rules  # noqa: E402
+import cpu_depth_chart  # noqa: E402
 from setup_contract_years import rebuild_contract_years, sync_team_cap_space  # noqa: E402
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger  # noqa: E402
 
@@ -649,6 +650,11 @@ def move_to_practice_squad(con: sqlite3.Connection, player_id: int, season: int,
         (PRACTICE_SQUAD_STATUS, player_id),
     )
     delete_depth_rows(con, player_id)
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=team_id,
+        reason="Player moved from active roster to practice squad.",
+    )
     status_history(
         con,
         player=player,
@@ -706,6 +712,11 @@ def sign_free_agent_to_practice_squad(
         (team_id, PRACTICE_SQUAD_STATUS, player_id),
     )
     delete_depth_rows(con, player_id)
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=team_id,
+        reason="Practice-squad signing changed roster composition.",
+    )
     status_history(
         con,
         player=player,
@@ -796,6 +807,12 @@ def release_player(
         (FREE_AGENT_STATUS, player_id),
     )
     delete_depth_rows(con, player_id)
+    if from_team_id is not None:
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=from_team_id,
+            reason="Player release changed roster composition.",
+        )
     status_history(
         con,
         player=player,
@@ -894,6 +911,11 @@ def sign_missing_specialist(
     con.execute(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
+    )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason=f"Missing {position} specialist signing changed roster composition.",
     )
     status_history(
         con,
@@ -1249,6 +1271,16 @@ def sign_practice_squad_poach(
         (team["team_id"], player["player_id"]),
     )
     delete_depth_rows(con, int(player["player_id"]))
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=old_team_id,
+        reason="Practice-squad player was poached by another team.",
+    )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason="Practice-squad poach changed roster composition.",
+    )
     status_history(
         con,
         player=player,
@@ -1443,6 +1475,11 @@ def promote_practice_squad_replacement(
 ) -> None:
     old_status = player["status"] or PRACTICE_SQUAD_STATUS
     con.execute("UPDATE players SET status = 'Active' WHERE player_id = ?", (player["player_id"],))
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason="Practice-squad promotion changed active roster composition.",
+    )
     status_history(
         con,
         player=player,
@@ -1502,6 +1539,11 @@ def move_active_to_practice_squad_sanity(
     old_status = player["status"] or ACTIVE_STATUS
     con.execute("UPDATE players SET status = ? WHERE player_id = ?", (PRACTICE_SQUAD_STATUS, player["player_id"]))
     delete_depth_rows(con, int(player["player_id"]))
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason="Roster sanity move changed active roster composition.",
+    )
     status_history(
         con,
         player=player,
@@ -2076,6 +2118,11 @@ def sign_free_agent_replacement(
     con.execute(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
+    )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason="Injury replacement signing changed roster composition.",
     )
     status_history(
         con,

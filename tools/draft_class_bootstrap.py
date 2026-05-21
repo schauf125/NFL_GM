@@ -18,7 +18,7 @@ from engine.draft.schema import ensure_schema  # noqa: E402
 import draft_personalities  # noqa: E402
 
 
-DEFAULT_PUBLIC_PROSPECT_COUNT = 330
+DEFAULT_PUBLIC_PROSPECT_COUNT = 310
 DEFAULT_CLASS_STRENGTH = 50
 
 

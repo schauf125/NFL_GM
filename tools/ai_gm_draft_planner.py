@@ -31,8 +31,9 @@ DEFAULT_BOARD_LIMIT = 120
 PREMIUM_GROUPS = {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
 LOW_COST_GROUPS = {"K", "P", "LS"}
 ROUND_ONE_NEEDS_CLEANER_VALUE_GROUPS = {"RB", "TE", "LB", "S", "CB", "WR"}
-ROUND_ONE_PLAN_MIN_GRADE = 68.0
-ROUND_ONE_PLAN_MIN_CEILING = 76.0
+ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS = {"C", "OG", "RB", "TE", "ILB", "LB", "FS", "SS", "NB"}
+ROUND_ONE_PLAN_MIN_GRADE = 70.0
+ROUND_ONE_PLAN_MIN_CEILING = 78.0
 ROUND_TWO_PLAN_MIN_GRADE = 62.0
 ROUND_TWO_PLAN_MIN_CEILING = 68.0
 CONFIDENCE_PENALTY_BASE = {
@@ -582,11 +583,18 @@ def score_prospect(
     picks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     group = position_group(str(row["position"]))
+    position = str(row["position"] or "").upper()
     priority = priorities.get(group, {})
     biases = profile_biases(profile)
     rank = as_int(row["board_rank"], 999)
     grade = as_float(row_value(row, "scout_grade", row_value(row, "overall", row_value(row, "true_grade", 50))))
     ceiling = as_float(row_value(row, "scout_ceiling", row_value(row, "potential", row_value(row, "ceiling_grade", grade))))
+    round_one_pick_numbers = [
+        max(1, as_int(pick.get("effective_pick_number") or pick.get("pick_number"), 32))
+        for pick in picks
+        if as_int(pick.get("round"), 0) == 1
+    ]
+    earliest_round_one_pick = min(round_one_pick_numbers) if round_one_pick_numbers else 32
     athletic = max(
         as_float(row_value(row, "combine_athletic_score")),
         as_float(row_value(row, "pro_day_athletic_score")),
@@ -651,6 +659,43 @@ def score_prospect(
             early_quality_penalty += 44.0
         if group in ROUND_ONE_NEEDS_CLEANER_VALUE_GROUPS and grade < 72 and ceiling < 79 and rank > 12:
             early_quality_penalty += 24.0
+        if position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS and rank > 20:
+            clean_immediate_profile = grade >= 74.5 and ceiling >= 80
+            clean_upside_profile = grade >= 70 and ceiling >= 84
+            if not (clean_immediate_profile or clean_upside_profile):
+                early_quality_penalty += 34.0
+        strong_confidence = confidence.lower() in {"high", "very high"}
+        pick_hint = earliest_round_one_pick
+        first_round_need = as_float(priority.get("draft_priority_score"))
+        clean_board_value = (
+            rank <= max(12, pick_hint + 3)
+            and grade >= (75.0 if pick_hint <= 10 else 73.0 if pick_hint <= 20 else 71.0)
+            and ceiling >= (82.0 if pick_hint <= 10 else 80.0 if pick_hint <= 20 else 78.0)
+        )
+        immediate_or_close_starter = (
+            first_round_need >= 36.0
+            and grade >= (75.0 if pick_hint <= 10 else 73.0 if pick_hint <= 20 else 71.0)
+            and ceiling >= 77.0
+            and rank <= max(22, pick_hint + 14)
+        )
+        high_upside_profile = (
+            ceiling >= (86.0 if pick_hint <= 10 else 84.0 if pick_hint <= 20 else 82.0)
+            and grade >= (69.0 if strong_confidence else 70.0)
+            and rank <= max(56, pick_hint + 40)
+        )
+        scouted_value_outlier = (
+            strong_confidence
+            and grade >= 75.0
+            and ceiling >= 82.0
+            and rank <= max(80, pick_hint + 55)
+        )
+        first_round_takeable = clean_board_value or immediate_or_close_starter or high_upside_profile or scouted_value_outlier
+        if not first_round_takeable:
+            early_quality_penalty += 48.0 if pick_hint <= 10 else 34.0 if pick_hint <= 20 else 24.0
+            if ceiling < 80.0 and grade < 76.0:
+                early_quality_penalty += 20.0
+            if rank > pick_hint + 14 and ceiling < 82.0:
+                early_quality_penalty += 22.0
         if group in {"WR", "TE", "CB", "S", "LB"} and ceiling < 76 and grade < 70:
             early_quality_penalty += 38.0
         if group == "QB" and (ceiling < 80 or grade < 67):

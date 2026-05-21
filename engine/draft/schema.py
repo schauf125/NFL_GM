@@ -49,11 +49,27 @@ CREATE TABLE IF NOT EXISTS draft_prospects (
     discovery_notes TEXT,
     development_pathway TEXT,
     pipeline_note TEXT,
+    display_name TEXT,
+    preferred_name TEXT,
+    name_pronunciation_note TEXT,
+    name_background_note TEXT,
+    family_football_type TEXT,
+    family_football_background TEXT,
+    name_storyline_note TEXT,
     eye_color TEXT,
     hair_color TEXT,
     hairstyle TEXT,
     hairstyle_outlier INTEGER NOT NULL DEFAULT 0,
     facial_hair_style TEXT,
+    skin_tone TEXT,
+    complexion TEXT,
+    face_shape TEXT,
+    jawline TEXT,
+    brow_profile TEXT,
+    nose_profile TEXT,
+    smile_profile TEXT,
+    media_style TEXT,
+    accessory_style TEXT,
     has_mustache INTEGER NOT NULL DEFAULT 0,
     has_beard INTEGER NOT NULL DEFAULT 0,
     appearance_notes TEXT,
@@ -547,6 +563,13 @@ SELECT
     dp.discovery_notes,
     dp.development_pathway,
     dp.pipeline_note,
+    dp.display_name,
+    dp.preferred_name,
+    dp.name_pronunciation_note,
+    dp.name_background_note,
+    dp.family_football_type,
+    dp.family_football_background,
+    dp.name_storyline_note,
     dp.projected_round,
     dp.projected_pick,
     dp.first_name,
@@ -863,7 +886,23 @@ DRAFT_PROSPECT_COLUMN_MIGRATIONS = {
     "discovery_notes": "TEXT",
     "development_pathway": "TEXT",
     "pipeline_note": "TEXT",
+    "display_name": "TEXT",
+    "preferred_name": "TEXT",
+    "name_pronunciation_note": "TEXT",
+    "name_background_note": "TEXT",
+    "family_football_type": "TEXT",
+    "family_football_background": "TEXT",
+    "name_storyline_note": "TEXT",
     "hair_color": "TEXT",
+    "skin_tone": "TEXT",
+    "complexion": "TEXT",
+    "face_shape": "TEXT",
+    "jawline": "TEXT",
+    "brow_profile": "TEXT",
+    "nose_profile": "TEXT",
+    "smile_profile": "TEXT",
+    "media_style": "TEXT",
+    "accessory_style": "TEXT",
     "true_grade": "INTEGER",
     "ceiling_grade": "INTEGER",
     "original_archetype": "TEXT",
@@ -915,12 +954,27 @@ CREATE INDEX IF NOT EXISTS idx_draft_prospects_class_discovery
 
 SCHEMA_SQL = TABLE_SCHEMA_SQL + VIEW_SCHEMA_SQL
 
+VIEW_NAMES = [
+    "draft_prospect_role_scores_view",
+    "draft_prospect_sim_ratings_view",
+    "draft_prospect_personalities_view",
+    "draft_prospect_private_workouts_view",
+    "draft_prospect_pro_day_results_view",
+    "draft_prospect_combine_results_view",
+    "draft_internal_board_view",
+    "draft_board_view",
+    "draft_class_summary_view",
+]
+
 
 def ensure_schema(con: sqlite3.Connection) -> None:
     """Create or refresh the draft-class schema and views."""
     con.executescript(TABLE_SCHEMA_SQL)
     _ensure_draft_prospect_columns(con)
     con.executescript(POST_MIGRATION_INDEX_SQL)
+    for view_name in VIEW_NAMES:
+        con.execute(f"DROP VIEW IF EXISTS main.{view_name}")
+        con.execute(f"DROP VIEW IF EXISTS temp.{view_name}")
     con.executescript(VIEW_SCHEMA_SQL)
 
 

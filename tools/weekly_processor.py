@@ -17,6 +17,7 @@ from datetime import date
 from pathlib import Path
 
 import ai_gm
+import cpu_depth_chart
 import daily_processor
 import event_generator
 import free_agency_processor
@@ -985,6 +986,21 @@ def process_week(
         scouting_note += " AI GM weekly review generation disabled."
         timings["trade_market"] = 0.0
     scouting_note += fa_resolve_note + trade_market_note
+
+    try:
+        started = time.perf_counter()
+        depth_refresh = cpu_depth_chart.rebuild_dirty_depth_charts(
+            con,
+            season=season,
+            apply=True,
+        )
+        mark_timing("depth_chart_refresh", started)
+        refreshed_teams = int(depth_refresh.get("teams", 0) or 0)
+        if refreshed_teams:
+            scouting_note += f" CPU depth charts refreshed for {refreshed_teams} roster-changed team(s)."
+    except Exception as depth_exc:
+        timings["depth_chart_refresh"] = 0.0
+        scouting_note += f" CPU depth chart refresh skipped: {depth_exc}."
 
     cur = con.execute(
         """

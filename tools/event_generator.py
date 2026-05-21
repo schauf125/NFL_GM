@@ -185,7 +185,7 @@ PLAYER_TRAITS = {
         "templates": [
             {
                 "key": "young-room",
-                "title": "{name} helping steady {team}'s young players",
+                "title": "{name} helping steady young players in {team}",
                 "body": (
                     "{team} coaches credit {name} with helping younger players get through the "
                     "week's install. That sort of hidden value does not always show up in a box score."
@@ -203,7 +203,7 @@ PLAYER_TRAITS = {
         "templates": [
             {
                 "key": "keeps-light",
-                "title": "{name} keeps {team}'s room loose",
+                "title": "{name} keeps the mood loose in {team}",
                 "body": (
                     "{name} gave {team} a lighter week around the facility. Coaches usually do "
                     "not mind that when the work still gets done."
@@ -583,6 +583,15 @@ class EventCadence:
     default_min_events: int
 
 
+EVENT_CATEGORY_CAPS_BY_CADENCE: dict[str, dict[str, int]] = {
+    "regular_season": {"Prospects": 1, "Roster": 1, "Team Culture": 1, "Rumors": 1, "Discipline": 1},
+    "postseason": {"Prospects": 1, "Roster": 1, "Team Culture": 1, "Rumors": 1, "Discipline": 1},
+    "preseason": {"Prospects": 1, "Roster": 1, "Team Culture": 1, "Rumors": 1, "Discipline": 1},
+    "market_draft": {"Prospects": 2, "Roster": 1, "Team Culture": 1, "Rumors": 1, "Discipline": 1},
+    "offseason": {"Prospects": 1, "Roster": 1, "Team Culture": 1, "Rumors": 1, "Discipline": 1},
+}
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     if not db_path.exists():
         raise FileNotFoundError(db_path)
@@ -647,8 +656,8 @@ def event_cadence(con: sqlite3.Connection, *, event_date: str, week: int) -> Eve
             code="regular_season",
             label="Regular season light",
             phase_code=phase_code,
-            rate_multiplier=0.55,
-            default_max_events=2,
+            rate_multiplier=0.42,
+            default_max_events=1,
             default_min_events=0,
         )
     if "POSTSEASON" in phase:
@@ -656,8 +665,8 @@ def event_cadence(con: sqlite3.Connection, *, event_date: str, week: int) -> Eve
             code="postseason",
             label="Postseason controlled",
             phase_code=phase_code,
-            rate_multiplier=0.75,
-            default_max_events=3,
+            rate_multiplier=0.55,
+            default_max_events=1,
             default_min_events=0,
         )
     if any(token in phase for token in ("CAMP", "PRESEASON", "CUTDOWN")) or month in {7, 8}:
@@ -665,26 +674,26 @@ def event_cadence(con: sqlite3.Connection, *, event_date: str, week: int) -> Eve
             code="preseason",
             label="Preseason buzz",
             phase_code=phase_code,
-            rate_multiplier=1.25,
-            default_max_events=4,
-            default_min_events=1,
+            rate_multiplier=0.90,
+            default_max_events=2,
+            default_min_events=0,
         )
     if month in {3, 4}:
         return EventCadence(
             code="market_draft",
             label="Market and draft buzz",
             phase_code=phase_code,
-            rate_multiplier=1.35,
-            default_max_events=5,
+            rate_multiplier=1.05,
+            default_max_events=3,
             default_min_events=1,
         )
     return EventCadence(
         code="offseason",
         label="Offseason buzz",
         phase_code=phase_code,
-        rate_multiplier=1.15,
-        default_max_events=4,
-        default_min_events=1,
+        rate_multiplier=0.80,
+        default_max_events=2,
+        default_min_events=0,
     )
 
 
@@ -867,6 +876,7 @@ def player_personality_candidates(
           AND pp.season = ?
           AND pp.trait_key IN ({placeholders})
           AND COALESCE(p.status, 'Active') NOT IN ('Retired')
+          AND p.team_id IS NOT NULL
         """,
         (game_id, personality_season, *trait_keys),
     ).fetchall()
@@ -1296,21 +1306,53 @@ def fallback_candidates(
     return candidates
 
 
-def select_events(candidates: list[dict[str, Any]], *, max_events: int) -> list[dict[str, Any]]:
+def select_events(
+    candidates: list[dict[str, Any]],
+    *,
+    max_events: int,
+    cadence_code: str = "offseason",
+) -> list[dict[str, Any]]:
     selected: list[dict[str, Any]] = []
     seen_sources: set[tuple[str | None, int | None]] = set()
     trait_counts: dict[str, int] = {}
+    team_counts: dict[int, int] = {}
+    category_counts: dict[str, int] = {}
+    category_caps = EVENT_CATEGORY_CAPS_BY_CADENCE.get(cadence_code, EVENT_CATEGORY_CAPS_BY_CADENCE["offseason"])
     ordered = sorted(candidates, key=lambda event: float(event.get("roll_score") or 0), reverse=True)
-    for item in ordered:
+
+    def try_add(item: dict[str, Any], *, diversity_pass: bool) -> bool:
         source_key = (str(item.get("related_table") or ""), item.get("related_id"))
         if source_key in seen_sources:
-            continue
+            return False
         trait_key = str(item.get("debug_trait") or "general")
         if trait_counts.get(trait_key, 0) >= 1:
-            continue
+            return False
+        is_major = bool(item.get("is_major"))
+        category = str(item.get("category") or "League")
+        if diversity_pass and category_counts.get(category, 0) >= 1:
+            return False
+        if not is_major and category_counts.get(category, 0) >= category_caps.get(category, 1):
+            return False
+        team_id = item.get("team_id")
+        if team_id is not None:
+            team_key = int(team_id)
+            if not is_major and team_counts.get(team_key, 0) >= 1:
+                return False
         seen_sources.add(source_key)
         trait_counts[trait_key] = trait_counts.get(trait_key, 0) + 1
+        category_counts[category] = category_counts.get(category, 0) + 1
+        if team_id is not None:
+            team_counts[int(team_id)] = team_counts.get(int(team_id), 0) + 1
         selected.append(item)
+        return True
+
+    for diversity_pass in (True, False):
+        for item in ordered:
+            if len(selected) >= max_events:
+                break
+            if not diversity_pass and item in selected:
+                continue
+            try_add(item, diversity_pass=diversity_pass)
         if len(selected) >= max_events:
             break
     return selected
@@ -1580,7 +1622,7 @@ def generate_weekly_events(
                 needed=min_events - len(candidates),
             )
         )
-    selected = select_events(candidates, max_events=max_events)
+    selected = select_events(candidates, max_events=max_events, cadence_code=cadence.code)
     inserted = 0
     if apply:
         for item in selected:

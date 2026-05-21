@@ -15,7 +15,7 @@ from .attributes import DraftAttributeGenerator
 from .combine import CombineGenerator
 from .college import CollegeGenerator
 from .hometown import HometownGenerator
-from .names import NameGenerator, UNITED_STATES
+from .names import GeneratedName, NameGenerator, UNITED_STATES
 from .physical import PhysicalProfileGenerator, PhysicalTraits, format_height, format_measurement
 from .scouting import ScoutingReportGenerator
 from .workouts import PrivateWorkoutGenerator, ProDayGenerator
@@ -228,8 +228,8 @@ INTERNATIONAL_CHANCE_FACTORS: dict[str, float] = {
     "tier_4": 1.80,
 }
 
-DEFAULT_HIDDEN_PROSPECT_MIN = 50
-DEFAULT_HIDDEN_PROSPECT_MAX = 70
+DEFAULT_HIDDEN_PROSPECT_MIN = 36
+DEFAULT_HIDDEN_PROSPECT_MAX = 44
 HIDDEN_DISCOVERY_PROFILE = "hidden_unlisted"
 PUBLIC_DISCOVERY_PROFILE = "public_board"
 HIDDEN_COLLEGE_TIER_WEIGHTS = {
@@ -246,15 +246,57 @@ HIDDEN_TALENT_RANK_BUCKETS: tuple[tuple[int, int, float], ...] = (
     (141, 178, 24.0),
     (179, 216, 32.0),
     (217, 256, 28.0),
-    (257, 330, 2.8),
+    (257, 310, 2.8),
 )
 
 PUBLIC_COLLEGE_TIER_WEIGHTS_BY_BUCKET = {
-    "round_1": {"Power": 3.6, "Regular": 0.30, "Small": 0.025},
-    "round_2_3": {"Power": 2.25, "Regular": 0.78, "Small": 0.08},
-    "round_4_5": {"Power": 1.35, "Regular": 1.00, "Small": 0.24},
+    "round_1": {"Power": 5.0, "Regular": 0.12, "Small": 0.006},
+    "round_2_3": {"Power": 3.0, "Regular": 0.45, "Small": 0.035},
+    "round_4_5": {"Power": 1.8, "Regular": 0.78, "Small": 0.14},
     "round_6_7": {"Power": 0.80, "Regular": 1.20, "Small": 1.00},
     "leftover": {"Power": 0.40, "Regular": 1.50, "Small": 2.50},
+}
+
+DISPLAY_NICKNAMES: tuple[tuple[str, float], ...] = (
+    ("Ace", 8.0),
+    ("Bam", 4.0),
+    ("Boss", 3.0),
+    ("Deuce", 5.0),
+    ("Jet", 6.0),
+    ("Kool-Aid", 1.0),
+    ("Smoke", 4.0),
+    ("Tank", 7.0),
+    ("Flash", 2.0),
+)
+
+FOOTBALL_FAMILY_TYPES: tuple[tuple[str, float], ...] = (
+    ("father_college", 30.0),
+    ("older_brother_fbs", 24.0),
+    ("uncle_pro_camp", 18.0),
+    ("coach_family", 16.0),
+    ("multi_sport_family", 12.0),
+)
+
+NAME_CONTEXT_ETHNICITY_NOTES: dict[str, str] = {
+    "polynesian": "Polynesian family background lines up with the hometown and regional profile.",
+    "hawaiian": "Hawaii/Polynesian naming background gives scouts an extra hometown context note.",
+    "hispanic_latino": "Spanish-language naming background; hometown and college context may matter in regional scouting.",
+    "african_west": "West African naming background; teams often log pronunciation and family context during interviews.",
+    "asian_east": "East Asian naming background; teams may add pronunciation notes during spring visits.",
+    "asian_south": "South Asian naming background; teams may add pronunciation notes during spring visits.",
+    "caribbean": "Caribbean naming background adds a little more regional context.",
+    "native": "Indigenous/Native naming background; regional context is a useful cross-check.",
+}
+
+COUNTRY_NAME_CONTEXT_NOTES: dict[str, str] = {
+    "American Samoa": "American Samoa pipeline; evaluators tend to cross-check family football background and relocation path.",
+    "Samoa": "Samoa pipeline; evaluators tend to cross-check family football background and relocation path.",
+    "Tonga": "Tonga pipeline; evaluators tend to cross-check family football background and relocation path.",
+    "Australia": "Australian pathway; pronunciation and prior-sport background often show up in visit notes.",
+    "Nigeria": "Nigerian background; scouts usually log pronunciation and family relocation context.",
+    "Ghana": "Ghanaian background; scouts usually log pronunciation and family relocation context.",
+    "Mexico": "Mexican background; regional scouting may add more context than public media.",
+    "Canada": "Canadian development path; name/background notes are usually cleaner than most international files.",
 }
 
 
@@ -270,6 +312,13 @@ class DraftClassPreviewRow:
     discovery_notes: str
     development_pathway: str
     pipeline_note: str
+    display_name: str
+    preferred_name: str
+    name_pronunciation_note: str
+    name_background_note: str
+    family_football_type: str
+    family_football_background: str
+    name_storyline_note: str
     draft_year: int
     first_name: str
     last_name: str
@@ -381,6 +430,15 @@ class DraftClassPreviewRow:
     hair_color: str
     hairstyle: str
     facial_hair: str
+    skin_tone: str
+    complexion: str
+    face_shape: str
+    jawline: str
+    brow_profile: str
+    nose_profile: str
+    smile_profile: str
+    media_style: str
+    accessory_style: str
     has_mustache: bool
     has_beard: bool
     photo_prompt_traits: str
@@ -410,7 +468,7 @@ class DraftClassPreviewGenerator:
         self,
         *,
         draft_year: int,
-        count: int = 330,
+        count: int = 310,
         hidden_count: int | None = None,
         hidden_min: int = DEFAULT_HIDDEN_PROSPECT_MIN,
         hidden_max: int = DEFAULT_HIDDEN_PROSPECT_MAX,
@@ -449,24 +507,29 @@ class DraftClassPreviewGenerator:
             position_rank_counts[position] += 1
             position_rank = position_rank_counts[position]
             birth_country = birth_countries[index - 1]
-            generated_name = self.name_generator.generate(
-                ethnicity_key=ethnicity_keys[index - 1],
-                country=birth_country,
-                international_chance=0.0,
+            ethnicity_key = ethnicity_keys[index - 1]
+            origin_ethnicity_key = (
+                self.name_generator.ethnicity_key_for_country(birth_country)
+                or ethnicity_key
+            )
+            ethnicity_label = str(
+                self.name_generator.ethnicity_profiles.get(ethnicity_key, {}).get("label")
+                or ethnicity_key
             )
             handedness = self._choose_handedness(position)
             college = self.college_generator.generate(
                 rank=index,
-                is_international=generated_name.is_international,
+                is_international=birth_country != UNITED_STATES,
                 age=ages[index - 1],
                 tier_weights=HIDDEN_COLLEGE_TIER_WEIGHTS
                 if is_hidden
                 else self._college_tier_weights_for_rank(index),
+                position=position,
             )
             development_pathway, pipeline_note = self._development_pathway(
                 position=position,
-                birth_country=generated_name.country,
-                is_international=generated_name.is_international,
+                birth_country=birth_country,
+                is_international=birth_country != UNITED_STATES,
                 college=college.college,
                 college_tier=college.college_tier,
                 rank=index,
@@ -478,26 +541,49 @@ class DraftClassPreviewGenerator:
             physical = self._apply_pathway_physical_flavor(
                 physical=physical,
                 position=position,
-                birth_country=generated_name.country,
+                birth_country=birth_country,
                 development_pathway=development_pathway,
             )
             hometown = self.hometown_generator.generate(
                 college=college.college,
                 college_tier=college.college_tier,
-                birth_country=generated_name.country,
-                is_international=generated_name.is_international,
-                ethnicity_key=generated_name.ethnicity_key,
-                ethnicity_label=generated_name.ethnicity_label,
-                origin_ethnicity_key=(
-                    self.name_generator.ethnicity_key_for_country(generated_name.country)
-                    or generated_name.ethnicity_key
-                ),
+                birth_country=birth_country,
+                is_international=birth_country != UNITED_STATES,
+                ethnicity_key=ethnicity_key,
+                ethnicity_label=ethnicity_label,
+                origin_ethnicity_key=origin_ethnicity_key,
+            )
+            generated_name = self.name_generator.generate(
+                ethnicity_key=ethnicity_key,
+                country=birth_country,
+                position=position,
+                hometown_state=hometown.state,
+                hometown_region=hometown.region,
+                international_chance=0.0,
+            )
+            name_metadata = self._name_metadata(
+                generated_name=generated_name,
+                position=position,
+                rank=index,
+                college=college.college,
+                college_tier=college.college_tier,
+                hometown_state=hometown.state,
+                hometown_region=hometown.region,
+                development_pathway=development_pathway,
             )
             appearance = self.appearance_generator.generate(
                 ethnicity_key=generated_name.ethnicity_key,
                 ethnicity_label=generated_name.ethnicity_label,
+                name_culture_styles=self.name_generator.culture_styles_for_name(
+                    first_name=generated_name.first_name,
+                    last_name=generated_name.last_name,
+                ),
                 position=position,
                 age=college.age,
+                birth_country=generated_name.country,
+                is_international=generated_name.is_international,
+                college_tier=college.college_tier,
+                rank=index,
             )
             attributes = self.attribute_generator.generate(
                 position=position,
@@ -589,6 +675,13 @@ class DraftClassPreviewGenerator:
                     ),
                     development_pathway=development_pathway,
                     pipeline_note=pipeline_note,
+                    display_name=name_metadata["display_name"],
+                    preferred_name=name_metadata["preferred_name"],
+                    name_pronunciation_note=name_metadata["name_pronunciation_note"],
+                    name_background_note=name_metadata["name_background_note"],
+                    family_football_type=name_metadata["family_football_type"],
+                    family_football_background=name_metadata["family_football_background"],
+                    name_storyline_note="",
                     draft_year=draft_year,
                     first_name=generated_name.first_name,
                     last_name=generated_name.last_name,
@@ -684,7 +777,13 @@ class DraftClassPreviewGenerator:
                     scout_ceiling=scouting_report.perceived_ceiling,
                     scout_risk=scouting_report.perceived_risk,
                     scouting_summary=self._append_pathway_summary(
-                        scouting_report.summary,
+                        self._append_archetype_summary(
+                            scouting_report.summary,
+                            archetype=attributes.archetype,
+                            primary_role=attributes.primary_role,
+                            secondary_role=attributes.secondary_role,
+                            identity_status=attributes.archetype_identity_status,
+                        ),
                         development_pathway=development_pathway,
                         pipeline_note=pipeline_note,
                         birth_country=generated_name.country,
@@ -706,6 +805,15 @@ class DraftClassPreviewGenerator:
                     hair_color=appearance.hair_color,
                     hairstyle=appearance.hairstyle,
                     facial_hair=appearance.facial_hair_style,
+                    skin_tone=appearance.skin_tone,
+                    complexion=appearance.complexion,
+                    face_shape=appearance.face_shape,
+                    jawline=appearance.jawline,
+                    brow_profile=appearance.brow_profile,
+                    nose_profile=appearance.nose_profile,
+                    smile_profile=appearance.smile_profile,
+                    media_style=appearance.media_style,
+                    accessory_style=appearance.accessory_style,
                     has_mustache=appearance.has_mustache,
                     has_beard=appearance.has_beard,
                     photo_prompt_traits=appearance.photo_prompt_traits,
@@ -714,7 +822,184 @@ class DraftClassPreviewGenerator:
                     facial_hair_outlier=appearance.is_facial_hair_outlier,
                 )
             )
+        rows = self._apply_name_storylines(rows)
         return self._apply_public_board(rows)
+
+    def _name_metadata(
+        self,
+        *,
+        generated_name: GeneratedName,
+        position: str,
+        rank: int,
+        college: str,
+        college_tier: str,
+        hometown_state: str,
+        hometown_region: str,
+        development_pathway: str,
+    ) -> dict[str, str]:
+        preferred_name = generated_name.first_name
+        display_name = generated_name.full_name
+        background_notes: list[str] = []
+
+        first_source = generated_name.first_source.lower()
+        if "distinctive_flair" in first_source:
+            background_notes.append(
+                f"Distinctive given name; area scouts may hear more local story than public-board detail."
+            )
+        elif generated_name.first_name.endswith("."):
+            background_notes.append("Uses initials publicly; full given name is not emphasized in the draft file.")
+        else:
+            nickname_chance = 0.012
+            if position.upper() in {"RB", "WR", "CB", "NB", "EDGE", "SS"}:
+                nickname_chance += 0.005
+            if rank <= 80:
+                nickname_chance += 0.002
+            if self.rng.random() < nickname_chance:
+                preferred_name = self._weighted_choice(dict(DISPLAY_NICKNAMES))
+                display_name = f"{preferred_name} {generated_name.last_name}"
+                background_notes.append(
+                    f'Goes by "{preferred_name}" in team notes; nickname traces back to high school or family.'
+                )
+
+        context_note = self._name_context_note(
+            generated_name=generated_name,
+            hometown_state=hometown_state,
+            hometown_region=hometown_region,
+        )
+        if context_note:
+            background_notes.append(context_note)
+
+        family_type, family_note = self._football_family_profile(
+            generated_name=generated_name,
+            position=position,
+            rank=rank,
+            college=college,
+            college_tier=college_tier,
+            development_pathway=development_pathway,
+        )
+
+        pronunciation_note = self._pronunciation_note(
+            generated_name=generated_name,
+            preferred_name=preferred_name,
+        )
+
+        return {
+            "display_name": display_name,
+            "preferred_name": preferred_name,
+            "name_pronunciation_note": pronunciation_note,
+            "name_background_note": " ".join(background_notes),
+            "family_football_type": family_type,
+            "family_football_background": family_note,
+        }
+
+    def _name_context_note(
+        self,
+        *,
+        generated_name: GeneratedName,
+        hometown_state: str,
+        hometown_region: str,
+    ) -> str:
+        country_note = COUNTRY_NAME_CONTEXT_NOTES.get(generated_name.country)
+        if country_note:
+            return country_note
+        key = generated_name.ethnicity_key
+        if key in NAME_CONTEXT_ETHNICITY_NOTES:
+            return NAME_CONTEXT_ETHNICITY_NOTES[key]
+        if hometown_state == "HI" and key in {"polynesian", "hawaiian", "asian_east"}:
+            return "Hawaii hometown context supports the name/background profile."
+        if hometown_region == "West" and key in {"polynesian", "hawaiian", "hispanic_latino", "asian_east"}:
+            return "West Coast hometown context gives the naming background a plausible regional fit."
+        if hometown_region == "Texas" and key == "hispanic_latino":
+            return "Texas hometown context supports the Spanish-language naming background."
+        return ""
+
+    def _football_family_profile(
+        self,
+        *,
+        generated_name: GeneratedName,
+        position: str,
+        rank: int,
+        college: str,
+        college_tier: str,
+        development_pathway: str,
+    ) -> tuple[str, str]:
+        chance = 0.055
+        if rank <= 64:
+            chance += 0.025
+        elif rank <= 160:
+            chance += 0.010
+        if college_tier == "Power":
+            chance += 0.012
+        if development_pathway == "Football family":
+            chance += 0.22
+        if any(suffix in generated_name.last_name for suffix in (" Jr.", " II", " III", " IV")):
+            chance += 0.04
+        if position.upper() == "QB":
+            chance += 0.01
+        if self.rng.random() >= min(chance, 0.32):
+            return "", ""
+
+        family_type = self._weighted_choice(dict(FOOTBALL_FAMILY_TYPES))
+        if family_type == "father_college":
+            return family_type, "Father played college football; scouts note a more mature football household."
+        if family_type == "older_brother_fbs":
+            return family_type, "Older brother played FBS football, giving teams a little extra background context."
+        if family_type == "uncle_pro_camp":
+            return family_type, "Uncle spent time in a pro camp; teams treat it as context, not proof of translation."
+        if family_type == "coach_family":
+            return family_type, f"Family coaching background around {college} gives interviews a more football-literate feel."
+        return family_type, "Multi-sport family background shows up in the character and development file."
+
+    @staticmethod
+    def _pronunciation_note(
+        *,
+        generated_name: GeneratedName,
+        preferred_name: str,
+    ) -> str:
+        if generated_name.country != UNITED_STATES:
+            return f"Confirm pronunciation during visits; {generated_name.country} background is part of the file."
+        if "'" in generated_name.first_name or "'" in generated_name.last_name:
+            return "Pronunciation usually gets confirmed during team interviews because of the apostrophe styling."
+        if "-" in generated_name.first_name or "-" in generated_name.last_name:
+            return "Hyphenated name; teams confirm preferred pronunciation and jersey-display preference."
+        if generated_name.first_name.endswith("."):
+            return "Uses initials publicly; confirm full-name preference during interviews."
+        if preferred_name != generated_name.first_name:
+            return f'Uses "{preferred_name}" publicly; confirm legal/preferred name split during onboarding.'
+        return ""
+
+    def _apply_name_storylines(self, rows: list[DraftClassPreviewRow]) -> list[DraftClassPreviewRow]:
+        by_last: dict[str, list[int]] = {}
+        for index, row in enumerate(rows):
+            key = row.last_name.split()[0].lower()
+            by_last.setdefault(key, []).append(index)
+
+        replacements: dict[int, str] = {}
+        for indexes in by_last.values():
+            if len(indexes) < 2:
+                continue
+            state_groups: dict[str, list[int]] = {}
+            for index in indexes:
+                state = rows[index].hometown_state or ""
+                if state:
+                    state_groups.setdefault(state, []).append(index)
+            for state_indexes in state_groups.values():
+                if len(state_indexes) < 2:
+                    continue
+                if self.rng.random() < 0.18:
+                    chosen = state_indexes[:2]
+                    relation_note = "Same-state surname overlap; team notes list no confirmed relation."
+                    if self.rng.random() < 0.20:
+                        relation_note = "Same-state surname overlap with a possible distant-family note from area scouts."
+                    for index in chosen:
+                        replacements[index] = relation_note
+
+        if not replacements:
+            return rows
+        return [
+            replace(row, name_storyline_note=replacements.get(index, row.name_storyline_note))
+            for index, row in enumerate(rows)
+        ]
 
     def _apply_public_board(self, rows: list[DraftClassPreviewRow]) -> list[DraftClassPreviewRow]:
         true_rank_by_index = {
@@ -873,13 +1158,16 @@ class DraftClassPreviewGenerator:
         pro_day_signal = row.pro_day_grade if row.pro_day_grade is not None else row.pro_day_athletic_score
         workout_signal = _average_present(combine_signal, pro_day_signal)
         workout_component = 0.0 if workout_signal is None else (workout_signal - 60) * 0.12
+        late_process_component = self._late_process_board_component(row)
         production_anchor = max(0.0, 28.0 - row.true_rank * 0.065)
         if row.position.upper() in {"K", "P"}:
             production_anchor *= 0.25
             workout_component *= 0.75
+            late_process_component *= 0.65
         elif row.position.upper() == "LS":
             production_anchor = 0.0
             workout_component *= 0.50
+            late_process_component *= 0.50
         confidence_sigma = {"High": 1.8, "Medium": 3.2, "Low": 5.2}.get(row.scout_confidence, 3.2)
         if row.true_rank > 256:
             confidence_sigma += 2.0
@@ -890,6 +1178,7 @@ class DraftClassPreviewGenerator:
             + production_anchor
             + workout_component
             + interview_component
+            + late_process_component
             + positional_value
             - risk_penalty
             - medical_penalty
@@ -897,6 +1186,29 @@ class DraftClassPreviewGenerator:
             - age_penalty
             + board_noise
         )
+
+    def _late_process_board_component(self, row: DraftClassPreviewRow) -> float:
+        component = 0.0
+        if row.pro_day_improved_from_combine:
+            component += 1.1
+        if row.pro_day_grade is not None and row.combine_grade is not None:
+            component += max(-2.4, min(2.4, (row.pro_day_grade - row.combine_grade) * 0.08))
+        if row.pro_day_workout_variance == "Confirmed":
+            component += 0.4
+        elif row.pro_day_workout_variance == "Muddy":
+            component -= 0.9
+        if row.college_tier == "Small":
+            if row.pro_day_grade is not None and row.pro_day_grade >= 78:
+                component += 1.5
+            elif row.pro_day_status in {"DNP", "Limited"}:
+                component -= 1.2
+        if row.private_workout_grade is not None:
+            component += max(-2.6, min(2.8, (row.private_workout_grade - 60) * 0.07))
+        if row.medical_risk == "Concern":
+            component -= 1.4
+        elif row.medical_risk == "Red flag":
+            component -= 3.5
+        return component
 
     def _development_pathway(
         self,
@@ -1107,6 +1419,36 @@ class DraftClassPreviewGenerator:
         note = pipeline_note or "Evaluation path adds a little more context variance than a standard file."
         return f"{summary} {prefix}: {note}"
 
+    @staticmethod
+    def _append_archetype_summary(
+        summary: str,
+        *,
+        archetype: str,
+        primary_role: str,
+        secondary_role: str,
+        identity_status: str,
+    ) -> str:
+        if not archetype:
+            return summary
+        role_label = primary_role.replace("_", " ").title() if primary_role else archetype
+        secondary = secondary_role.replace("_", " ").title() if secondary_role else ""
+        if identity_status == "Relabeled":
+            return (
+                f"{summary} Best-fit archetype reads as {archetype} ({role_label}); "
+                "the original label was corrected by trait fit."
+            )
+        if identity_status == "Illusion":
+            return (
+                f"{summary} Public archetype is {archetype}, but internal traits make it "
+                "a boom/bust projection label."
+            )
+        if secondary:
+            return (
+                f"{summary} Archetype: {archetype}, with {role_label} as the cleanest role "
+                f"and {secondary} as the secondary path."
+            )
+        return f"{summary} Archetype: {archetype}, with {role_label} as the cleanest role."
+
     def _medical_profile(self, *, attributes, combine, pro_day) -> tuple[str, str, str]:
         durability = int(attributes.ratings.get("durability", 60))
         risk_roll = self.rng.random()
@@ -1184,18 +1526,32 @@ class DraftClassPreviewGenerator:
 
     def _late_process_profile(self, row: DraftClassPreviewRow, board_delta: int) -> tuple[str, str]:
         if board_delta >= 55:
-            reason = self.rng.choice([
-                "pro-day testing and follow-up visits created late momentum",
+            reasons = [
+                "late cross-checks created real momentum",
                 "teams appear more comfortable after private exposure",
-                "athletic testing and role fit pushed him up boards",
-            ])
+                "role fit pushed him up boards",
+            ]
+            if row.pro_day_improved_from_combine or (row.pro_day_grade is not None and row.pro_day_grade >= 82):
+                reasons.append("pro-day testing gave teams a cleaner athletic signal")
+            if row.private_workout_grade is not None and row.private_workout_grade >= 76:
+                reasons.append("private workouts gave teams more conviction")
+            if row.college_tier == "Small":
+                reasons.append("area scouts kept pushing his small-school file up the board")
+            reason = self.rng.choice(reasons)
             return "Riser", f"Moved up about {board_delta} slots as {reason}."
         if board_delta <= -55:
-            reason = self.rng.choice([
-                "medical/interview context introduced uncertainty",
+            reasons = [
                 "late cross-checks cooled the public-board grade",
                 "teams became less convinced the traits translate cleanly",
-            ])
+                "decision makers became less comfortable with the range",
+            ]
+            if row.medical_risk in {"Concern", "Red flag"} or row.pro_day_medical_recheck:
+                reasons.append("medical context introduced real uncertainty")
+            if row.interview_grade is not None and row.interview_grade <= 48:
+                reasons.append("interview and whiteboard feedback came back uneven")
+            if row.workout_variance == "Muddy" or row.pro_day_workout_variance == "Muddy":
+                reasons.append("testing signals muddied the projection")
+            reason = self.rng.choice(reasons)
             return "Faller", f"Slipped about {abs(board_delta)} slots as {reason}."
         if abs(board_delta) >= 24:
             direction = "up" if board_delta > 0 else "down"
@@ -1228,28 +1584,34 @@ class DraftClassPreviewGenerator:
         penalty = 0.0
         if tier == "Small":
             if rank <= 20:
-                penalty += 8.5
+                penalty += 13.0
             elif rank <= 32:
-                penalty += 5.5
+                penalty += 9.0
+            elif rank <= 50:
+                penalty += 7.0
             elif rank <= 96:
-                penalty += 2.8
+                penalty += 4.5
             elif rank <= 160:
-                penalty += 1.2
+                penalty += 2.2
         elif tier == "Regular":
             if rank <= 20:
-                penalty += 3.0
+                penalty += 5.5
             elif rank <= 32:
-                penalty += 1.8
+                penalty += 3.5
+            elif rank <= 50:
+                penalty += 2.4
+            elif rank <= 96:
+                penalty += 0.8
 
         if tier == "International" or row.is_international or row.birth_country != UNITED_STATES:
             if rank <= 32:
-                penalty += 12.0
+                penalty += 16.0
             elif rank <= 64:
-                penalty += 8.0
+                penalty += 11.0
             elif rank <= 128:
-                penalty += 6.0
+                penalty += 8.0
             elif rank <= 160:
-                penalty += 3.4
+                penalty += 5.0
         pathway = row.development_pathway
         if pathway in {"International Pathway", "Late football starter", "Rugby convert", "Specialist pipeline"}:
             if rank <= 64:
@@ -1725,7 +2087,9 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
             f"<td class=\"text-cell\">{html.escape(row.discovery_notes)}</td>"
             f"<td>{projected_round_text}</td>"
             f"<td>{_html_optional(row.projected_pick)}</td>"
-            f"<td>{html.escape(row.full_name)}</td>"
+            f"<td>{html.escape(row.display_name or row.full_name)}</td>"
+            f"<td class=\"text-cell\">{html.escape(row.name_background_note or row.name_pronunciation_note or row.name_storyline_note)}</td>"
+            f"<td class=\"text-cell\">{html.escape(row.family_football_background)}</td>"
             f"<td>{row.position}</td>"
             f"<td>{row.position_group}</td>"
             f"<td>{row.age}</td>"
@@ -1785,6 +2149,15 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
             f"<td>{html.escape(row.hair_color)}</td>"
             f"<td>{html.escape(row.hairstyle)}</td>"
             f"<td>{html.escape(row.facial_hair)}</td>"
+            f"<td>{html.escape(row.skin_tone)}</td>"
+            f"<td>{html.escape(row.complexion)}</td>"
+            f"<td>{html.escape(row.face_shape)}</td>"
+            f"<td>{html.escape(row.jawline)}</td>"
+            f"<td>{html.escape(row.brow_profile)}</td>"
+            f"<td>{html.escape(row.nose_profile)}</td>"
+            f"<td>{html.escape(row.smile_profile)}</td>"
+            f"<td>{html.escape(row.media_style)}</td>"
+            f"<td>{html.escape(row.accessory_style)}</td>"
             f"<td>{html.escape(row.photo_prompt_traits)}</td>"
             f"<td>{flag_text}</td>"
             f"{hidden_cells}"
@@ -1816,7 +2189,7 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
     h1 {{ margin: 0 0 6px; font-size: 28px; }}
     .meta {{ margin: 0 0 20px; color: #52616b; }}
     .table-wrap {{ overflow-x: auto; background: white; border: 1px solid #d7dee3; border-radius: 8px; }}
-    table {{ border-collapse: collapse; width: 100%; min-width: 5200px; }}
+    table {{ border-collapse: collapse; width: 100%; min-width: 6400px; }}
     th, td {{ padding: 8px 10px; border-bottom: 1px solid #e6ebef; text-align: left; font-size: 13px; white-space: nowrap; }}
     th {{ position: sticky; top: 0; background: #edf2f5; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: #34444f; }}
     tr:nth-child(even) td {{ background: #fafcfd; }}
@@ -1832,12 +2205,14 @@ def write_html(rows: list[DraftClassPreviewRow], path: Path, *, include_hidden: 
     <table>
       <thead>
         <tr>
-          <th>Board</th><th>Status</th><th>Discovery</th><th>Scout Var</th><th>Discovery Note</th><th>Proj Rd</th><th>Proj Pick</th><th>Name</th><th>Pos</th><th>Group</th><th>Age</th><th>College</th><th>Hometown</th><th>Ht</th><th>Wt</th><th>Arm</th><th>Hand Size</th><th>Handed</th>
+          <th>Board</th><th>Status</th><th>Discovery</th><th>Scout Var</th><th>Discovery Note</th><th>Proj Rd</th><th>Proj Pick</th><th>Name</th><th>Name Context</th><th>Family</th><th>Pos</th><th>Group</th><th>Age</th><th>College</th><th>Hometown</th><th>Ht</th><th>Wt</th><th>Arm</th><th>Hand Size</th><th>Handed</th>
           <th>Combine</th><th>Comb Grade</th><th>Ath Score</th><th>Drills</th><th>40</th><th>10 Split</th><th>Bench</th><th>Vert</th><th>Broad</th><th>3-Cone</th><th>Shuttle</th><th>60 Sh</th><th>Workout</th><th>Combine Summary</th><th>Skipped</th><th>Combine Note</th>
           <th>Pro Day</th><th>Pro Grade</th><th>Pro Ath</th><th>Pro Drills</th><th>Pro 40</th><th>Pro 10</th><th>Pro Bench</th><th>Pro Vert</th><th>Pro Broad</th><th>Pro 3-Cone</th><th>Pro Shuttle</th><th>Pro Workout</th><th>Pro Summary</th><th>Pro Skipped</th><th>Pro Note</th>
           <th>Archetype</th><th>Primary Role</th>
           <th>Scout</th><th>Conf</th><th>Scout Grade</th><th>Scout Ceiling</th><th>Scout Risk</th><th>Summary</th><th>Strengths</th><th>Concerns</th><th>Projection</th><th>Full Report</th>
-          <th>Ethnicity</th><th>Country</th><th>Eyes</th><th>Hair Color</th><th>Hair Style</th><th>Facial Hair</th><th>Photo Traits</th><th>Flags</th>{hidden_headers}
+          <th>Ethnicity</th><th>Country</th><th>Eyes</th><th>Hair Color</th><th>Hair Style</th><th>Facial Hair</th>
+          <th>Skin Tone</th><th>Complexion</th><th>Face</th><th>Jawline</th><th>Brow</th><th>Nose</th><th>Smile</th><th>Media</th><th>Accessories</th>
+          <th>Photo Traits</th><th>Flags</th>{hidden_headers}
         </tr>
       </thead>
       <tbody>

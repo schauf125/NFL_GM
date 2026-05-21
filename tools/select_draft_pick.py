@@ -52,6 +52,7 @@ import player_personalities
 import player_development_modifiers
 import scheme_fits
 import player_headshot_backfill
+import draft_portrait_assets
 
 
 SOURCE = "draft_selection"
@@ -94,6 +95,7 @@ def ensure_all_schema(con: sqlite3.Connection) -> None:
     ensure_player_lb_behavior_schema(con)
     ensure_player_secondary_behavior_schema(con)
     ensure_player_specialist_behavior_schema(con)
+    draft_portrait_assets.ensure_schema(con)
     player_personalities.ensure_schema(con)
     player_personalities.seed_trait_definitions(con)
     player_development_modifiers.seed_master_data(con)
@@ -1177,7 +1179,15 @@ def convert_undrafted_prospect_to_free_agent(
         prospect=prospect,
         draft_year=draft_year,
     )
-    player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
+    attached_portrait = draft_portrait_assets.attach_prospect_portrait_to_player(
+        con,
+        prospect_id=int(prospect["prospect_id"]),
+        player_id=player_id,
+        team_abbr="FA",
+        root=ROOT,
+    )
+    if not attached_portrait:
+        player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
     rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
@@ -1660,7 +1670,15 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         pick=pick,
         rookie_contract=contract,
     )
-    player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
+    attached_portrait = draft_portrait_assets.attach_prospect_portrait_to_player(
+        con,
+        prospect_id=int(prospect["prospect_id"]),
+        player_id=player_id,
+        team_abbr=team_abbr,
+        root=ROOT,
+    )
+    if not attached_portrait:
+        player_headshot_backfill.ensure_fallback_headshot(con, player_id=player_id, root=ROOT)
     rating_rows = copy_ratings(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     qb_behavior_rows = copy_qb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     rb_behavior_rows = copy_rb_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)

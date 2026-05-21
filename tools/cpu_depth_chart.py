@@ -87,11 +87,55 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def upsert_setting(con: sqlite3.Connection, key: str, value: str) -> None:
+    if not table_exists(con, "game_settings"):
+        return
+    con.execute(
+        """
+        INSERT INTO game_settings (setting_key, setting_value, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(setting_key) DO UPDATE SET
+            setting_value = excluded.setting_value,
+            updated_at = datetime('now')
+        """,
+        (key, value),
+    )
+
+
 def current_season(con: sqlite3.Connection) -> int:
+    if not table_exists(con, "game_settings"):
+        return match_engine.DEFAULT_SEASON
     row = con.execute(
-        "SELECT setting_value FROM game_settings WHERE setting_key = 'current_season'"
+        """
+        SELECT setting_value
+        FROM game_settings
+        WHERE setting_key IN ('current_contract_year', 'current_season')
+        ORDER BY CASE setting_key WHEN 'current_contract_year' THEN 0 ELSE 1 END
+        LIMIT 1
+        """
     ).fetchone()
     return int(row["setting_value"]) if row else match_engine.DEFAULT_SEASON
+
+
+def active_user_team(con: sqlite3.Connection, default: str | None = "MIN") -> str | None:
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute("SELECT user_team FROM active_game_save_view LIMIT 1").fetchone()
+        if row and row["user_team"]:
+            return str(row["user_team"]).upper()
+    if table_exists(con, "game_saves"):
+        row = con.execute(
+            """
+            SELECT t.abbreviation
+            FROM game_saves gs
+            JOIN teams t ON t.team_id = gs.user_team_id
+            WHERE gs.status = 'active'
+            ORDER BY gs.updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row["abbreviation"]:
+            return str(row["abbreviation"]).upper()
+    return default.upper() if default else None
 
 
 def team_rows(con: sqlite3.Connection, team: str | None, user_team: str | None, include_user: bool) -> list[sqlite3.Row]:
@@ -108,6 +152,151 @@ def team_rows(con: sqlite3.Connection, team: str | None, user_team: str | None, 
         f"SELECT team_id, abbreviation FROM teams {where} ORDER BY abbreviation",
         params,
     ).fetchall()
+
+
+def team_abbr_for_id(con: sqlite3.Connection, team_id: int | None) -> str | None:
+    if team_id is None:
+        return None
+    row = con.execute("SELECT abbreviation FROM teams WHERE team_id = ?", (team_id,)).fetchone()
+    return str(row["abbreviation"]).upper() if row and row["abbreviation"] else None
+
+
+def mark_depth_chart_stale(
+    con: sqlite3.Connection,
+    team_abbr: str | None = None,
+    *,
+    team_id: int | None = None,
+    reason: str | None = None,
+) -> bool:
+    abbr = (team_abbr or team_abbr_for_id(con, team_id) or "").upper()
+    if not abbr:
+        return False
+    upsert_setting(con, f"depth_chart_needs_update_{abbr}", "1")
+    upsert_setting(con, "depth_chart_needs_update", "1")
+    if reason:
+        upsert_setting(con, f"depth_chart_needs_update_reason_{abbr}", reason[:240])
+    return True
+
+
+def mark_all_cpu_depth_charts_stale(
+    con: sqlite3.Connection,
+    *,
+    user_team: str | None = None,
+    reason: str | None = None,
+) -> int:
+    user = (user_team or active_user_team(con) or "").upper()
+    count = 0
+    for row in con.execute("SELECT abbreviation FROM teams ORDER BY abbreviation").fetchall():
+        abbr = str(row["abbreviation"]).upper()
+        if user and abbr == user:
+            continue
+        if mark_depth_chart_stale(con, abbr, reason=reason):
+            count += 1
+    return count
+
+
+def dirty_depth_chart_team_abbrs(
+    con: sqlite3.Connection,
+    *,
+    user_team: str | None = None,
+    include_user: bool = False,
+) -> list[str]:
+    if not table_exists(con, "game_settings"):
+        return []
+    user = (user_team or active_user_team(con) or "").upper()
+    rows = con.execute(
+        """
+        SELECT setting_key
+        FROM game_settings
+        WHERE setting_key LIKE 'depth_chart_needs_update_%'
+          AND setting_key NOT LIKE 'depth_chart_needs_update_reason_%'
+          AND setting_value = '1'
+        ORDER BY setting_key
+        """
+    ).fetchall()
+    abbrs: list[str] = []
+    for row in rows:
+        abbr = str(row["setting_key"]).replace("depth_chart_needs_update_", "", 1).upper()
+        if not abbr or (user and abbr == user and not include_user):
+            continue
+        abbrs.append(abbr)
+    if abbrs:
+        return sorted(set(abbrs))
+
+    global_dirty = con.execute(
+        """
+        SELECT setting_value
+        FROM game_settings
+        WHERE setting_key = 'depth_chart_needs_update'
+        """
+    ).fetchone()
+    if not global_dirty or str(global_dirty["setting_value"]) != "1":
+        return []
+    return [
+        str(row["abbreviation"]).upper()
+        for row in team_rows(con, None, user if user else None, include_user)
+    ]
+
+
+def clear_depth_chart_stale(con: sqlite3.Connection, team_abbrs: list[str]) -> None:
+    if not table_exists(con, "game_settings"):
+        return
+    for abbr in team_abbrs:
+        con.execute(
+            "UPDATE game_settings SET setting_value = '0', updated_at = datetime('now') WHERE setting_key = ?",
+            (f"depth_chart_needs_update_{abbr.upper()}",),
+        )
+        con.execute(
+            "DELETE FROM game_settings WHERE setting_key = ?",
+            (f"depth_chart_needs_update_reason_{abbr.upper()}",),
+        )
+    remaining = con.execute(
+        """
+        SELECT 1
+        FROM game_settings
+        WHERE setting_key LIKE 'depth_chart_needs_update_%'
+          AND setting_key NOT LIKE 'depth_chart_needs_update_reason_%'
+          AND setting_value = '1'
+        LIMIT 1
+        """
+    ).fetchone()
+    if not remaining:
+        con.execute(
+            "UPDATE game_settings SET setting_value = '0', updated_at = datetime('now') WHERE setting_key = 'depth_chart_needs_update'"
+        )
+
+
+def rebuild_dirty_depth_charts(
+    con: sqlite3.Connection,
+    *,
+    season: int | None = None,
+    user_team: str | None = None,
+    include_user: bool = False,
+    apply: bool = True,
+) -> dict[str, object]:
+    if not table_exists(con, "depth_charts"):
+        return {"teams": 0, "rows": 0, "rebuilt": []}
+    target_season = season or current_season(con)
+    dirty_abbrs = dirty_depth_chart_team_abbrs(con, user_team=user_team, include_user=include_user)
+    if not dirty_abbrs:
+        return {"teams": 0, "rows": 0, "rebuilt": []}
+    qmarks = ",".join("?" for _ in dirty_abbrs)
+    teams = con.execute(
+        f"SELECT team_id, abbreviation FROM teams WHERE abbreviation IN ({qmarks}) ORDER BY abbreviation",
+        dirty_abbrs,
+    ).fetchall()
+    results = [
+        rebuild_team_depth(con, team_row=team_row, season=target_season, apply=apply)
+        for team_row in teams
+    ]
+    rebuilt = [str(item["team"]).upper() for item in results]
+    if apply:
+        clear_depth_chart_stale(con, rebuilt)
+    return {
+        "teams": len(results),
+        "rows": sum(int(item["rows"]) for item in results),
+        "rebuilt": rebuilt,
+    }
 
 
 def legal_candidates(team: match_engine.TeamSnapshot, slot: str) -> list[match_engine.PlayerSnapshot]:
@@ -154,7 +343,28 @@ def depth_sort_score(
     elif slot in {"LDL", "RDL", "NT"} and player.position in {"IDL", "DT", "NT"}:
         position_bonus = 3.0
 
-    if slot == "RB":
+    if slot == "QB":
+        mental = (
+            player.rating("processing_speed")
+            + player.rating("play_recognition")
+            + player.rating("composure")
+            + player.rating("discipline")
+        ) / 4.0
+        years_exp = float(player.metadata.get("years_exp") or 0)
+        contract_aav = float(player.metadata.get("contract_aav") or 0)
+        starter_investment = min(2.25, max(0.0, (contract_aav - 5_000_000.0) / 7_500_000.0))
+        veteran_trust = min(1.15, max(0.0, years_exp - 8.0) * 0.08) if overall >= 68 else 0.0
+        veteran_decline = max(0.0, age - 38.0) * 0.08
+        primary = (
+            overall * 0.58
+            + role_score * 0.28
+            + mental * 0.11
+            + potential * 0.02
+            + starter_investment
+            + veteran_trust
+            - veteran_decline
+        )
+    elif slot == "RB":
         primary = overall * 0.62 + role_score * 0.38
         if overall < 70:
             primary -= (70.0 - overall) * 0.45
@@ -291,6 +501,25 @@ def cmd_rebuild(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rebuild_dirty(args: argparse.Namespace) -> int:
+    with connect(args.db) as con:
+        result = rebuild_dirty_depth_charts(
+            con,
+            season=args.season,
+            user_team=args.user_team,
+            include_user=args.include_user,
+            apply=args.apply,
+        )
+        if args.apply:
+            con.commit()
+    mode = "Rebuilt" if args.apply else "DRY RUN: would rebuild"
+    print(f"{mode} dirty CPU depth charts for {result['teams']} team(s), {result['rows']} row(s).")
+    rebuilt = result.get("rebuilt") or []
+    if rebuilt:
+        print(f"  Teams: {', '.join(rebuilt[:16])}{' ...' if len(rebuilt) > 16 else ''}")
+    return 0
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     with connect(args.db) as con:
         season = args.season or current_season(con)
@@ -324,6 +553,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(rebuild)
     rebuild.add_argument("--apply", action="store_true")
     rebuild.set_defaults(func=cmd_rebuild)
+
+    rebuild_dirty = subparsers.add_parser("rebuild-dirty", help="Rebuild only teams marked as needing depth-chart updates.")
+    add_common(rebuild_dirty)
+    rebuild_dirty.add_argument("--apply", action="store_true")
+    rebuild_dirty.set_defaults(func=cmd_rebuild_dirty)
 
     audit = subparsers.add_parser("audit", help="Audit CPU depth charts for stale starters.")
     add_common(audit)

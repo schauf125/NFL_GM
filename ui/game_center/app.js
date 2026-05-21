@@ -11,6 +11,7 @@
     selectedDraftClassPackage: "",
     draftProspectPopoverOpen: false,
     draftTradeModal: null,
+    draftTradeAlertDismissed: {},
     draftBoardSort: { key: "rank", direction: "asc" },
     draftBoardPositionFilter: "all",
     scoutingBoardSort: { key: "rank", direction: "asc" },
@@ -27,6 +28,7 @@
     injuryModal: null,
     rosterCutdownPrompt: null,
     rosterCutdownPromptDismissedKey: null,
+    fifthYearOptionPromptDismissedKey: null,
     pendingRosterCutdownAction: null,
     pendingSimAdvancePrompt: null,
     selectedAiGmReviewId: null,
@@ -63,9 +65,11 @@
     tradePartnerTeam: "",
     tradeUserSlots: Array(5).fill(""),
     tradePartnerSlots: Array(5).fill(""),
+    takeoverTeam: "",
     rosterPositionFilter: "all",
     rosterGroupFilter: "all",
     rosterStatusFilter: "all",
+    rosterTeam: "",
     selectedRosterPlayerId: null,
     rosterSort: { key: "role", direction: "desc" },
     localScoutingKey: null,
@@ -88,6 +92,7 @@
   };
   const DRAFT_TRADE_MAX_OFFER_PICKS = 4;
   let viewRefreshInFlight = null;
+  let renderScheduled = false;
   const SIM_PROGRESS_POLL_ACTIONS = new Set([
     "sim_week",
     "sim_season",
@@ -128,6 +133,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "take_over_team",
     "draft_class_generate",
     "draft_class_import",
     "auto_cutdown_continue",
@@ -152,6 +158,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "take_over_team",
     "draft_class_generate",
     "draft_class_import",
     "auto_cutdown_continue",
@@ -172,6 +179,7 @@
     "advance_next_event",
     "advance_to_date",
     "advance_next_league_year",
+    "take_over_team",
     "inbox_mark_read",
     "event_generate_week",
   ]);
@@ -186,6 +194,7 @@
     "advance_next_event",
     "advance_to_date",
     "advance_next_league_year",
+    "take_over_team",
     "league_news_seed",
     "event_generate_week",
   ]);
@@ -226,6 +235,7 @@
     "depth_chart_move",
     "auto_cutdown",
     "auto_cutdown_continue",
+    "take_over_team",
   ]);
   const INJURIES_REFRESH_ACTIONS = new Set([
     "load_game",
@@ -237,6 +247,7 @@
     "advance_next_event",
     "advance_to_date",
     "advance_next_league_year",
+    "take_over_team",
   ]);
   const DRAFT_REFRESH_ACTIONS = new Set([
     "draft_class_generate",
@@ -261,6 +272,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "take_over_team",
     "draft_class_generate",
     "draft_class_import",
     "scouting_setup",
@@ -292,6 +304,7 @@
     "advance_to_date",
     "advance_next_league_year",
     "advance_to_draft",
+    "take_over_team",
     "free_agency_start",
     "free_agency_cpu_seed",
     "free_agency_advance_hour",
@@ -308,7 +321,9 @@
     "load_game",
     "complete_season",
     "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
+    "take_over_team",
     "free_agency_start",
     "free_agency_cpu_seed",
     "free_agency_advance_hour",
@@ -373,6 +388,7 @@
     "advance_next_event",
     "advance_to_date",
     "advance_next_league_year",
+    "take_over_team",
   ]);
 
   function node(tag, className, text) {
@@ -839,11 +855,25 @@
     return section ? `${date} | ${section}` : date;
   }
 
+  function isObserveMode() {
+    return String(data.activeSave?.control_mode || data.registry?.controlMode || data.settings?.control_mode || "").toLowerCase() === "observe"
+      || (!data.activeSave?.user_team && data.activeSave?.game_id);
+  }
+
+  function hasUserTeam() {
+    return Boolean(data.activeSave?.user_team) && !isObserveMode();
+  }
+
+  function observeHiddenViews() {
+    return new Set(["practiceSquad", "depth", "contracts", "scouting", "trades"]);
+  }
+
   function updateHeaderChrome() {
     refs.seasonLabel.textContent = String(data.currentSeason || "");
     refs.phaseText.textContent = data.currentPhase || "";
     refs.dateText.textContent = currentDateDisplay();
-    refs.saveText.textContent = data.activeSave?.display_name || data.registry?.activeGameId || "Master DB";
+    const saveName = data.activeSave?.display_name || data.registry?.activeGameId || "Master DB";
+    refs.saveText.textContent = isObserveMode() ? `${saveName} (Observe)` : saveName;
     updateConditionalNav();
     updateLiveStatus();
   }
@@ -874,9 +904,14 @@
   }
 
   function updateConditionalNav() {
+    const hiddenForObserve = observeHiddenViews();
     refs.buttons.forEach((button) => {
       if (button.dataset.view === "playoffTree") {
         button.hidden = !playoffTreeVisible();
+      } else if (isObserveMode() && hiddenForObserve.has(button.dataset.view)) {
+        button.hidden = true;
+      } else if (hiddenForObserve.has(button.dataset.view)) {
+        button.hidden = false;
       }
     });
   }
@@ -1049,6 +1084,117 @@
     });
   }
 
+  function openRosterTeam(abbr) {
+    const team = String(abbr || "").trim().toUpperCase();
+    if (!team || team === "-") return;
+    state.rosterTeam = team;
+    state.rosterGroupFilter = "all";
+    state.rosterStatusFilter = "all";
+    state.selectedRosterPlayerId = null;
+    state.depthChartLiveKey = null;
+    switchView("roster", { refresh: true });
+  }
+
+  function statTeamLink(team) {
+    const abbr = String(team || "").trim().toUpperCase();
+    if (!abbr || abbr === "-") return "-";
+    const button = node("button", "text-link team-stat-link", abbr);
+    button.type = "button";
+    button.title = `Open ${abbr} roster`;
+    button.addEventListener("click", () => openRosterTeam(abbr));
+    return button;
+  }
+
+  function normalizeTeamOption(team) {
+    const abbr = String(team?.abbr || team?.abbreviation || team?.team || "").trim().toUpperCase();
+    if (!abbr || abbr === "-") return null;
+    const name = team?.name
+      || team?.team_name
+      || [team?.city, team?.nickname].filter(Boolean).join(" ")
+      || abbr;
+    return {
+      abbr,
+      name,
+      conference: team?.conference || "",
+      division: team?.division || "",
+      logo: team?.teamLogo || team?.logo || "",
+    };
+  }
+
+  function rosterTeamOptions() {
+    const map = new Map();
+    const add = (team) => {
+      const normalized = normalizeTeamOption(team);
+      if (normalized && !map.has(normalized.abbr)) map.set(normalized.abbr, normalized);
+    };
+    (data.teams || []).forEach(add);
+    (data.season?.standings || []).forEach(add);
+    (data.tradeCenter?.teams || []).forEach(add);
+    add({
+      abbreviation: data.depthChart?.team,
+      team_name: data.depthChart?.teamName,
+    });
+    add({
+      abbreviation: data.activeSave?.user_team,
+      team_name: data.activeSave?.user_team,
+    });
+    return [...map.values()].sort((a, b) => {
+      const aLabel = String(a.name && a.name !== a.abbr ? a.name : a.abbr).toLowerCase();
+      const bLabel = String(b.name && b.name !== b.abbr ? b.name : b.abbr).toLowerCase();
+      return aLabel.localeCompare(bLabel) || a.abbr.localeCompare(b.abbr);
+    });
+  }
+
+  function rosterTeamSelector(activeTeam) {
+    let teams = rosterTeamOptions();
+    const firstTeam = teams[0]?.abbr || "MIN";
+    const userTeam = String(data.activeSave?.user_team || firstTeam).toUpperCase();
+    const active = String(activeTeam || userTeam || firstTeam).toUpperCase();
+    if (!teams.some((team) => team.abbr === active)) {
+      teams = [{ abbr: active, name: active, conference: "", division: "", logo: "" }, ...teams];
+      teams.sort((a, b) => {
+        const aLabel = String(a.name && a.name !== a.abbr ? a.name : a.abbr).toLowerCase();
+        const bLabel = String(b.name && b.name !== b.abbr ? b.name : b.abbr).toLowerCase();
+        return aLabel.localeCompare(bLabel) || a.abbr.localeCompare(b.abbr);
+      });
+    }
+    const selected = teams.find((team) => team.abbr === active) || teams[0];
+    const wrap = node("div", "roster-team-switcher");
+    const logo = teamLogo(selected?.logo, selected?.abbr, "roster-team-logo");
+    const field = node("label", "roster-filter roster-team-filter");
+    append(field, [node("span", null, "Change Team")]);
+    const select = node("select");
+    teams.forEach((team) => {
+      const option = node("option", null, `${team.abbr} | ${team.name}`);
+      option.value = team.abbr;
+      option.selected = team.abbr === active;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.rosterTeam = select.value;
+      state.selectedRosterPlayerId = null;
+      state.depthChartLiveKey = null;
+      if (runnerMode()) {
+        loadLiveDepthChart().then(render);
+      } else {
+        render();
+      }
+    });
+    field.append(select);
+    const myTeam = node("button", "run-button compact roster-my-team-button", isObserveMode() ? "Observe" : "My Team");
+    myTeam.type = "button";
+    myTeam.disabled = isObserveMode() || active === userTeam;
+    myTeam.title = isObserveMode() ? "Observe Mode has no user-controlled team." : `Show ${userTeam} roster`;
+    myTeam.addEventListener("click", () => openRosterTeam(userTeam));
+    append(wrap, [
+      logo,
+      field,
+      myTeam,
+      node("small", null, selected?.division ? `${selected.conference || "NFL"} ${selected.division}` : "Roster view"),
+    ]);
+    return wrap;
+  }
+
   function row(title, detail, right, tone) {
     const item = node("div", "row");
     const left = append(node("div"), [
@@ -1108,6 +1254,41 @@
     });
     const queryText = query.toString();
     return `${path}${queryText ? `?${queryText}` : ""}`;
+  }
+
+  function scheduleRender() {
+    if (renderScheduled) return;
+    renderScheduled = true;
+    window.requestAnimationFrame(() => {
+      renderScheduled = false;
+      render();
+    });
+  }
+
+  function calendarDataKey(calendar, currentDate = "") {
+    const days = (calendar?.days || []).map((day) => [
+      day.date,
+      day.isFocusDate ? 1 : 0,
+      day.isToday ? 1 : 0,
+      (day.events || []).map((event) => [event.event_id, event.event_code, event.event_name].join(":")).join(";"),
+      (day.games || []).map((game) => [
+        game.game_id,
+        game.played,
+        game.away_score,
+        game.home_score,
+        game.away_team,
+        game.home_team,
+      ].join(":")).join(";"),
+      (day.news || []).map((item) => item.news_id).join(";"),
+    ]);
+    return JSON.stringify([
+      currentDate || "",
+      calendar?.focusDate || "",
+      calendar?.monthLabel || "",
+      calendar?.rangeStart || "",
+      calendar?.rangeEnd || "",
+      days,
+    ]);
   }
 
   async function apiGet(scope, path, options = {}) {
@@ -1221,6 +1402,7 @@
     const season = data.currentSeason || data.season?.season || "";
     const liveFocus = Boolean(options.liveFocus);
     const currentDate = liveFocus ? "" : (data.currentDate || data.calendar?.focusDate || "");
+    const previousKey = calendarDataKey(data.calendar || {}, data.currentDate || "");
     const payload = await apiGet("calendar", "/api/calendar", {
       params: { season, date: currentDate, live: liveFocus ? "1" : "" },
       loadingKey: "calendarLoading",
@@ -1239,7 +1421,7 @@
     state.calendarLiveKey = `${payload.season || season || ""}:${payload.currentDate || currentDate || ""}`;
     state.calendarLiveFocus = Boolean(payload.liveFocus);
     updateHeaderChrome();
-    return true;
+    return previousKey !== calendarDataKey(data.calendar || {}, data.currentDate || "");
   }
 
   function inboxLiveKey() {
@@ -1276,6 +1458,7 @@
   function draftLiveKey() {
     const draft = data.draft || {};
     const stateRow = draft.state || {};
+    const firstEvent = (draft.events || [])[0] || {};
     return [
       draft.year || "",
       stateRow.current_pick_number || "",
@@ -1285,6 +1468,7 @@
       draft.pickTotals?.remaining || 0,
       (draft.selections || []).length,
       (draft.userSelections || []).length,
+      firstEvent.event_id || "",
     ].join(":");
   }
 
@@ -1346,15 +1530,19 @@
     const talks = data.contractNegotiations || {};
     const firstExpiring = (talks.expiring || [])[0] || {};
     const firstCap = (talks.capCasualties || [])[0] || {};
+    const firstOption = (talks.fifthYearOptions || [])[0] || {};
     return [
+      data.currentDate || data.activeSave?.current_date || "",
       talks.season || data.currentSeason || "",
       talks.team || data.activeSave?.user_team || "",
       talks.counts?.expiring || talks.counts?.total || 0,
+      talks.counts?.fifthYearOptions || (talks.fifthYearOptions || []).length || 0,
       talks.counts?.capCasualties || 0,
       talks.counts?.restructures || 0,
       talks.currentCap?.cap_space || "",
       talks.projectedCap?.cap_space || "",
       firstExpiring.player_id || "",
+      firstOption.player_id || "",
       firstCap.player_id || "",
     ].join(":");
   }
@@ -1372,6 +1560,17 @@
       firstRow.rank || firstRow.depth_rank || "",
       firstRoster.player_id || "",
     ].join(":");
+  }
+
+  function rosterContractSeason() {
+    return Number(
+      data.currentContractYear
+      || data.contractNegotiations?.currentCap?.season
+      || data.freeAgency?.leagueYear
+      || data.currentSeason
+      || data.season?.season
+      || 0
+    );
   }
 
   function aiGmLiveKey() {
@@ -1577,9 +1776,12 @@
   async function loadLiveDepthChart() {
     if (!location.protocol.startsWith("http") || state.depthChartLoading) return false;
     const season = data.currentSeason || data.season?.season || "";
-    const team = data.activeSave?.user_team || data.depthChart?.team || "";
+    const contractSeason = rosterContractSeason() || season;
+    const team = state.view === "roster" && state.rosterTeam
+      ? state.rosterTeam
+      : data.activeSave?.user_team || data.depthChart?.team || rosterTeamOptions()[0]?.abbr || "";
     const payload = await apiGet("depth chart", "/api/depth-chart", {
-      params: { season, team },
+      params: { season, contractSeason, team },
       loadingKey: "depthChartLoading",
     });
     if (!payload) return false;
@@ -1692,7 +1894,7 @@
   }
 
   function startDraftProgressPolling(action) {
-    if (!["draft_skip_to_user", "draft_finish"].includes(action) || !runnerMode()) return null;
+    if (!["draft_skip", "draft_skip_to_user", "draft_finish"].includes(action) || !runnerMode()) return null;
     let stopped = false;
     const tick = async () => {
       if (stopped || state.draftLoading) return;
@@ -1713,7 +1915,7 @@
     const tick = async () => {
       if (stopped) return;
       const changed = await loadLiveCalendar({ liveFocus: true, quiet: true });
-      if (changed && state.view === "calendar") render();
+      if (changed && state.view === "calendar") scheduleRender();
     };
     tick();
     const interval = window.setInterval(tick, 1600);
@@ -1808,7 +2010,7 @@
     const calendarProgressAction = SIM_PROGRESS_POLL_ACTIONS.has(action);
     if (calendarProgressAction) {
       state.calendarLiveFocus = true;
-      switchView("calendar", { refresh: true });
+      switchView("calendar", { refresh: false });
     }
     state.runnerBusy = true;
     state.busyAction = action;
@@ -1875,7 +2077,12 @@
   }
 
   function cancellableRunnerAction(action) {
-    return action === "sim_week" || action === "sim_season" || action === "advance_to_draft";
+    return action === "sim_week"
+      || action === "sim_season"
+      || action === "advance_to_draft"
+      || action === "draft_skip"
+      || action === "draft_skip_to_user"
+      || action === "draft_finish";
   }
 
   async function requestRunnerCancel() {
@@ -1943,6 +2150,27 @@
     }
   }
 
+  function draftIsComplete(draft = data.draft || {}) {
+    const totals = draft?.pickTotals || {};
+    return Number(totals.total || 0) > 0 && Number(totals.remaining || 0) <= 0;
+  }
+
+  function draftRoomStatus(draft = data.draft || {}) {
+    return String(draft?.state?.status || "").toLowerCase();
+  }
+
+  function draftRoomIsActive(draft = data.draft || {}) {
+    const status = draftRoomStatus(draft);
+    return Boolean(draft?.state) && !["complete", "completed"].includes(status);
+  }
+
+  function draftCanAdvanceToCurrentDraft(draft = data.draft || {}) {
+    if (!draft?.draftDate) return false;
+    if (draftIsComplete(draft)) return false;
+    if (draftRoomIsActive(draft)) return false;
+    return true;
+  }
+
   function draftNeedsAdvanceWarning(action) {
     if (!["advance_next_event", "advance_to_date", "advance_next_league_year", "sim_week", "sim_season"].includes(action)) return false;
     const draft = data.draft || {};
@@ -1959,6 +2187,7 @@
     const buckets = [
       calendar.upcomingEvents || [],
       calendar.eventsInView || [],
+      ...(calendar.days || []).map((day) => day.events || []),
       data.events || [],
     ];
     for (const events of buckets) {
@@ -2220,6 +2449,7 @@
       league_news_seed: "Refresh League News",
       event_generate_week: "Roll Weekly Events",
       new_june1_save: "Start Fresh June 1 Save",
+      take_over_team: "Take Over Team",
       status: "Refresh Status",
       preflight: "Run Preflight",
       advance_next_league_year: "Advance To Next League Year",
@@ -2258,14 +2488,19 @@
   }
 
   function draftActionAvailability(action, draft, selected) {
-    const draftState = draft?.state || null;
+    const draftState = draftRoomIsActive(draft) ? draft?.state : null;
     const remaining = Number(draft?.pickTotals?.remaining || 0);
+    if (isObserveMode() && ["draft_skip_to_user", "draft_pick", "draft_user_trade"].includes(action)) {
+      return { disabledReason: "Observe Mode has no user-controlled draft pick." };
+    }
     if (action === "advance_to_draft") {
+      if (draftIsComplete(draft)) return { disabledReason: "Draft is complete." };
       if (draftState) return { disabledReason: "Draft room is already active." };
       if (!draft?.draftDate) return { disabledReason: "No draft date is available." };
       return {};
     }
     if (action === "draft_start") {
+      if (draftIsComplete(draft)) return { disabledReason: "Draft is complete." };
       if (draftState) return { disabledReason: "Draft room is already started." };
       if (!dateReached(draft?.draftDate)) return { disabledReason: `Draft date is ${shortDate(draft?.draftDate)}.` };
       if (draft?.orderFinalized === false) return { disabledReason: draft.orderWarning || "Draft order is not finalized." };
@@ -2352,33 +2587,36 @@
   }
 
   function draftControlPanel(draft, commands, selected) {
-    const draftState = draft?.state || null;
+    const draftState = draftRoomIsActive(draft) ? draft?.state : null;
     const currentTeam = draftState?.current_team || "-";
-    const userTeam = draftState?.user_team || data.activeSave?.user_team || "User";
+    const userTeam = draftState?.user_team || data.activeSave?.user_team || (isObserveMode() ? "CPU" : "User");
     const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
     const remaining = Number(draft?.pickTotals?.remaining || 0);
     const onClockTone = isUserOnClock() ? "good" : draftState ? "warn" : "";
-    const p = panel("Draft Control", draftState ? `${currentTeam} on clock` : "Setup");
+    const complete = draftIsComplete(draft);
+    const p = panel("Draft Control", complete ? "Complete" : draftState ? `${currentTeam} on clock` : "Setup");
     const body = panelBody(p);
     const hero = node("div", "control-hero draft-control-hero");
     append(hero, [
       teamLogo(currentDraftQueuePick(draft, draftState)?.teamLogo, currentTeam, "draft-control-logo"),
       append(node("div", "control-copy draft-control-copy"), [
         node("span", "tag", draftState ? `Pick ${currentPick}` : `Draft ${draft?.year || ""}`),
-        node("strong", null, draftState ? `${currentTeam} is on the clock` : dateReached(draft?.draftDate) ? "Draft room is ready" : `Draft date ${shortDate(draft?.draftDate)}`),
+        node("strong", null, complete ? "Draft is complete" : draftState ? `${currentTeam} is on the clock` : dateReached(draft?.draftDate) ? "Draft room is ready" : `Draft date ${shortDate(draft?.draftDate)}`),
         node("small", null, draftState
-          ? `${remaining} pick(s) remaining. ${isUserOnClock() ? `${userTeam} can submit a pick now.` : "Skip CPU picks until your team is up."}`
-          : dateReached(draft?.draftDate) ? "Start the room paused before making selections." : "Advance the calendar when you are ready."),
+          ? `${remaining} pick(s) remaining. ${isObserveMode() ? "Observe or sim CPU selections." : isUserOnClock() ? `${userTeam} can submit a pick now.` : "Skip CPU picks until your team is up."}`
+          : complete ? "Advance the calendar to continue the offseason." : dateReached(draft?.draftDate) ? "Start the room paused before making selections." : "Advance the calendar when you are ready."),
       ]),
-      tag(isUserOnClock() ? "Your Pick" : draftState ? "CPU Pick" : "Not Started", onClockTone),
+      tag(complete ? "Complete" : isObserveMode() && draftState ? "Observe" : isUserOnClock() ? "Your Pick" : draftState ? "CPU Pick" : "Not Started", complete ? "good" : onClockTone),
     ]);
     const controls = node("div", "control-bar draft-control-bar");
     const controlEntries = [
       [dateReached(draft?.draftDate) ? "Start Draft" : "Sim To Draft", "advance_to_draft", {}, "good"],
       ["Start Room", "draft_start", {}, "good"],
       ["Skip Pick", "draft_skip", { count: 1 }, ""],
-      [`Skip To ${userTeam}`, "draft_skip_to_user", {}, ""],
-      ["Make Pick", "draft_pick", selected?.prospect_id ? { prospect_id: selected.prospect_id } : {}, "good"],
+      ...(isObserveMode() ? [] : [
+        [`Skip To ${userTeam}`, "draft_skip_to_user", {}, ""],
+        ["Make Pick", "draft_pick", selected?.prospect_id ? { prospect_id: selected.prospect_id } : {}, "good"],
+      ]),
       ["Finish Draft", "draft_finish", {}, "warn"],
     ].map(([label, action, params, tone]) => ({
       label,
@@ -2390,6 +2628,8 @@
     append(controls, [
       ...controlEntries.map((entry) => controlButton({ ...entry, className: "draft-control-button" })),
     ]);
+    const draftPause = draftSimPauseButton();
+    if (draftPause) controls.append(draftPause);
     const secondary = node("div", "control-secondary draft-control-secondary");
     append(secondary, [
       draftControlButton("Next League Year", "advance_next_league_year", {}, draft, selected),
@@ -2412,6 +2652,16 @@
       secondary,
     ]);
     return p;
+  }
+
+  function draftSimPauseButton() {
+    if (!state.runnerBusy || !["draft_skip", "draft_skip_to_user", "draft_finish"].includes(state.busyAction)) return null;
+    const button = node("button", "control-button draft-control-button warn", state.cancelRequested ? "Pause Requested" : "Pause Draft Sim");
+    button.type = "button";
+    button.disabled = state.cancelRequested;
+    button.title = "Pause after the current draft pick finishes.";
+    button.addEventListener("click", requestRunnerCancel);
+    return button;
   }
 
   function actionCard(title, detail, command, action, params, tone, options = {}) {
@@ -2675,17 +2925,19 @@
       ));
     }
 
-    cards.push(actionCard(
-      "Advance To Draft",
-      available
-        ? `${available} players are still available. Use this when you are done shopping and want to jump to draft week.`
-        : "Free agency is mostly cleared. Jump to draft week when ready.",
-      commands.advanceToDraft,
-      "advance_to_draft",
-      {},
-      "",
-      { runLabel: "Go To Draft" },
-    ));
+    if (draftCanAdvanceToCurrentDraft(data.draft)) {
+      cards.push(actionCard(
+        "Advance To Draft",
+        available
+          ? `${available} players are still available. Use this when you are done shopping and want to jump to draft week.`
+          : "Free agency is mostly cleared. Jump to draft week when ready.",
+        commands.advanceToDraft,
+        "advance_to_draft",
+        {},
+        "",
+        { runLabel: "Go To Draft" },
+      ));
+    }
     return cards;
   }
 
@@ -2712,7 +2964,8 @@
       return {};
     }
     if (action === "advance_to_draft") {
-      if (data.draft?.state) return { disabledReason: "Draft room is already active." };
+      if (draftIsComplete(data.draft)) return { disabledReason: "Draft is complete." };
+      if (draftRoomIsActive(data.draft)) return { disabledReason: "Draft room is already active." };
       return {};
     }
     return {};
@@ -2757,8 +3010,11 @@
       ["Seed CPU Offers", "free_agency_cpu_seed", {}, ""],
       ["Advance Hour", "free_agency_advance_hour", {}, period?.current_stage === "day_one_hourly" ? "good" : ""],
       ["Advance Day", "free_agency_advance_day", {}, period?.current_stage === "daily" ? "good" : ""],
-      ["Advance To Draft", "advance_to_draft", {}, "warn"],
-    ].map(([label, action, params, tone]) => ({
+    ];
+    if (draftCanAdvanceToCurrentDraft(data.draft)) {
+      controlEntries.push(["Advance To Draft", "advance_to_draft", {}, "warn"]);
+    }
+    const mappedControlEntries = controlEntries.map(([label, action, params, tone]) => ({
       label,
       action,
       params,
@@ -2766,7 +3022,7 @@
       availability: freeAgencyActionAvailability(action, fa),
     }));
     append(controls, [
-      ...controlEntries.map((entry) => controlButton({ ...entry, className: "fa-control-button" })),
+      ...mappedControlEntries.map((entry) => controlButton({ ...entry, className: "fa-control-button" })),
     ]);
     const secondary = node("div", "control-secondary fa-control-secondary");
     append(secondary, [
@@ -2777,7 +3033,7 @@
       controls,
       controlMetaLine({
         generatedAt: data.freeAgencyGeneratedAt,
-        reasons: controlDisabledReasons(controlEntries),
+        reasons: controlDisabledReasons(mappedControlEntries),
       }),
       secondary,
     ]);
@@ -2954,12 +3210,24 @@
       tag("Calendar", "good"),
     ]);
     const controls = node("div", "control-bar calendar-control-bar");
+    const seasonPhase = seasonPhaseState(data.season || {});
     const controlEntries = [
       ["Advance Date", "advance_next_event", {}, "good"],
-      [nextGameType === "PRE" ? "Sim Rest Preseason" : "Sim Rest Season", "sim_season", { game_type: nextGameType }, "warn"],
-      [nextWeek ? `Sim ${nextWeekLabel}` : "Sim Week", "sim_week", { week: nextWeek, game_type: nextGameType }, "good"],
     ];
-    if (data.draft?.draftDate && !data.draft?.state && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
+    if (["preseason", "regular", "postseason_setup"].includes(seasonPhase)) {
+      controlEntries.push([nextGameType === "PRE" ? "Sim Rest Preseason" : "Sim Rest Season", "sim_season", { game_type: nextGameType }, "warn"]);
+    }
+    if (nextWeek && ["preseason", "regular"].includes(seasonPhase)) {
+      controlEntries.push([`Sim ${nextWeekLabel}`, "sim_week", { week: nextWeek, game_type: nextGameType }, "good"]);
+    }
+    if (draftIsComplete(data.draft) && data.currentDate && data.draft?.year && data.currentDate < `${data.draft.year}-06-01`) {
+      controlEntries.push([
+        "Next League Year",
+        "advance_next_league_year",
+        {},
+        "good",
+      ]);
+    } else if (draftCanAdvanceToCurrentDraft(data.draft) && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
       controlEntries.push([
         dateReached(data.draft.draftDate) ? "Start Draft" : "Sim To Draft",
         "advance_to_draft",
@@ -2998,9 +3266,22 @@
   }
 
   function draftNextCards(draft, commands, selected) {
-    const draftState = draft.state;
+    const draftState = draftRoomIsActive(draft) ? draft.state : null;
     const remaining = Number(draft.pickTotals?.remaining || 0);
     const cards = [];
+
+    if (remaining <= 0 && Number(draft.pickTotals?.total || 0) > 0) {
+      cards.push(actionCard(
+        "Advance To Next League Year",
+        "All picks have been recorded. Jump to June 1, process post-draft calendar hooks, and generate the next draft class.",
+        commands.advanceNextLeagueYear,
+        "advance_next_league_year",
+        {},
+        "good",
+        { runLabel: "Advance To June 1" },
+      ));
+      return cards;
+    }
 
     if (!draftState) {
       if (!dateReached(draft.draftDate)) {
@@ -3024,19 +3305,6 @@
           { runLabel: "Start Draft" },
         ));
       }
-      return cards;
-    }
-
-    if (remaining <= 0) {
-      cards.push(actionCard(
-        "Advance To Next League Year",
-        "All picks have been recorded. Jump to June 1, process post-draft calendar hooks, and generate the next draft class.",
-        commands.advanceNextLeagueYear,
-        "advance_next_league_year",
-        {},
-        "good",
-        { runLabel: "Advance To June 1" },
-      ));
       return cards;
     }
 
@@ -3184,12 +3452,20 @@
       node(
         "span",
         null,
-        cancellable
+        cancellable && String(state.busyAction || "").startsWith("draft_")
+          ? "Keep this page open. Pause stops the draft after the current pick."
+          : cancellable
           ? "Keep this page open. Stop safely pauses after the current game or weekly hook finishes."
           : "Keep this page open. The affected panels will refresh when the action finishes."
       ),
     ]);
-    const stop = cancellable ? node("button", "runner-cancel-button", state.cancelRequested ? "Stop requested" : "Stop safely") : null;
+    const stop = cancellable ? node(
+      "button",
+      "runner-cancel-button",
+      state.cancelRequested
+        ? (String(state.busyAction || "").startsWith("draft_") ? "Pause requested" : "Stop requested")
+        : (String(state.busyAction || "").startsWith("draft_") ? "Pause draft" : "Stop safely")
+    ) : null;
     if (stop) {
       stop.type = "button";
       stop.disabled = state.cancelRequested;
@@ -3562,6 +3838,118 @@
     return overlay;
   }
 
+  function isFifthYearOptionDeadlineToday() {
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "").slice(0, 10);
+    if (!currentDate) return false;
+    const eventDate = calendarEventDateByCode("FIFTH_YEAR_OPTION_DEADLINE");
+    if (eventDate) return currentDate === eventDate;
+    const phase = String(data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "").toLowerCase();
+    const isOffseason = phase.includes("offseason") || phase.includes("post") || phase.includes("free") || phase.includes("draft");
+    return currentDate.slice(5) === "05-01" && isOffseason;
+  }
+
+  function fifthYearOptionCandidates() {
+    return (data.contractNegotiations?.fifthYearOptions || [])
+      .filter((player) => player && (player.player_id || player.player_name));
+  }
+
+  function fifthYearOptionPromptKey(players = fifthYearOptionCandidates()) {
+    return [
+      data.activeSave?.game_id || data.activeSave?.save_id || data.registry?.activeGameId || "",
+      data.currentDate || data.activeSave?.current_date || "",
+      data.contractNegotiations?.team || data.activeSave?.user_team || "",
+      players.map((player) => `${player.player_id || player.player_name}:${player.option_season || ""}`).join(","),
+    ].join(":");
+  }
+
+  function maybeLoadFifthYearOptionPromptData() {
+    if (!runnerMode() || state.runnerBusy || state.contractsLoading || !isFifthYearOptionDeadlineToday()) return;
+    if (state.contractsLiveKey === contractsLiveKey()) return;
+    loadLiveContracts().then(() => scheduleRender());
+  }
+
+  function fifthYearOptionModal() {
+    if (state.runnerBusy || !isFifthYearOptionDeadlineToday()) return null;
+    const players = fifthYearOptionCandidates();
+    if (!players.length) return null;
+    const key = fifthYearOptionPromptKey(players);
+    if (key && state.fifthYearOptionPromptDismissedKey === key) return null;
+    const talks = data.contractNegotiations || {};
+    const team = talks.team || data.activeSave?.user_team || "your team";
+    const overlay = node("div", "box-score-modal-overlay fifth-option-overlay");
+    const modal = node("section", "box-score-modal fifth-option-modal");
+    const top = node("div", "box-score-modal-top");
+    const title = node("div", "box-score-modal-title");
+    append(title, [
+      node("span", "tag warn", "Deadline"),
+      node("strong", null, "Fifth-Year Options"),
+      node("small", null, `${team} decision${players.length === 1 ? "" : "s"} due today`),
+    ]);
+    const close = node("button", "icon-button close-button", "Decide Later");
+    close.type = "button";
+    close.addEventListener("click", () => {
+      state.fifthYearOptionPromptDismissedKey = key;
+      render();
+    });
+    append(top, [title, close]);
+
+    const body = node("div", "box-score-modal-body fifth-option-body");
+    body.append(node("p", null, "The fifth-year option deadline is today. Exercise the option to lock in the guaranteed option year, or decline it and let the player continue toward normal contract talks."));
+    const list = node("div", "fifth-option-list");
+    players.forEach((player) => {
+      const card = node("article", "fifth-option-card");
+      const cardTop = node("div", "fifth-option-card-top");
+      append(cardTop, [
+        playerLink(player.player_id, player.player_name, "player-link strong-link", {
+          team,
+          position: player.position,
+        }),
+        tag(player.recommendation || "Review", String(player.recommendation || "").toLowerCase().includes("exercise") ? "good" : "warn"),
+      ]);
+      const details = node("div", "fifth-option-details");
+      append(details, [
+        append(node("span"), [node("b", null, player.position || "-"), document.createTextNode(" Position")]),
+        append(node("span"), [node("b", null, player.market_score || "-"), document.createTextNode(" Score")]),
+        append(node("span"), [node("b", null, player.option_season || "-"), document.createTextNode(" Option Year")]),
+        append(node("span"), [node("b", null, money(player.option_salary)), document.createTextNode(" Salary")]),
+      ]);
+      const actions = node("div", "fifth-option-actions");
+      const exercise = node("button", "control-button good", "Exercise Option");
+      exercise.type = "button";
+      exercise.disabled = state.runnerBusy || !runnerMode();
+      exercise.addEventListener("click", () => runAction("contract_option_exercise", {
+        player_id: player.player_id,
+      }));
+      const decline = node("button", "control-button secondary", "Decline");
+      decline.type = "button";
+      decline.disabled = state.runnerBusy || !runnerMode();
+      decline.addEventListener("click", () => runAction("contract_option_decline", {
+        player_id: player.player_id,
+      }));
+      append(actions, [exercise, decline]);
+      append(card, [cardTop, details, actions]);
+      list.append(card);
+    });
+    const footer = node("div", "fifth-option-footer");
+    const openContracts = node("button", "control-button", "Open Contract Talks");
+    openContracts.type = "button";
+    openContracts.addEventListener("click", () => {
+      state.fifthYearOptionPromptDismissedKey = key;
+      switchView("contracts", { refresh: true });
+    });
+    footer.append(openContracts);
+    append(body, [list, footer]);
+    append(modal, [top, body]);
+    overlay.append(modal);
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) {
+        state.fifthYearOptionPromptDismissedKey = key;
+        render();
+      }
+    });
+    return overlay;
+  }
+
   function rosterGateCountsFromState() {
     const depth = data.depthChart || {};
     const rows = rosterRows(depth);
@@ -3616,6 +4004,7 @@
   }
 
   function finishRender(root) {
+    maybeLoadFifthYearOptionPromptData();
     const banner = runnerBusyBanner();
     if (banner) root.prepend(banner);
     const boxScore = boxScoreModal();
@@ -3630,6 +4019,10 @@
     if (cutdownMode) root.append(cutdownMode);
     const draftSetup = draftClassSetupModal();
     if (draftSetup) root.append(draftSetup);
+    const fifthOption = fifthYearOptionModal();
+    if (fifthOption) root.append(fifthOption);
+    const draftTradeAlert = draftTradeAlertModal();
+    if (draftTradeAlert) root.append(draftTradeAlert);
     refs.content.replaceChildren(root);
   }
 
@@ -3797,7 +4190,7 @@
   }
 
   function renderOverview() {
-    setHeader("Season Hub", "A simple control room for testing seasons: sim weeks, check the league table, move through the calendar, and keep an eye on your Vikings save.");
+    setHeader("Season Hub", isObserveMode() ? "League-wide sim controls for watching all 32 CPU front offices." : "A simple control room for testing seasons, league tables, calendar flow, and your active save.");
     const root = document.createDocumentFragment();
     const summary = panel("Save Snapshot", "Current Run");
     panelBody(summary).append(renderMetrics());
@@ -3811,14 +4204,21 @@
     nextBody.append(
       actionCard(
         "Start Fresh June 1 Save",
-        "Create a new active Vikings save on June 1, with offseason roster limits off. This is the default starting point.",
+        isObserveMode() ? "Create a new observe save on June 1, with all 32 teams CPU-controlled." : "Create a new active team save on June 1, with offseason roster limits off.",
         commands.newJune1Save || commands.newGame,
         "new_june1_save",
-        {
-          start_year: data.currentSeason || 2026,
-          user_team: data.activeSave?.user_team || "MIN",
-          name: `${data.activeSave?.user_team || "MIN"} June 1 Start`,
-        },
+        isObserveMode()
+          ? {
+            start_year: data.currentSeason || 2026,
+            control_mode: "observe",
+            observe_mode: true,
+            name: "Observe June 1 Start",
+          }
+          : {
+            start_year: data.currentSeason || 2026,
+            user_team: data.activeSave?.user_team || "MIN",
+            name: `${data.activeSave?.user_team || "MIN"} June 1 Start`,
+          },
         "",
       )
     );
@@ -3868,7 +4268,7 @@
         )
       );
     }
-    if (data.draft?.draftDate && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
+    if (draftCanAdvanceToCurrentDraft(data.draft) && String(data.currentPhase || "").toLowerCase().includes("offseason")) {
       nextBody.append(
         actionCard(
           "Advance To Draft",
@@ -4184,16 +4584,19 @@
     teams.forEach((team, index) => {
       const diff = Number(team.points_for || 0) - Number(team.points_against || 0);
       const tr = node("tr", index === 0 ? "division-leader" : "");
-      append(tr, [
-        append(node("td", null), [
-          append(node("div", "standings-team"), [
-            teamLogo(team.teamLogo, team.abbreviation, "standings-team-logo"),
-            append(node("span", "standings-team-copy"), [
-              node("strong", null, team.abbreviation || "-"),
-              node("span", null, team.team_name || ""),
-            ]),
-          ]),
+      const teamButton = node("button", "standings-team", null);
+      teamButton.type = "button";
+      teamButton.title = `Open ${team.abbreviation || "team"} roster`;
+      teamButton.addEventListener("click", () => openRosterTeam(team.abbreviation));
+      append(teamButton, [
+        teamLogo(team.teamLogo, team.abbreviation, "standings-team-logo"),
+        append(node("span", "standings-team-copy"), [
+          node("strong", null, team.abbreviation || "-"),
+          node("span", null, team.team_name || ""),
         ]),
+      ]);
+      append(tr, [
+        append(node("td", null), [teamButton]),
         node("td", null, whole(team.wins)),
         node("td", null, whole(team.losses)),
         node("td", null, whole(team.ties)),
@@ -4475,14 +4878,41 @@
     aavInput.value = String(defaultAav);
     aavInput.title = "AAV";
 
+    const guaranteeInput = node("input", "offer-input offer-guarantee");
+    guaranteeInput.type = "number";
+    guaranteeInput.min = "0";
+    guaranteeInput.max = "85";
+    guaranteeInput.step = "5";
+    guaranteeInput.value = String(Math.max(0, Math.min(85, guaranteePct || 20)));
+    guaranteeInput.title = "Guaranteed money percentage";
+
+    const structureSelect = node("select", "offer-input offer-structure");
+    [
+      ["balanced", "Balanced"],
+      ["backloaded", "Backloaded"],
+      ["frontloaded", "Frontloaded"],
+      ["bonus-heavy", "Low Yr 1"],
+    ].forEach(([value, label]) => {
+      const option = node("option", null, label);
+      option.value = value;
+      if (value === "balanced") option.selected = true;
+      structureSelect.append(option);
+    });
+    structureSelect.title = "Contract structure";
+
     const currentOffer = () => {
       const years = Math.max(1, Math.min(5, Number(yearsInput.value || defaultYears || 1)));
       const aav = Math.max(0, Number(aavInput.value || defaultAav || 0));
-      const bonus = roundTo(aav * years * 0.08, 50_000);
+      const guarantee = Math.max(0, Math.min(85, Number(guaranteeInput.value || guaranteePct || 0)));
+      const structure = structureSelect.value || "balanced";
+      const bonusRate = structure === "bonus-heavy" ? 0.18 : structure === "backloaded" ? 0.12 : 0.08;
+      const bonus = roundTo(aav * years * bonusRate, 50_000);
       return {
         years,
         aav,
         bonus,
+        guarantee,
+        structure,
       };
     };
 
@@ -4490,6 +4920,19 @@
     wrap.append(yearsInput);
     wrap.append(node("span", "offer-label", "AAV"));
     wrap.append(aavInput);
+    wrap.append(node("span", "offer-label", "Gtd"));
+    wrap.append(guaranteeInput);
+    wrap.append(node("span", "offer-label", "Shape"));
+    wrap.append(structureSelect);
+    if (isObserveMode()) {
+      [yearsInput, aavInput, guaranteeInput, structureSelect].forEach((item) => { item.disabled = true; });
+      const observe = node("button", "run-button", "Observe");
+      observe.type = "button";
+      observe.disabled = true;
+      observe.title = "Observe Mode has no user-controlled free-agent offers.";
+      wrap.append(observe);
+      return wrap;
+    }
     if (runnerMode()) {
       const run = node("button", "run-button", state.runnerBusy ? "Running" : "Offer");
       run.type = "button";
@@ -4501,7 +4944,8 @@
           years: offer.years,
           aav: offer.aav,
           bonus: offer.bonus,
-          guarantee_pct: guaranteePct,
+          guarantee_pct: offer.guarantee,
+          structure: offer.structure,
           cpu_response_offers: 2,
         });
       });
@@ -5437,6 +5881,9 @@
         team: depth.team,
         position: player.position,
       }));
+      const contractText = contract.end_year
+        ? `Cap ${money(contract.cap_hit || contract.asking_aav || 0)} | thru ${contract.end_year}`
+        : (contract.type || "-");
       append(tr, [
         append(node("td", "roster-photo-cell"), [rosterHeadshot(player)]),
         node("td", "numeric roster-number-cell", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
@@ -5447,7 +5894,7 @@
         node("td", "numeric", player.age ?? "-"),
         node("td", null, assignment ? `${assignment.slot} #${assignment.rank}` : "-"),
         node("td", null, player.role?.key ? `${roleLabel(player.role.key)} ${oneDecimal(player.roleScore)}` : "-"),
-        node("td", null, contract.end_year ? `${money(contract.cap_hit || contract.asking_aav || 0)} / ${contract.end_year}` : (contract.type || "-")),
+        node("td", null, contractText),
         node("td", null, player.status || "Active"),
       ]);
       body.append(tr);
@@ -5512,43 +5959,53 @@
       metric("Overall", player.overall ?? "-", `Potential ${player.potential ?? "-"}`),
       metric("Depth", assignment ? `${assignment.slot} #${assignment.rank}` : "Unassigned", assignment?.unit || "No room"),
       metric("Role Fit", player.roleScore ? oneDecimal(player.roleScore) : "-", player.role?.key ? roleLabel(player.role.key) : "No role read"),
-      metric("Contract", contract.end_year ? `Through ${contract.end_year}` : (contract.type || "Rostered"), contract.cap_hit ? `Cap ${money(contract.cap_hit)}` : (contract.market_tier || "")),
+      metric(
+        "Contract",
+        contract.end_year ? `Through ${contract.end_year}` : (contract.type || "Rostered"),
+        contract.cap_hit ? `${contract.season || rosterContractSeason() || ""} cap ${money(contract.cap_hit)}`.trim() : (contract.market_tier || "")
+      ),
     ]);
     const actions = node("div", "roster-action-grid");
     const profile = node("a", "run-button compact", "View Profile");
     profile.href = playerProfileHref({ playerId: player.player_id, name: player.player_name, team: depth.team, position: player.position });
     const cardLink = node("a", "run-button compact", "View Card");
     cardLink.href = playerCardHref({ playerId: player.player_id, name: player.player_name, team: depth.team, position: player.position });
-    const depthButton = node("button", "run-button compact", "Depth Chart");
-    depthButton.type = "button";
-    depthButton.addEventListener("click", () => {
-      state.selectedDepthSlot = assignment?.slot || null;
-      switchView("depth");
-    });
-    append(actions, [
-      profile,
-      cardLink,
-      depthButton,
-      rosterActionButton("Extend", "contract_extend", {
-        player_id: player.player_id,
-        years: contract.suggested_years || player.suggested_years || 1,
-        aav: contract.asking_aav || player.asking_aav || 0,
-      }),
-      rosterActionButton("Restructure", "contract_restructure", {
-        player_id: player.player_id,
-        amount: contract.suggested_convert || player.suggested_convert || 0,
-      }),
-      rosterActionButton("Release", "roster_release_player", {
-        player_id: player.player_id,
-      }, "danger"),
-    ]);
+    const userTeam = String(data.activeSave?.user_team || "").toUpperCase();
+    const viewedTeam = String(depth.team || "").toUpperCase();
+    const isUserRoster = !userTeam || !viewedTeam || viewedTeam === userTeam;
+    append(actions, [profile, cardLink]);
+    if (isUserRoster) {
+      const depthButton = node("button", "run-button compact", "Depth Chart");
+      depthButton.type = "button";
+      depthButton.addEventListener("click", () => {
+        state.selectedDepthSlot = assignment?.slot || null;
+        switchView("depth");
+      });
+      append(actions, [
+        depthButton,
+        rosterActionButton("Extend", "contract_extend", {
+          player_id: player.player_id,
+          years: contract.suggested_years || player.suggested_years || 1,
+          aav: contract.asking_aav || player.asking_aav || 0,
+        }),
+        rosterActionButton("Restructure", "contract_restructure", {
+          player_id: player.player_id,
+          amount: contract.suggested_convert || player.suggested_convert || 0,
+        }),
+        rosterActionButton("Release", "roster_release_player", {
+          player_id: player.player_id,
+        }, "danger"),
+      ]);
+    } else {
+      actions.append(node("div", "read-only-note", `${viewedTeam} roster is view-only from here.`));
+    }
     const assignments = node("div", "roster-assignment-strip");
     (player.assignments || []).slice(0, 8).forEach((item) => assignments.append(tag(`${item.slot} #${item.rank}`, depthRoleTone(item.rank))));
     if (!assignments.children.length) assignments.append(tag("No depth role", ""));
     append(body, [
       title,
       facts,
-      sectionBlock("Jersey Number", rosterJerseyControl(player)),
+      isUserRoster ? sectionBlock("Jersey Number", rosterJerseyControl(player)) : null,
       sectionBlock("Actions", actions),
       sectionBlock("Depth Usage", assignments),
     ]);
@@ -5917,11 +6374,15 @@
   }
 
   function renderRosterHub() {
-    const team = data.activeSave?.user_team || data.depthChart?.team || "MIN";
+    const userTeam = data.activeSave?.user_team || rosterTeamOptions()[0]?.abbr || "MIN";
+    const team = state.rosterTeam || userTeam;
     setHeader("View Roster", `${team} roster by position group, ratings, depth role, and player actions.`);
     const root = document.createDocumentFragment();
-    const depth = data.depthChart || { rows: [], roster: [], units: [] };
-    if (runnerMode() && state.depthChartLiveKey !== depthChartLiveKey() && !state.depthChartLoading) {
+    const liveDepth = data.depthChart || { rows: [], roster: [], units: [] };
+    const depth = String(liveDepth.team || "").toUpperCase() === String(team).toUpperCase()
+      ? liveDepth
+      : { team, rows: [], roster: [], units: [] };
+    if (runnerMode() && (state.depthChartLiveKey !== depthChartLiveKey() || String(data.depthChart?.team || "") !== String(team)) && !state.depthChartLoading) {
       loadLiveDepthChart().then(render);
     }
     const rows = rosterRows(depth);
@@ -5932,6 +6393,7 @@
     if (state.depthChartLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live roster..."));
     }
+    panelBody(summary).append(rosterTeamSelector(team));
     const metrics = node("section", "metric-grid roster-metrics");
     append(metrics, [
       metric("Players", String(rows.length), "Active roster pool"),
@@ -5949,7 +6411,10 @@
     const toolbar = node("div", "roster-toolbar");
     const depthLink = node("button", "run-button compact", "Open Depth Chart");
     depthLink.type = "button";
+    depthLink.disabled = isObserveMode();
+    depthLink.title = isObserveMode() ? "Depth chart editing is disabled in Observe Mode." : "Open depth chart";
     depthLink.addEventListener("click", () => {
+      if (isObserveMode()) return;
       switchView("depth");
     });
     append(toolbar, [
@@ -6127,7 +6592,7 @@
 
   function draftRoomTopline(draft, visibleBoard, selected) {
     const draftState = draft?.state || null;
-    const userTeam = draftState?.user_team || data.activeSave?.user_team || "MIN";
+    const userTeam = draftState?.user_team || data.activeSave?.user_team || (isObserveMode() ? "CPU" : "MIN");
     const currentTeam = draftState?.current_team || "-";
     const onClock = isUserOnClock();
     const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
@@ -6169,7 +6634,7 @@
       const item = node("div", "row draft-event-row");
       append(item, [
         append(node("span"), [
-          node("strong", null, event.event_type === "user_draft_trade_rejected" ? "Trade rejected" : event.event_type === "user_draft_trade" ? "Trade accepted" : event.event_type || "Draft event"),
+          node("strong", null, draftEventLabel(event)),
           node("small", null, event.message || ""),
         ]),
       ]);
@@ -6179,9 +6644,17 @@
     return p;
   }
 
+  function draftEventLabel(event) {
+    const type = String(event?.event_type || "");
+    if (type === "user_draft_trade_rejected") return "Trade rejected";
+    if (type === "user_draft_trade" || type === "draft_trade") return "Draft trade";
+    if (type === "selection") return "Selection";
+    return type ? type.replace(/_/g, " ") : "Draft event";
+  }
+
   function draftWarRoomPanel(draft, visibleBoard, selected) {
     const draftState = draft?.state || null;
-    const userTeam = draftState?.user_team || data.activeSave?.user_team || "MIN";
+    const userTeam = draftState?.user_team || data.activeSave?.user_team || (isObserveMode() ? "CPU" : "MIN");
     const currentTeam = draftState?.current_team || "-";
     const onClock = isUserOnClock();
     const currentPick = draftState?.current_pick_number ? `#${draftState.current_pick_number}` : "-";
@@ -6477,6 +6950,139 @@
     });
     overlay.append(dialog);
     return overlay;
+  }
+
+  function firstRoundDraftTradeAlertEvent() {
+    if (state.view !== "draft") return null;
+    const draft = data.draft || {};
+    const event = (draft.events || []).find((item) => {
+      const type = String(item?.event_type || "");
+      return Number(item?.round || 0) === 1 && (type === "draft_trade" || type === "user_draft_trade");
+    });
+    if (!event) return null;
+    const key = `${draft.year || ""}:${event.event_id || event.created_at || event.message || ""}`;
+    if (state.draftTradeAlertDismissed[key]) return null;
+    return { ...event, key };
+  }
+
+  function draftTradeAlertModal() {
+    const event = firstRoundDraftTradeAlertEvent();
+    if (!event) return null;
+    const details = event.details || {};
+    const buyerReceives = details.buyerReceives || [];
+    const sellerReceives = details.sellerReceives || [];
+    const buyerLabel = details.buyer || event.team || "Acquiring team";
+    const sellerLabel = details.seller || event.original_team || "Original team";
+    const pickLabel = event.pick_number ? `Pick #${event.pick_number}` : "First-round pick";
+    const prospectName = details.target?.name || event.prospect_name || "";
+    const prospectMeta = [details.target?.position || event.prospect_position, event.prospect_college].filter(Boolean).join(" | ");
+    const valueText = Number(details.offerValue || 0) && Number(details.targetValue || 0)
+      ? `Trade value: ${Number(details.offerValue).toFixed(1)} offered vs ${Number(details.targetValue).toFixed(1)} required`
+      : "";
+    const tradeTitle = `${buyerLabel || "Team"} - ${sellerLabel || "Team"} Trade`;
+    const closeAlert = () => {
+      state.draftTradeAlertDismissed[event.key] = true;
+      render();
+    };
+    const close = node("button", "icon-button close-button", "Close");
+    close.type = "button";
+    close.addEventListener("click", closeAlert);
+    const actions = node("div", "draft-trade-alert-actions");
+    if (event.prospect_id) {
+      const prospectButton = node("button", "control-button secondary", "Open Prospect");
+      prospectButton.type = "button";
+      prospectButton.addEventListener("click", () => {
+        state.draftTradeAlertDismissed[event.key] = true;
+        openProspect(event.prospect_id, { preferredView: "draft" });
+      });
+      actions.append(prospectButton);
+    }
+    const ok = node("button", "control-button primary", "Got It");
+    ok.type = "button";
+    ok.addEventListener("click", closeAlert);
+    actions.append(ok);
+
+    const overlay = node("div", "box-score-modal-overlay draft-trade-modal-overlay draft-trade-alert-overlay");
+    const dialog = node("section", "box-score-modal draft-trade-modal draft-trade-alert-modal");
+    append(dialog, [
+      append(node("div", "box-score-modal-header draft-trade-modal-header"), [
+        append(node("div"), [
+          node("span", "tag good", "First-Round Trade"),
+          node("h3", null, tradeTitle),
+          node("small", "muted", event.created_at ? `Draft room update | ${event.created_at}` : "Draft room update"),
+        ]),
+        close,
+      ]),
+      append(node("div", "draft-trade-alert-body"), [
+        append(node("div", "draft-trade-alert-summary"), [
+          node("strong", null, `${buyerLabel} moved up for ${pickLabel}`),
+          node("span", null, event.message || "A first-round draft trade has been completed."),
+          details.legacyReconstructed ? node("em", null, "Compensation reconstructed from the draft ledger.") : null,
+        ]),
+        append(node("div", "draft-trade-alert-sides"), [
+          draftTradeAlertSide(`${buyerLabel} Receives`, buyerReceives, [
+            pickLabel,
+            prospectName ? `Target: ${prospectName}${prospectMeta ? ` | ${prospectMeta}` : ""}` : "",
+          ].filter(Boolean)),
+          draftTradeAlertSide(`${sellerLabel} Receives`, sellerReceives, []),
+        ]),
+        append(node("div", "draft-trade-alert-grid"), [
+          valueText ? append(node("div", "draft-trade-alert-card"), [
+            node("small", null, "Value"),
+            node("strong", null, valueText),
+          ]) : null,
+          append(node("div", "draft-trade-alert-card"), [
+            node("small", null, "Why It Happened"),
+            node("strong", null, details.reason || "Draft-room trade negotiation"),
+          ]),
+        ]),
+      ]),
+      append(node("div", "draft-trade-footer"), [
+        node("small", "muted", "First-round trade alerts appear once when they happen."),
+        actions,
+      ]),
+    ]);
+    overlay.addEventListener("click", (clickEvent) => {
+      if (clickEvent.target === overlay) closeAlert();
+    });
+    overlay.append(dialog);
+    return overlay;
+  }
+
+  function draftTradeAlertSide(title, picks, fallbackLines = []) {
+    const side = node("section", "draft-trade-alert-side");
+    const pickCount = (picks || []).length;
+    const list = node("div", "draft-trade-alert-picks");
+    (picks || []).forEach((pick) => list.append(draftTradeAlertPick(pick)));
+    if (!list.children.length) {
+      fallbackLines.forEach((line) => {
+        if (line) list.append(node("div", "draft-trade-alert-pick", line));
+      });
+    }
+    if (!list.children.length) {
+      list.append(node("div", "draft-trade-alert-pick muted", "Compensation details unavailable for this older trade event."));
+    }
+    append(side, [
+      append(node("div", "draft-trade-alert-side-head"), [
+        node("small", null, title),
+        node("span", null, pickCount ? `${pickCount} asset${pickCount === 1 ? "" : "s"}` : "Fallback"),
+      ]),
+      list,
+    ]);
+    return side;
+  }
+
+  function draftTradeAlertPick(pick) {
+    const pickNumber = Number(pick?.pickNumber || 0);
+    const round = Number(pick?.round || 0);
+    const draftYear = pick?.draftYear || "";
+    const label = pick?.label || (pickNumber && round ? `${draftYear} R${round}, Pick ${pickNumber}` : `${draftYear} Round ${round}`.trim());
+    const row = node("div", "draft-trade-alert-pick");
+    append(row, [
+      node("strong", null, label || "Draft pick"),
+      pickNumber && round ? node("span", null, `Round ${round} | Pick ${pickNumber}`) : null,
+    ]);
+    return row;
   }
 
   function draftSelectionNameLink(playerId, prospectId, name, position, preferPlayer, team) {
@@ -6847,18 +7453,75 @@
   }
 
   function prospectNameButton(player) {
-    const wrap = node("span", "prospect-name-cell");
-    const button = node("button", "prospect-link", player.player_name || `${player.first_name || ""} ${player.last_name || ""}`.trim());
+    const wrap = node("span", "prospect-name-cell with-thumb draft-row-prospect");
+    const copy = node("span", "prospect-name-copy");
+    const button = node("button", "prospect-link", prospectDisplayName(player));
     button.type = "button";
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       openDraftProspectPopover(player.prospect_id);
     });
-    append(wrap, [
+    append(copy, [
       button,
       node("small", null, roleLabel(player.primary_role || player.archetype)),
     ]);
+    append(wrap, [prospectThumbnail(player, "tiny"), copy]);
     return wrap;
+  }
+
+  function prospectDisplayName(prospect) {
+    return prospect?.player_name
+      || prospect?.playerName
+      || `${prospect?.first_name || prospect?.firstName || ""} ${prospect?.last_name || prospect?.lastName || ""}`.trim()
+      || "Prospect";
+  }
+
+  function prospectInitials(prospect) {
+    const name = prospectDisplayName(prospect);
+    const pieces = name.split(/\s+/).filter(Boolean);
+    if (!pieces.length) return "P";
+    if (pieces.length === 1) return pieces[0].slice(0, 2).toUpperCase();
+    return `${pieces[0][0] || ""}${pieces[pieces.length - 1][0] || ""}`.toUpperCase();
+  }
+
+  function prospectThumbnail(prospect, size = "") {
+    const thumb = node("span", `prospect-thumb ${size}`.trim());
+    const label = prospectDisplayName(prospect);
+    thumb.title = label;
+    thumb.setAttribute("aria-hidden", "true");
+    if (prospect?.portrait) {
+      const img = document.createElement("img");
+      img.src = prospect.portrait;
+      img.alt = "";
+      img.loading = "lazy";
+      img.addEventListener("error", () => {
+        img.remove();
+        thumb.classList.add("image-missing");
+        thumb.textContent = prospectInitials(prospect);
+      }, { once: true });
+      thumb.append(img);
+    } else {
+      thumb.classList.add("image-missing");
+      thumb.textContent = prospectInitials(prospect);
+    }
+    return thumb;
+  }
+
+  function prospectFromBoards(prospectId) {
+    const id = String(prospectId || "");
+    if (!id) return null;
+    const pools = [
+      data.scouting?.board || [],
+      data.draft?.board || [],
+      (data.draft?.pickQueue || []).map((pick) => pick.selectedProspect).filter(Boolean),
+      data.draft?.selections || [],
+      data.draft?.userSelections || [],
+    ];
+    for (const pool of pools) {
+      const match = (pool || []).find((item) => String(item?.prospect_id || item?.prospectId || "") === id);
+      if (match) return match;
+    }
+    return null;
   }
 
   function openDraftProspectPopover(prospectId) {
@@ -6944,11 +7607,22 @@
       return card;
     }
     const identity = node("div", "prospect-identity");
-    append(identity, [
+    if (player.portrait) {
+      const portrait = node("div", "prospect-portrait");
+      const img = document.createElement("img");
+      img.src = player.portrait;
+      img.alt = `${player.player_name || "Prospect"} portrait`;
+      img.loading = "lazy";
+      portrait.append(img);
+      identity.append(portrait);
+    }
+    const identityText = node("div", "prospect-identity-text");
+    append(identityText, [
       node("h3", null, player.player_name),
       node("div", "prospect-tags"),
     ]);
-    const tags = identity.querySelector(".prospect-tags");
+    identity.append(identityText);
+    const tags = identityText.querySelector(".prospect-tags");
     append(tags, [
       tag(player.position || "-"),
       player.college_class ? tag(player.college_class) : null,
@@ -7002,6 +7676,8 @@
       ["Medical", `${player.medical_flag || "Clean file"}${player.medical_risk ? ` | ${player.medical_risk}` : ""}`],
       ["Interview", `${player.interview_trait || "-"}${player.interview_grade ? ` | ${player.interview_grade}` : ""}`],
       ["Private", `${player.private_workout_type || "None"}${player.private_workout_interest ? ` | ${player.private_workout_interest}` : ""}`],
+      ["Name", player.name_background_note || player.name_pronunciation_note || player.name_storyline_note || "-"],
+      ["Family", player.family_football_background || "-"],
       ["Pipeline", player.pipeline_note || player.discovery_notes || "-"],
       ["Board", player.late_process_note || "-"],
     ], "compact")));
@@ -7154,6 +7830,7 @@
   }
 
   function isUserOnClock() {
+    if (isObserveMode()) return false;
     const draftState = data.draft?.state;
     if (!draftState) return false;
     return String(draftState.current_team || "").toUpperCase() === String(draftState.user_team || data.activeSave?.user_team || "").toUpperCase();
@@ -7794,6 +8471,7 @@
     const controlDeck = node("div", "scouting-control-deck");
     append(controlDeck, [metrics, controls, eventGrid]);
     body.append(controlDeck);
+    body.append(renderScoutingTierBudgets(scouting));
 
     normalizeScoutingFilters(scouting.board || []);
     const filteredBoard = filteredScoutingBoard(scouting.board || []);
@@ -7807,6 +8485,32 @@
     append(layout, [boardPanel]);
     body.append(layout);
     return p;
+  }
+
+  function renderScoutingTierBudgets(scouting) {
+    const budgets = scouting.tierBudgets || [];
+    if (!budgets.length) return node("div");
+    const wrap = node("section", "scouting-tier-budget-strip");
+    budgets.forEach((tier) => {
+      const mediumUsed = Number(tier.mediumUsed || 0);
+      const mediumLimit = Number(tier.mediumLimit || 0);
+      const highUsed = Number(tier.highUsed || 0);
+      const highLimit = Number(tier.highLimit || 0);
+      const veryHighUsed = Number(tier.veryHighUsed || 0);
+      const veryHighLimit = Number(tier.veryHighLimit || 0);
+      const saturated = (mediumLimit && mediumUsed >= mediumLimit)
+        || (highLimit && highUsed >= highLimit)
+        || (veryHighLimit && veryHighUsed >= veryHighLimit);
+      append(wrap, [
+        append(node("article", `scouting-tier-chip ${saturated ? "full" : ""}`), [
+          node("strong", null, `Board ${tier.label || "-"}`),
+          node("span", null, `Med ${mediumUsed}/${mediumLimit}`),
+          node("span", null, `High ${highUsed}/${highLimit}`),
+          node("span", null, `VH ${veryHighUsed}/${veryHighLimit}`),
+        ]),
+      ]);
+    });
+    return wrap;
   }
 
   function scoutingWindowBanner(scouting, options) {
@@ -7869,10 +8573,7 @@
     reports.slice(0, 6).forEach((report) => {
       const card = node("article", `top30-card ${report.result_type || ""}`.trim());
       append(card, [
-        append(node("div", "message-top"), [
-          node("strong", null, report.player_name || "Prospect"),
-          node("span", "event-date", report.result_type === "trait" ? "Trait" : "Confidence"),
-        ]),
+        scoutingMiniCardHeader(report, report.result_type === "trait" ? "Trait" : "Confidence"),
         node("small", null, `${report.position || "-"} | ${report.college || "-"} | ${shortDate(report.event_date)}`),
         node("p", null, report.notes || "Senior Bowl report logged."),
       ]);
@@ -7905,10 +8606,7 @@
     visits.slice(0, 6).forEach((visit) => {
       const card = node("article", `top30-card ${visit.result_type || ""}`.trim());
       append(card, [
-        append(node("div", "message-top"), [
-          node("strong", null, visit.player_name || "Prospect"),
-          node("span", "event-date", top30OutcomeLabel(visit.result_type)),
-        ]),
+        scoutingMiniCardHeader(visit, top30OutcomeLabel(visit.result_type)),
         node("small", null, `${visit.position || "-"} | ${visit.college || "-"} | ${shortDate(visit.visit_date)}`),
         node("p", null, visit.notes || "Visit completed."),
       ]);
@@ -7924,6 +8622,20 @@
       personality: "Traits",
       inconclusive: "Inconclusive",
     }[result] || "Visit";
+  }
+
+  function scoutingMiniCardHeader(item, label) {
+    const prospect = prospectFromBoards(item.prospect_id) || item;
+    const header = node("div", "message-top scouting-card-top");
+    append(header, [
+      prospectThumbnail(prospect, "small"),
+      append(node("span", "scouting-card-title"), [
+        node("strong", null, item.player_name || prospectDisplayName(prospect)),
+        node("small", null, `${item.position || prospect?.position || "-"} | ${item.college || prospect?.college || "-"}`),
+      ]),
+      node("span", "event-date", label || "Report"),
+    ]);
+    return header;
   }
 
   function renderScoutingAudit(audit = {}) {
@@ -8211,18 +8923,20 @@
   }
 
   function scoutingProspectNameButton(prospect) {
-    const wrap = node("span", "prospect-name-cell");
-    const button = node("button", "prospect-link", prospect.player_name || `${prospect.first_name || ""} ${prospect.last_name || ""}`.trim() || "Prospect");
+    const wrap = node("span", "prospect-name-cell with-thumb scouting-row-prospect");
+    const copy = node("span", "prospect-name-copy");
+    const button = node("button", "prospect-link", prospectDisplayName(prospect));
     button.type = "button";
     button.title = "Open prospect card";
     button.addEventListener("click", (event) => {
       event.stopPropagation();
       openDraftProspectPopover(prospect.prospect_id);
     });
-    append(wrap, [
+    append(copy, [
       button,
       node("small", null, prospect.archetype || roleLabel(prospect.primary_role)),
     ]);
+    append(wrap, [prospectThumbnail(prospect, "small"), copy]);
     return wrap;
   }
 
@@ -9022,12 +9736,12 @@
       panelBody(summary).append(node("div", "empty-state", "Refreshing live league leaders..."));
     }
     panelBody(summary).append(table(["Category", "Leader", "Team", "Total"], [
-      ["Passing", statPlayerLink(stats.passing?.[0]), stats.passing?.[0]?.team || "-", stats.passing?.[0] ? `${whole(stats.passing[0].pass_yards)} yards` : "-"],
-      ["Rushing", statPlayerLink(stats.rushing?.[0]), stats.rushing?.[0]?.team || "-", stats.rushing?.[0] ? `${whole(stats.rushing[0].rush_yards)} yards` : "-"],
-      ["Receiving", statPlayerLink(stats.receiving?.[0]), stats.receiving?.[0]?.team || "-", stats.receiving?.[0] ? `${whole(stats.receiving[0].receiving_yards)} yards` : "-"],
-      ["Sacks", statPlayerLink(stats.sacks?.[0]), stats.sacks?.[0]?.team || "-", stats.sacks?.[0] ? `${whole(stats.sacks[0].sacks)} sacks` : "-"],
-      ["Tackles", statPlayerLink(stats.tackles?.[0]), stats.tackles?.[0]?.team || "-", stats.tackles?.[0] ? `${whole(stats.tackles[0].tackles)} tackles` : "-"],
-      ["Snaps", statPlayerLink(stats.snaps?.[0]), stats.snaps?.[0]?.team || "-", stats.snaps?.[0] ? `${whole(stats.snaps[0].total_snaps)} snaps` : "-"],
+      ["Passing", statPlayerLink(stats.passing?.[0]), statTeamLink(stats.passing?.[0]?.team), stats.passing?.[0] ? `${whole(stats.passing[0].pass_yards)} yards` : "-"],
+      ["Rushing", statPlayerLink(stats.rushing?.[0]), statTeamLink(stats.rushing?.[0]?.team), stats.rushing?.[0] ? `${whole(stats.rushing[0].rush_yards)} yards` : "-"],
+      ["Receiving", statPlayerLink(stats.receiving?.[0]), statTeamLink(stats.receiving?.[0]?.team), stats.receiving?.[0] ? `${whole(stats.receiving[0].receiving_yards)} yards` : "-"],
+      ["Sacks", statPlayerLink(stats.sacks?.[0]), statTeamLink(stats.sacks?.[0]?.team), stats.sacks?.[0] ? `${whole(stats.sacks[0].sacks)} sacks` : "-"],
+      ["Tackles", statPlayerLink(stats.tackles?.[0]), statTeamLink(stats.tackles?.[0]?.team), stats.tackles?.[0] ? `${whole(stats.tackles[0].tackles)} tackles` : "-"],
+      ["Snaps", statPlayerLink(stats.snaps?.[0]), statTeamLink(stats.snaps?.[0]?.team), stats.snaps?.[0] ? `${whole(stats.snaps[0].total_snaps)} snaps` : "-"],
     ]));
     root.append(summary);
 
@@ -9035,7 +9749,7 @@
     panelBody(passing).append(table(["#", "Player", "Team", "Comp", "Att", "Pct", "Yds", "TD", "INT", "Sacks"], (stats.passing || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.pass_completions),
       whole(p.pass_attempts),
       rate(p.pass_completions, p.pass_attempts),
@@ -9051,7 +9765,7 @@
     panelBody(rushing).append(table(["#", "Player", "Team", "Car", "Yds", "Avg", "TD"], (stats.rushing || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.rush_attempts),
       whole(p.rush_yards),
       oneDecimal(Number(p.rush_yards || 0) / Math.max(1, Number(p.rush_attempts || 0))),
@@ -9062,7 +9776,7 @@
     panelBody(receiving).append(table(["#", "Player", "Team", "Rec", "Tgt", "Yds", "Avg", "TD"], (stats.receiving || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.receptions),
       whole(p.targets),
       whole(p.receiving_yards),
@@ -9077,7 +9791,7 @@
     panelBody(sacks).append(table(["#", "Player", "Team", "Sacks", "Tkl", "FF"], (stats.sacks || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.sacks),
       whole(p.tackles),
       whole(p.forced_fumbles),
@@ -9086,7 +9800,7 @@
     panelBody(interceptions).append(table(["#", "Player", "Team", "INT", "PD", "Solo", "Ast", "Tkl"], (stats.interceptions || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.interceptions),
       whole(p.pass_deflections),
       p.solo_tackles === undefined ? "-" : whole(p.solo_tackles),
@@ -9100,7 +9814,7 @@
     panelBody(kicking).append(table(["#", "Player", "Team", "FG", "FGA", "XP", "XPA", "Long"], (stats.kicking || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.fg_made),
       whole(p.fg_attempts),
       whole(p.xp_made),
@@ -9113,7 +9827,7 @@
     panelBody(snaps).append(table(["#", "Player", "Team", "Off", "Def", "ST", "Total"], (stats.snaps || []).map((p, idx) => [
       idx + 1,
       statPlayerLink(p),
-      p.team,
+      statTeamLink(p.team),
       whole(p.offensive_snaps),
       whole(p.defensive_snaps),
       whole(p.special_teams_snaps),
@@ -9126,18 +9840,64 @@
     finishRender(root);
   }
 
+  function observeTakeoverPanel() {
+    if (!isObserveMode()) return null;
+    const teams = rosterTeamOptions();
+    if (!teams.length) return null;
+    if (!state.takeoverTeam || !teams.some((team) => team.abbr === state.takeoverTeam)) {
+      const preferred = teams.find((team) => team.abbr === "MIN") || teams[0];
+      state.takeoverTeam = preferred.abbr;
+    }
+    const selected = teams.find((team) => team.abbr === state.takeoverTeam) || teams[0];
+    const root = panel("Take Over Team", "Observe Mode");
+    root.classList.add("observe-takeover-panel");
+    const body = panelBody(root);
+    const row = node("div", "roster-team-switcher observe-takeover-controls");
+    const logo = teamLogo(selected?.logo, selected?.abbr, "roster-team-logo");
+    const field = node("label", "roster-filter roster-team-filter");
+    append(field, [node("span", null, "Team")]);
+    const select = node("select");
+    select.disabled = state.runnerBusy || !runnerMode();
+    teams.forEach((team) => {
+      const option = node("option", null, `${team.abbr} | ${team.name}`);
+      option.value = team.abbr;
+      option.selected = team.abbr === state.takeoverTeam;
+      select.append(option);
+    });
+    select.addEventListener("change", () => {
+      state.takeoverTeam = select.value;
+      render();
+    });
+    field.append(select);
+    const takeOver = node("button", "run-button", state.runnerBusy ? "Running" : "Take Over");
+    takeOver.type = "button";
+    takeOver.disabled = state.runnerBusy || !runnerMode() || !state.takeoverTeam;
+    takeOver.title = runnerMode() ? "Switch this save to user control for the selected team." : "Live actions are unavailable";
+    takeOver.addEventListener("click", () => runAction("take_over_team", { team: state.takeoverTeam }));
+    append(row, [logo, field, takeOver]);
+    append(body, [
+      node("p", "muted", "Jump in at the current date. The team’s existing CPU scouting file becomes your scouting board."),
+      row,
+    ]);
+    return root;
+  }
+
   function renderCalendar() {
-    const userTeam = data.activeSave?.user_team || "User";
-    setHeader("Calendar", `${userTeam} schedule with league-wide dates, news, and the next useful advance target.`);
+    const userTeam = data.activeSave?.user_team || "League";
+    setHeader("Calendar", isObserveMode() ? "League calendar with games, news, and the next useful advance target." : `${userTeam} schedule with league-wide dates, news, and the next useful advance target.`);
     const root = document.createDocumentFragment();
     const calendar = data.calendar || {};
     const calendarKey = `${data.currentSeason || data.season?.season || ""}:${data.currentDate || calendar.focusDate || ""}`;
-    if (runnerMode() && state.calendarLiveKey !== calendarKey && !state.calendarLoading) {
-      loadLiveCalendar().then(render);
+    if (runnerMode() && !state.runnerBusy && !state.calendarLiveFocus && state.calendarLiveKey !== calendarKey && !state.calendarLoading) {
+      loadLiveCalendar().then((changed) => {
+        if (changed) scheduleRender();
+      });
     }
     const nextEvent = calendar.nextEvent || (data.events || [])[0];
     const nextWeek = data.season?.nextWeek;
     root.append(calendarControlPanel(calendar, nextEvent, nextWeek));
+    const takeover = observeTakeoverPanel();
+    if (takeover) root.append(takeover);
     if (state.runnerBusy && cancellableRunnerAction(state.busyAction)) {
       root.append(calendarSimProgressStrip(calendar));
     }
@@ -9581,6 +10341,9 @@
   }
 
   function render() {
+    if (isObserveMode() && observeHiddenViews().has(state.view)) {
+      state.view = "calendar";
+    }
     maybeShowRosterGatePromptFromState();
     const previousView = state.lastRenderedView;
     const shouldRestoreScroll = previousView === state.view;
@@ -9624,6 +10387,10 @@
   refs.buttons.forEach((button) => {
     button.addEventListener("click", () => {
       if (button.hidden) return;
+      if (button.dataset.view === "roster") {
+        state.rosterTeam = "";
+        state.depthChartLiveKey = null;
+      }
       switchView(button.dataset.view, { refresh: false });
       refreshCurrentView();
     });

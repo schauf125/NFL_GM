@@ -9,14 +9,14 @@
       "max_pct": 0.6,
       "first_styles": {
         "us_general": 42,
-        "football": 10,
+        "football": 4,
         "african_american": 38,
         "west_african": 7,
         "caribbean": 3
       },
       "last_styles": {
         "us_general": 55,
-        "football": 25,
+        "football": 11,
         "african_american": 12,
         "west_african": 5,
         "caribbean": 3
@@ -30,16 +30,16 @@
       "min_pct": 0.22,
       "max_pct": 0.3,
       "first_styles": {
-        "us_general": 68,
-        "football": 10,
-        "anglo": 13,
+        "us_general": 72,
+        "football": 2,
+        "anglo": 15,
         "european": 9
       },
       "last_styles": {
-        "us_general": 50,
-        "football": 20,
-        "anglo": 15,
-        "european": 15
+        "us_general": 54,
+        "football": 5,
+        "anglo": 17,
+        "european": 17
       }
     },
     {
@@ -51,7 +51,7 @@
       "max_pct": 0.125,
       "first_styles": {
         "us_general": 46,
-        "football": 10,
+        "football": 4,
         "african_american": 17,
         "hispanic_latino": 12,
         "polynesian": 8,
@@ -59,7 +59,7 @@
       },
       "last_styles": {
         "us_general": 35,
-        "football": 20,
+        "football": 9,
         "african_american": 12,
         "hispanic_latino": 14,
         "polynesian": 10,
@@ -75,12 +75,12 @@
       "max_pct": 0.07,
       "first_styles": {
         "us_general": 32,
-        "football": 6,
+        "football": 3,
         "hispanic_latino": 62
       },
       "last_styles": {
         "us_general": 20,
-        "football": 10,
+        "football": 4,
         "hispanic_latino": 70
       }
     },
@@ -93,13 +93,13 @@
       "max_pct": 0.045,
       "first_styles": {
         "us_general": 30,
-        "football": 5,
+        "football": 2,
         "polynesian": 40,
         "hawaiian": 15,
         "samoan": 10
       },
       "last_styles": {
-        "football": 15,
+        "football": 7,
         "polynesian": 45,
         "hawaiian": 15,
         "samoan": 25
@@ -110,19 +110,19 @@
       "label": "Asian",
       "target_pct": 0.002,
       "sigma_pct": 0.002,
-      "min_pct": 0.0,
+      "min_pct": 0,
       "max_pct": 0.012,
       "first_styles": {
         "us_general": 35,
         "asian": 45,
         "south_asian": 15,
-        "football": 5
+        "football": 2
       },
       "last_styles": {
         "asian": 55,
         "south_asian": 25,
         "us_general": 15,
-        "football": 5
+        "football": 2
       }
     },
     {
@@ -130,17 +130,17 @@
       "label": "American Indian / Alaska Native",
       "target_pct": 0.003,
       "sigma_pct": 0.002,
-      "min_pct": 0.0,
+      "min_pct": 0,
       "max_pct": 0.015,
       "first_styles": {
         "us_general": 55,
         "native_american": 35,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "native_american": 65,
         "us_general": 25,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -152,12 +152,12 @@
       "max_pct": 0.09,
       "first_styles": {
         "us_general": 70,
-        "football": 8,
+        "football": 4,
         "international_misc": 22
       },
       "last_styles": {
         "us_general": 55,
-        "football": 20,
+        "football": 9,
         "international_misc": 25
       }
     }
@@ -171,12 +171,12 @@
       "first_styles": {
         "canadian": 55,
         "us_general": 35,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "canadian": 55,
         "us_general": 35,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -187,11 +187,11 @@
       "first_styles": {
         "west_african": 70,
         "us_general": 20,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "west_african": 80,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       }
     },
@@ -203,12 +203,12 @@
       "first_styles": {
         "australian": 60,
         "anglo": 25,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "australian": 55,
         "anglo": 30,
-        "football": 15
+        "football": 7
       }
     },
     {
@@ -219,12 +219,12 @@
       "first_styles": {
         "german": 65,
         "european": 20,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "german": 75,
         "european": 15,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -234,12 +234,12 @@
       "common_positions": "DL, TE",
       "first_styles": {
         "anglo": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       },
       "last_styles": {
         "anglo": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       }
     },
@@ -251,12 +251,12 @@
       "first_styles": {
         "samoan": 55,
         "polynesian": 30,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "samoan": 65,
         "polynesian": 25,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -267,12 +267,12 @@
       "first_styles": {
         "samoan": 60,
         "polynesian": 30,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "samoan": 70,
         "polynesian": 20,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -283,12 +283,12 @@
       "first_styles": {
         "polynesian": 65,
         "samoan": 20,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "polynesian": 75,
         "samoan": 15,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -298,12 +298,12 @@
       "common_positions": "DL, LB, DB",
       "first_styles": {
         "west_african": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       },
       "last_styles": {
         "west_african": 80,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       }
     },
@@ -314,12 +314,12 @@
       "common_positions": "DL, EDGE, LB",
       "first_styles": {
         "west_african": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       },
       "last_styles": {
         "west_african": 80,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       }
     },
@@ -330,12 +330,12 @@
       "common_positions": "OL, DL, K",
       "first_styles": {
         "hispanic_latino": 75,
-        "football": 10,
+        "football": 4,
         "us_general": 15
       },
       "last_styles": {
         "hispanic_latino": 80,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       }
     },
@@ -348,13 +348,13 @@
         "australian": 35,
         "polynesian": 35,
         "anglo": 20,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "australian": 25,
         "polynesian": 45,
         "anglo": 20,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -365,12 +365,12 @@
       "first_styles": {
         "anglo": 60,
         "european": 25,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "anglo": 70,
         "european": 20,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -380,12 +380,12 @@
       "common_positions": "OL, DL",
       "first_styles": {
         "european": 60,
-        "football": 20,
+        "football": 9,
         "us_general": 20
       },
       "last_styles": {
         "european": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       }
     },
@@ -396,12 +396,12 @@
       "common_positions": "WR, DB, DL",
       "first_styles": {
         "european": 60,
-        "football": 20,
+        "football": 9,
         "us_general": 20
       },
       "last_styles": {
         "european": 70,
-        "football": 15,
+        "football": 7,
         "us_general": 15
       }
     },
@@ -412,12 +412,12 @@
       "common_positions": "WR, DB, K",
       "first_styles": {
         "asian": 75,
-        "football": 10,
+        "football": 4,
         "us_general": 15
       },
       "last_styles": {
         "asian": 80,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       }
     },
@@ -430,13 +430,13 @@
         "asian": 45,
         "hispanic_latino": 25,
         "us_general": 20,
-        "football": 10
+        "football": 4
       },
       "last_styles": {
         "asian": 45,
         "hispanic_latino": 30,
         "us_general": 15,
-        "football": 10
+        "football": 4
       }
     },
     {
@@ -447,13 +447,13 @@
       "first_styles": {
         "south_asian": 70,
         "asian": 10,
-        "football": 10,
+        "football": 4,
         "us_general": 10
       },
       "last_styles": {
         "south_asian": 82,
         "asian": 8,
-        "football": 5,
+        "football": 2,
         "us_general": 5
       }
     },
@@ -465,12 +465,12 @@
       "first_styles": {
         "hispanic_latino": 55,
         "international_misc": 25,
-        "football": 20
+        "football": 9
       },
       "last_styles": {
         "hispanic_latino": 55,
         "international_misc": 25,
-        "football": 20
+        "football": 9
       }
     },
     {
@@ -481,12 +481,12 @@
       "first_styles": {
         "caribbean": 60,
         "african_american": 25,
-        "football": 15
+        "football": 7
       },
       "last_styles": {
         "caribbean": 60,
         "african_american": 25,
-        "football": 15
+        "football": 7
       }
     }
   ],

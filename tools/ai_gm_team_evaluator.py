@@ -146,6 +146,17 @@ def current_date(con: sqlite3.Connection) -> str:
     return str(row["setting_value"]) if row else datetime.now().date().isoformat()
 
 
+def is_before_roster_cutdown(evaluation_date: str, season: int) -> bool:
+    """Before cutdown, focus FA evaluation on quality gaps instead of ideal body counts."""
+    try:
+        parsed = datetime.fromisoformat(str(evaluation_date)).date()
+    except (TypeError, ValueError):
+        return False
+    if parsed.year != season:
+        return parsed.year < season
+    return (parsed.month, parsed.day) < (9, 1)
+
+
 def get_team(con: sqlite3.Connection, team_abbr: str) -> sqlite3.Row:
     row = con.execute(
         "SELECT * FROM teams WHERE abbreviation = ?",
@@ -421,7 +432,12 @@ def score_priority(score: float) -> str:
     return "monitor"
 
 
-def room_summary(players: list[dict[str, Any]], season: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def room_summary(
+    players: list[dict[str, Any]],
+    season: int,
+    *,
+    before_cutdown: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = {group: [] for group in ROOM_TARGETS}
     for player in players:
         grouped.setdefault(str(player["position_group"]), []).append(player)
@@ -435,12 +451,19 @@ def room_summary(players: list[dict[str, Any]], season: int) -> tuple[list[dict[
         max_count = as_int(config["max"], ideal + 1)
         starter_floor = as_float(config["starter_floor"], 70.0)
         depth_floor = as_float(config["depth_floor"], 60.0)
-        starters = room[:starter_count]
-        depth = room[starter_count:ideal]
-        best_score = room[0]["current_score"] if room else 0.0
+        evaluation_room = room
+        if group == "RB":
+            halfbacks = [p for p in room if str(p.get("position") or "").upper() == "RB"]
+            if halfbacks:
+                evaluation_room = halfbacks
+            else:
+                evaluation_room = []
+        starters = evaluation_room[:starter_count]
+        depth = evaluation_room[starter_count:ideal]
+        best_score = evaluation_room[0]["current_score"] if evaluation_room else (room[0]["current_score"] if room else 0.0)
         starter_avg = avg([p["current_score"] for p in starters], default=0.0)
         depth_avg = avg([p["current_score"] for p in depth], default=0.0)
-        role_avg = avg([as_float(p.get("role_score"), p["overall"]) for p in room], default=0.0)
+        role_avg = avg([as_float(p.get("role_score"), p["overall"]) for p in evaluation_room], default=0.0)
         expiring_core = [
             p for p in starters
             if p.get("end_year") and as_int(p["end_year"]) <= season + 1
@@ -454,15 +477,23 @@ def room_summary(players: list[dict[str, Any]], season: int) -> tuple[list[dict[
 
         drivers: list[str] = []
         score = 0.0
-        if len(room) < starter_count:
-            score += (starter_count - len(room)) * 28
+        if len(evaluation_room) < starter_count:
+            score += (starter_count - len(evaluation_room)) * 28
             drivers.append("missing starter bodies")
-        if len(room) < ideal:
-            score += (ideal - len(room)) * 9
+        if len(evaluation_room) < ideal and not before_cutdown:
+            score += (ideal - len(evaluation_room)) * 9
             drivers.append("thin depth")
+        elif len(evaluation_room) < ideal and before_cutdown:
+            drivers.append("pre-cutdown depth can be filled later")
+        if group == "RB" and len(evaluation_room) < len(room):
+            drivers.append("fullback does not cover halfback snaps")
+        starter_quality_weight = 2.3 if before_cutdown else 1.5
         if starter_avg and starter_avg < starter_floor:
-            score += (starter_floor - starter_avg) * 1.5
+            score += (starter_floor - starter_avg) * starter_quality_weight
             drivers.append("starter quality gap")
+        if before_cutdown and best_score and best_score < starter_floor and group not in {"K", "P", "LS"}:
+            score += (starter_floor - best_score) * 1.1
+            drivers.append("no clear starter-quality option")
         if not starter_avg and room:
             score += starter_floor * 0.6
             drivers.append("no trusted starter grade")
@@ -496,8 +527,10 @@ def room_summary(players: list[dict[str, Any]], season: int) -> tuple[list[dict[
                 "need_score": score,
                 "investment_tier": config["tier"],
                 "player_count": len(room),
+                "evaluation_player_count": len(evaluation_room),
                 "ideal_count": ideal,
                 "max_count": max_count,
+                "before_cutdown": bool(before_cutdown),
                 "best_score": round(best_score, 1),
                 "starter_avg": round(starter_avg, 1),
                 "depth_avg": round(depth_avg, 1),
@@ -517,10 +550,14 @@ def room_summary(players: list[dict[str, Any]], season: int) -> tuple[list[dict[
         if len(room) > max_count:
             surplus_score += (len(room) - max_count) * 18
             surplus_drivers.append("over roster max")
-        if len(room) > ideal and depth_avg >= depth_floor + 4:
+        if len(room) > ideal and depth_avg >= depth_floor + 4 and not before_cutdown:
             surplus_score += (len(room) - ideal) * 7
             surplus_drivers.append("tradable depth")
-        if len(room) > ideal and any(p["age"] >= 29 and p["current_score"] < best_score - 5 for p in room):
+        if (
+            len(room) > ideal
+            and any(p["age"] >= 29 and p["current_score"] < best_score - 5 for p in room)
+            and not before_cutdown
+        ):
             surplus_score += 8
             surplus_drivers.append("older depth can be replaced")
         if surplus_score > 0:
@@ -930,7 +967,8 @@ def evaluate_team(
     cap = cap_snapshot(con, team_id, season)
     counts = roster_counts(con, team_id)
     record = team_record(con, team_id, season)
-    needs, surplus = room_summary(players, season)
+    before_cutdown = is_before_roster_cutdown(evaluation_date, season)
+    needs, surplus = room_summary(players, season, before_cutdown=before_cutdown)
     candidates = build_candidate_lists(players, needs, surplus, season)
     metrics = team_quality_metrics(players, cap, record, counts)
     phase = choose_team_phase(metrics, needs)
@@ -956,6 +994,10 @@ def evaluate_team(
         "summary": summary,
         "team_direction": phase,
         "metrics": metrics,
+        "roster_context": {
+            "before_cutdown": before_cutdown,
+            "ideal_count_weight": "quality_first" if before_cutdown else "full_depth",
+        },
         "roster_needs": top_needs,
         "roster_surplus": top_surplus,
         "contract_pressure": candidates["contract_pressure"],

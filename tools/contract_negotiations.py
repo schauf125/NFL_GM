@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 from tools import setup_contract_years  # noqa: E402
 from tools import setup_transactions_cap_ledger  # noqa: E402
 from tools import roster_actions  # noqa: E402
+from tools import cpu_depth_chart  # noqa: E402
 
 
 SOURCE = "contract_negotiations"
@@ -1700,10 +1701,10 @@ def create_contract_from_offer_sheet(
             player_id, team_id, signed_date, start_year, end_year,
             total_value, total_years, aav, signing_bonus,
             roster_bonus, workout_bonus, is_guaranteed,
-            dead_cap_current, dead_cap_next, no_trade_clause,
-            option_year, option_exercised, franchise_tag, contract_type, is_active
+            guarantee_pct, dead_cap_current, dead_cap_next, no_trade_clause,
+            option_year, option_exercised, franchise_tag, contract_type, salary_structure, is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 0, 0, 0, NULL, 'OfferSheet', 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, 0, 0, 0, 0, NULL, 'OfferSheet', 'balanced', 1)
         """,
         (
             player_id,
@@ -1716,6 +1717,7 @@ def create_contract_from_offer_sheet(
             aav,
             signing_bonus,
             1 if int(guarantee_pct or 0) >= 50 else 0,
+            int(guarantee_pct or 0),
         ),
     )
     contract_id = int(cur.lastrowid)
@@ -1831,6 +1833,16 @@ def resolve_offer_sheet(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (offering_team_id, player_id),
         )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=original_team_id,
+            reason="Offer sheet declined; player left roster.",
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=offering_team_id,
+            reason="Offer sheet signing changed roster composition.",
+        )
         comp_pick_id = award_offer_sheet_compensation(
             con,
             from_team_id=offering_team_id,
@@ -1842,6 +1854,11 @@ def resolve_offer_sheet(
         con.execute(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (original_team_id, player_id),
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=original_team_id,
+            reason="Offer sheet matched; contract status changed roster planning.",
         )
     con.execute(
         """
@@ -1956,7 +1973,7 @@ def apply_tag(
             )
     tag_thresholds = {
         "franchise": {
-            "QB": 82,
+            "QB": 86,
             "RB": 88,
             "WR": 84,
             "OT": 84,
@@ -1969,7 +1986,7 @@ def apply_tag(
             "LB": 86,
         },
         "exclusive": {
-            "QB": 88,
+            "QB": 90,
             "RB": 90,
             "WR": 88,
             "OT": 88,
@@ -1982,7 +1999,7 @@ def apply_tag(
             "LB": 89,
         },
         "transition": {
-            "QB": 80,
+            "QB": 86,
             "RB": 86,
             "WR": 84,
             "OT": 83,
@@ -2002,6 +2019,15 @@ def apply_tag(
                 f"{label} is reserved for higher-end {group} starters "
                 f"({score:.0f} score, needs {minimum_score}+). Use --force to override."
             )
+        if group == "QB":
+            overall = int(target.get("overall") or score)
+            potential = int(target.get("potential") or overall)
+            current_aav = int(target.get("aav") or 0)
+            if overall < 82 or potential < 84 or tag_aav > max(int(current_aav * 2.25), int(target.get("asking_aav") or 0) + 12_000_000):
+                raise ValueError(
+                    f"{label} is reserved for true franchise-level QBs. "
+                    f"{target['player_name']} grades {overall}/{potential} with a {money(tag_aav)} tender."
+                )
     if tender_type.startswith("rfa_") and score < 58 and not force:
         raise ValueError("RFA tenders should be reserved for players with a realistic roster path. Use --force to override.")
 
@@ -2023,9 +2049,10 @@ def apply_tag(
             player_id, team_id, signed_date, start_year, end_year,
             total_value, total_years, aav, signing_bonus,
             roster_bonus, workout_bonus, is_guaranteed,
-            dead_cap_current, dead_cap_next, franchise_tag, contract_type, is_active
+            guarantee_pct, dead_cap_current, dead_cap_next, franchise_tag,
+            contract_type, salary_structure, is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 1, 0, 0, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 1, 100, 0, 0, ?, ?, 'balanced', 1)
         """,
         (
             player_id,
@@ -2387,6 +2414,11 @@ def release_player(
     con.execute(
         "UPDATE players SET team_id = NULL, status = 'Free Agent' WHERE player_id = ?",
         (player_id,),
+    )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=int(team["team_id"]),
+        reason="Player release changed roster composition.",
     )
     if table_exists(con, "depth_charts"):
         con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))
@@ -2860,6 +2892,11 @@ def process_expired_contracts(
         con.execute(
             "UPDATE players SET team_id = NULL, status = 'Free Agent' WHERE player_id = ?",
             (player_id,),
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=team_id,
+            reason="Expired contract changed roster composition.",
         )
         if table_exists(con, "depth_charts"):
             con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))

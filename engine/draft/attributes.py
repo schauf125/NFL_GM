@@ -1012,6 +1012,14 @@ class DraftAttributeGenerator:
         if archetype in {"Big-leg kicker", "Big-leg punter"}:
             strength += 3
 
+        if position in {"WR", "CB", "NB", "FS", "SS", "RB"} and weight_delta >= 18:
+            speed -= min(4.5, (weight_delta - 12) / 9.0)
+            agility -= min(5.0, (weight_delta - 10) / 8.0)
+        if position in {"OT", "OG", "C", "IDL"} and weight_delta <= -24:
+            strength -= min(5.0, abs(weight_delta + 12) / 8.0)
+        if position in {"EDGE", "IDL", "OT", "OG"} and frame_density_delta <= -22:
+            strength -= min(3.5, abs(frame_density_delta + 12) / 10.0)
+
         speed = roll(self.rng, speed, 4.0, 30, 99)
         agility = roll(self.rng, agility, 4.0, 30, 99)
         strength = roll(self.rng, strength, 4.0, 30, 99)

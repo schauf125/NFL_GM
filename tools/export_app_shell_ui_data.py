@@ -131,6 +131,7 @@ def load_registry() -> dict[str, Any]:
             "gameId": game_id,
             "name": record.get("name") or game_id,
             "userTeam": record.get("user_team"),
+            "controlMode": record.get("control_mode", "team"),
             "dbPath": record.get("db_path"),
             "manifestPath": record.get("manifest_path"),
             "currentDate": record.get("current_date"),
@@ -179,6 +180,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "registry": load_registry(),
             "commands": {
                 "newGameTemplate": "python tools\\play.py new --game-id <game_id> --name \"<save name>\" --user-team <TEAM>",
+                "observeGameTemplate": "python tools\\play.py new --game-id <game_id> --name \"Observe June 1 Start\" --control-mode observe --observe-mode",
                 "loadTemplate": "python tools\\play.py load <game_id>",
                 "active": "python tools\\play.py active",
                 "gameCenterExport": "python tools\\export_game_center_ui_data.py",

@@ -387,7 +387,7 @@ def prompt_for_subject(subject: PortraitSubject) -> str:
     lines.extend(
         [
             "If a reference image is supplied, use it only as a composition, lighting, background, crop, jersey-color, and media-day style reference. Do not copy the reference person's face, identity, hairstyle, ethnicity, or exact jersey marks.",
-            "Visual style: photorealistic official team media-day headshot, chest-up, straight-on camera, neutral confident expression, realistic skin texture, natural hair detail, studio lighting, dark matte or neutral gray background.",
+            "Visual style: photorealistic official team media-day headshot, chest-up, straight-on camera, expression follows the visual metadata and is usually neutral or closed-mouth unless a smile is explicitly specified, realistic skin texture, natural hair detail, studio lighting, dark matte or neutral gray background.",
             "Wardrobe: generic professional football jersey or training top in team-inspired colors, but no real team logos, NFL shields, brand marks, visible text, watermarks, or captions.",
             "Framing: square 1024x1024 composition, face centered, shoulders visible, no helmet, no action pose, no extra people, no illustration, no cartoon, no 3D render.",
         ]

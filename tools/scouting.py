@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sqlite3
@@ -42,7 +43,7 @@ DISCOVERY_START_CONFIDENCE = "Medium"
 DISCOVERY_START_LEVEL = CONFIDENCE_TARGET_LEVELS[DISCOVERY_START_CONFIDENCE]
 
 SIMPLE_ACTION_LABELS = {
-    "auto_assign": "Auto Assign 6 Scouts",
+    "auto_assign": "Auto Assign 8 Scouts",
     "specific": "Scout 4 Specific Players",
     "random_two": "Scout 8 Random Players",
     "discover_four": "Scout 4 Random + 8 Random Discoveries",
@@ -97,7 +98,7 @@ CPU_POSITION_TARGETS = {
 
 WEEKLY_SCOUTING_START_WEEK = 2
 WEEKLY_SCOUTING_END_WEEK = 18
-AUTO_ASSIGN_COUNT = 6
+AUTO_ASSIGN_COUNT = 8
 SPECIFIC_SCOUTING_COUNT = 4
 RANDOM_CROSSCHECK_COUNT = 8
 DISCOVER_RANDOM_CROSSCHECK_COUNT = 4
@@ -106,7 +107,7 @@ USER_AUTO_DUE_DILIGENCE_MIN = 3
 USER_AUTO_NEED_MIN = 2
 USER_AUTO_NON_NEED_REPEAT_PENALTY = 18.0
 USER_AUTO_FIRST_ROUND_VERY_HIGH_CAP = 8
-CPU_WEEKLY_SCOUTING_COUNT = 5
+CPU_WEEKLY_SCOUTING_COUNT = 7
 CPU_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
 USER_EXTRA_HIDDEN_DISCOVERY_CHANCE = 0.25
 HIDDEN_DISCOVERY_SHARED_TEAM_CAP = 10
@@ -123,13 +124,24 @@ CPU_SCOUTING_BUCKETS = {
     "day2": (33, 112),
     "day3": (97, 240),
 }
-PRE_DRAFT_PUBLIC_EARLY_COUNT = 10
-PRE_DRAFT_PUBLIC_LATE_COUNT = 15
+PRE_DRAFT_PUBLIC_EARLY_COUNT = 16
+PRE_DRAFT_PUBLIC_MID_COUNT = 20
+PRE_DRAFT_PUBLIC_LATE_COUNT = 22
 PREMIUM_POSITION_SCOUTING_BONUS = 4.0
 USER_AUTO_TOP30_FIRST_ROUND_CAP = 8
 USER_AUTO_TOP30_LATE_EARLY_CAP = 6
 USER_AUTO_TOP30_DAY2_CAP = 8
 USER_AUTO_TOP30_DAY3_CAP = 8
+SCOUTING_TIER_SIZE = 50
+SCOUTING_TIER_BUDGETS = {
+    1: {"Medium": 44, "High": 18, "Very High": 7},
+    2: {"Medium": 40, "High": 15, "Very High": 5},
+    3: {"Medium": 36, "High": 12, "Very High": 4},
+    4: {"Medium": 32, "High": 10, "Very High": 3},
+    5: {"Medium": 28, "High": 8, "Very High": 2},
+    6: {"Medium": 24, "High": 6, "Very High": 1},
+}
+SCOUTING_UNRANKED_TIER = 6
 
 
 def specific_scouting_cost(position: str | None) -> int:
@@ -229,6 +241,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             body TEXT NOT NULL,
             related_table TEXT,
             related_id INTEGER,
+            fingerprint TEXT,
             is_read INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -383,6 +396,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
     )
     ensure_draft_prospect_scouting_columns(con)
     ensure_cpu_scouting_columns(con)
+    ensure_user_inbox_columns(con)
 
 
 def ensure_draft_prospect_scouting_columns(con: sqlite3.Connection) -> None:
@@ -401,6 +415,21 @@ def ensure_cpu_scouting_columns(con: sqlite3.Connection) -> None:
     for column, definition in CPU_SCOUTING_PROGRESS_COLUMNS.items():
         if column not in existing:
             con.execute(f"ALTER TABLE cpu_scouting_prospect_progress ADD COLUMN {column} {definition}")
+
+
+def ensure_user_inbox_columns(con: sqlite3.Connection) -> None:
+    if not table_exists(con, "user_inbox_messages"):
+        return
+    existing = {row[1] for row in con.execute("PRAGMA table_info(user_inbox_messages)").fetchall()}
+    if "fingerprint" not in existing:
+        con.execute("ALTER TABLE user_inbox_messages ADD COLUMN fingerprint TEXT")
+    con.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_inbox_messages_fingerprint
+            ON user_inbox_messages(game_id, fingerprint)
+            WHERE fingerprint IS NOT NULL
+        """
+    )
 
 
 def setting(con: sqlite3.Connection, key: str, fallback: str | None = None) -> str | None:
@@ -441,6 +470,8 @@ def active_game_id(con: sqlite3.Connection, explicit: str | None = None) -> str:
 
 def user_team_abbr(con: sqlite3.Connection) -> str:
     row = active_game(con)
+    if row and "control_mode" in row.keys() and row["control_mode"] == "observe":
+        return ""
     if row and "user_team" in row.keys() and row["user_team"]:
         return str(row["user_team"])
     return setting(con, "user_team", "MIN") or "MIN"
@@ -448,6 +479,8 @@ def user_team_abbr(con: sqlite3.Connection) -> str:
 
 def user_team_id(con: sqlite3.Connection) -> int:
     row = active_game(con)
+    if row and "control_mode" in row.keys() and row["control_mode"] == "observe":
+        return 0
     if row and "user_team_id" in row.keys() and row["user_team_id"] is not None:
         return int(row["user_team_id"])
     abbr = user_team_abbr(con)
@@ -906,6 +939,151 @@ def advance_confidence(label: str | None, steps: int = 1) -> str:
     return CONFIDENCE_ORDER[min(index + max(0, int(steps)), len(CONFIDENCE_ORDER) - 1)]
 
 
+def scouting_tier_for_rank(rank_value: Any) -> int:
+    try:
+        rank = int(rank_value or 0)
+    except (TypeError, ValueError):
+        rank = 0
+    if rank <= 0:
+        return SCOUTING_UNRANKED_TIER
+    return max(1, min(SCOUTING_UNRANKED_TIER, ((rank - 1) // SCOUTING_TIER_SIZE) + 1))
+
+
+def scouting_tier_label(tier: int) -> str:
+    start = ((max(1, int(tier)) - 1) * SCOUTING_TIER_SIZE) + 1
+    end = max(1, int(tier)) * SCOUTING_TIER_SIZE
+    if tier >= SCOUTING_UNRANKED_TIER:
+        return f"{start}+"
+    return f"{start}-{end}"
+
+
+def scouting_budget_for_tier(tier: int, confidence: str) -> int:
+    budgets = SCOUTING_TIER_BUDGETS.get(max(1, min(SCOUTING_UNRANKED_TIER, int(tier))), SCOUTING_TIER_BUDGETS[SCOUTING_UNRANKED_TIER])
+    return int(budgets.get(normalize_confidence(confidence), 9999))
+
+
+def scouting_budget_usage(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    draft_year: int,
+    draft_class_id: int,
+    tier: int,
+    progress_table: str,
+    team_id: int | None = None,
+) -> dict[str, int]:
+    if progress_table not in {"scouting_prospect_progress", "cpu_scouting_prospect_progress"}:
+        raise ValueError("Unsupported scouting progress table.")
+    team_filter = ""
+    params: list[Any] = [game_id, draft_year]
+    if progress_table == "cpu_scouting_prospect_progress":
+        team_filter = "AND progress.team_id = ?"
+        params.append(int(team_id or 0))
+    start = ((max(1, int(tier)) - 1) * SCOUTING_TIER_SIZE) + 1
+    end = max(1, int(tier)) * SCOUTING_TIER_SIZE
+    if tier >= SCOUTING_UNRANKED_TIER:
+        rank_filter = "COALESCE(dp.public_board_rank, dp.scouting_rank, 9999) >= ?"
+        params.extend([draft_class_id, start])
+    else:
+        rank_filter = "COALESCE(dp.public_board_rank, dp.scouting_rank, 9999) BETWEEN ? AND ?"
+        params.extend([draft_class_id, start, end])
+    row = con.execute(
+        f"""
+        SELECT
+            SUM(CASE WHEN progress.scouting_confidence IN ('Medium', 'High', 'Very High') THEN 1 ELSE 0 END) AS medium_plus,
+            SUM(CASE WHEN progress.scouting_confidence IN ('High', 'Very High') THEN 1 ELSE 0 END) AS high_plus,
+            SUM(CASE WHEN progress.scouting_confidence = 'Very High' THEN 1 ELSE 0 END) AS very_high
+        FROM {progress_table} progress
+        JOIN draft_prospects dp
+          ON dp.prospect_id = progress.prospect_id
+        WHERE progress.game_id = ?
+          AND progress.draft_year = ?
+          {team_filter}
+          AND dp.draft_class_id = ?
+          AND {rank_filter}
+        """,
+        tuple(params),
+    ).fetchone()
+    return {
+        "Medium": int(row["medium_plus"] or 0) if row else 0,
+        "High": int(row["high_plus"] or 0) if row else 0,
+        "Very High": int(row["very_high"] or 0) if row else 0,
+    }
+
+
+def scouting_budget_allows(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    draft_year: int,
+    draft_class_id: int,
+    prospect: sqlite3.Row,
+    old_confidence: str,
+    new_confidence: str,
+    progress_table: str,
+    team_id: int | None = None,
+) -> tuple[bool, str | None]:
+    old_normalized = normalize_confidence(old_confidence)
+    new_normalized = normalize_confidence(new_confidence)
+    if CONFIDENCE_ORDER.index(new_normalized) < CONFIDENCE_ORDER.index("Medium"):
+        return True, None
+    tier = scouting_tier_for_rank(row_value(prospect, "public_board_rank", row_value(prospect, "scouting_rank", None)))
+    usage = scouting_budget_usage(
+        con,
+        game_id=game_id,
+        draft_year=draft_year,
+        draft_class_id=draft_class_id,
+        tier=tier,
+        progress_table=progress_table,
+        team_id=team_id,
+    )
+    if old_normalized not in {"Medium", "High", "Very High"}:
+        medium_limit = scouting_budget_for_tier(tier, "Medium")
+        if usage["Medium"] >= medium_limit:
+            return False, f"Scouting tier {scouting_tier_label(tier)} already has {medium_limit} Medium-or-better reports."
+    if old_normalized not in {"High", "Very High"} and new_normalized in {"High", "Very High"}:
+        high_limit = scouting_budget_for_tier(tier, "High")
+        if usage["High"] >= high_limit:
+            return False, f"Scouting tier {scouting_tier_label(tier)} already has {high_limit} High-or-better reports."
+    if new_normalized == "Very High" and old_normalized != "Very High":
+        very_high_limit = scouting_budget_for_tier(tier, "Very High")
+        if usage["Very High"] >= very_high_limit:
+            return False, f"Scouting tier {scouting_tier_label(tier)} already has {very_high_limit} Very High reports."
+    return True, None
+
+
+def user_scouting_tier_budget_payload(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    draft_year: int,
+    draft_class_id: int,
+) -> list[dict[str, Any]]:
+    rows = []
+    for tier in range(1, SCOUTING_UNRANKED_TIER + 1):
+        usage = scouting_budget_usage(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=draft_class_id,
+            tier=tier,
+            progress_table="scouting_prospect_progress",
+        )
+        rows.append(
+            {
+                "tier": tier,
+                "label": scouting_tier_label(tier),
+                "mediumUsed": usage["Medium"],
+                "mediumLimit": scouting_budget_for_tier(tier, "Medium"),
+                "highUsed": usage["High"],
+                "highLimit": scouting_budget_for_tier(tier, "High"),
+                "veryHighUsed": usage["Very High"],
+                "veryHighLimit": scouting_budget_for_tier(tier, "Very High"),
+            }
+        )
+    return rows
+
+
 def add_inbox_message(
     con: sqlite3.Connection,
     *,
@@ -918,19 +1096,51 @@ def add_inbox_message(
     message_date: str | None = None,
     related_table: str | None = None,
     related_id: int | None = None,
+    fingerprint: str | None = None,
+    quiet: bool = False,
 ) -> None:
     ensure_schema(con)
+    if quiet:
+        return
+    target_date = message_date or current_date(con)
+    dedupe = fingerprint or hashlib.sha256(
+        "|".join(
+            str(part or "")
+            for part in (
+                game_id,
+                target_date,
+                category,
+                title,
+                related_table,
+                related_id,
+            )
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    if priority not in {"high", "urgent"}:
+        daily_count = con.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM user_inbox_messages
+            WHERE game_id = ?
+              AND message_date = ?
+              AND category = ?
+            """,
+            (game_id, target_date, category),
+        ).fetchone()
+        daily_limit = 2 if category == "Scouting" else 3
+        if int(daily_count["c"] or 0) >= daily_limit:
+            return
     con.execute(
         """
-        INSERT INTO user_inbox_messages (
+        INSERT OR IGNORE INTO user_inbox_messages (
             game_id, message_date, category, priority, source, title, body,
-            related_table, related_id
+            related_table, related_id, fingerprint
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             game_id,
-            message_date or current_date(con),
+            target_date,
             category,
             priority,
             source,
@@ -938,6 +1148,7 @@ def add_inbox_message(
             body,
             related_table,
             related_id,
+            dedupe,
         ),
     )
 
@@ -946,7 +1157,7 @@ def public_pre_draft_candidate_rows(
     con: sqlite3.Connection,
     *,
     draft_class_id: int,
-    early: bool,
+    tier: str,
     game_id: str,
     team_id: int | None = None,
 ) -> list[sqlite3.Row]:
@@ -969,7 +1180,11 @@ def public_pre_draft_candidate_rows(
              AND progress.prospect_id = dp.prospect_id
         """
         params.extend([game_id, team_id])
-    board_filter = "dp.public_board_rank BETWEEN 1 AND 64" if early else "dp.public_board_rank > 64"
+    board_filter = {
+        "early": "dp.public_board_rank BETWEEN 1 AND 64",
+        "mid": "dp.public_board_rank BETWEEN 65 AND 170",
+        "late": "dp.public_board_rank > 170",
+    }.get(str(tier or "mid").lower(), "dp.public_board_rank BETWEEN 65 AND 170")
     params.append(draft_class_id)
     return con.execute(
         f"""
@@ -1008,7 +1223,19 @@ def upsert_user_pre_draft_medium(
     draft_year: int,
     prospect: sqlite3.Row,
     sweep_date: str,
-) -> None:
+) -> bool:
+    allowed, _reason_blocked = scouting_budget_allows(
+        con,
+        game_id=game_id,
+        draft_year=draft_year,
+        draft_class_id=int(prospect["draft_class_id"]),
+        prospect=prospect,
+        old_confidence="Low",
+        new_confidence="Medium",
+        progress_table="scouting_prospect_progress",
+    )
+    if not allowed:
+        return False
     report = "Pre-draft meetings and late-cycle film work moved this public-board file from Low to Medium confidence."
     con.execute(
         """
@@ -1080,6 +1307,7 @@ def upsert_user_pre_draft_medium(
             int(prospect["prospect_id"]),
         ),
     )
+    return True
 
 
 def upsert_cpu_pre_draft_medium(
@@ -1090,7 +1318,20 @@ def upsert_cpu_pre_draft_medium(
     team_id: int,
     prospect: sqlite3.Row,
     sweep_date: str,
-) -> None:
+) -> bool:
+    allowed, _reason_blocked = scouting_budget_allows(
+        con,
+        game_id=game_id,
+        draft_year=draft_year,
+        draft_class_id=int(prospect["draft_class_id"]),
+        prospect=prospect,
+        old_confidence="Low",
+        new_confidence="Medium",
+        progress_table="cpu_scouting_prospect_progress",
+        team_id=team_id,
+    )
+    if not allowed:
+        return False
     report = "Late pre-draft cross-check moved this public-board file from Low to Medium confidence."
     con.execute(
         """
@@ -1125,6 +1366,7 @@ def upsert_cpu_pre_draft_medium(
             report,
         ),
     )
+    return True
 
 
 def run_pre_draft_public_scouting_sweep(
@@ -1165,25 +1407,30 @@ def run_pre_draft_public_scouting_sweep(
     user_updates = 0
     user_rows = [
         *choose_pre_draft_public_rows(
-            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, early=True, game_id=target_game_id),
+            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, tier="early", game_id=target_game_id),
             count=PRE_DRAFT_PUBLIC_EARLY_COUNT,
             rng=user_rng,
         ),
         *choose_pre_draft_public_rows(
-            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, early=False, game_id=target_game_id),
+            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, tier="mid", game_id=target_game_id),
+            count=PRE_DRAFT_PUBLIC_MID_COUNT,
+            rng=user_rng,
+        ),
+        *choose_pre_draft_public_rows(
+            public_pre_draft_candidate_rows(con, draft_class_id=draft_class_id, tier="late", game_id=target_game_id),
             count=PRE_DRAFT_PUBLIC_LATE_COUNT,
             rng=user_rng,
         ),
     ]
     for prospect in user_rows:
-        upsert_user_pre_draft_medium(
+        if upsert_user_pre_draft_medium(
             con,
             game_id=target_game_id,
             draft_year=target_year,
             prospect=prospect,
             sweep_date=sweep_date,
-        )
-        user_updates += 1
+        ):
+            user_updates += 1
 
     cpu_updates = 0
     teams = con.execute("SELECT team_id FROM teams ORDER BY team_id").fetchall()
@@ -1195,7 +1442,7 @@ def run_pre_draft_public_scouting_sweep(
                 public_pre_draft_candidate_rows(
                     con,
                     draft_class_id=draft_class_id,
-                    early=True,
+                    tier="early",
                     game_id=target_game_id,
                     team_id=team_id_value,
                 ),
@@ -1206,7 +1453,18 @@ def run_pre_draft_public_scouting_sweep(
                 public_pre_draft_candidate_rows(
                     con,
                     draft_class_id=draft_class_id,
-                    early=False,
+                    tier="mid",
+                    game_id=target_game_id,
+                    team_id=team_id_value,
+                ),
+                count=PRE_DRAFT_PUBLIC_MID_COUNT,
+                rng=team_rng,
+            ),
+            *choose_pre_draft_public_rows(
+                public_pre_draft_candidate_rows(
+                    con,
+                    draft_class_id=draft_class_id,
+                    tier="late",
                     game_id=target_game_id,
                     team_id=team_id_value,
                 ),
@@ -1215,15 +1473,15 @@ def run_pre_draft_public_scouting_sweep(
             ),
         ]
         for prospect in team_rows:
-            upsert_cpu_pre_draft_medium(
+            if upsert_cpu_pre_draft_medium(
                 con,
                 game_id=target_game_id,
                 draft_year=target_year,
                 team_id=team_id_value,
                 prospect=prospect,
                 sweep_date=sweep_date,
-            )
-            cpu_updates += 1
+            ):
+                cpu_updates += 1
 
     con.execute(
         """
@@ -1238,7 +1496,7 @@ def run_pre_draft_public_scouting_sweep(
             target_year,
             active_user_team_id,
             PRE_DRAFT_PUBLIC_EARLY_COUNT,
-            PRE_DRAFT_PUBLIC_LATE_COUNT,
+            PRE_DRAFT_PUBLIC_MID_COUNT + PRE_DRAFT_PUBLIC_LATE_COUNT,
             user_updates,
             cpu_updates,
             base_seed,
@@ -1497,19 +1755,6 @@ def assign_prospect(
             END
         """,
         (target_game_id, target_year, period.season, period.week, prospect_id, normalized_focus),
-    )
-    add_inbox_message(
-        con,
-        game_id=target_game_id,
-        title=f"Scouting Queued: {prospect_name(prospect)}",
-        body=(
-            f"{prospect_name(prospect)} ({prospect['position']}, {prospect['college']}) "
-            f"was added to {period.label} with a {FOCUS_LABELS[normalized_focus]} focus."
-        ),
-        category="Scouting",
-        priority="normal",
-        related_table="draft_prospects",
-        related_id=prospect_id,
     )
     return prospect
 
@@ -1839,10 +2084,67 @@ def select_user_auto_assign_candidates(
     ]
     add_from(need_pool, min(count - len(selected), USER_AUTO_NEED_MIN))
 
-    depth_pool = [row for row in candidates if 65 <= board_rank(row) <= 220]
-    add_from(depth_pool, max(0, count - len(selected)))
+    tier_targets = [
+        (1, 50, max(1, round(count * 0.30))),
+        (51, 150, max(2, round(count * 0.42))),
+        (151, 260, max(1, round(count * 0.22))),
+    ]
+    for start, end, limit in tier_targets:
+        tier_pool = [row for row in candidates if start <= board_rank(row) <= end]
+        add_from(tier_pool, min(max(0, count - len(selected)), limit))
     add_from(candidates, max(0, count - len(selected)))
     return selected[:count]
+
+
+def select_with_scouting_tier_budgets(
+    con: sqlite3.Connection,
+    candidates: list[sqlite3.Row],
+    *,
+    game_id: str,
+    draft_year: int,
+    draft_class_id: int,
+    progress_table: str,
+    team_id: int | None = None,
+) -> list[sqlite3.Row]:
+    selected: list[sqlite3.Row] = []
+    projected_usage: dict[int, dict[str, int]] = {}
+    for prospect in candidates:
+        old_confidence = normalize_confidence(row_value(prospect, "scouting_confidence", row_value(prospect, "cpu_scouting_confidence", "Low")))
+        new_confidence = next_confidence(old_confidence)
+        if CONFIDENCE_ORDER.index(new_confidence) < CONFIDENCE_ORDER.index("Medium"):
+            selected.append(prospect)
+            continue
+        tier = scouting_tier_for_rank(row_value(prospect, "public_board_rank", row_value(prospect, "scouting_rank", None)))
+        usage = projected_usage.get(tier)
+        if usage is None:
+            usage = scouting_budget_usage(
+                con,
+                game_id=game_id,
+                draft_year=draft_year,
+                draft_class_id=draft_class_id,
+                tier=tier,
+                progress_table=progress_table,
+                team_id=team_id,
+            )
+        usage = dict(usage)
+        if old_confidence not in {"Medium", "High", "Very High"}:
+            medium_limit = scouting_budget_for_tier(tier, "Medium")
+            if usage["Medium"] >= medium_limit:
+                continue
+            usage["Medium"] += 1
+        if old_confidence not in {"High", "Very High"} and new_confidence in {"High", "Very High"}:
+            high_limit = scouting_budget_for_tier(tier, "High")
+            if usage["High"] >= high_limit:
+                continue
+            usage["High"] += 1
+        if new_confidence == "Very High" and old_confidence != "Very High":
+            very_high_limit = scouting_budget_for_tier(tier, "Very High")
+            if usage["Very High"] >= very_high_limit:
+                continue
+            usage["Very High"] += 1
+        projected_usage[tier] = usage
+        selected.append(prospect)
+    return selected
 
 
 def simple_scouting_report(prospect: sqlite3.Row, old_confidence: str, new_confidence: str, reason: str) -> str:
@@ -1932,6 +2234,21 @@ def advance_prospect_one_tier(
     ).fetchone()
     old_confidence = normalize_confidence(current["scouting_confidence"] if current else "Low")
     new_confidence = next_confidence(old_confidence)
+    class_row = draft_class_row(con, draft_year)
+    draft_class_id = int(class_row["draft_class_id"]) if class_row else int(row_value(prospect, "draft_class_id", 0) or 0)
+    if draft_class_id:
+        allowed, reason_blocked = scouting_budget_allows(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=draft_class_id,
+            prospect=prospect,
+            old_confidence=old_confidence,
+            new_confidence=new_confidence,
+            progress_table="scouting_prospect_progress",
+        )
+        if not allowed:
+            raise ValueError(reason_blocked or "This scouting tier has reached its confidence budget.")
     old_level = int(current["scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence]) if current else 15
     new_level = max(old_level, CONFIDENCE_TARGET_LEVELS[new_confidence])
     report = simple_scouting_report(prospect, old_confidence, new_confidence, reason)
@@ -2107,6 +2424,14 @@ def auto_assign_scouts(
         count=max(1, count),
         first_round_very_high_remaining=USER_AUTO_FIRST_ROUND_VERY_HIGH_CAP - first_round_very_high,
     )
+    selected = select_with_scouting_tier_budgets(
+        con,
+        selected,
+        game_id=target_game_id,
+        draft_year=target_year,
+        draft_class_id=int(class_row["draft_class_id"]),
+        progress_table="scouting_prospect_progress",
+    )
     if not selected:
         raise ValueError("No visible prospects need more scouting right now.")
     results = [
@@ -2215,7 +2540,29 @@ def scout_random_players(
     )
     if not candidates:
         raise ValueError("No visible prospects need more scouting right now.")
-    selected = rng.sample(candidates, k=min(count, len(candidates)))
+    selected = []
+    selected_ids: set[int] = set()
+    for start, end, share in ((1, 50, 0.25), (51, 150, 0.42), (151, 260, 0.25)):
+        bucket = [row for row in candidates if start <= board_rank(row) <= end]
+        rng.shuffle(bucket)
+        target = max(1, round(count * share))
+        for row in bucket[:target]:
+            selected.append(row)
+            selected_ids.add(int(row["prospect_id"]))
+    remaining = [row for row in candidates if int(row["prospect_id"]) not in selected_ids]
+    rng.shuffle(remaining)
+    selected.extend(remaining[: max(0, count - len(selected))])
+    selected = selected[: min(count, len(selected))]
+    selected = select_with_scouting_tier_budgets(
+        con,
+        selected,
+        game_id=target_game_id,
+        draft_year=target_year,
+        draft_class_id=int(class_row["draft_class_id"]),
+        progress_table="scouting_prospect_progress",
+    )
+    if not selected:
+        raise ValueError("Every selected board tier has reached its scouting confidence budget.")
     results = [
         advance_prospect_one_tier(
             con,
@@ -2308,6 +2655,14 @@ def discover_non_public_players(
         draft_class_id=int(class_row["draft_class_id"]),
     )
     random_selected = rng.sample(random_candidates, k=min(DISCOVER_RANDOM_CROSSCHECK_COUNT, len(random_candidates)))
+    random_selected = select_with_scouting_tier_budgets(
+        con,
+        random_selected,
+        game_id=target_game_id,
+        draft_year=target_year,
+        draft_class_id=int(class_row["draft_class_id"]),
+        progress_table="scouting_prospect_progress",
+    )
     random_results = [
         advance_prospect_one_tier(
             con,
@@ -2324,6 +2679,18 @@ def discover_non_public_players(
     results = []
     for prospect in selected:
         level = DISCOVERY_START_LEVEL
+        allowed, _reason_blocked = scouting_budget_allows(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            draft_class_id=int(class_row["draft_class_id"]),
+            prospect=prospect,
+            old_confidence="Low",
+            new_confidence=DISCOVERY_START_CONFIDENCE,
+            progress_table="scouting_prospect_progress",
+        )
+        if not allowed:
+            continue
         report = (
             f"Area scouts found {prospect_name(prospect)} ({prospect['position']}, {prospect['college']}). "
             "He was not on the public board. The early file starts at medium confidence, but still needs follow-up work."
@@ -2728,7 +3095,7 @@ def cpu_weekly_scouting_bucket_plan(
     earliest = pick_profile.get("earliest_round")
     has_first = bool(pick_profile.get("has_first_round_pick"))
     if has_first:
-        early_count = min(count - 1, max(1, round(count * 0.60))) if count > 1 else 1
+        early_count = min(count - 2, max(1, round(count * 0.42))) if count > 2 else 1
         plan = ["early"] * early_count
         while len(plan) < count:
             plan.append("day2" if len(plan) % 2 else "day3")
@@ -2739,7 +3106,7 @@ def cpu_weekly_scouting_bucket_plan(
     else:
         plan = ["day3", "day2", "day3"]
     while len(plan) < count:
-        plan.append(rng.choice(["day2", "day3"]))
+        plan.append(rng.choice(["day2", "day3", "day3"]))
     return plan[:count]
 
 
@@ -2895,7 +3262,15 @@ def select_cpu_weekly_scouting_prospects(
             break
         selected.append(prospect)
         selected_ids.add(int(prospect["prospect_id"]))
-    return selected
+    return select_with_scouting_tier_budgets(
+        con,
+        selected,
+        game_id=game_id,
+        draft_year=draft_year,
+        draft_class_id=draft_class_id,
+        progress_table="cpu_scouting_prospect_progress",
+        team_id=team_id,
+    )
 
 
 def advance_cpu_prospect_one_tier(
@@ -2921,6 +3296,28 @@ def advance_cpu_prospect_one_tier(
     ).fetchone()
     old_confidence = normalize_confidence(current["scouting_confidence"] if current else "Low")
     new_confidence = next_confidence(old_confidence)
+    class_row = draft_class_row(con, draft_year)
+    draft_class_id = int(class_row["draft_class_id"]) if class_row else int(row_value(prospect, "draft_class_id", 0) or 0)
+    if draft_class_id:
+        allowed, _reason_blocked = scouting_budget_allows(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=draft_class_id,
+            prospect=prospect,
+            old_confidence=old_confidence,
+            new_confidence=new_confidence,
+            progress_table="cpu_scouting_prospect_progress",
+            team_id=team_id,
+        )
+        if not allowed:
+            return {
+                "prospect_id": int(prospect["prospect_id"]),
+                "old_confidence": old_confidence,
+                "new_confidence": old_confidence,
+                "scouting_level": int(current["scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence]) if current else CONFIDENCE_TARGET_LEVELS[old_confidence],
+                "blocked_by_budget": True,
+            }
     old_level = int(current["scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence]) if current else 15
     new_level = max(old_level, CONFIDENCE_TARGET_LEVELS[new_confidence])
     visibility = "discovered" if str(prospect["public_board_status"] or "") == "off_public_board" else "known"
@@ -3103,6 +3500,19 @@ def discover_cpu_hidden_prospects(
     for candidate in choose_hidden_discovery_candidates(candidates, count=discovery_count, rng=rng):
         level = DISCOVERY_START_LEVEL
         confidence = DISCOVERY_START_CONFIDENCE
+        allowed, _reason_blocked = scouting_budget_allows(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=draft_class_id,
+            prospect=candidate,
+            old_confidence="Low",
+            new_confidence=confidence,
+            progress_table="cpu_scouting_prospect_progress",
+            team_id=team_id,
+        )
+        if not allowed:
+            continue
         con.execute(
             """
             INSERT INTO cpu_scouting_prospect_progress (
@@ -3184,8 +3594,9 @@ def run_cpu_weekly_scouting(
             count=max(1, count_per_team),
             rng=rng,
         )
+        advanced_this_team = 0
         for prospect in selected:
-            advance_cpu_prospect_one_tier(
+            result = advance_cpu_prospect_one_tier(
                 con,
                 game_id=target_game_id,
                 draft_year=target_year,
@@ -3194,7 +3605,46 @@ def run_cpu_weekly_scouting(
                 prospect=prospect,
                 reason=f"{team_abbr} scouts sharpened",
             )
-        total_advanced += len(selected)
+            if not result.get("blocked_by_budget"):
+                advanced_this_team += 1
+        breadth_slots = max(1, count_per_team // 3)
+        breadth = cpu_visible_scouting_candidates(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            draft_class_id=draft_class_id,
+            team_id=team_id,
+            limit=48,
+            board_rank_min=151,
+            board_rank_max=260,
+        )
+        breadth = [
+            row for row in breadth
+            if normalize_confidence(row["cpu_scouting_confidence"]) == "Low"
+            and int(row["prospect_id"]) not in {int(item["prospect_id"]) for item in selected}
+        ]
+        rng.shuffle(breadth)
+        for prospect in select_with_scouting_tier_budgets(
+            con,
+            breadth[:breadth_slots],
+            game_id=target_game_id,
+            draft_year=target_year,
+            draft_class_id=draft_class_id,
+            progress_table="cpu_scouting_prospect_progress",
+            team_id=team_id,
+        ):
+            result = advance_cpu_prospect_one_tier(
+                con,
+                game_id=target_game_id,
+                draft_year=target_year,
+                team_id=team_id,
+                period=period,
+                prospect=prospect,
+                reason=f"{team_abbr} scouts added a late-board cross-check on",
+            )
+            if not result.get("blocked_by_budget"):
+                advanced_this_team += 1
+        total_advanced += advanced_this_team
         total_discoveries += discover_cpu_hidden_prospects(
             con,
             game_id=target_game_id,
@@ -3271,7 +3721,45 @@ def process_assignments(
         ).fetchone()
         old_level = int(current["scouting_level"] or 15) if current else 15
         new_level = max(old_level, min(95, old_level + gain))
+        old_confidence = normalize_confidence(current["scouting_confidence"] if current else confidence_for_level(old_level))
         confidence = confidence_for_level(new_level)
+        allowed, reason_blocked = scouting_budget_allows(
+            con,
+            game_id=target_game_id,
+            draft_year=target_year,
+            draft_class_id=int(class_row["draft_class_id"]),
+            prospect=assignment,
+            old_confidence=old_confidence,
+            new_confidence=confidence,
+            progress_table="scouting_prospect_progress",
+        )
+        if not allowed:
+            con.execute(
+                """
+                UPDATE scouting_assignments
+                SET status = 'cancelled',
+                    processed_at = datetime('now')
+                WHERE assignment_id = ?
+                """,
+                (int(assignment["assignment_id"]),),
+            )
+            add_inbox_message(
+                con,
+                game_id=target_game_id,
+                title=f"Scouting Reassigned: {prospect_name(assignment)}",
+                body=(
+                    f"The scouting staff did not spend this week's deeper look on {prospect_name(assignment)} "
+                    f"because {reason_blocked or 'that board tier has reached its confidence budget'}. "
+                    "They will redirect future work toward another part of the board."
+                ),
+                category="Scouting",
+                priority="normal",
+                source="College Scouting",
+                message_date=period.date,
+                related_table="draft_prospects",
+                related_id=int(assignment["prospect_id"]),
+            )
+            continue
 
         personality_text = None
         personality_known = int(current["personality_known"] or 0) if current else 0
@@ -3476,6 +3964,18 @@ def discover_user_extra_hidden_prospect(
 
     level = DISCOVERY_START_LEVEL
     confidence = DISCOVERY_START_CONFIDENCE
+    allowed, _reason_blocked = scouting_budget_allows(
+        con,
+        game_id=game_id,
+        draft_year=draft_year,
+        draft_class_id=draft_class_id,
+        prospect=candidate,
+        old_confidence="Low",
+        new_confidence=confidence,
+        progress_table="scouting_prospect_progress",
+    )
+    if not allowed:
+        return []
     report = (
         f"An area scout surfaced {prospect_name(candidate)} ({candidate['position']}, {candidate['college']}) "
         "outside the public board. The early file starts at medium confidence, but still needs follow-up work."
@@ -3601,9 +4101,22 @@ def discover_hidden_prospects(
             int(class_row["draft_class_id"]),
         ),
     ).fetchall()
+    created = 0
     for prospect in choose_hidden_discovery_candidates(candidates, count=count, rng=rng):
         level = DISCOVERY_START_LEVEL
         confidence = DISCOVERY_START_CONFIDENCE
+        allowed, _reason_blocked = scouting_budget_allows(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=int(class_row["draft_class_id"]),
+            prospect=prospect,
+            old_confidence="Low",
+            new_confidence=confidence,
+            progress_table="scouting_prospect_progress",
+        )
+        if not allowed:
+            continue
         con.execute(
             """
             INSERT INTO scouting_prospect_progress (
@@ -3651,7 +4164,8 @@ def discover_hidden_prospects(
             related_table="draft_prospects",
             related_id=int(prospect["prospect_id"]),
         )
-    return len(candidates)
+        created += 1
+    return created
 
 
 def prospect_trait_rows(con: sqlite3.Connection, prospect_id: int) -> list[sqlite3.Row]:
@@ -3857,6 +4371,18 @@ def execute_top30_visit(
     if result_type == "full":
         visit_confidence = "Very High" if confidence_steps >= 2 else advance_confidence(old_confidence, 2)
         visit_level = max(visit_level, 95)
+    allowed, reason_blocked = scouting_budget_allows(
+        con,
+        game_id=target_game_id,
+        draft_year=target_year,
+        draft_class_id=draft_class_id,
+        prospect=prospect,
+        old_confidence=old_confidence,
+        new_confidence=visit_confidence,
+        progress_table="scouting_prospect_progress",
+    )
+    if not allowed:
+        raise ValueError(reason_blocked or "This scouting tier has reached its confidence budget.")
     con.execute(
         """
         INSERT INTO scouting_top30_visits (
@@ -4206,8 +4732,8 @@ def auto_assign_top30_visits(
 
     visits = []
     for prospect in selected:
-        visits.append(
-            execute_top30_visit(
+        try:
+            visit = execute_top30_visit(
                 con,
                 prospect_id=int(prospect["prospect_id"]),
                 game_id=target_game_id,
@@ -4216,7 +4742,11 @@ def auto_assign_top30_visits(
                 visit_date=effective_visit_date,
                 confidence_steps=1,
             )
-        )
+        except ValueError as exc:
+            if "tier" not in str(exc).lower() and "budget" not in str(exc).lower():
+                raise
+            continue
+        visits.append(visit)
 
     if visits:
         names = ", ".join(visit["name"] for visit in visits[:8])
@@ -4396,6 +4926,32 @@ def execute_cpu_top30_visit(
     traits = trait_payload(con, prospect_id) if result_type in {"personality", "full"} else []
     hidden_info = hidden_info_payload(prospect) if result_type == "full" else None
     notes = top30_visit_note(prospect, result_type=result_type, traits=traits, hidden_info=hidden_info)
+    old_confidence = normalize_confidence(prospect["cpu_scouting_confidence"])
+    old_level = int(prospect["cpu_scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence])
+    visit_confidence = advance_confidence(old_confidence, 2)
+    visit_level = max(old_level, CONFIDENCE_TARGET_LEVELS[visit_confidence])
+    if result_type == "full":
+        new_level = max(visit_level, 95)
+        new_confidence = "Very High"
+    else:
+        new_level = visit_level
+        new_confidence = visit_confidence
+    class_row = draft_class_row(con, draft_year)
+    draft_class_id = int(class_row["draft_class_id"]) if class_row else int(row_value(prospect, "draft_class_id", 0) or 0)
+    if draft_class_id:
+        allowed, _reason_blocked = scouting_budget_allows(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=draft_class_id,
+            prospect=prospect,
+            old_confidence=old_confidence,
+            new_confidence=new_confidence,
+            progress_table="cpu_scouting_prospect_progress",
+            team_id=team_id,
+        )
+        if not allowed:
+            return None
     con.execute(
         """
         INSERT OR IGNORE INTO scouting_top30_visits (
@@ -4421,17 +4977,6 @@ def execute_cpu_top30_visit(
     )
     if not con.execute("SELECT changes() AS c").fetchone()["c"]:
         return None
-
-    old_confidence = normalize_confidence(prospect["cpu_scouting_confidence"])
-    old_level = int(prospect["cpu_scouting_level"] or CONFIDENCE_TARGET_LEVELS[old_confidence])
-    visit_confidence = advance_confidence(old_confidence, 2)
-    visit_level = max(old_level, CONFIDENCE_TARGET_LEVELS[visit_confidence])
-    if result_type == "full":
-        new_level = max(visit_level, 95)
-        new_confidence = "Very High"
-    else:
-        new_level = visit_level
-        new_confidence = visit_confidence
     visibility = "discovered" if str(prospect["public_board_status"] or "") == "off_public_board" else "known"
     if str(prospect["cpu_visibility_status"] or "") not in {"", "hidden"}:
         visibility = str(prospect["cpu_visibility_status"])
@@ -5761,6 +6306,12 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 40) -> dict[str, A
             "discover_four": 1,
             "auto_assign": 1,
         },
+        "tierBudgets": user_scouting_tier_budget_payload(
+            con,
+            game_id=game_id,
+            draft_year=draft_year,
+            draft_class_id=int(class_row["draft_class_id"]),
+        ),
         "weeklyActionStarted": bool(used),
         "nonSpecificActionUsed": non_specific_action_used,
         "weeklyChoiceUsed": weekly_choice_used,

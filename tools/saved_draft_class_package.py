@@ -23,12 +23,15 @@ if str(ROOT) not in sys.path:
 from engine.draft.class_preview import DraftClassPreviewRow  # noqa: E402
 from engine.draft.persistence import persist_draft_class  # noqa: E402
 from engine.draft.schema import ensure_schema  # noqa: E402
+import draft_portrait_assets  # noqa: E402
 import draft_personalities  # noqa: E402
 import scouting  # noqa: E402
 
 
 DEFAULT_PACKAGE_ROOT = Path(r"Z:\NFL_GM_SIM_MISC_Files\Saved Draft Classes")
 DEFAULT_DB = ROOT / "database" / "nfl_gm.db"
+SUPPORTED_SCHEMA_VERSION = 4
+MIN_SUPPORTED_SCHEMA_VERSION = 3
 
 ROW_DEFAULTS: dict[str, Any] = {
     "medical_flag": "None",
@@ -42,10 +45,26 @@ ROW_DEFAULTS: dict[str, Any] = {
     "public_board_delta": 0,
     "development_pathway": "Traditional pipeline",
     "pipeline_note": "",
+    "display_name": "",
+    "preferred_name": "",
+    "name_pronunciation_note": "",
+    "name_background_note": "",
+    "family_football_type": "",
+    "family_football_background": "",
+    "name_storyline_note": "",
     "hometown": "",
     "hometown_city": "",
     "hometown_state": "",
     "hometown_region": "",
+    "skin_tone": "",
+    "complexion": "",
+    "face_shape": "",
+    "jawline": "",
+    "brow_profile": "",
+    "nose_profile": "",
+    "smile_profile": "",
+    "media_style": "",
+    "accessory_style": "",
 }
 
 
@@ -64,6 +83,32 @@ def package_manifest(package: Path) -> dict[str, Any]:
         if isinstance(manifest, dict):
             return manifest
     raise FileNotFoundError(f"No manifest found in saved draft class package: {package}")
+
+
+def manifest_schema_info(manifest: dict[str, Any]) -> dict[str, Any]:
+    try:
+        schema_version = int(manifest.get("schema_version") or 1)
+    except (TypeError, ValueError):
+        schema_version = 1
+    compatible = MIN_SUPPORTED_SCHEMA_VERSION <= schema_version <= SUPPORTED_SCHEMA_VERSION
+    warning = ""
+    if schema_version > SUPPORTED_SCHEMA_VERSION:
+        warning = (
+            f"Package schema {schema_version} is newer than supported schema "
+            f"{SUPPORTED_SCHEMA_VERSION}; update the game before importing."
+        )
+    elif schema_version < MIN_SUPPORTED_SCHEMA_VERSION:
+        warning = (
+            f"Package schema {schema_version} is older than the preferred schema "
+            f"{MIN_SUPPORTED_SCHEMA_VERSION}; import will use compatibility defaults."
+        )
+        compatible = True
+    return {
+        "schemaVersion": schema_version,
+        "supportedSchemaVersion": SUPPORTED_SCHEMA_VERSION,
+        "compatible": compatible,
+        "warning": warning,
+    }
 
 
 def list_packages(root: Path = DEFAULT_PACKAGE_ROOT) -> list[dict[str, Any]]:
@@ -88,6 +133,7 @@ def list_packages(root: Path = DEFAULT_PACKAGE_ROOT) -> list[dict[str, Any]]:
                 }
             )
             continue
+        schema_info = manifest_schema_info(manifest)
         packages.append(
             {
                 "name": str(manifest.get("class_name") or package.name),
@@ -101,6 +147,10 @@ def list_packages(root: Path = DEFAULT_PACKAGE_ROOT) -> list[dict[str, Any]]:
                 "classStrength": manifest.get("class_strength"),
                 "createdAt": manifest.get("created_at"),
                 "seed": manifest.get("generation_seed"),
+                "schemaVersion": schema_info["schemaVersion"],
+                "supportedSchemaVersion": schema_info["supportedSchemaVersion"],
+                "importCompatible": schema_info["compatible"],
+                "schemaWarning": schema_info["warning"],
             }
         )
     return packages
@@ -111,11 +161,20 @@ def load_rows(package: Path, draft_year: int | None = None) -> tuple[dict[str, A
     if not full_path.exists():
         raise FileNotFoundError(full_path)
     payload = read_json(full_path)
-    manifest = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else package_manifest(package)
+    if isinstance(payload, list):
+        manifest = package_manifest(package)
+        raw_rows = payload
+    elif isinstance(payload, dict):
+        manifest = payload.get("manifest") if isinstance(payload.get("manifest"), dict) else package_manifest(package)
+        raw_rows = payload.get("rows")
+    else:
+        raise ValueError(f"Unsupported saved draft class payload in {full_path}")
+    schema_info = manifest_schema_info(manifest)
+    if not schema_info["compatible"]:
+        raise ValueError(schema_info["warning"] or "Saved draft class package schema is not compatible.")
     target_year = int(draft_year or manifest.get("draft_year") or 0)
     if target_year <= 0:
         raise ValueError("A target draft year is required for this package.")
-    raw_rows = payload.get("rows")
     if not isinstance(raw_rows, list) or not raw_rows:
         raise ValueError(f"No draft rows found in {full_path}")
 
@@ -128,6 +187,10 @@ def load_rows(package: Path, draft_year: int | None = None) -> tuple[dict[str, A
         for key, default in ROW_DEFAULTS.items():
             if key in field_names and key not in values:
                 values[key] = default
+        if "display_name" in field_names and not values.get("display_name"):
+            values["display_name"] = f"{raw.get('first_name', '')} {raw.get('last_name', '')}".strip()
+        if "preferred_name" in field_names and not values.get("preferred_name"):
+            values["preferred_name"] = str(raw.get("first_name") or "")
         values["draft_year"] = target_year
         missing = sorted(field_names - set(values))
         if missing:
@@ -137,6 +200,8 @@ def load_rows(package: Path, draft_year: int | None = None) -> tuple[dict[str, A
             )
         rows.append(DraftClassPreviewRow(**values))
     manifest = dict(manifest)
+    manifest["schema_warning"] = schema_info["warning"]
+    manifest["schema_version"] = schema_info["schemaVersion"]
     manifest["imported_from_package_year"] = manifest.get("draft_year")
     manifest["draft_year"] = target_year
     return manifest, rows
@@ -198,6 +263,11 @@ def import_package(
         "wouldReplace": bool(status.get("exists")),
         "applied": False,
         "scoutingInitialized": False,
+        "portraitsCopied": 0,
+        "portraitsMapped": 0,
+        "portraitsMissing": 0,
+        "schemaVersion": manifest.get("schema_version"),
+        "schemaWarning": manifest.get("schema_warning") or "",
     }
     if not apply:
         return result
@@ -212,6 +282,14 @@ def import_package(
         class_name=str(manifest.get("class_name") or f"{target_year} Saved Draft Class"),
         notes=f"Imported from saved package {package}. Source package draft year: {manifest.get('imported_from_package_year')}.",
         force=bool(status.get("exists")),
+    )
+    portrait_result = draft_portrait_assets.import_saved_class_portraits(
+        con,
+        package=package,
+        rows=rows,
+        draft_class_id=persisted.draft_class_id,
+        draft_year=target_year,
+        root=ROOT,
     )
     class_row, prospects, assignments = draft_personalities.build_generation_result(
         con,
@@ -241,6 +319,9 @@ def import_package(
             "applied": True,
             "draftClassId": persisted.draft_class_id,
             "personalityRunId": personality_run_id,
+            "portraitsCopied": int(portrait_result.get("copied", 0)),
+            "portraitsMapped": int(portrait_result.get("mapped", 0)),
+            "portraitsMissing": int(portrait_result.get("missing", 0)),
             "scoutingInitialized": scouting_result is not None,
             "scouting": scouting_result,
         }
@@ -315,6 +396,8 @@ def main() -> int:
         )
         if result.get("scoutingInitialized"):
             print("Scouting initialized.")
+        if result.get("portraitsCopied"):
+            print(f"Portraits copied: {result['portraitsCopied']}.")
     return 0
 
 

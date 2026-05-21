@@ -28,6 +28,39 @@ DEFAULT_SEASON = 2026
 PREMIUM_GROUPS = {"QB", "WR", "OT", "IOL", "EDGE", "IDL", "CB"}
 LOW_COST_GROUPS = {"K", "P", "LS", "ST", "FB"}
 EVALUATOR_GROUP = {"OT": "OL", "IOL": "OL", "ST": "ST"}
+NEED_PRIORITY_WEIGHT = {"urgent": 5, "high": 4, "medium": 3, "low": 2, "monitor": 1, "": 0}
+ROOM_STARTER_SLOTS = {
+    "QB": 1,
+    "RB": 2,
+    "WR": 3,
+    "TE": 1,
+    "OT": 2,
+    "IOL": 3,
+    "EDGE": 2,
+    "IDL": 2,
+    "LB": 2,
+    "CB": 3,
+    "S": 2,
+    "K": 1,
+    "P": 1,
+    "LS": 1,
+}
+ROOM_IDEAL_COUNTS = {
+    "QB": 3,
+    "RB": 4,
+    "WR": 6,
+    "TE": 3,
+    "OT": 4,
+    "IOL": 5,
+    "EDGE": 5,
+    "IDL": 5,
+    "LB": 5,
+    "CB": 6,
+    "S": 5,
+    "K": 1,
+    "P": 1,
+    "LS": 1,
+}
 
 FALLBACK_BASE_AAV = {
     "QB": 9_000_000,
@@ -301,6 +334,86 @@ def normalized_group(raw_group: Any, position: Any) -> str:
     return group or "UNK"
 
 
+def room_context_for_team(con: sqlite3.Connection, team_id: int, league_year: int) -> dict[str, dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT
+            p.player_id,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            p.age,
+            COALESCE(p.overall, 50) AS overall,
+            COALESCE(p.potential, p.overall, 50) AS potential,
+            COALESCE(c.aav, 0) AS aav
+        FROM players p
+        LEFT JOIN contracts c
+          ON c.player_id = p.player_id
+         AND c.team_id = p.team_id
+         AND c.is_active = 1
+         AND COALESCE(c.start_year, ?) <= ?
+         AND COALESCE(c.end_year, ?) >= ?
+        WHERE p.team_id = ?
+          AND p.status = 'Active'
+        ORDER BY p.overall DESC, p.potential DESC
+        """,
+        (league_year, league_year, league_year, league_year, team_id),
+    ).fetchall()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        player = dict(row)
+        group = normalized_group(None, player.get("position"))
+        grouped.setdefault(group, []).append(player)
+
+    context: dict[str, dict[str, Any]] = {}
+    for group, players in grouped.items():
+        players.sort(key=lambda item: (as_int(item.get("overall")), as_int(item.get("potential"))), reverse=True)
+        starters = players[: ROOM_STARTER_SLOTS.get(group, 2)]
+        context[group] = {
+            "count": len(players),
+            "starter_slots": ROOM_STARTER_SLOTS.get(group, 2),
+            "ideal": ROOM_IDEAL_COUNTS.get(group, max(3, ROOM_STARTER_SLOTS.get(group, 2) + 2)),
+            "best": as_int(players[0].get("overall")) if players else 0,
+            "best_potential": as_int(players[0].get("potential")) if players else 0,
+            "starter_floor": min((as_int(player.get("overall")) for player in starters), default=0),
+            "paid_starter_count": sum(1 for player in players if as_int(player.get("aav")) >= 8_000_000),
+            "players": players[:8],
+        }
+
+    qbs = grouped.get("QB", [])
+    young_qbs = [
+        player for player in qbs
+        if as_int(player.get("age")) <= 25
+        and as_int(player.get("potential")) >= 84
+        and as_int(player.get("overall")) >= 68
+    ]
+    if young_qbs:
+        context.setdefault("QB", {})
+        context["QB"]["young_qb_plan"] = True
+        context["QB"]["young_qb_best"] = max(as_int(player.get("overall")) for player in young_qbs)
+        context["QB"]["young_qb_names"] = [str(player.get("player_name")) for player in young_qbs[:3]]
+
+    # Fullbacks are useful roster pieces, but they should not hide a thin halfback room.
+    halfbacks = [
+        player for player in grouped.get("RB", [])
+        if str(player.get("position") or "").upper() == "RB"
+    ]
+    if halfbacks:
+        halfbacks.sort(key=lambda item: (as_int(item.get("overall")), as_int(item.get("potential"))), reverse=True)
+        context.setdefault("RB", {})
+        context["RB"]["halfback_count"] = len(halfbacks)
+        context["RB"]["halfback_best"] = as_int(halfbacks[0].get("overall"))
+        context["RB"]["halfback_starter_floor"] = min(
+            (as_int(player.get("overall")) for player in halfbacks[:2]),
+            default=0,
+        )
+    else:
+        context.setdefault("RB", {})
+        context["RB"]["halfback_count"] = 0
+        context["RB"]["halfback_best"] = 0
+        context["RB"]["halfback_starter_floor"] = 0
+    return context
+
+
 def fetch_market_rows(
     con: sqlite3.Connection,
     *,
@@ -469,6 +582,29 @@ def need_for_player(player: dict[str, Any], need_by_group: dict[str, dict[str, A
     return need_by_group.get(eval_group)
 
 
+def need_priority_value(need: dict[str, Any] | None) -> int:
+    if not need:
+        return 0
+    return NEED_PRIORITY_WEIGHT.get(str(need.get("priority") or "").lower(), 0)
+
+
+def has_stronger_unfilled_needs(need_by_group: dict[str, dict[str, Any]], group: str, threshold: int = 3) -> bool:
+    eval_group = EVALUATOR_GROUP.get(group, group)
+    current_priority = need_priority_value(need_by_group.get(eval_group))
+    for need_group, need in need_by_group.items():
+        if need_group == eval_group:
+            continue
+        if need_priority_value(need) >= threshold and need_priority_value(need) > current_priority:
+            return True
+    return False
+
+
+def strict_group_offer_limit(group: str) -> int:
+    if group in {"CB", "WR", "IOL"}:
+        return 2
+    return 1
+
+
 def recommended_years(player: dict[str, Any], bucket: str) -> int:
     preferred = max(1, as_int(player.get("preferred_years"), 1))
     age = as_int(player.get("age"), 28)
@@ -492,6 +628,8 @@ def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_
     minimum = as_int(player.get("minimum_aav"))
     tier = str(player.get("market_tier") or "Depth")
     group = str(player.get("position_group") or "")
+    overall = as_int(player.get("overall"), as_int(player.get("market_score"), 60))
+    potential = as_int(player.get("potential"), overall)
     if bucket == "primary_targets":
         pct = 1.02 if tier == "Premium" else 0.98
     elif bucket == "value_targets":
@@ -505,10 +643,17 @@ def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_
     if bucket in {"bridge_or_depth", "monitor"}:
         max_pct = 0.92
     max_aav = max(initial, round_money(asking * max_pct, 50_000))
+    quality_cap = max(minimum, fa.cpu_true_quality_aav_cap(player))
+    if group == "QB" and overall <= 76 and potential < 82:
+        quality_cap = min(quality_cap, max(minimum, 16_500_000))
+    max_aav = min(max_aav, quality_cap)
+    initial = min(initial, max_aav)
     if remaining_budget > 0 and bucket in {"primary_targets", "value_targets", "bridge_or_depth"}:
         max_aav = min(max_aav, max(minimum, remaining_budget))
         initial = min(initial, max_aav)
-    years = recommended_years(player, bucket)
+    years = min(recommended_years(player, bucket), fa.cpu_offer_year_cap(player))
+    if group == "QB" and overall <= 76 and potential < 82:
+        years = min(years, 1)
     guarantee = max(as_int(player.get("guarantee_pct")), 15)
     if bucket == "primary_targets":
         guarantee += 14
@@ -518,6 +663,17 @@ def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_
         guarantee = min(25, guarantee)
     guarantee = max(0, min(72, guarantee))
     bonus_pct = 0.12 if bucket == "primary_targets" else 0.07 if bucket == "value_targets" else 0.03
+    if years <= 1:
+        structure = "balanced"
+    elif bucket == "primary_targets" and tier == "Premium" and group in PREMIUM_GROUPS and cap_band in {"tight", "critical", "over_cap"}:
+        structure = "backloaded"
+        bonus_pct = max(bonus_pct, 0.16)
+    elif bucket == "primary_targets" and tier == "Premium" and group in PREMIUM_GROUPS:
+        structure = "backloaded"
+    elif bucket in {"bridge_or_depth", "monitor"}:
+        structure = "frontloaded" if years > 1 else "balanced"
+    else:
+        structure = "balanced"
     signing_bonus = round_money(initial * years * bonus_pct, 50_000)
     return {
         "recommended_years": years,
@@ -525,6 +681,7 @@ def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_
         "max_aav": max_aav,
         "signing_bonus": signing_bonus,
         "guarantee_pct": guarantee,
+        "contract_structure": structure,
         "total_value": initial * years,
     }
 
@@ -534,16 +691,22 @@ def player_fit_score(
     need: dict[str, Any] | None,
     *,
     surplus: dict[str, Any] | None,
+    room_context: dict[str, dict[str, Any]],
+    need_by_group: dict[str, dict[str, Any]],
     budget: int,
     biases: dict[str, Any],
+    strict_need_plan: bool = False,
 ) -> tuple[float, list[str]]:
     score = as_float(player.get("market_score"), 60.0)
+    overall = as_float(player.get("overall"), score)
+    potential = as_float(player.get("potential"), overall)
     asking = as_int(player.get("asking_aav"))
     age = as_int(player.get("age"), 28)
     group = str(player.get("position_group") or "")
     tier = str(player.get("market_tier") or "")
     reasons: list[str] = []
     fit = score
+    priority_value = need_priority_value(need)
     if need:
         need_score = as_float(need.get("need_score"), 0.0)
         fit += need_score * 0.42
@@ -584,6 +747,40 @@ def player_fit_score(
             reasons.append("short-term policy fit")
     if "starter" in policy_text and tier in {"Premium", "Starter"} and need:
         fit += 3
+    room = room_context.get(group, {})
+    if group == "QB":
+        young_qb_plan = bool(room.get("young_qb_plan"))
+        young_qb_best = as_float(room.get("young_qb_best"), 0.0)
+        best_qb = as_float(room.get("best"), young_qb_best)
+        if young_qb_plan and priority_value < 4:
+            fit -= 26
+            reasons.append("young QB plan already on roster")
+        if young_qb_plan and overall < max(80.0, young_qb_best + 8.0):
+            fit -= 22
+            reasons.append("not enough of an upgrade over young QB plan")
+        if as_int(room.get("count")) >= 2 and overall <= best_qb + 3 and asking >= 8_000_000:
+            fit -= 18
+            reasons.append("expensive QB without clear starter separation")
+    elif group == "RB":
+        if as_int(room.get("halfback_count")) < 2 or as_int(room.get("halfback_starter_floor")) < 68:
+            fit += 9
+            reasons.append("thin true halfback room")
+    elif group in {"EDGE", "WR", "IDL", "OT", "IOL", "CB"}:
+        if (
+            priority_value <= 2
+            and as_int(room.get("count")) >= as_int(room.get("starter_slots"), 2)
+            and as_int(room.get("starter_floor")) >= 72
+            and asking >= 10_000_000
+        ):
+            fit -= 16
+            reasons.append("premium room already has playable starters")
+    if strict_need_plan:
+        if priority_value <= 2 and asking >= 6_000_000:
+            fit -= 20
+            reasons.append("skipped-user plan avoids low-priority spending")
+        if has_stronger_unfilled_needs(need_by_group, group):
+            fit -= 10
+            reasons.append("stronger roster holes should come first")
     return round(clamp(fit, 0, 120), 1), list(dict.fromkeys(reason for reason in reasons if reason))
 
 
@@ -596,6 +793,7 @@ def classify_player(
     remaining_budget: int,
     total_budget: int,
     cap_band: str,
+    strict_need_plan: bool = False,
 ) -> str:
     score = as_float(player.get("market_score"))
     asking = as_int(player.get("asking_aav"))
@@ -606,8 +804,19 @@ def classify_player(
     need_score = as_float(need.get("need_score")) if need else 0.0
     need_priority = str(need.get("priority") if need else "").lower()
     surplus_score = as_float(surplus.get("surplus_score")) if surplus else 0.0
-    real_need = need_priority in {"urgent", "high", "medium"} or need_score >= 42
+    strict_relative_need = (
+        strict_need_plan
+        and need is not None
+        and need_score >= 22
+        and group != "QB"
+        and not (group in {"EDGE", "WR", "IDL", "OT", "IOL"} and asking >= 10_000_000 and need_priority in {"low", "monitor", ""})
+    )
+    real_need = need_priority in {"urgent", "high", "medium"} or need_score >= 42 or strict_relative_need
 
+    if strict_need_plan and not real_need:
+        return "monitor" if score >= 82 or tier == "Premium" else "avoid"
+    if strict_need_plan and not strict_relative_need and need_priority in {"low", "monitor", ""} and asking >= 6_000_000:
+        return "monitor" if score >= 78 else "avoid"
     if cap_band in {"over_cap", "critical"} and asking > max(2_500_000, total_budget):
         return "monitor" if need_score >= 60 or score >= 78 else "avoid"
     if group in LOW_COST_GROUPS and not need:
@@ -620,9 +829,9 @@ def classify_player(
         return "primary_targets"
     if fit_score >= 80 and real_need and asking <= remaining_budget and tier in {"Premium", "Starter"}:
         return "primary_targets"
-    if fit_score >= 70 and ((need and surplus_score < 20) or tier in {"Starter", "Rotation"}) and minimum <= remaining_budget:
+    if fit_score >= 70 and real_need and surplus_score < 20 and minimum <= remaining_budget:
         return "value_targets"
-    if fit_score >= 60 and minimum <= remaining_budget and ((need and surplus_score < 20) or score >= 64 or group in LOW_COST_GROUPS):
+    if fit_score >= 60 and minimum <= remaining_budget and ((real_need and surplus_score < 20) or group in LOW_COST_GROUPS):
         return "bridge_or_depth"
     if need or score >= 72 or tier in {"Premium", "Starter"}:
         return "monitor"
@@ -679,6 +888,7 @@ def build_free_agent_plan(
     persist: bool = False,
     refresh_market: bool = False,
     market_limit: int = 120,
+    strict_need_plan: bool = False,
 ) -> dict[str, Any]:
     ensure_schema(con)
     league_year = league_year or current_league_year(con)
@@ -697,6 +907,7 @@ def build_free_agent_plan(
     )
     need_by_group, target_groups = need_maps(evaluation)
     surplus_by_group = surplus_maps(evaluation)
+    room_context = room_context_for_team(con, team_id, league_year)
     projected_cap = (
         contract_negotiations.projected_cap_summary(con, team_id, league_year)
         or contract_negotiations.cap_summary(con, team_id)
@@ -726,8 +937,11 @@ def build_free_agent_plan(
             player,
             need,
             surplus=surplus,
+            room_context=room_context,
+            need_by_group=need_by_group,
             budget=remaining or as_int(budget["practical_free_agent_budget"]),
             biases=biases,
+            strict_need_plan=strict_need_plan,
         )
         candidates.append((fit_score, player, need, surplus, reasons))
     candidates.sort(key=lambda item: (item[0], as_float(item[1].get("market_score")), -as_int(item[1].get("asking_aav"))), reverse=True)
@@ -741,6 +955,7 @@ def build_free_agent_plan(
             remaining_budget=remaining,
             total_budget=as_int(budget["practical_free_agent_budget"]),
             cap_band=str(budget["cap_band"]),
+            strict_need_plan=strict_need_plan,
         )
         offer = offer_shape(player, bucket, remaining, str(budget["cap_band"]))
         if bucket in {"primary_targets", "value_targets", "bridge_or_depth"}:
@@ -784,6 +999,7 @@ def build_free_agent_plan(
         "league_year": league_year,
         "season": season,
         "plan_date": plan_date,
+        "strict_need_plan": bool(strict_need_plan),
         "advisory_only": True,
         "team": {
             "team_id": team_id,
@@ -805,6 +1021,14 @@ def build_free_agent_plan(
             "cap_band": evaluation.get("metrics", {}).get("cap_band"),
             "target_groups": target_groups[:8],
             "top_needs": evaluation.get("roster_needs", [])[:6],
+            "room_context": {
+                group: {
+                    key: value
+                    for key, value in context.items()
+                    if key != "players"
+                }
+                for group, context in room_context.items()
+            },
         },
         "gm_biases": biases,
         "plan": buckets,
@@ -1070,12 +1294,26 @@ def validate_saved_plan_for_apply(
 
     total_aav = 0
     accepted_count = 0
+    accepted_by_group: dict[str, int] = {}
+    strict_need_plan = bool(saved_plan.get("strict_need_plan"))
     for item in target_offer_items(saved_plan):
         player_id = as_int(item.get("player_id"))
+        player_group = normalized_group(item.get("position_group"), item.get("position"))
         offer = dict(item.get("offer") or {})
         aav = as_int(offer.get("initial_aav"))
         if accepted_count >= max_offers:
             skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "max offer count reached"})
+            continue
+        if strict_need_plan and accepted_by_group.get(player_group, 0) >= strict_group_offer_limit(player_group):
+            skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "skipped-user plan room offer limit reached"})
+            continue
+        if (
+            strict_need_plan
+            and accepted_by_group.get(player_group, 0) >= 1
+            and aav >= 8_000_000
+            and player_group not in {"CB", "WR", "IOL"}
+        ):
+            skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "skipped-user plan avoids stacking starter-money offers in one room"})
             continue
         if aav <= 0:
             errors.append(f"{item.get('player_name')} has no positive planned AAV.")
@@ -1109,6 +1347,7 @@ def validate_saved_plan_for_apply(
             continue
 
         accepted_count += 1
+        accepted_by_group[player_group] = accepted_by_group.get(player_group, 0) + 1
         total_aav += aav
         operations.append(
             {
@@ -1122,6 +1361,7 @@ def validate_saved_plan_for_apply(
                 "max_aav": max_aav,
                 "signing_bonus": max(0, as_int(offer.get("signing_bonus"))),
                 "guarantee_pct": max(0, min(100, as_int(offer.get("guarantee_pct")))),
+                "contract_structure": str(offer.get("contract_structure") or "balanced"),
                 "expected_role": item.get("expected_role"),
                 "reasons": item.get("reasons") or [],
             }
@@ -1176,6 +1416,7 @@ def apply_free_agent_plan(
             game_id=saved_plan.get("game_id") or "master",
             plan_date=plan_date_for_league_year(con, league_year),
             persist=False,
+            strict_need_plan=bool(saved_plan.get("strict_need_plan")),
         )
     except Exception:
         current = None
@@ -1213,6 +1454,7 @@ def apply_free_agent_plan(
             guarantee_pct=as_int(operation["guarantee_pct"]),
             submitted_date=offer_date,
             submitted_hour=offer_hour,
+            contract_structure=str(operation.get("contract_structure") or "balanced"),
             notes=(
                 f"AI GM reviewed free-agent plan {plan_id}: {operation['bucket']} "
                 f"({operation.get('expected_role') or 'role TBD'})."

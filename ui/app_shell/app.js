@@ -2,6 +2,7 @@
   let data = window.APP_SHELL_DATA || { teams: [], registry: { saves: [] }, settings: {}, events: [] };
   const state = {
     view: "home",
+    controlMode: "team",
     selectedTeam: "MIN",
     gameId: defaultGameId("MIN"),
     saveName: "MIN June 1 Start",
@@ -38,7 +39,8 @@
       .slice(0, 19)
       .replace(/[-:T]/g, "")
       .slice(0, 14);
-    return `${String(team || "MIN").toLowerCase()}_june1_${stamp}`;
+    const prefix = String(team || "MIN").toLowerCase();
+    return `${prefix}_june1_${stamp}`;
   }
 
   function node(tag, className, text) {
@@ -62,6 +64,7 @@
   }
 
   function currentTeam() {
+    if (state.controlMode === "observe") return null;
     return data.teams.find((team) => team.abbr === state.selectedTeam) || data.teams[0];
   }
 
@@ -360,7 +363,9 @@
     return {
       game_id: state.gameId,
       name: state.saveName,
-      user_team: state.selectedTeam,
+      control_mode: state.controlMode,
+      observe_mode: state.controlMode === "observe",
+      user_team: state.controlMode === "observe" ? undefined : state.selectedTeam,
       start_year: 2026,
       seed: state.seed ? Number(state.seed) : undefined,
       no_variance: !state.variance,
@@ -373,7 +378,7 @@
   function renderNewGame() {
     const team = currentTeam();
     setTheme(team);
-    updateHeader("New Game", "Choose a team and start a fresh June 1 save.");
+    updateHeader("New Game", state.controlMode === "observe" ? "Start a fresh June 1 save with all 32 teams CPU-controlled." : "Choose a team and start a fresh June 1 save.");
     const root = document.createDocumentFragment();
     const formGrid = node("div", "form-grid");
 
@@ -381,11 +386,22 @@
     const stack = node("div", "form-stack");
     const gameId = inputLabel("Game ID", "text", state.gameId, (value) => { state.gameId = value; });
     const saveName = inputLabel("Save Name", "text", state.saveName, (value) => { state.saveName = value; });
+    const observe = checkboxLabel("Observe Mode", state.controlMode === "observe", (checked) => {
+      state.controlMode = checked ? "observe" : "team";
+      if (checked) {
+        state.gameId = defaultGameId("observe");
+        state.saveName = "Observe June 1 Start";
+      } else {
+        state.gameId = defaultGameId(state.selectedTeam);
+        state.saveName = `${state.selectedTeam} June 1 Start`;
+      }
+      renderNewGame();
+    });
     const seed = inputLabel("Seed", "number", state.seed, (value) => { state.seed = value; });
     const variance = checkboxLabel("Rating Variance", state.variance, (checked) => { state.variance = checked; });
     const personality = checkboxLabel("Personality Variance", state.personalityVariance, (checked) => { state.personalityVariance = checked; });
     const development = checkboxLabel("Development Modifiers", state.developmentModifiers, (checked) => { state.developmentModifiers = checked; });
-    append(stack, [gameId, saveName, seed, variance, personality, development]);
+    append(stack, [gameId, saveName, observe, seed, variance, personality, development]);
     formPanel.append(stack);
     const command = node("div", "command-box setup-actions");
     const note = node("div", "command-note", runnerMode() ? "Start the save when your setup looks right." : "Live actions are unavailable.");
@@ -398,18 +414,20 @@
     append(command, [note, actions]);
     formPanel.append(command);
 
-    const teamsPanel = panel("Team Select", team ? team.name : "");
+    const teamsPanel = panel("Team Select", state.controlMode === "observe" ? "Disabled in Observe Mode" : (team ? team.name : ""));
     const teamGrid = node("div", "team-grid");
     data.teams.forEach((item) => {
       const card = node("button", "team-choice");
       card.type = "button";
-      card.classList.toggle("active", item.abbr === state.selectedTeam);
+      card.disabled = state.controlMode === "observe";
+      card.classList.toggle("active", state.controlMode !== "observe" && item.abbr === state.selectedTeam);
       const logo = node("img");
       logo.src = item.logo || "";
       logo.alt = "";
       logo.hidden = !item.logo;
       append(card, [logo, append(node("div"), [node("strong", null, item.abbr), node("div", "muted", item.name)])]);
       card.addEventListener("click", () => {
+        state.controlMode = "team";
         state.selectedTeam = item.abbr;
         if (!state.gameId || state.gameId.startsWith("min_") || state.gameId.includes("_june1_")) {
           state.gameId = defaultGameId(item.abbr);
@@ -475,7 +493,7 @@
         });
         const left = append(node("div"), [
           node("strong", null, save.name),
-          node("div", "muted", `${save.userTeam || "-"} | ${save.currentDate || "-"} | ${save.phase || "-"}`),
+          node("div", "muted", `${save.controlMode === "observe" ? "Observe Mode" : (save.userTeam || "-")} | ${save.currentDate || "-"} | ${save.phase || "-"}`),
         ]);
         append(row, [left, append(node("div", "save-actions"), [load, del])]);
         list.append(row);

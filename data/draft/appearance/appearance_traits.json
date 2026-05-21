@@ -22,9 +22,9 @@
     "other_unknown": {"White": 24, "Black / African American": 20, "Hispanic / Latino": 18, "Asian": 12, "Middle Eastern / North African": 10, "Mediterranean": 8, "Native Hawaiian / Pacific Islander": 8}
   },
   "eye_color_weights": {
-    "black_african_american": {"Brown": 88, "Hazel": 7, "Amber": 3, "Green": 1, "Blue": 1},
+    "black_african_american": {"Brown": 90, "Hazel": 6, "Amber": 3.2, "Green": 0.6, "Blue": 0.2},
     "white": {"Blue": 36, "Brown": 31, "Hazel": 18, "Green": 12, "Gray": 3},
-    "multiracial": {"Brown": 58, "Hazel": 18, "Blue": 11, "Green": 7, "Amber": 4, "Gray": 2},
+    "multiracial": {"Brown": 64, "Hazel": 17, "Blue": 8, "Green": 6, "Amber": 4, "Gray": 1},
     "hispanic_latino": {"Brown": 80, "Hazel": 12, "Green": 4, "Blue": 3, "Amber": 1},
     "native_hawaiian_pacific_islander": {"Brown": 82, "Hazel": 10, "Amber": 5, "Green": 2, "Blue": 1},
     "asian": {"Brown": 92, "Hazel": 4, "Amber": 3, "Green": 0.5, "Blue": 0.5},
@@ -48,6 +48,144 @@
     "Mediterranean": {"Black": 1.3, "Dark brown": 1.2, "Blond": 0.5, "Red": 0.65},
     "Eastern European": {"Light brown": 1.25, "Blond": 1.15, "Auburn": 1.1},
     "Mixed / Unspecified": {"Red": 1.15, "Auburn": 1.15}
+  },
+  "skin_tone_weights": {
+    "black_african_american": {"Medium brown": 28, "Brown": 34, "Dark brown": 24, "Deep brown": 9, "Tan": 4, "Light brown": 1},
+    "white": {"Fair": 34, "Light": 30, "Light tan": 18, "Medium": 10, "Olive": 5, "Tan": 3},
+    "multiracial": {"Light brown": 22, "Medium": 20, "Tan": 18, "Brown": 18, "Light": 12, "Dark brown": 7, "Fair": 3},
+    "hispanic_latino": {"Tan": 30, "Medium": 25, "Olive": 18, "Light brown": 15, "Brown": 8, "Light": 4},
+    "native_hawaiian_pacific_islander": {"Tan": 31, "Brown": 27, "Medium brown": 20, "Light brown": 12, "Dark brown": 7, "Medium": 3},
+    "asian": {"Light": 27, "Medium": 25, "Light tan": 19, "Tan": 14, "Fair": 9, "Olive": 4, "Brown": 2},
+    "american_indian_alaska_native": {"Tan": 28, "Light brown": 23, "Medium brown": 20, "Brown": 14, "Medium": 10, "Light": 5},
+    "other_unknown": {"Medium": 24, "Light": 20, "Tan": 18, "Light brown": 14, "Olive": 10, "Brown": 8, "Fair": 4, "Dark brown": 2}
+  },
+  "skin_tone_label_adjustments": {
+    "West African": {"Dark brown": 1.35, "Deep brown": 1.45, "Medium brown": 1.12},
+    "East African": {"Brown": 1.2, "Dark brown": 1.2, "Deep brown": 1.18},
+    "Caribbean": {"Brown": 1.15, "Tan": 1.12, "Dark brown": 1.08},
+    "Irish / Scottish": {"Fair": 1.35, "Light": 1.12, "Olive": 0.72},
+    "Germanic European": {"Fair": 1.22, "Light": 1.18},
+    "Southern European": {"Olive": 1.55, "Light tan": 1.18, "Fair": 0.72},
+    "Mediterranean": {"Olive": 1.55, "Tan": 1.2, "Fair": 0.72},
+    "Mexican / Mexican American": {"Tan": 1.25, "Light brown": 1.15, "Olive": 1.12},
+    "Caribbean Latino": {"Brown": 1.22, "Tan": 1.16},
+    "South Asian": {"Brown": 1.25, "Medium brown": 1.16, "Tan": 1.12, "Fair": 0.65},
+    "East Asian": {"Light": 1.18, "Light tan": 1.14, "Brown": 0.72},
+    "Southeast Asian": {"Tan": 1.2, "Medium": 1.12, "Brown": 1.1}
+  },
+  "complexion_weights": {
+    "Clear complexion": 33,
+    "Warm undertone": 20,
+    "Cool undertone": 12,
+    "Sun-touched complexion": 12,
+    "Freckled cheeks": 7,
+    "Smooth youthful complexion": 7,
+    "Weathered outdoor complexion": 5,
+    "Slight acne scarring": 4
+  },
+  "complexion_tone_adjustments": {
+    "Fair": {"Freckled cheeks": 1.6, "Cool undertone": 1.25, "Sun-touched complexion": 0.85},
+    "Light": {"Freckled cheeks": 1.25, "Cool undertone": 1.08},
+    "Tan": {"Sun-touched complexion": 1.35, "Warm undertone": 1.12},
+    "Brown": {"Warm undertone": 1.18, "Freckled cheeks": 0.7},
+    "Dark brown": {"Warm undertone": 1.2, "Freckled cheeks": 0.55},
+    "Deep brown": {"Warm undertone": 1.2, "Freckled cheeks": 0.45}
+  },
+  "face_shape_weights": {
+    "black_african_american": {"Oval face": 28, "Broad face": 23, "Square face": 20, "Round face": 15, "Long face": 10, "Heart-shaped face": 4},
+    "white": {"Oval face": 30, "Square face": 22, "Long face": 18, "Round face": 16, "Broad face": 9, "Heart-shaped face": 5},
+    "multiracial": {"Oval face": 31, "Square face": 20, "Broad face": 17, "Round face": 16, "Long face": 11, "Heart-shaped face": 5},
+    "hispanic_latino": {"Oval face": 31, "Round face": 21, "Square face": 18, "Broad face": 14, "Long face": 11, "Heart-shaped face": 5},
+    "native_hawaiian_pacific_islander": {"Broad face": 31, "Oval face": 25, "Square face": 20, "Round face": 15, "Long face": 6, "Heart-shaped face": 3},
+    "asian": {"Oval face": 33, "Round face": 23, "Long face": 15, "Square face": 13, "Heart-shaped face": 9, "Broad face": 7},
+    "american_indian_alaska_native": {"Oval face": 30, "Broad face": 23, "Square face": 17, "Long face": 14, "Round face": 12, "Heart-shaped face": 4},
+    "other_unknown": {"Oval face": 31, "Square face": 19, "Round face": 18, "Long face": 14, "Broad face": 13, "Heart-shaped face": 5}
+  },
+  "jawline_weights": {
+    "black_african_american": {"Strong jawline": 33, "Rounded jawline": 22, "Broad jawline": 22, "Defined chin": 14, "Narrow jawline": 9},
+    "white": {"Defined jawline": 31, "Square jawline": 24, "Rounded jawline": 18, "Narrow jawline": 15, "Strong jawline": 12},
+    "multiracial": {"Defined jawline": 29, "Strong jawline": 24, "Rounded jawline": 20, "Square jawline": 17, "Narrow jawline": 10},
+    "hispanic_latino": {"Defined jawline": 30, "Rounded jawline": 23, "Strong jawline": 21, "Square jawline": 16, "Narrow jawline": 10},
+    "native_hawaiian_pacific_islander": {"Broad jawline": 33, "Strong jawline": 27, "Rounded jawline": 18, "Defined chin": 14, "Square jawline": 8},
+    "asian": {"Rounded jawline": 30, "Defined jawline": 25, "Narrow jawline": 21, "Square jawline": 14, "Strong jawline": 10},
+    "american_indian_alaska_native": {"Strong jawline": 30, "Defined jawline": 26, "Broad jawline": 19, "Rounded jawline": 16, "Narrow jawline": 9},
+    "other_unknown": {"Defined jawline": 29, "Rounded jawline": 22, "Strong jawline": 20, "Square jawline": 17, "Narrow jawline": 12}
+  },
+  "brow_profile_weights": {
+    "black_african_american": {"Straight brows": 29, "Thick brows": 26, "Arched brows": 18, "Low brow ridge": 15, "Soft brow": 12},
+    "white": {"Straight brows": 28, "Thick brows": 22, "Arched brows": 20, "Soft brow": 18, "Low brow ridge": 12},
+    "multiracial": {"Straight brows": 29, "Thick brows": 24, "Arched brows": 19, "Soft brow": 16, "Low brow ridge": 12},
+    "hispanic_latino": {"Thick brows": 30, "Straight brows": 27, "Arched brows": 18, "Low brow ridge": 13, "Soft brow": 12},
+    "native_hawaiian_pacific_islander": {"Thick brows": 31, "Straight brows": 28, "Soft brow": 16, "Low brow ridge": 14, "Arched brows": 11},
+    "asian": {"Straight brows": 37, "Soft brow": 25, "Thick brows": 18, "Arched brows": 12, "Low brow ridge": 8},
+    "american_indian_alaska_native": {"Straight brows": 33, "Thick brows": 25, "Low brow ridge": 17, "Soft brow": 14, "Arched brows": 11},
+    "other_unknown": {"Straight brows": 30, "Thick brows": 23, "Arched brows": 18, "Soft brow": 17, "Low brow ridge": 12}
+  },
+  "nose_profile_weights": {
+    "black_african_american": {"Broad nose": 34, "Rounded nose": 24, "Straight nose": 20, "Wide bridge": 14, "Narrow nose": 8},
+    "white": {"Straight nose": 34, "Narrow nose": 24, "Rounded nose": 17, "Prominent bridge": 15, "Broad nose": 10},
+    "multiracial": {"Straight nose": 27, "Rounded nose": 24, "Broad nose": 21, "Narrow nose": 16, "Wide bridge": 12},
+    "hispanic_latino": {"Straight nose": 29, "Rounded nose": 24, "Broad nose": 18, "Prominent bridge": 16, "Narrow nose": 13},
+    "native_hawaiian_pacific_islander": {"Broad nose": 34, "Rounded nose": 25, "Wide bridge": 21, "Straight nose": 14, "Narrow nose": 6},
+    "asian": {"Straight nose": 33, "Rounded nose": 25, "Low bridge": 21, "Narrow nose": 14, "Broad nose": 7},
+    "american_indian_alaska_native": {"Straight nose": 31, "Prominent bridge": 24, "Broad nose": 20, "Rounded nose": 17, "Narrow nose": 8},
+    "other_unknown": {"Straight nose": 31, "Rounded nose": 22, "Broad nose": 18, "Narrow nose": 17, "Prominent bridge": 12}
+  },
+  "smile_profile_weights": {
+    "black_african_american": {"Neutral expression": 28, "Closed-mouth focus": 20, "Reserved smile": 18, "Subtle smile": 14, "Confident smile": 13, "Wide smile": 5, "Gap-toothed smile": 1.5},
+    "white": {"Neutral expression": 30, "Closed-mouth focus": 21, "Reserved smile": 18, "Subtle smile": 14, "Confident smile": 11, "Wide smile": 4, "Gap-toothed smile": 1.5},
+    "multiracial": {"Neutral expression": 28, "Closed-mouth focus": 19, "Reserved smile": 17, "Subtle smile": 14, "Confident smile": 14, "Wide smile": 6, "Gap-toothed smile": 1.5},
+    "hispanic_latino": {"Neutral expression": 28, "Closed-mouth focus": 19, "Reserved smile": 17, "Subtle smile": 14, "Confident smile": 14, "Wide smile": 6, "Gap-toothed smile": 1.5},
+    "native_hawaiian_pacific_islander": {"Neutral expression": 25, "Closed-mouth focus": 18, "Reserved smile": 16, "Subtle smile": 14, "Confident smile": 16, "Wide smile": 9, "Gap-toothed smile": 1.5},
+    "asian": {"Neutral expression": 31, "Closed-mouth focus": 22, "Reserved smile": 18, "Subtle smile": 15, "Confident smile": 9, "Wide smile": 3, "Gap-toothed smile": 1.5},
+    "american_indian_alaska_native": {"Neutral expression": 29, "Closed-mouth focus": 20, "Reserved smile": 18, "Subtle smile": 14, "Confident smile": 12, "Wide smile": 5, "Gap-toothed smile": 1.5},
+    "other_unknown": {"Neutral expression": 29, "Closed-mouth focus": 20, "Reserved smile": 18, "Subtle smile": 14, "Confident smile": 12, "Wide smile": 5, "Gap-toothed smile": 1.5}
+  },
+  "media_style_weights": {
+    "official combine headshot backdrop": 28,
+    "college media-day neutral backdrop": 24,
+    "pro-day interview backdrop": 18,
+    "team facility workout backdrop": 12,
+    "Senior Bowl media tent": 8,
+    "small-school gym backdrop": 6,
+    "international pathway media backdrop": 4
+  },
+  "top_prospect_media_adjustments": {
+    "official combine headshot backdrop": 1.4,
+    "Senior Bowl media tent": 1.25,
+    "small-school gym backdrop": 0.65
+  },
+  "small_school_media_adjustments": {
+    "small-school gym backdrop": 2.4,
+    "pro-day interview backdrop": 1.35,
+    "official combine headshot backdrop": 0.78
+  },
+  "international_media_adjustments": {
+    "international pathway media backdrop": 3.0,
+    "pro-day interview backdrop": 1.3,
+    "small-school gym backdrop": 1.2
+  },
+  "accessory_style_weights": {
+    "No visible accessories": 88,
+    "Black athletic headband": 1.2,
+    "Thin chain tucked under collar": 6,
+    "Small stud earrings": 5,
+    "White skullcap": 0.35,
+    "Visible arm tattoo edge": 3,
+    "Small neck tattoo": 1.2,
+    "Clear sports glasses": 0.8
+  },
+  "accessory_position_adjustments": {
+    "WR": {"Black athletic headband": 1.35, "Thin chain tucked under collar": 1.2, "Small stud earrings": 1.2},
+    "DB": {"Black athletic headband": 1.25, "Small stud earrings": 1.2},
+    "OL": {"White skullcap": 1.05, "Thin chain tucked under collar": 0.78},
+    "DL": {"Visible arm tattoo edge": 1.3, "White skullcap": 0.95},
+    "QB": {"No visible accessories": 1.15, "Clear sports glasses": 1.25, "Small neck tattoo": 0.55}
+  },
+  "accessory_young_adjustments": {
+    "Small neck tattoo": 0.72,
+    "Visible arm tattoo edge": 0.85,
+    "No visible accessories": 1.08
   },
   "hairstyle_outlier_chance": 0.03,
   "hairstyle_weights": {

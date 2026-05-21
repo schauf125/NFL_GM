@@ -19,9 +19,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import select_draft_pick
+import cpu_depth_chart
 import scouting as scouting_tools
 import scouting_perception
+import sim_control
 import trade_engine
+from setup_transactions_cap_ledger import insert_transaction
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,16 +54,23 @@ ROUND_ONE_MIN_GRADE_FLOOR = 68.0
 ROUND_ONE_MIN_CEILING_FLOOR = 76.0
 ROUND_ONE_LOW_CEILING_IMPACT_POSITIONS = {"QB", "OT", "EDGE", "IDL"}
 ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS = {"C", "OG", "RB", "TE", "ILB", "FS", "SS", "NB"}
-ROUND_ONE_LUXURY_ROOM_POSITIONS = {"WR", "TE", "CB", "NB", "FS", "SS"}
+ROUND_ONE_LUXURY_ROOM_POSITIONS = {"WR", "TE", "OT", "EDGE", "CB", "NB", "FS", "SS"}
 ROUND_ONE_LOW_CEILING_POSITIONS = {"WR", "TE", "CB", "NB", "FS", "SS", "C", "OG", "ILB", "LB"}
+ROUND_ONE_PREMIUM_SWING_POSITIONS = {"QB", "OT", "EDGE", "CB", "WR", "IDL"}
+ROUND_ONE_LATE_KNOWN_LOW_CEILING_GRADE = 71.0
+ROUND_ONE_LATE_KNOWN_LOW_CEILING_CEILING = 76.0
 ROUND_TWO_MIN_GRADE_FLOOR = 62.0
 ROUND_TWO_MIN_CEILING_FLOOR = 68.0
-DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 16, 2: 9, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2}
-DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 16.0, "high": 8.0, "medium": 1.0, "low": -12.0, "unscouted": -22.0}
-DRAFT_TRADE_PREMIUM_POSITIONS = {"QB", "OT", "EDGE", "CB", "WR"}
-DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 62.0, 2: 58.0, 3: 54.0, 4: 52.0, 5: 50.0, 6: 50.0, 7: 50.0}
-DRAFT_TRADE_MAX_BY_ROUND = {1: 8, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
-DRAFT_TRADE_MAX_TOTAL = 24
+DRAFT_TRADE_LOOKAHEAD_BY_ROUND = {1: 22, 2: 10, 3: 7, 4: 5, 5: 4, 6: 3, 7: 2}
+DRAFT_TRADE_CONFIDENCE_BONUS = {"very high": 19.0, "high": 10.0, "medium": 2.0, "low": -12.0, "unscouted": -22.0}
+DRAFT_TRADE_PREMIUM_POSITIONS = {"QB", "OT", "EDGE", "IDL", "CB", "WR"}
+DRAFT_TRADE_SCORE_THRESHOLD_BY_ROUND = {1: 57.0, 2: 57.0, 3: 53.0, 4: 52.0, 5: 50.0, 6: 50.0, 7: 50.0}
+DRAFT_TRADE_MAX_BY_ROUND = {1: 10, 2: 6, 3: 5, 4: 4, 5: 3, 6: 3, 7: 3}
+DRAFT_TRADE_MAX_TOTAL = 28
+CPU_DRAFT_TRADE_MAX_OFFER_PICKS = 4
+CPU_DRAFT_TRADE_MAX_FUTURE_PICKS = 2
+CPU_DRAFT_TRADE_FUTURE_YEARS = 2
+CPU_DRAFT_TRADE_FUTURE_ROUNDS = 4
 USER_DRAFT_TRADE_MAX_PICKS = 4
 SELLER_LIKED_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
@@ -93,6 +103,13 @@ def table_exists(con: sqlite3.Connection, table_name: str) -> bool:
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
+    columns: set[str] = set()
+    for row in con.execute(f"PRAGMA table_info({table_name})").fetchall():
+        columns.add(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]))
+    return columns
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -133,6 +150,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             player_id INTEGER REFERENCES players(player_id) ON DELETE SET NULL,
             event_type TEXT NOT NULL,
             message TEXT NOT NULL,
+            event_details TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
@@ -212,6 +230,8 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         WHERE status = 'Available';
         """
     )
+    if "event_details" not in table_columns(con, "draft_room_events"):
+        con.execute("ALTER TABLE draft_room_events ADD COLUMN event_details TEXT")
 
 
 def money(value: int | None) -> str:
@@ -349,14 +369,15 @@ def log_event(
     pick: sqlite3.Row | None = None,
     prospect_id: int | None = None,
     player_id: int | None = None,
+    event_details: dict[str, Any] | None = None,
 ) -> None:
     con.execute(
         """
         INSERT INTO draft_room_events (
             draft_year, pick_id, pick_number, round, team_id,
-            prospect_id, player_id, event_type, message
+            prospect_id, player_id, event_type, message, event_details
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             draft_year,
@@ -368,8 +389,62 @@ def log_event(
             player_id,
             event_type,
             message,
+            json.dumps(event_details, separators=(",", ":")) if event_details else None,
         ),
     )
+
+
+def record_draft_trade_transaction(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    event_type: str,
+    pick: sqlite3.Row,
+    buyer_team_id: int,
+    seller_team_id: int,
+    message: str,
+) -> None:
+    insert_transaction(
+        con,
+        transaction_date=current_game_date(con, draft_year),
+        season=draft_year,
+        phase="Draft",
+        transaction_type="Draft Pick Move",
+        team_id=buyer_team_id,
+        secondary_team_id=seller_team_id,
+        from_team_id=seller_team_id,
+        to_team_id=buyer_team_id,
+        description=message,
+        source=SOURCE,
+        external_ref=f"{event_type}:{draft_year}:{int(pick['pick_id'])}",
+    )
+
+
+def draft_trade_pick_payload(
+    con: sqlite3.Connection,
+    pick: sqlite3.Row,
+    *,
+    current_draft_year: int,
+    from_team_id: int,
+    to_team_id: int,
+) -> dict[str, Any]:
+    pick_number = effective_pick_number(pick)
+    round_number = int(pick["round"] or 0)
+    pick_year = int(pick["draft_year"] or current_draft_year)
+    label = f"{pick_year} Round {round_number}"
+    if pick_year == current_draft_year and pick_number:
+        label = f"{pick_year} R{round_number}, Pick {pick_number}"
+    return {
+        "pickId": int(pick["pick_id"]),
+        "draftYear": pick_year,
+        "round": round_number,
+        "pickNumber": int(pick_number) if pick_number else None,
+        "label": label,
+        "fromTeamId": int(from_team_id),
+        "fromTeam": team_abbr(con, from_team_id),
+        "toTeamId": int(to_team_id),
+        "toTeam": team_abbr(con, to_team_id),
+    }
 
 
 def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row | None) -> None:
@@ -380,6 +455,7 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
     if not pick:
         udfa_results = select_draft_pick.convert_undrafted_available_prospects(con, draft_year)
         cap_cleanup: dict[str, int] = {}
+        depth_signings: dict[str, int] = {}
         try:
             import free_agency_processor
 
@@ -391,7 +467,7 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
                 con,
                 draft_year,
                 user_team=user_team,
-                min_space=1_000_000,
+                min_space=6_000_000,
                 max_moves_per_team=4,
                 max_teams=32,
                 time_budget_seconds=12.0,
@@ -437,6 +513,63 @@ def set_current_pick(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row
                 event_type="post_draft_cap_compliance",
                 message=message,
             )
+        try:
+            import free_agency_processor
+
+            user_team = None
+            if table_exists(con, "active_game_save_view"):
+                user_row = con.execute("SELECT user_team FROM active_game_save_view LIMIT 1").fetchone()
+                user_team = str(user_row["user_team"]) if user_row and user_row["user_team"] else None
+            depth_signings = free_agency_processor.cpu_post_draft_depth_signings(
+                con,
+                draft_year,
+                user_team=user_team,
+                max_per_team=3,
+                max_total=56,
+            )
+        except Exception as exc:
+            depth_signings = {"error": str(exc)}
+        if depth_signings:
+            if "error" in depth_signings:
+                message = f"Post-draft depth free agency skipped: {depth_signings['error']}."
+            else:
+                message = (
+                    "Post-draft depth free agency: "
+                    f"{depth_signings.get('signings', 0)} signing(s) across "
+                    f"{depth_signings.get('teams', 0)} team(s); "
+                    f"{depth_signings.get('specialist_signings', 0)} specialist spot(s) filled."
+                )
+            log_event(
+                con,
+                draft_year=draft_year,
+                event_type="post_draft_depth_free_agency",
+                message=message,
+            )
+        try:
+            depth_refresh = cpu_depth_chart.rebuild_dirty_depth_charts(
+                con,
+                season=draft_year,
+                user_team=user_team,
+                apply=True,
+            )
+        except Exception as exc:
+            log_event(
+                con,
+                draft_year=draft_year,
+                event_type="post_draft_depth_chart_refresh",
+                message=f"Post-draft CPU depth-chart refresh skipped: {exc}.",
+            )
+        else:
+            if int(depth_refresh.get("teams", 0) or 0):
+                log_event(
+                    con,
+                    draft_year=draft_year,
+                    event_type="post_draft_depth_chart_refresh",
+                    message=(
+                        "Post-draft CPU depth charts refreshed for "
+                        f"{depth_refresh.get('teams', 0)} team(s)."
+                    ),
+                )
         if udfa_results:
             top_names = ", ".join(
                 f"{row['player_name']} ({row['position']})"
@@ -864,6 +997,41 @@ def cpu_confidence_rank_penalty(row: sqlite3.Row, round_number: int) -> float:
     return base * multiplier
 
 
+def cpu_deep_scout_value_bonus(
+    row: sqlite3.Row,
+    *,
+    round_number: int,
+    overall_pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+) -> float:
+    """Let strong internal reports beat the public board when the profile is worth it."""
+    if round_number != 1:
+        return 0.0
+    confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+    if confidence not in EARLY_DRAFT_STRONG_CONFIDENCE:
+        return 0.0
+    pick_number = overall_pick_number or 32
+    if base_rank <= max(24, pick_number + 6):
+        return 0.0
+    position = str(row["position"] or "").upper()
+    grade_bonus = max(0.0, perceived_grade - 70.0) * 1.3
+    ceiling_bonus = max(0.0, perceived_ceiling - 82.0) * 1.15
+    if perceived_grade >= 74.0 and perceived_ceiling >= 84.0:
+        profile_bonus = 16.0
+    elif perceived_grade >= 70.0 and perceived_ceiling >= 88.0:
+        profile_bonus = 14.0
+    elif perceived_grade >= 76.0 and perceived_ceiling >= 80.0:
+        profile_bonus = 12.0
+    else:
+        return 0.0
+    premium_bonus = 5.0 if position in ROUND_ONE_PREMIUM_SWING_POSITIONS else 0.0
+    very_high_bonus = 5.0 if confidence == "very high" else 0.0
+    distance_bonus = min(12.0, max(0.0, base_rank - pick_number) * 0.18)
+    return min(42.0, profile_bonus + grade_bonus + ceiling_bonus + premium_bonus + very_high_bonus + distance_bonus)
+
+
 def row_value(row: sqlite3.Row, key: str, default: Any = None) -> Any:
     return row[key] if key in row.keys() else default
 
@@ -876,6 +1044,96 @@ def row_float(row: sqlite3.Row, key: str, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def cpu_round_one_value_profile(
+    *,
+    position: str,
+    pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    confidence: str,
+    need: float = 0.0,
+) -> dict[str, bool]:
+    """Classify whether a round-one target has enough value to stand on its own.
+
+    First-round picks should usually be either upside bets, clean board values, or
+    near-term starters. This profile keeps that idea consistent across the live
+    picker, seller trade-down logic, and buyer trade-up logic.
+    """
+    position = position.upper()
+    confidence = confidence.lower()
+    strong_confidence = confidence in EARLY_DRAFT_STRONG_CONFIDENCE
+    top_ten = pick_number <= 10
+    top_twenty = pick_number <= 20
+    late = pick_number >= 25
+    premium_position = position in ROUND_ONE_PREMIUM_SWING_POSITIONS
+
+    immediate_grade = 76.0 if top_ten else 74.0 if top_twenty else 72.0
+    close_grade = 74.0 if top_ten else 72.0 if top_twenty else 70.5
+    upside_ceiling = 86.0 if top_ten else 84.0 if top_twenty else 82.0
+    board_window = 8 if top_ten else 12 if top_twenty else 16
+
+    clean_board_value = (
+        base_rank <= max(12, pick_number + 3)
+        and perceived_grade >= (75.0 if top_ten else 73.0 if top_twenty else 71.0)
+        and perceived_ceiling >= (82.0 if top_ten else 80.0 if top_twenty else 78.0)
+    )
+    high_upside = (
+        perceived_ceiling >= upside_ceiling
+        and perceived_grade >= (69.0 if strong_confidence else 70.0)
+        and base_rank <= max(48, pick_number + 38)
+    )
+    premium_upside = (
+        premium_position
+        and strong_confidence
+        and perceived_grade >= 70.0
+        and perceived_ceiling >= (84.0 if top_twenty else 82.0)
+        and base_rank <= max(64, pick_number + 42)
+    )
+    scouted_value_outlier = (
+        strong_confidence
+        and perceived_grade >= 75.0
+        and perceived_ceiling >= 82.0
+        and base_rank <= max(80, pick_number + 55)
+    )
+    immediate_starter = (
+        need >= 12.0
+        and perceived_grade >= immediate_grade
+        and perceived_ceiling >= 77.0
+        and base_rank <= max(18, pick_number + board_window)
+    )
+    close_starter = (
+        need >= 18.0
+        and perceived_grade >= close_grade
+        and perceived_ceiling >= 78.0
+        and base_rank <= max(24, pick_number + board_window)
+    )
+    late_clean_need_fit = (
+        late
+        and need >= 24.0
+        and perceived_grade >= 73.0
+        and perceived_ceiling >= 77.0
+        and base_rank <= max(48, pick_number + 10)
+    )
+    takeable = any(
+        (
+            clean_board_value,
+            high_upside,
+            premium_upside,
+            scouted_value_outlier,
+            immediate_starter,
+            close_starter,
+            late_clean_need_fit,
+        )
+    )
+    return {
+        "takeable": takeable,
+        "clean_board_value": clean_board_value,
+        "high_upside": high_upside or premium_upside or scouted_value_outlier,
+        "starter": immediate_starter or close_starter or late_clean_need_fit,
+    }
 
 
 def cpu_early_round_value_penalty(
@@ -929,6 +1187,14 @@ def cpu_early_round_value_penalty(
         top_ten = pick_number <= 10
         late = pick_number >= 25
         needs_cleaner_value = position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+        round_one_profile = cpu_round_one_value_profile(
+            position=position,
+            pick_number=pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            confidence=confidence,
+        )
         if perceived_grade < ROUND_ONE_MIN_GRADE_FLOOR:
             penalty += (92.0 if early else 58.0) + ((ROUND_ONE_MIN_GRADE_FLOOR - perceived_grade) * 3.6)
         elif perceived_grade < 70.0 and early:
@@ -982,6 +1248,17 @@ def cpu_early_round_value_penalty(
             penalty += 46.0 if early else 26.0
         if confidence in {"unscouted", "low"} and perceived_grade < 62.0 and base_rank > 32:
             penalty += 70.0 if early else 44.0
+        if not round_one_profile["takeable"]:
+            if perceived_ceiling < 80.0 and perceived_grade < 76.0:
+                penalty += 58.0 if top_ten else 42.0 if early else 30.0
+            elif perceived_ceiling < 78.0:
+                penalty += 28.0 if early else 16.0
+            if base_rank > pick_number + 14 and perceived_ceiling < 82.0:
+                penalty += 38.0 if early else 24.0
+            if confidence == "medium" and perceived_ceiling < 82.0 and perceived_grade < 74.0:
+                penalty += 30.0 if early else 18.0
+            if confidence in EARLY_DRAFT_STRONG_CONFIDENCE and perceived_ceiling < 78.0 and perceived_grade < 74.0:
+                penalty += 24.0 if early else 14.0
         if needs_cleaner_value:
             if top_ten and perceived_ceiling < 82.0 and perceived_grade < 75.0:
                 penalty += 64.0
@@ -990,8 +1267,8 @@ def cpu_early_round_value_penalty(
             elif late and perceived_ceiling < 74.0 and perceived_grade < 68.0:
                 penalty += 20.0
 
-        if late and confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
-            penalty *= 0.72
+        if late and confidence in EARLY_DRAFT_STRONG_CONFIDENCE and (perceived_ceiling >= 80.0 or perceived_grade >= 74.0):
+            penalty *= 0.82
         if true_rank is not None and true_rank > 95 and true_grade < 58:
             penalty += 30.0 if early else 18.0
     elif round_number == 2:
@@ -1134,6 +1411,53 @@ def cpu_duplicate_position_penalty(
         )
     if exceptional_value:
         penalty *= 0.55 if premium_qb_taken else 0.35
+    return penalty
+
+
+def cpu_same_position_better_option_penalty(
+    row: sqlite3.Row,
+    *,
+    round_number: int,
+    overall_pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    candidate_evaluations: dict[int, dict[str, Any]],
+) -> float:
+    if round_number > 2:
+        return 0.0
+    position = str(row["position"] or "").upper()
+    if position in {"QB", "K", "P", "LS"}:
+        return 0.0
+    prospect_id = int(row["prospect_id"])
+    confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+    pick_number = overall_pick_number or ((round_number - 1) * 32) + 16
+    penalty = 0.0
+    for other_id, other in candidate_evaluations.items():
+        if other_id == prospect_id or other["position"] != position:
+            continue
+        other_confidence = str(other["confidence"] or "unscouted").lower()
+        if other_confidence not in {"medium", "high", "very high"}:
+            continue
+        other_rank = int(other["base_rank"])
+        if other_rank > max(64, base_rank + 28, pick_number + 36):
+            continue
+        other_grade = float(other["grade"])
+        other_ceiling = float(other["ceiling"])
+        clearly_better = (
+            (other_grade >= perceived_grade + 2.5 and other_ceiling >= perceived_ceiling + 4.0)
+            or (other_grade >= perceived_grade - 1.0 and other_ceiling >= perceived_ceiling + 8.0)
+            or (other_grade >= perceived_grade + 5.0 and other_ceiling >= perceived_ceiling + 1.5)
+        )
+        if not clearly_better:
+            continue
+        rank_gap = max(0, other_rank - base_rank)
+        base_penalty = 104.0 if round_number == 1 else 42.0
+        if round_number == 1 and pick_number <= 12:
+            base_penalty += 36.0
+        if confidence in {"unscouted", "low"}:
+            base_penalty += 18.0
+        penalty = max(penalty, base_penalty - min(26.0, rank_gap * 1.2))
     return penalty
 
 
@@ -1455,6 +1779,131 @@ def cpu_round_one_hard_reject(
             return True
         return False
 
+    need = position_need_bonus(con, team_id, position)
+    value_profile = cpu_round_one_value_profile(
+        position=position,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+        need=need,
+    )
+
+    premium_upside_swing = (
+        position in ROUND_ONE_PREMIUM_SWING_POSITIONS
+        and perceived_grade >= 70.0
+        and perceived_ceiling >= 86.0
+        and base_rank <= max(42, pick_number + 28)
+    )
+    late_premium_upside_swing = (
+        pick_number >= 25
+        and position in ROUND_ONE_PREMIUM_SWING_POSITIONS
+        and perceived_grade >= 68.0
+        and perceived_ceiling >= 88.0
+        and base_rank <= max(56, pick_number + 28)
+        and confidence in EARLY_DRAFT_STRONG_CONFIDENCE
+    )
+
+    if not value_profile["takeable"]:
+        if confidence == "medium":
+            if perceived_ceiling < 82.0 and perceived_grade < 74.0 and base_rank > max(18, pick_number + 6):
+                return True
+            if perceived_ceiling < 78.0 and perceived_grade < 72.0:
+                return True
+        elif confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
+            if perceived_ceiling < 78.0 and perceived_grade < 74.0 and base_rank > max(18, pick_number + 8):
+                return True
+            if perceived_ceiling < 76.0 and base_rank > max(20, pick_number + 10):
+                return True
+            if pick_number <= 20 and perceived_ceiling < 80.0 and perceived_grade < 74.0:
+                return True
+        elif base_rank > max(16, pick_number + 4) and perceived_ceiling < 84.0:
+            return True
+
+    if confidence in {"unscouted", "low"}:
+        if base_rank > 32 and not late_premium_upside_swing:
+            return True
+        if perceived_grade < 68.0 and base_rank > 20:
+            return True
+        if perceived_ceiling < 82.0 and base_rank > 24:
+            return True
+    elif confidence == "medium":
+        if (
+            position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+            and perceived_grade < 75.0
+            and perceived_ceiling < 80.0
+            and base_rank > 20
+        ):
+            return True
+        if base_rank > 48 and not premium_upside_swing:
+            return True
+        if perceived_grade < 66.0 and perceived_ceiling < 82.0 and base_rank > 24:
+            return True
+        if perceived_grade < 68.0 and perceived_ceiling < 78.0 and base_rank > 18:
+            return True
+    elif confidence in EARLY_DRAFT_STRONG_CONFIDENCE:
+        if (
+            pick_number >= 25
+            and perceived_grade < ROUND_ONE_LATE_KNOWN_LOW_CEILING_GRADE
+            and perceived_ceiling < ROUND_ONE_LATE_KNOWN_LOW_CEILING_CEILING
+        ):
+            return True
+        if (
+            pick_number <= 16
+            and perceived_grade < 70.0
+            and perceived_ceiling < 76.0
+            and base_rank > 8
+        ):
+            return True
+        if (
+            position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+            and perceived_grade < 75.0
+            and perceived_ceiling < 76.0
+            and base_rank > 20
+        ):
+            return True
+        if (
+            position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+            and perceived_grade < 72.0
+            and perceived_ceiling < 79.0
+            and base_rank > 20
+        ):
+            return True
+        if position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS and base_rank > 20:
+            clean_immediate_profile = perceived_grade >= 74.5 and perceived_ceiling >= 80.0
+            clean_upside_profile = perceived_grade >= 70.0 and perceived_ceiling >= 84.0
+            if not (clean_immediate_profile or clean_upside_profile):
+                return True
+        if perceived_ceiling < 73.0:
+            return True
+        if perceived_grade < 69.0 and perceived_ceiling < 76.0:
+            return True
+        if position in ROUND_ONE_LOW_CEILING_POSITIONS and perceived_ceiling < 75.0 and perceived_grade < 70.0:
+            return True
+        if (
+            position not in ROUND_ONE_PREMIUM_SWING_POSITIONS
+            and perceived_ceiling < 78.0
+            and base_rank > 28
+        ):
+            return True
+        if (
+            position in ROUND_ONE_PREMIUM_SWING_POSITIONS
+            and perceived_grade < 66.0
+            and perceived_ceiling < 86.0
+            and base_rank > 40
+        ):
+            return True
+        if perceived_grade < 66.0 and perceived_ceiling < 78.0 and base_rank > 24:
+            return True
+        if perceived_grade < 64.0 and base_rank > 18:
+            return True
+
+    if perceived_grade < 64.0 and perceived_ceiling < 84.0 and base_rank > 20:
+        return True
+    if perceived_grade < 67.0 and perceived_ceiling < 78.0 and base_rank > 24:
+        return True
+
     if position in ROUND_ONE_LOW_CEILING_POSITIONS:
         if perceived_ceiling < 74.0:
             return True
@@ -1601,12 +2050,13 @@ def latest_plan_rank_map(
 def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3.Row) -> sqlite3.Row:
     team_id = int(pick["current_team_id"])
     game_id = active_game_id(con)
-    candidates = cpu_auto_candidate_rows(con, draft_year, team_id, limit=96)
+    round_number = int(pick["round"])
+    overall_pick_number = effective_pick_number(pick)
+    candidate_limit = 180 if round_number == 1 else 112 if round_number == 2 else 96
+    candidates = cpu_auto_candidate_rows(con, draft_year, team_id, limit=candidate_limit)
     if not candidates:
         raise ValueError("No available prospects remain on the board.")
 
-    round_number = int(pick["round"])
-    overall_pick_number = effective_pick_number(pick)
     plan_ranks = latest_plan_rank_map(con, team_id=team_id, draft_year=draft_year, game_id=game_id)
     selected_counts = drafted_position_counts_before(
         con,
@@ -1628,23 +2078,24 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             for prospect_id, plan_index in plan_ranks.items()
             if plan_index < ROUND_ONE_PLAN_TIER_SIZE
         }
+    candidate_evaluations: dict[int, dict[str, Any]] = {}
     for row in candidates:
-        base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
-        confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+        prospect_id = int(row["prospect_id"])
+        candidate_evaluations[prospect_id] = {
+            "base_rank": cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id),
+            "confidence": str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower(),
+            "grade": cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=team_id),
+            "ceiling": cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=team_id),
+            "position": str(row["position"] or "").upper(),
+        }
+    for row in candidates:
+        evaluation = candidate_evaluations[int(row["prospect_id"])]
+        base_rank = int(evaluation["base_rank"])
+        confidence = str(evaluation["confidence"])
         public_grade = float(row["scout_grade"] or row["overall"] or row["true_grade"] or 50)
         public_ceiling = float(row["scout_ceiling"] or row["potential"] or row["ceiling_grade"] or public_grade)
-        perceived_grade = cpu_perceived_grade(
-            row,
-            game_id=game_id,
-            draft_year=draft_year,
-            team_id=team_id,
-        )
-        perceived_ceiling = cpu_perceived_ceiling(
-            row,
-            game_id=game_id,
-            draft_year=draft_year,
-            team_id=team_id,
-        )
+        perceived_grade = float(evaluation["grade"])
+        perceived_ceiling = float(evaluation["ceiling"])
         if cpu_round_one_hard_reject(
             con,
             row,
@@ -1658,10 +2109,19 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             continue
         if round_number == 1:
             public_escape = base_rank <= ROUND_ONE_PUBLIC_ESCAPE_RANK and confidence in ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE
+            medium_upside_escape = (
+                confidence == "medium"
+                and base_rank <= max(40, (overall_pick_number or 32) + 16)
+                and (
+                    perceived_grade >= 74.0
+                    or perceived_ceiling >= 84.0
+                    or (base_rank <= 12 and perceived_grade >= 72.0 and perceived_ceiling >= 80.0)
+                )
+            )
             in_plan_tier = int(row["prospect_id"]) in plan_tier_ids
             if confidence in {"unscouted", "low"} and not public_escape:
                 continue
-            if confidence == "medium" and not in_plan_tier and not public_escape:
+            if confidence == "medium" and not in_plan_tier and not public_escape and not medium_upside_escape:
                 continue
             offboard_discovery_without_followup = (
                 str(row["cpu_visibility_status"] or "").lower() == "discovered"
@@ -1732,6 +2192,24 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             )
             if top_ten_low_value_reach:
                 continue
+            round_one_profile = cpu_round_one_value_profile(
+                position=str(row["position"] or ""),
+                pick_number=overall_pick_number or 32,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                confidence=confidence,
+                need=bonus,
+            )
+            if not round_one_profile["takeable"]:
+                poor_first_round_value = (
+                    perceived_ceiling < 80.0
+                    or perceived_grade < 72.0
+                    or base_rank > (overall_pick_number or 32) + 14
+                    or confidence == "medium"
+                )
+                if poor_first_round_value:
+                    continue
         grade_delta = perceived_grade - public_grade
         ceiling_delta = perceived_ceiling - public_ceiling
         scouting_adjustment = (grade_delta * 2.2) + (ceiling_delta * 0.75)
@@ -1748,6 +2226,14 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
         )
+        deep_scout_value_bonus = cpu_deep_scout_value_bonus(
+            row,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number or 32,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+        )
         duplicate_position_penalty = cpu_duplicate_position_penalty(
             row,
             round_number=round_number,
@@ -1757,6 +2243,15 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_ceiling=perceived_ceiling,
             selected_counts=selected_counts,
             qb_investments=qb_investments,
+        )
+        same_position_better_option_penalty = cpu_same_position_better_option_penalty(
+            row,
+            round_number=round_number,
+            overall_pick_number=overall_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            candidate_evaluations=candidate_evaluations,
         )
         position_room_penalty = cpu_position_room_penalty(
             con,
@@ -1806,9 +2301,11 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             - scouting_adjustment
             - plan_bonus
             - qb_search_bonus
+            - deep_scout_value_bonus
             + confidence_penalty
             + early_value_penalty
             + duplicate_position_penalty
+            + same_position_better_option_penalty
             + position_room_penalty
             + qb_room_penalty
             + luxury_room_penalty
@@ -1829,20 +2326,12 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             scored = guarded
     if not scored:
         for row in candidates:
-            base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
-            perceived_grade = cpu_perceived_grade(
-                row,
-                game_id=game_id,
-                draft_year=draft_year,
-                team_id=team_id,
-            )
-            perceived_ceiling = cpu_perceived_ceiling(
-                row,
-                game_id=game_id,
-                draft_year=draft_year,
-                team_id=team_id,
-            )
-            if cpu_round_one_hard_reject(
+            evaluation = candidate_evaluations[int(row["prospect_id"])]
+            base_rank = int(evaluation["base_rank"])
+            confidence = str(evaluation["confidence"])
+            perceived_grade = float(evaluation["grade"])
+            perceived_ceiling = float(evaluation["ceiling"])
+            hard_rejected = cpu_round_one_hard_reject(
                 con,
                 row,
                 team_id=team_id,
@@ -1851,9 +2340,66 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 base_rank=base_rank,
                 perceived_grade=perceived_grade,
                 perceived_ceiling=perceived_ceiling,
-            ):
+            )
+            if hard_rejected and round_number > 2:
                 continue
+            hard_reject_penalty = 96.0 if hard_rejected and round_number == 1 else 42.0 if hard_rejected else 0.0
+            if round_number == 1:
+                public_escape = (
+                    base_rank <= ROUND_ONE_PUBLIC_ESCAPE_RANK
+                    and confidence in ROUND_ONE_PUBLIC_ESCAPE_CONFIDENCE
+                )
+                medium_upside_escape = (
+                    confidence == "medium"
+                    and base_rank <= max(40, (overall_pick_number or 32) + 16)
+                    and (
+                        perceived_grade >= 74.0
+                        or perceived_ceiling >= 84.0
+                        or (base_rank <= 12 and perceived_grade >= 72.0 and perceived_ceiling >= 80.0)
+                    )
+                )
+                fallback_medium_escape = (
+                    confidence == "medium"
+                    and base_rank <= max(96, (overall_pick_number or 32) + 72)
+                    and (
+                        perceived_ceiling >= 84.0
+                        or (perceived_grade >= 70.0 and perceived_ceiling >= 80.0)
+                    )
+                )
+                if confidence in {"unscouted", "low"} and not public_escape:
+                    continue
+                if (
+                    confidence == "medium"
+                    and not public_escape
+                    and not medium_upside_escape
+                    and not fallback_medium_escape
+                ):
+                    continue
+                round_one_profile = cpu_round_one_value_profile(
+                    position=str(row["position"] or ""),
+                    pick_number=overall_pick_number or 32,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                    confidence=confidence,
+                    need=position_need_bonus(con, team_id, str(row["position"])),
+                )
+                if not round_one_profile["takeable"]:
+                    if confidence == "medium" and (perceived_grade < 68.0 or base_rank > (overall_pick_number or 32) + 40):
+                        hard_reject_penalty += 120.0
+                    elif perceived_ceiling < 80.0 or perceived_grade < 72.0:
+                        hard_reject_penalty += 80.0
+                    else:
+                        hard_reject_penalty += 36.0
             confidence_penalty = cpu_confidence_rank_penalty(row, round_number) * 0.35
+            deep_scout_value_bonus = cpu_deep_scout_value_bonus(
+                row,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number or 32,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+            )
             duplicate_position_penalty = cpu_duplicate_position_penalty(
                 row,
                 round_number=round_number,
@@ -1863,6 +2409,15 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 perceived_ceiling=perceived_ceiling,
                 selected_counts=selected_counts,
                 qb_investments=qb_investments,
+            )
+            same_position_better_option_penalty = cpu_same_position_better_option_penalty(
+                row,
+                round_number=round_number,
+                overall_pick_number=overall_pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                candidate_evaluations=candidate_evaluations,
             )
             position_room_penalty = cpu_position_room_penalty(
                 con,
@@ -1909,10 +2464,13 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 base_rank
                 - position_need_bonus(con, team_id, str(row["position"]))
                 - qb_search_bonus
+                - deep_scout_value_bonus
                 - max(0.0, perceived_grade - 65.0) * 0.45
                 - max(0.0, perceived_ceiling - perceived_grade) * 0.2
                 + confidence_penalty
+                + hard_reject_penalty
                 + duplicate_position_penalty
+                + same_position_better_option_penalty
                 + position_room_penalty
                 + qb_room_penalty
                 + luxury_room_penalty
@@ -1982,6 +2540,45 @@ def available_trade_picks_after(
     ).fetchall()
 
 
+def available_future_trade_picks(
+    con: sqlite3.Connection,
+    *,
+    draft_year: int,
+    team_id: int,
+    max_years: int = CPU_DRAFT_TRADE_FUTURE_YEARS,
+    max_round: int = CPU_DRAFT_TRADE_FUTURE_ROUNDS,
+    limit: int = 12,
+) -> list[sqlite3.Row]:
+    return con.execute(
+        f"""
+        {ordered_pick_cte()}
+        SELECT dp.*, t.abbreviation AS current_team
+        FROM ordered dp
+        LEFT JOIN teams t ON t.team_id = dp.current_team_id
+        WHERE dp.current_team_id = ?
+          AND COALESCE(dp.is_used, 0) = 0
+          AND dp.draft_year > ?
+          AND dp.draft_year <= ?
+          AND dp.round BETWEEN 1 AND ?
+        ORDER BY dp.draft_year, dp.round, COALESCE(dp.effective_pick_number, dp.pick_number, dp.pick_id), dp.pick_id
+        LIMIT ?
+        """,
+        (team_id, draft_year, draft_year + max(1, int(max_years)), max(1, min(7, int(max_round))), limit),
+    ).fetchall()
+
+
+def dedupe_trade_pick_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    seen: set[int] = set()
+    unique: list[sqlite3.Row] = []
+    for row in rows:
+        pick_id = int(row["pick_id"])
+        if pick_id in seen:
+            continue
+        seen.add(pick_id)
+        unique.append(row)
+    return unique
+
+
 def draft_trade_target_for_team(
     con: sqlite3.Connection,
     *,
@@ -1993,7 +2590,7 @@ def draft_trade_target_for_team(
 ) -> tuple[float, sqlite3.Row | None, str]:
     lookahead = DRAFT_TRADE_LOOKAHEAD_BY_ROUND.get(max(1, min(7, round_number)), 6)
     danger_rank = min(next_pick_number - 1, current_pick_number + lookahead)
-    rows = cpu_auto_candidate_rows(con, draft_year, team_id, limit=160)
+    rows = cpu_auto_candidate_rows(con, draft_year, team_id, limit=220)
     game_id = active_game_id(con)
     best: tuple[float, sqlite3.Row | None, str] = (0.0, None, "")
     for row in rows:
@@ -2006,12 +2603,81 @@ def draft_trade_target_for_team(
             continue
         if confidence in {"low", "unscouted"} and times <= 0:
             continue
-        if round_number <= 1 and confidence not in {"high", "very high"}:
-            continue
         if round_number <= 3 and confidence in {"low", "unscouted"}:
             continue
         perceived_grade = cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
         perceived_ceiling = cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=team_id)
+        medium_late_first_value = (
+            round_number == 1
+            and current_pick_number >= 20
+            and confidence == "medium"
+            and perceived_grade >= 72.0
+            and perceived_ceiling >= 84.0
+            and board_rank <= current_pick_number + lookahead + 4
+        )
+        if round_number <= 1 and confidence not in {"high", "very high"} and not medium_late_first_value:
+            continue
+        round_one_profile = (
+            cpu_round_one_value_profile(
+                position=position,
+                pick_number=current_pick_number,
+                base_rank=board_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                confidence=confidence,
+                need=need,
+            )
+            if round_number == 1
+            else {"takeable": True, "high_upside": False, "starter": False, "clean_board_value": False}
+        )
+        if round_number == 1 and not round_one_profile["takeable"]:
+            continue
+        if position == "QB" and round_number == 1:
+            room = qb_room_summary(con, team_id)
+            starter = con.execute(
+                """
+                SELECT p.age, p.overall, p.potential, COALESCE(c.aav, 0) AS aav, COALESCE(c.end_year, 0) AS end_year
+                FROM players p
+                LEFT JOIN contracts c
+                  ON c.player_id = p.player_id
+                 AND c.team_id = p.team_id
+                 AND COALESCE(c.is_active, 1) = 1
+                WHERE p.team_id = ?
+                  AND p.position = 'QB'
+                  AND p.status IN ('Active', 'Out', 'Reserve/Future', 'Practice Squad', 'PUP', 'IR')
+                ORDER BY COALESCE(p.overall, 0) DESC, COALESCE(p.potential, 0) DESC, p.player_id
+                LIMIT 1
+                """,
+                (team_id,),
+            ).fetchone()
+            starter_overall = int(starter["overall"] or room["best_overall"] or 0) if starter else int(room["best_overall"] or 0)
+            starter_potential = int(starter["potential"] or room["best_potential"] or 0) if starter else int(room["best_potential"] or 0)
+            starter_age = int(starter["age"] or 99) if starter else 99
+            starter_aav = int(starter["aav"] or 0) if starter else 0
+            starter_end_year = int(starter["end_year"] or 0) if starter else 0
+            bridge_or_better_starter = (
+                starter_overall >= 78
+                and starter_potential >= 80
+                and starter_age <= 32
+            )
+            paid_current_starter = starter_aav >= 20_000_000 and starter_end_year >= draft_year
+            clear_franchise_upgrade = (
+                confidence == "very high"
+                and board_rank <= 12
+                and perceived_grade >= max(74.0, starter_overall - 2.0)
+                and perceived_ceiling >= max(86.0, starter_potential + 5.0)
+            )
+            top_five_trade_up_upgrade = (
+                current_pick_number <= 5
+                and confidence == "very high"
+                and board_rank <= 6
+                and perceived_grade >= max(76.0, starter_overall - 1.0)
+                and perceived_ceiling >= max(88.0, starter_potential + 6.0)
+            )
+            if bridge_or_better_starter and not (clear_franchise_upgrade or top_five_trade_up_upgrade):
+                continue
+            if paid_current_starter and not top_five_trade_up_upgrade and perceived_ceiling < max(88.0, starter_potential + 6.0):
+                continue
         qb_search_bonus = franchise_qb_search_bonus(
             con,
             row,
@@ -2030,7 +2696,25 @@ def draft_trade_target_for_team(
             and perceived_grade >= 74
             and perceived_ceiling >= 86
         )
-        if not premium_sliding_qb and (board_rank < current_pick_number - 4 or board_rank > danger_rank):
+        sliding_value_target = (
+            round_number == 1
+            and confidence in {"high", "very high"}
+            and position in DRAFT_TRADE_PREMIUM_POSITIONS
+            and board_rank < current_pick_number - 4
+            and perceived_grade >= 72.0
+            and perceived_ceiling >= 84.0
+        )
+        future_value_target = (
+            round_number == 1
+            and confidence in {"high", "very high"}
+            and position in DRAFT_TRADE_PREMIUM_POSITIONS
+            and board_rank <= current_pick_number + lookahead + 6
+            and perceived_grade >= 70.0
+            and perceived_ceiling >= 84.0
+        )
+        if not (premium_sliding_qb or sliding_value_target or future_value_target) and (
+            board_rank < current_pick_number - 4 or board_rank > danger_rank
+        ):
             continue
         qb_room_penalty = cpu_qb_room_pick_penalty(
             con,
@@ -2059,6 +2743,10 @@ def draft_trade_target_for_team(
         premium = 7.0 if position in DRAFT_TRADE_PREMIUM_POSITIONS and round_number <= 3 else 0.0
         if premium_sliding_qb:
             premium += 28.0
+        if sliding_value_target:
+            premium += 16.0
+        elif future_value_target:
+            premium += 10.0
         hidden = 8.0 if row["cpu_visibility_status"] == "discovered" and str(row["public_board_status"] or "") == "off_public_board" else 0.0
         score = (
             need
@@ -2069,6 +2757,8 @@ def draft_trade_target_for_team(
             + min(42.0, qb_search_bonus * 0.34)
             + premium
             + hidden
+            + (8.0 if round_one_profile.get("high_upside") else 0.0)
+            + (5.0 if round_one_profile.get("starter") else 0.0)
             - (qb_room_penalty * 0.25)
             - (early_value_penalty * 0.18)
         )
@@ -2104,6 +2794,15 @@ def seller_should_keep_pick(
     if position != "QB":
         need = position_need_bonus(con, seller_team_id, position)
         premium_position = position in DRAFT_TRADE_PREMIUM_POSITIONS or position in {"IDL", "DT", "NT", "FS", "SS", "S"}
+        profile = cpu_round_one_value_profile(
+            position=position,
+            pick_number=current_pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            confidence=confidence,
+            need=need,
+        )
         premium_target = (
             premium_position
             and confidence in {"high", "very high"}
@@ -2119,9 +2818,17 @@ def seller_should_keep_pick(
             and perceived_grade >= 80
             and perceived_ceiling >= 88
         )
+        high_upside_need_target = (
+            premium_position
+            and confidence in {"high", "very high"}
+            and need >= 16
+            and base_rank <= max(18, current_pick_number + 6)
+            and profile["takeable"]
+            and (profile["high_upside"] or perceived_grade >= 76)
+        )
         return bool(
-            (current_pick_number <= 12 and (premium_target or blue_chip_target))
-            or (current_pick_number <= 20 and need >= 18 and premium_target)
+            (current_pick_number <= 12 and (premium_target or blue_chip_target or high_upside_need_target))
+            or (current_pick_number <= 20 and need >= 18 and (premium_target or high_upside_need_target))
         )
 
     if not room["unresolved"]:
@@ -2151,29 +2858,47 @@ def build_trade_up_offer(
     offer_value = pick_chart_value(con, buyer_next_pick, chart)
     max_ratio = 1.32 if int(current_pick["round"]) <= 2 else 1.22
     min_ratio = 0.88 if int(current_pick["round"]) <= 3 else 0.80
+    current_draft_year = int(current_pick["draft_year"])
+    current_year_candidates = available_trade_picks_after(
+        con,
+        draft_year=current_draft_year,
+        team_id=buyer_team_id,
+        after_pick_number=effective_pick_number(current_pick) or 0,
+        limit=18,
+    )
+    future_candidates = available_future_trade_picks(
+        con,
+        draft_year=current_draft_year,
+        team_id=buyer_team_id,
+        max_years=CPU_DRAFT_TRADE_FUTURE_YEARS,
+        max_round=CPU_DRAFT_TRADE_FUTURE_ROUNDS if int(current_pick["round"]) <= 3 else 3,
+        limit=14,
+    )
     candidates = [
-        row
-        for row in available_trade_picks_after(
-            con,
-            draft_year=int(current_pick["draft_year"]),
-            team_id=buyer_team_id,
-            after_pick_number=effective_pick_number(current_pick) or 0,
-            limit=12,
-        )
+        row for row in dedupe_trade_pick_rows([*current_year_candidates, *future_candidates])
         if int(row["pick_id"]) != int(buyer_next_pick["pick_id"])
     ]
+    max_offer_picks = CPU_DRAFT_TRADE_MAX_OFFER_PICKS if int(current_pick["round"]) <= 2 else 3
+    future_pick_count = 0
     for candidate in candidates:
         if offer_value >= target_value * min_ratio:
             break
-        if len(offered) >= 3:
+        if len(offered) >= max_offer_picks:
             break
+        is_future_pick = int(candidate["draft_year"]) > current_draft_year
+        if is_future_pick and future_pick_count >= CPU_DRAFT_TRADE_MAX_FUTURE_PICKS:
+            continue
+        if is_future_pick and int(candidate["round"]) == 1 and int(current_pick["round"]) > 2:
+            continue
         candidate_value = pick_chart_value(con, candidate, chart)
         if offer_value + candidate_value <= target_value * max_ratio:
             offered.append(candidate)
             offer_value += candidate_value
+            if is_future_pick:
+                future_pick_count += 1
     if offer_value < target_value * min_ratio or offer_value > target_value * max_ratio:
         return None
-    summary = ", ".join(f"{row['draft_year']} R{row['round']}" for row in offered)
+    summary = ", ".join(pick_description(row) for row in offered)
     return offered, offer_value, target_value, summary
 
 
@@ -2205,6 +2930,7 @@ def seller_board_temperature(
         base_rank = cpu_base_rank(row, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
         perceived_grade = cpu_perceived_grade(row, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
         perceived_ceiling = cpu_perceived_ceiling(row, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+        need = position_need_bonus(con, seller_team_id, str(row["position"] or ""))
         early_penalty = cpu_early_round_value_penalty(
             row,
             round_number=round_number,
@@ -2214,11 +2940,22 @@ def seller_board_temperature(
             perceived_ceiling=perceived_ceiling,
         )
         reachable = base_rank <= pick_number + {1: 20, 2: 24, 3: 32}.get(max(1, min(7, round_number)), 48)
-        quality_floor = (
-            (round_number == 1 and perceived_grade >= 68 and perceived_ceiling >= 76)
-            or (round_number == 2 and perceived_grade >= 62 and perceived_ceiling >= 68)
-            or (round_number >= 3 and perceived_grade >= 58 and perceived_ceiling >= 64)
-        )
+        if round_number == 1:
+            profile = cpu_round_one_value_profile(
+                position=str(row["position"] or ""),
+                pick_number=pick_number,
+                base_rank=base_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                confidence=confidence,
+                need=need,
+            )
+            quality_floor = profile["takeable"]
+        else:
+            quality_floor = (
+                (round_number == 2 and perceived_grade >= 62 and perceived_ceiling >= 68)
+                or (round_number >= 3 and perceived_grade >= 58 and perceived_ceiling >= 64)
+            )
         if reachable and quality_floor and early_penalty < 70:
             viable_count += 1
         if confidence not in SELLER_LIKED_CONFIDENCE:
@@ -2233,7 +2970,7 @@ def seller_board_temperature(
                 "base_rank": base_rank,
                 "grade": perceived_grade,
                 "ceiling": perceived_ceiling,
-                "need": position_need_bonus(con, seller_team_id, str(row["position"] or "")),
+                "need": need,
             }
             if best_liked is None or (
                 candidate["base_rank"],
@@ -2279,9 +3016,29 @@ def seller_trade_down_willingness(
     if not best or str(best["position"] or "").upper() not in DRAFT_TRADE_PREMIUM_POSITIONS:
         willingness += 0.04
     if board["cold"]:
-        willingness += {1: 0.18, 2: 0.14, 3: 0.09}.get(max(1, min(7, round_number)), 0.04)
+        willingness += {1: 0.28, 2: 0.14, 3: 0.09}.get(max(1, min(7, round_number)), 0.04)
     elif board["lukewarm"]:
-        willingness += {1: 0.08, 2: 0.06, 3: 0.04}.get(max(1, min(7, round_number)), 0.02)
+        willingness += {1: 0.14, 2: 0.06, 3: 0.04}.get(max(1, min(7, round_number)), 0.02)
+    if round_number == 1 and best:
+        game_id = active_game_id(con)
+        position = str(best["position"] or "").upper()
+        base_rank = cpu_base_rank(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+        perceived_grade = cpu_perceived_grade(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+        perceived_ceiling = cpu_perceived_ceiling(best, game_id=game_id, draft_year=draft_year, team_id=seller_team_id)
+        pick_number = effective_pick_number(pick) or 32
+        profile = cpu_round_one_value_profile(
+            position=position,
+            pick_number=pick_number,
+            base_rank=base_rank,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            confidence=confidence,
+            need=need,
+        )
+        if not profile["takeable"]:
+            willingness += 0.12
+        elif perceived_ceiling < 80.0 and perceived_grade < 74.0:
+            willingness += 0.07
     return willingness
 
 
@@ -2341,18 +3098,62 @@ def execute_draft_pick_trade(
         (int(current_pick["pick_id"]),),
     ).fetchone()
     sent_summary = ", ".join(f"{p['draft_year']} R{p['round']}" for p in offered_picks)
+    message = (
+        f"{buyer} traded up with {seller} to pick #{current_pick_number} for a shot at "
+        f"{target['first_name']} {target['last_name']} ({target['position']}). "
+        f"Sent {sent_summary} "
+        f"(value {offer_value:.1f} vs {target_value:.1f}). {reason}."
+    )
+    event_details = {
+        "buyer": buyer,
+        "seller": seller,
+        "buyerTeamId": int(buyer_team_id),
+        "sellerTeamId": int(seller_team_id),
+        "buyerReceives": [
+            draft_trade_pick_payload(
+                con,
+                current_pick,
+                current_draft_year=draft_year,
+                from_team_id=seller_team_id,
+                to_team_id=buyer_team_id,
+            )
+        ],
+        "sellerReceives": [
+            draft_trade_pick_payload(
+                con,
+                pick,
+                current_draft_year=draft_year,
+                from_team_id=buyer_team_id,
+                to_team_id=seller_team_id,
+            )
+            for pick in offered_picks
+        ],
+        "target": {
+            "prospectId": int(target["prospect_id"]),
+            "name": f"{target['first_name']} {target['last_name']}",
+            "position": target["position"],
+        },
+        "offerValue": round(float(offer_value), 2),
+        "targetValue": round(float(target_value), 2),
+        "reason": reason,
+    }
     log_event(
         con,
         draft_year=draft_year,
         event_type="draft_trade",
         pick=refreshed,
         prospect_id=int(target["prospect_id"]),
-        message=(
-            f"{buyer} traded up with {seller} to pick #{current_pick_number} for a shot at "
-            f"{target['first_name']} {target['last_name']} ({target['position']}). "
-            f"Sent {sent_summary} "
-            f"(value {offer_value:.1f} vs {target_value:.1f}). {reason}."
-        ),
+        message=message,
+        event_details=event_details,
+    )
+    record_draft_trade_transaction(
+        con,
+        draft_year=draft_year,
+        event_type="draft_trade",
+        pick=refreshed,
+        buyer_team_id=buyer_team_id,
+        seller_team_id=seller_team_id,
+        message=message,
     )
     return refreshed
 
@@ -2554,15 +3355,54 @@ def execute_user_pick_trade(
         )
     sent_summary = ", ".join(pick_description(pick) for pick in offered_picks)
     target_number = effective_pick_number(target_pick)
+    message = (
+        f"{buyer} acquired pick #{target_number} from {seller}. "
+        f"Sent {sent_summary} (value {offer_value:.1f} vs {target_value:.1f}); {acceptance_note}."
+    )
+    event_details = {
+        "buyer": buyer,
+        "seller": seller,
+        "buyerTeamId": int(user_team_id),
+        "sellerTeamId": int(seller_team_id),
+        "buyerReceives": [
+            draft_trade_pick_payload(
+                con,
+                target_pick,
+                current_draft_year=draft_year,
+                from_team_id=seller_team_id,
+                to_team_id=user_team_id,
+            )
+        ],
+        "sellerReceives": [
+            draft_trade_pick_payload(
+                con,
+                pick,
+                current_draft_year=draft_year,
+                from_team_id=user_team_id,
+                to_team_id=seller_team_id,
+            )
+            for pick in offered_picks
+        ],
+        "offerValue": round(float(offer_value), 2),
+        "targetValue": round(float(target_value), 2),
+        "reason": acceptance_note,
+    }
     log_event(
         con,
         draft_year=draft_year,
         event_type="user_draft_trade",
         pick=refreshed,
-        message=(
-            f"{buyer} acquired pick #{target_number} from {seller}. "
-            f"Sent {sent_summary} (value {offer_value:.1f} vs {target_value:.1f}); {acceptance_note}."
-        ),
+        message=message,
+        event_details=event_details,
+    )
+    record_draft_trade_transaction(
+        con,
+        draft_year=draft_year,
+        event_type="user_draft_trade",
+        pick=refreshed,
+        buyer_team_id=user_team_id,
+        seller_team_id=seller_team_id,
+        message=message,
     )
     return {
         "accepted": True,
@@ -2715,9 +3555,9 @@ def maybe_execute_cpu_draft_trade_up(
     seller_board = seller_board_temperature(con, draft_year=draft_year, seller_team_id=seller_team_id, pick=pick)
     seller_market_discount = 0.0
     if seller_board["cold"]:
-        seller_market_discount = {1: 5.0, 2: 4.0, 3: 2.5}.get(max(1, min(7, round_number)), 1.0)
+        seller_market_discount = {1: 8.0, 2: 4.0, 3: 2.5}.get(max(1, min(7, round_number)), 1.0)
     elif seller_board["lukewarm"]:
-        seller_market_discount = {1: 2.5, 2: 2.0, 3: 1.0}.get(max(1, min(7, round_number)), 0.0)
+        seller_market_discount = {1: 4.0, 2: 2.0, 3: 1.0}.get(max(1, min(7, round_number)), 0.0)
     for team in con.execute("SELECT team_id FROM teams WHERE team_id <> ? ORDER BY team_id", (seller_team_id,)).fetchall():
         buyer_team_id = int(team["team_id"])
         if buyer_team_id == user_team_id:
@@ -2775,7 +3615,7 @@ def maybe_execute_cpu_draft_trade_up(
             continue
         offered_picks, offer_value, target_value, summary = offer
         ratio = offer_value / target_value if target_value else 0.0
-        accept_floor = 0.92 - min(0.14, seller_willingness)
+        accept_floor = 0.92 - min(0.18, seller_willingness)
         if ratio >= accept_floor or score >= 64.0:
             traded_pick = execute_draft_pick_trade(
                 con,
@@ -2880,6 +3720,47 @@ def select_for_current_pick(con: sqlite3.Connection, args: argparse.Namespace) -
                 (pick["current_team_id"], args.draft_year),
             )
         if trade_target_id is not None:
+            if getattr(args, "pause_on_trade", True) and int(pick["round"] or 0) == 1:
+                con.execute(
+                    """
+                    UPDATE draft_room_state
+                    SET clock_status = 'paused',
+                        current_pick_id = ?,
+                        current_pick_number = ?,
+                        current_round = ?,
+                        current_team_id = ?,
+                        updated_at = datetime('now')
+                    WHERE draft_year = ?
+                    """,
+                    (
+                        int(pick["pick_id"]),
+                        effective_pick_number(pick),
+                        int(pick["round"]),
+                        int(pick["current_team_id"]),
+                        args.draft_year,
+                    ),
+                )
+                log_event(
+                    con,
+                    draft_year=args.draft_year,
+                    event_type="draft_trade_pause",
+                    pick=pick,
+                    prospect_id=int(trade_target_id),
+                    message=(
+                        f"Draft paused after a first-round trade at pick "
+                        f"#{effective_pick_number(pick)}."
+                    ),
+                )
+                return {
+                    "draft_year": args.draft_year,
+                    "draft_paused_for_trade": True,
+                    "effective_pick_number": effective_pick_number(pick),
+                    "team": team_abbr(con, int(pick["current_team_id"])),
+                    "message": (
+                        f"Draft paused after a first-round trade at pick "
+                        f"#{effective_pick_number(pick)}."
+                    ),
+                }
             prospect_id = trade_target_id
         else:
             prospect = choose_auto_prospect(con, args.draft_year, pick)
@@ -2912,6 +3793,25 @@ def run_skip(con: sqlite3.Connection, args: argparse.Namespace) -> list[dict[str
     ensure_schema(con)
     results: list[dict[str, Any]] = []
     for _ in range(args.count):
+        if args.apply and sim_control.cancel_requested(args.db):
+            state = current_state(con, args.draft_year)
+            if state and state["status"] != "complete":
+                con.execute(
+                    """
+                    UPDATE draft_room_state
+                    SET clock_status = 'paused',
+                        updated_at = datetime('now')
+                    WHERE draft_year = ?
+                    """,
+                    (args.draft_year,),
+                )
+                log_event(
+                    con,
+                    draft_year=args.draft_year,
+                    event_type="draft_sim_paused",
+                    message="Draft sim paused by user request.",
+                )
+            break
         state = current_state(con, args.draft_year)
         if not state or state["status"] == "complete":
             break
@@ -2926,9 +3826,13 @@ def run_skip(con: sqlite3.Connection, args: argparse.Namespace) -> list[dict[str
             draft_year=args.draft_year,
             prospect_id=None,
             no_cap_snapshot=args.no_cap_snapshot,
+            pause_on_trade=not getattr(args, "no_pause_on_trade", False),
             schema_ready=True,
         )
-        results.append(select_for_current_pick(con, pick_args))
+        result = select_for_current_pick(con, pick_args)
+        results.append(result)
+        if result.get("draft_paused_for_trade"):
+            break
         if args.apply and getattr(args, "commit_each", False):
             con.commit()
             con.execute("BEGIN")
@@ -3042,6 +3946,10 @@ def action_board(args: argparse.Namespace) -> None:
 def action_pick(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
         result = run_mutation(con, args, select_for_current_pick)
+    if result.get("draft_paused_for_trade"):
+        print(f"Mode: {'APPLY' if args.apply else 'DRY RUN'}")
+        print(result.get("message", "Draft paused after a first-round trade."))
+        return
     select_draft_pick.print_selection(result, dry_run=not args.apply)
 
 
@@ -3052,6 +3960,9 @@ def action_skip(args: argparse.Namespace) -> None:
     for result in results:
         if result.get("draft_complete"):
             print(f"- {result.get('message', 'Draft complete.')}")
+            continue
+        if result.get("draft_paused_for_trade"):
+            print(f"- {result.get('message', 'Draft paused after a trade.')}")
             continue
         print(
             f"- #{result['effective_pick_number']} {result['team']}: "
@@ -3136,6 +4047,7 @@ def build_parser() -> argparse.ArgumentParser:
     pick.add_argument("--draft-year", type=int, required=True)
     pick.add_argument("--prospect-id", type=int, help="Omit to auto-pick.")
     pick.add_argument("--no-cap-snapshot", action="store_true")
+    pick.add_argument("--no-pause-on-trade", action="store_true", help="Do not pause when a first-round CPU trade fires.")
     pick.add_argument("--apply", action="store_true")
     pick.set_defaults(func=action_pick)
 
@@ -3145,6 +4057,7 @@ def build_parser() -> argparse.ArgumentParser:
     skip.add_argument("--until-user-pick", action="store_true")
     skip.add_argument("--include-user-pick", action="store_true")
     skip.add_argument("--no-cap-snapshot", action="store_true")
+    skip.add_argument("--no-pause-on-trade", action="store_true", help="Do not pause when a first-round CPU trade fires.")
     skip.add_argument("--commit-each", action="store_true", help="Commit after each auto-pick so live UIs can refresh during long skips.")
     skip.add_argument("--apply", action="store_true")
     skip.set_defaults(func=action_skip)

@@ -55,6 +55,7 @@ class ActiveGame:
     current_league_year: int
     current_phase_code: str
     status: str
+    control_mode: str
     user_team_id: int | None
     rng_seed: int | None
     rating_variance_run_id: int | None
@@ -108,13 +109,15 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             current_league_year INTEGER NOT NULL,
             current_phase_code TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
+            control_mode TEXT NOT NULL DEFAULT 'team',
             user_team_id INTEGER REFERENCES teams(team_id) ON DELETE SET NULL,
             rng_seed INTEGER,
             rating_variance_run_id INTEGER,
             notes TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            CHECK(status IN ('active', 'paused', 'archived'))
+            CHECK(status IN ('active', 'paused', 'archived')),
+            CHECK(control_mode IN ('team', 'observe'))
         );
 
         CREATE INDEX IF NOT EXISTS idx_game_saves_status
@@ -134,6 +137,17 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_game_flow_log_game_date
             ON game_flow_log(game_id, game_date, log_type);
+
+        DROP TRIGGER IF EXISTS trg_game_saves_no_backdate;
+        CREATE TRIGGER trg_game_saves_no_backdate
+        BEFORE UPDATE OF "current_date" ON game_saves
+        FOR EACH ROW
+        WHEN OLD."current_date" IS NOT NULL
+          AND NEW."current_date" IS NOT NULL
+          AND date(NEW."current_date") < date(OLD."current_date")
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
 
         DROP VIEW IF EXISTS active_game_save_view;
         CREATE VIEW active_game_save_view AS
@@ -156,6 +170,8 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         """
     )
     cols = {row["name"] for row in con.execute("PRAGMA table_info(game_saves)").fetchall()}
+    if "control_mode" not in cols:
+        con.execute("ALTER TABLE game_saves ADD COLUMN control_mode TEXT NOT NULL DEFAULT 'team'")
     if "personality_run_id" not in cols:
         con.execute("ALTER TABLE game_saves ADD COLUMN personality_run_id INTEGER")
     if "development_run_id" not in cols:
@@ -194,11 +210,13 @@ def sync_game_settings(con: sqlite3.Connection, game: sqlite3.Row | ActiveGame) 
         current_league_year = game.current_league_year
         phase_code = game.current_phase_code
         game_id = game.game_id
+        user_team_id = game.user_team_id
     else:
         current_date = game["current_date"]
         current_league_year = int(game["current_league_year"])
         phase_code = game["current_phase_code"]
         game_id = game["game_id"]
+        user_team_id = game["user_team_id"] if "user_team_id" in game.keys() else None
 
     phase = phase_for_date(con, current_date)
     upsert_setting(con, "active_game_id", game_id)
@@ -206,6 +224,18 @@ def sync_game_settings(con: sqlite3.Connection, game: sqlite3.Row | ActiveGame) 
     upsert_setting(con, "current_league_year", str(current_league_year))
     upsert_setting(con, "current_season", str(current_league_year))
     upsert_setting(con, "current_calendar_phase", phase_code)
+    if isinstance(game, ActiveGame):
+        control_mode = game.control_mode
+    else:
+        control_mode = game["control_mode"] if "control_mode" in game.keys() and game["control_mode"] else "team"
+    upsert_setting(con, "control_mode", str(control_mode))
+    if user_team_id is not None:
+        team = con.execute("SELECT abbreviation FROM teams WHERE team_id = ?", (int(user_team_id),)).fetchone()
+        if team and team["abbreviation"]:
+            upsert_setting(con, "user_team", str(team["abbreviation"]))
+            upsert_setting(con, "active_user_team", str(team["abbreviation"]))
+    else:
+        con.execute("DELETE FROM game_settings WHERE setting_key IN ('user_team', 'active_user_team')")
     upsert_setting(con, "roster_limits_enforced", str(int(phase["roster_limits_enforced"] or 0)))
     if phase["salary_cap_mode"]:
         upsert_setting(con, "cap_accounting_mode", phase["salary_cap_mode"])
@@ -264,6 +294,7 @@ def active_game(con: sqlite3.Connection) -> ActiveGame | None:
         current_league_year=current_league_year,
         current_phase_code=current_phase_code,
         status=row["status"],
+        control_mode=row["control_mode"] if "control_mode" in row.keys() and row["control_mode"] else "team",
         user_team_id=row["user_team_id"],
         rng_seed=row["rng_seed"],
         rating_variance_run_id=row["rating_variance_run_id"],
@@ -334,7 +365,12 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
 
     start_date = f"{args.start_year}-06-01"
     phase = phase_for_date(con, start_date)
-    user_team_id = get_team_id(con, args.user_team)
+    requested_mode = str(getattr(args, "control_mode", "") or "").strip().lower()
+    observe_requested = bool(getattr(args, "observe_mode", False))
+    control_mode = "observe" if observe_requested or requested_mode == "observe" or not args.user_team else "team"
+    if requested_mode and requested_mode not in {"team", "observe"}:
+        raise ValueError(f"Unsupported control mode: {requested_mode}")
+    user_team_id = None if control_mode == "observe" else get_team_id(con, args.user_team)
     seed = args.seed if args.seed is not None else secrets.randbits(63)
     display_name = args.name or args.game_id
     variance_run_id = None
@@ -469,10 +505,10 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         """
         INSERT INTO game_saves (
             game_id, display_name, start_league_year, "current_date",
-            current_league_year, current_phase_code, status, user_team_id,
+            current_league_year, current_phase_code, status, control_mode, user_team_id,
             rng_seed, rating_variance_run_id, personality_run_id, development_run_id, notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             args.game_id,
@@ -481,6 +517,7 @@ def start_game(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             start_date,
             int(phase["league_year"]),
             phase["phase_code"],
+            control_mode,
             user_team_id,
             seed
             if (
@@ -607,7 +644,13 @@ def pending_draft_class_setup_year(con: sqlite3.Connection) -> int | None:
         draft_year = int(row["setting_value"])
     except (TypeError, ValueError):
         return None
-    return None if draft_class_has_prospects(con, draft_year) else draft_year
+    if draft_class_has_prospects(con, draft_year):
+        con.execute(
+            "DELETE FROM game_settings WHERE setting_key IN ('draft_class_setup_pending_year', 'draft_class_setup_pending_reason')"
+        )
+        upsert_setting(con, "draft_class_ready_year", str(draft_year))
+        return None
+    return draft_year
 
 
 def first_sim_year_start_between(
@@ -725,6 +768,135 @@ def update_active_game_date(con: sqlite3.Connection, game: ActiveGame, target_da
             event=event,
         )
     return phase, crossed_events
+
+
+def copy_cpu_scouting_to_user(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    team_id: int,
+) -> dict[str, int]:
+    scouting.ensure_schema(con)
+    if not table_exists(con, "cpu_scouting_prospect_progress") or not table_exists(con, "scouting_prospect_progress"):
+        return {"copied": 0, "draft_years": 0}
+    source_count = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM cpu_scouting_prospect_progress
+        WHERE game_id = ?
+          AND team_id = ?
+        """,
+        (game_id, team_id),
+    ).fetchone()
+    draft_years = con.execute(
+        """
+        SELECT COUNT(DISTINCT draft_year) AS count
+        FROM cpu_scouting_prospect_progress
+        WHERE game_id = ?
+          AND team_id = ?
+        """,
+        (game_id, team_id),
+    ).fetchone()
+    con.execute(
+        """
+        INSERT INTO scouting_prospect_progress (
+            game_id, draft_year, prospect_id, visibility_status, scouting_level,
+            scouting_confidence, times_scouted, personality_known,
+            last_scouted_season, last_scouted_week, last_scouted_date, last_report,
+            created_at, updated_at
+        )
+        SELECT
+            game_id, draft_year, prospect_id, visibility_status, scouting_level,
+            scouting_confidence, times_scouted, COALESCE(personality_known, 0),
+            last_scouted_season, last_scouted_week, last_scouted_date, last_report,
+            datetime('now'), datetime('now')
+        FROM cpu_scouting_prospect_progress
+        WHERE game_id = ?
+          AND team_id = ?
+        ON CONFLICT(game_id, draft_year, prospect_id) DO UPDATE SET
+            visibility_status = CASE
+                WHEN scouting_prospect_progress.visibility_status = 'hidden' THEN excluded.visibility_status
+                ELSE scouting_prospect_progress.visibility_status
+            END,
+            scouting_level = MAX(scouting_prospect_progress.scouting_level, excluded.scouting_level),
+            scouting_confidence = CASE
+                WHEN excluded.scouting_level >= scouting_prospect_progress.scouting_level THEN excluded.scouting_confidence
+                ELSE scouting_prospect_progress.scouting_confidence
+            END,
+            times_scouted = MAX(scouting_prospect_progress.times_scouted, excluded.times_scouted),
+            personality_known = MAX(scouting_prospect_progress.personality_known, excluded.personality_known),
+            last_scouted_season = COALESCE(excluded.last_scouted_season, scouting_prospect_progress.last_scouted_season),
+            last_scouted_week = COALESCE(excluded.last_scouted_week, scouting_prospect_progress.last_scouted_week),
+            last_scouted_date = COALESCE(excluded.last_scouted_date, scouting_prospect_progress.last_scouted_date),
+            last_report = COALESCE(excluded.last_report, scouting_prospect_progress.last_report),
+            updated_at = datetime('now')
+        """,
+        (game_id, team_id),
+    )
+    return {
+        "copied": int(source_count["count"] or 0) if source_count else 0,
+        "draft_years": int(draft_years["count"] or 0) if draft_years else 0,
+    }
+
+
+def action_take_over_team(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    game = active_game(con)
+    if not game:
+        raise ValueError("No active game save to take over.")
+    team_abbr = str(args.team or "").strip().upper()
+    if not team_abbr:
+        raise ValueError("A team abbreviation is required.")
+    team_id = get_team_id(con, team_abbr)
+    team = con.execute(
+        "SELECT abbreviation, city || ' ' || nickname AS team_name FROM teams WHERE team_id = ?",
+        (team_id,),
+    ).fetchone()
+    if not team:
+        raise ValueError(f"Team not found: {team_abbr}")
+
+    con.execute(
+        """
+        UPDATE game_saves
+        SET control_mode = 'team',
+            user_team_id = ?,
+            updated_at = datetime('now')
+        WHERE game_id = ?
+        """,
+        (team_id, game.game_id),
+    )
+    if table_exists(con, "draft_room_state"):
+        con.execute(
+            """
+            UPDATE draft_room_state
+            SET user_team_id = ?,
+                updated_at = datetime('now')
+            WHERE status <> 'complete'
+            """,
+            (team_id,),
+        )
+    refreshed = con.execute("SELECT * FROM game_saves WHERE game_id = ?", (game.game_id,)).fetchone()
+    sync_game_settings(con, refreshed)
+    scouting_result = copy_cpu_scouting_to_user(con, game_id=game.game_id, team_id=team_id)
+    log_game_event(
+        con,
+        game_id=game.game_id,
+        game_date=refreshed["current_date"],
+        log_type="CONTROL_CHANGE",
+        title=f"Took over {team['abbreviation']}",
+        details=(
+            f"Control mode changed from {game.control_mode} to team. "
+            f"{team['team_name']} is now user-controlled. "
+            f"Copied {scouting_result['copied']} CPU scouting file(s) "
+            f"across {scouting_result['draft_years']} draft class(es)."
+        ),
+    )
+    con.commit()
+    print(f"Now controlling {team['team_name']} ({team['abbreviation']}).")
+    if scouting_result["copied"]:
+        print(
+            f"Copied {scouting_result['copied']} existing CPU scouting file(s) "
+            f"for {team['abbreviation']} into the user scouting board."
+        )
 
 
 def advance_to_date(
@@ -947,6 +1119,8 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--game-id", required=True)
     start_parser.add_argument("--name")
     start_parser.add_argument("--user-team", help="Optional user-controlled team abbreviation.")
+    start_parser.add_argument("--control-mode", choices=("team", "observe"), help="Use 'observe' for no user-controlled team.")
+    start_parser.add_argument("--observe-mode", action="store_true", help="Start with no user-controlled team.")
     start_parser.add_argument("--start-year", type=int, default=DEFAULT_START_YEAR)
     start_parser.add_argument("--calendar-years", type=int, default=DEFAULT_CALENDAR_YEARS)
     start_parser.add_argument("--seed", type=int)
@@ -998,6 +1172,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--include-info", action="store_true")
     validate_parser.add_argument("--no-save", action="store_true")
 
+    takeover_parser = subparsers.add_parser("take-over-team", help="Switch an observe save to a user-controlled team.")
+    takeover_parser.add_argument("--team", required=True, help="Team abbreviation to control.")
+
     return parser
 
 
@@ -1024,6 +1201,8 @@ def main() -> int:
             action_log(con, args)
         elif args.command == "validate-rosters":
             action_validate_rosters(con, args)
+        elif args.command == "take-over-team":
+            action_take_over_team(con, args)
     finally:
         con.close()
     return 0

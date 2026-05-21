@@ -23,6 +23,7 @@ from typing import Any
 
 import roster_actions
 import contract_negotiations
+import cpu_depth_chart
 import league_calendar
 import player_personalities
 from setup_contract_years import rebuild_contract_year, sync_team_cap_space
@@ -70,7 +71,7 @@ POSITION_GROUP_BY_POS = {
 
 STARTER_SLOTS_BY_GROUP = {
     "QB": 1,
-    "RB": 2,
+    "RB": 1,
     "WR": 3,
     "TE": 1,
     "OT": 2,
@@ -155,7 +156,7 @@ MARKET_TIER_FLOORS = {
 
 MARKET_GROUP_TIER_FLOORS = {
     ("Premium", "QB"): 12_000_000,
-    ("Premium", "RB"): 9_200_000,
+    ("Premium", "RB"): 11_500_000,
     ("Premium", "WR"): 17_000_000,
     ("Premium", "TE"): 15_000_000,
     ("Premium", "OT"): 18_000_000,
@@ -167,7 +168,7 @@ MARKET_GROUP_TIER_FLOORS = {
     ("Premium", "S"): 12_000_000,
     ("Premium", "ST"): 3_200_000,
     ("Starter", "QB"): 7_500_000,
-    ("Starter", "RB"): 6_500_000,
+    ("Starter", "RB"): 7_500_000,
     ("Starter", "WR"): 10_500_000,
     ("Starter", "TE"): 7_500_000,
     ("Starter", "OT"): 14_500_000,
@@ -182,6 +183,7 @@ MARKET_GROUP_TIER_FLOORS = {
 
 CPU_FA_CAP_RESERVE = 22_000_000
 CPU_FA_LATE_MARKET_RESERVE = 8_000_000
+CPU_FINAL_SIGNING_MIN_BUFFER = 4_000_000
 
 CPU_GROUP_SPEND_LIMITS = {
     "QB": 30_000_000,
@@ -266,6 +268,8 @@ POST_DRAFT_MINIMUM_RATIO_BY_TIER = {
     "Depth": 0.48,
     "Camp": 0.46,
 }
+
+POST_DRAFT_STRATEGIES = {"soften", "normal", "firm_floor", "injury_wait"}
 
 POSITION_OLD_AGE = {
     "QB": 36,
@@ -399,6 +403,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             guarantee_pct INTEGER NOT NULL DEFAULT 0,
             market_heat INTEGER NOT NULL DEFAULT 50,
             patience INTEGER NOT NULL DEFAULT 10,
+            post_draft_strategy TEXT NOT NULL DEFAULT 'normal',
+            holdout_until TEXT,
+            holdout_reason TEXT,
             status TEXT NOT NULL DEFAULT 'available',
             signed_team_id INTEGER REFERENCES teams(team_id) ON DELETE SET NULL,
             signed_offer_id INTEGER,
@@ -419,6 +426,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             total_value INTEGER NOT NULL,
             signing_bonus INTEGER NOT NULL DEFAULT 0,
             guarantee_pct INTEGER NOT NULL DEFAULT 0,
+            contract_structure TEXT NOT NULL DEFAULT 'balanced',
             status TEXT NOT NULL DEFAULT 'pending',
             submitted_date TEXT NOT NULL,
             submitted_hour INTEGER,
@@ -484,6 +492,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             m.guarantee_pct,
             m.market_heat,
             m.patience,
+            COALESCE(m.post_draft_strategy, 'normal') AS post_draft_strategy,
+            m.holdout_until,
+            m.holdout_reason,
             m.status AS market_status,
             m.signed_team_id,
             signed_team.abbreviation AS signed_team,
@@ -548,6 +559,35 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         JOIN players p ON p.player_id = o.player_id;
         """
     )
+    for table, column, ddl in (
+        ("free_agency_offers", "contract_structure", "TEXT NOT NULL DEFAULT 'balanced'"),
+        ("contracts", "guarantee_pct", "INTEGER NOT NULL DEFAULT 0"),
+        ("contracts", "salary_structure", "TEXT NOT NULL DEFAULT 'balanced'"),
+        ("free_agency_player_markets", "post_draft_strategy", "TEXT NOT NULL DEFAULT 'normal'"),
+        ("free_agency_player_markets", "holdout_until", "TEXT"),
+        ("free_agency_player_markets", "holdout_reason", "TEXT"),
+    ):
+        try:
+            existing = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
+            if table_exists(con, table) and column not in existing:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        except sqlite3.Error:
+            pass
+    if table_exists(con, "game_saves"):
+        con.executescript(
+            """
+            DROP TRIGGER IF EXISTS trg_game_saves_no_backdate;
+            CREATE TRIGGER trg_game_saves_no_backdate
+            BEFORE UPDATE OF "current_date" ON game_saves
+            FOR EACH ROW
+            WHEN OLD."current_date" IS NOT NULL
+              AND NEW."current_date" IS NOT NULL
+              AND date(NEW."current_date") < date(OLD."current_date")
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+            """
+        )
 
 
 def parse_date(value: str) -> date:
@@ -696,9 +736,9 @@ def market_age_factor(group: str, tier: str, age: int | None) -> float:
         return 1.0
     if group == "RB":
         if age >= 31:
-            return 0.72
+            return 0.82
         if age >= 29:
-            return 0.86
+            return 0.92
         if age <= 25 and tier in {"Premium", "Starter"}:
             return 1.06
         return 1.0
@@ -780,6 +820,25 @@ def normalized_group(row: sqlite3.Row | dict[str, Any]) -> str:
     return group
 
 
+def market_tier_score(row: sqlite3.Row | dict[str, Any]) -> int:
+    """Anchor market tier to true OVR, with only a small role/potential bump."""
+    overall = true_overall(row)
+    role_score = float(row_value(row, "market_score", overall) or overall)
+    potential = int(row_value(row, "potential", overall) or overall)
+    age_value = row_value(row, "age")
+    age = int(age_value) if age_value is not None else 28
+    bonus = 0
+    if role_score >= overall + 8:
+        bonus += 2 if overall >= 72 else 1
+    elif role_score >= overall + 5 and overall >= 70:
+        bonus += 1
+    if age <= 26 and potential >= overall + 8:
+        bonus += 2
+    elif age <= 27 and potential >= overall + 5:
+        bonus += 1
+    return int(max(overall, min(role_score, overall + min(4, bonus))))
+
+
 def normalized_tier(row: sqlite3.Row | dict[str, Any]) -> str:
     tier = str(row_value(row, "market_tier", "Depth") or "Depth").title()
     if tier in {"Core", "Franchise"}:
@@ -788,13 +847,13 @@ def normalized_tier(row: sqlite3.Row | dict[str, Any]) -> str:
         tier = "Depth"
 
     group = normalized_group(row)
-    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    score = market_tier_score(row)
     if group == "QB":
         score_tier = "Premium" if score >= 80 else "Starter" if score >= 72 else "Rotation" if score >= 65 else "Depth" if score >= 58 else "Camp"
     elif group in {"WR", "OT", "EDGE", "CB", "IDL", "IOL"}:
         score_tier = "Premium" if score >= 78 else "Starter" if score >= 72 else "Rotation" if score >= 66 else "Depth" if score >= 60 else "Camp"
     elif group in {"RB", "TE", "LB", "S"}:
-        score_tier = "Premium" if score >= 76 else "Starter" if score >= 70 else "Rotation" if score >= 64 else "Depth" if score >= 58 else "Camp"
+        score_tier = "Premium" if score >= 78 else "Starter" if score >= 70 else "Rotation" if score >= 64 else "Depth" if score >= 58 else "Camp"
     elif group == "ST":
         score_tier = "Premium" if score >= 78 else "Starter" if score >= 70 else "Rotation" if score >= 62 else "Depth"
     else:
@@ -870,7 +929,7 @@ def deactivate_elapsed_active_contracts(con: sqlite3.Connection, league_year: in
 
 def market_price_ceiling(row: sqlite3.Row | dict[str, Any], tier: str, *, post_draft: bool) -> int:
     group = normalized_group(row)
-    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    score = market_tier_score(row)
     if group == "QB":
         if score < 64:
             base = 5_000_000
@@ -878,10 +937,16 @@ def market_price_ceiling(row: sqlite3.Row | dict[str, Any], tier: str, *, post_d
             base = 8_000_000
         elif score < 72:
             base = 12_000_000
+        elif score < 74:
+            base = 14_000_000
         elif score < 76:
             base = 18_000_000
+        elif score < 78:
+            base = 20_000_000
         elif score < 80:
-            base = 28_000_000
+            base = 26_000_000
+        elif score < 82:
+            base = 36_000_000
         else:
             base = 55_000_000
     else:
@@ -943,6 +1008,189 @@ def cpu_excluded_user_team(con: sqlite3.Connection, args: argparse.Namespace) ->
     return contract_negotiations.active_user_team(con)
 
 
+def cpu_controlled_user_team(con: sqlite3.Connection, args: argparse.Namespace) -> str | None:
+    if not bool(getattr(args, "cpu_controls_user_team", False)):
+        return None
+    team = contract_negotiations.active_user_team(con)
+    return team.upper() if team else None
+
+
+def general_market_excluded_user_team(con: sqlite3.Connection, args: argparse.Namespace) -> str | None:
+    """Exclude the user team from loose market offers when a formal AI plan is running."""
+    controlled_user = cpu_controlled_user_team(con, args)
+    if controlled_user:
+        return controlled_user
+    return cpu_excluded_user_team(con, args)
+
+
+def active_game_id_value(con: sqlite3.Connection) -> str:
+    return current_setting(con, "active_game_id") or "master"
+
+
+def apply_cpu_controlled_user_free_agent_plan(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    args: argparse.Namespace,
+    *,
+    max_offers: int,
+) -> dict[str, int]:
+    """Use the same needs-aware planner for the user team when FA is skipped.
+
+    The generic CPU offer loop is intentionally broad. When a player fast-forwards
+    through the whole market, the user team should instead get a persisted AI GM
+    plan that targets its roster holes and then submits a small number of offers.
+    """
+    team_abbr = cpu_controlled_user_team(con, args)
+    if not team_abbr or max_offers <= 0:
+        return {"plans": 0, "offers": 0}
+    league_year = int(row_value(period, "league_year", getattr(args, "league_year", 0)) or 0)
+    plan_date = str(row_value(period, "current_date", current_game_date_value(con) or default_start_date(league_year)))
+    team = team_by_abbr(con, team_abbr)
+    game_id = active_game_id_value(con)
+    existing = None
+    if table_exists(con, "ai_gm_free_agent_plans"):
+        existing = con.execute(
+            """
+            SELECT plan_id, apply_status
+            FROM ai_gm_free_agent_plans
+            WHERE game_id = ?
+              AND team_id = ?
+              AND league_year = ?
+              AND plan_date = ?
+              AND apply_status = 'applied'
+            ORDER BY plan_id DESC
+            LIMIT 1
+            """,
+            (game_id, int(team["team_id"]), league_year, plan_date),
+        ).fetchone()
+    if existing:
+        return {"plans": 0, "offers": 0}
+
+    try:
+        import ai_gm_free_agent_planner as free_agent_planner
+
+        free_agent_planner.ensure_schema(con)
+        free_agent_planner.build_free_agent_plan(
+            con,
+            team_abbr=team_abbr,
+            league_year=league_year,
+            season=league_year,
+            game_id=game_id,
+            plan_date=plan_date,
+            persist=True,
+            refresh_market=True,
+            market_limit=160,
+            strict_need_plan=True,
+        )
+        plan_row = con.execute(
+            """
+            SELECT plan_id
+            FROM ai_gm_free_agent_plans
+            WHERE game_id = ?
+              AND team_id = ?
+              AND league_year = ?
+              AND plan_date = ?
+            ORDER BY plan_id DESC
+            LIMIT 1
+            """,
+            (game_id, int(team["team_id"]), league_year, plan_date),
+        ).fetchone()
+        if not plan_row:
+            return {"plans": 0, "offers": 0}
+        result = free_agent_planner.apply_free_agent_plan(
+            con,
+            plan_id=int(plan_row["plan_id"]),
+            allow_stale=True,
+            max_offers=max_offers,
+        )
+        offers = len(result.get("operations") or []) if result.get("applied") else 0
+        log_event(
+            con,
+            league_year=league_year,
+            event_date=plan_date,
+            event_hour=int(row_value(period, "current_hour", 12) or 12)
+            if str(row_value(period, "current_stage", "")) == "day_one_hourly"
+            else None,
+            event_type="user_auto_fa_plan",
+            team_id=int(team["team_id"]),
+            message=(
+                f"{team_abbr} used an AI GM free-agent plan while the user skipped the market; "
+                f"{offers} offer(s) submitted."
+            ),
+        )
+        return {"plans": 1, "offers": offers}
+    except Exception as exc:
+        log_event(
+            con,
+            league_year=league_year,
+            event_date=plan_date,
+            event_hour=None,
+            event_type="user_auto_fa_plan_failed",
+            team_id=int(team["team_id"]),
+            message=f"{team_abbr} AI GM free-agent plan could not be applied: {exc}",
+        )
+        return {"plans": 0, "offers": 0}
+
+
+def ensure_missing_specialists_for_fa(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    *,
+    user_team: str | None = None,
+    max_total: int = 96,
+) -> int:
+    """Fill unavoidable K/P/LS holes before roster/cap cleanup gets too far along."""
+    try:
+        import roster_cutdown
+
+        roster_cutdown.ensure_cutdown_schema(con)
+    except Exception:
+        return 0
+
+    league_year = int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con))
+    event_date = str(row_value(period, "current_date", current_game_date_value(con) or default_start_date(league_year)))
+    teams = con.execute(
+        """
+        SELECT team_id, abbreviation
+        FROM teams
+        WHERE (? IS NULL OR abbreviation <> ?)
+        ORDER BY abbreviation
+        """,
+        (user_team, user_team),
+    ).fetchall()
+    signed = 0
+    for team in teams:
+        if signed >= max_total:
+            break
+        for position in ("K", "P", "LS"):
+            if signed >= max_total:
+                break
+            try:
+                did_sign = roster_cutdown.sign_missing_specialist(
+                    con,
+                    team=team,
+                    position=position,
+                    season=league_year,
+                )
+            except Exception:
+                did_sign = False
+            if not did_sign:
+                continue
+            signed += 1
+            log_event(
+                con,
+                league_year=league_year,
+                event_date=event_date,
+                event_hour=None,
+                event_type="cpu_specialist_signing",
+                team_id=int(team["team_id"]),
+                message=f"{team['abbreviation']} filled a missing {position} spot before roster finalization.",
+            )
+    if signed:
+        sync_team_cap_space(con)
+    return signed
+
+
 def cpu_late_market(period: sqlite3.Row | dict[str, Any]) -> bool:
     return str(row_value(period, "current_stage", "") or "") == "daily" and int(row_value(period, "day_count", 1) or 1) >= 8
 
@@ -1002,16 +1250,16 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
     potential = int(row_value(row, "potential", overall) or overall)
     upside_bonus = 1.0 + clamp((potential - overall) * 0.018, 0.0, 0.14)
     tables = {
-        "QB": [(64, 5_000_000), (68, 8_500_000), (72, 13_000_000), (76, 20_000_000), (80, 32_000_000), (99, 58_000_000)],
+        "QB": [(64, 5_000_000), (68, 8_000_000), (72, 10_500_000), (74, 13_000_000), (77, 16_500_000), (79, 21_000_000), (80, 26_000_000), (82, 36_000_000), (99, 58_000_000)],
         "RB": [(64, 2_600_000), (68, 4_400_000), (72, 6_800_000), (76, 9_800_000), (80, 13_800_000), (99, 17_500_000)],
-        "CB": [(60, 3_000_000), (64, 4_800_000), (68, 7_000_000), (72, 10_000_000), (76, 14_000_000), (80, 21_000_000), (99, 29_000_000)],
-        "S": [(60, 3_000_000), (64, 4_800_000), (68, 7_500_000), (72, 10_500_000), (76, 14_500_000), (80, 19_000_000), (99, 24_000_000)],
-        "EDGE": [(64, 4_800_000), (68, 7_800_000), (72, 11_800_000), (74, 14_000_000), (76, 16_000_000), (80, 22_000_000), (99, 34_000_000)],
-        "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 10_500_000), (76, 14_000_000), (80, 20_000_000), (99, 28_000_000)],
-        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 14_500_000), (78, 19_000_000), (80, 24_000_000), (88, 34_000_000), (99, 40_000_000)],
-        "TE": [(64, 3_500_000), (68, 6_000_000), (72, 8_500_000), (76, 12_500_000), (80, 18_000_000), (86, 22_000_000), (99, 27_000_000)],
-        "OT": [(64, 4_500_000), (68, 8_000_000), (72, 13_500_000), (76, 18_500_000), (80, 25_000_000), (99, 32_000_000)],
-        "IOL": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (76, 13_000_000), (78, 15_500_000), (82, 20_000_000), (99, 25_000_000)],
+        "CB": [(60, 3_000_000), (64, 4_800_000), (68, 7_000_000), (72, 9_500_000), (76, 11_500_000), (78, 14_500_000), (80, 20_000_000), (99, 29_000_000)],
+        "S": [(60, 3_000_000), (64, 4_800_000), (68, 7_500_000), (72, 10_500_000), (74, 12_000_000), (76, 14_500_000), (80, 19_000_000), (99, 24_000_000)],
+        "EDGE": [(64, 4_800_000), (68, 7_800_000), (72, 10_800_000), (74, 12_000_000), (76, 15_000_000), (78, 17_500_000), (80, 22_000_000), (99, 34_000_000)],
+        "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 10_500_000), (76, 14_000_000), (78, 16_000_000), (80, 20_000_000), (99, 28_000_000)],
+        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 12_000_000), (78, 14_800_000), (80, 24_000_000), (88, 34_000_000), (99, 40_000_000)],
+        "TE": [(64, 3_500_000), (68, 6_000_000), (72, 8_500_000), (76, 10_800_000), (78, 12_500_000), (80, 16_500_000), (86, 22_000_000), (99, 27_000_000)],
+        "OT": [(64, 4_500_000), (68, 8_000_000), (72, 11_500_000), (74, 12_000_000), (76, 17_500_000), (80, 25_000_000), (99, 32_000_000)],
+        "IOL": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (74, 11_000_000), (76, 13_000_000), (78, 15_500_000), (82, 20_000_000), (99, 25_000_000)],
         "LB": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (76, 13_000_000), (80, 18_000_000), (99, 22_000_000)],
         "ST": [(64, 1_500_000), (70, 2_800_000), (76, 4_000_000), (99, 5_500_000)],
     }
@@ -1025,6 +1273,22 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
     # to turn a 58 OVR corner into a $20M player.
     if overall < 72:
         upside_bonus = min(upside_bonus, 1.08)
+    if group in {"TE", "OT"} and overall <= 73 and potential < 80:
+        upside_bonus = min(upside_bonus, 1.03)
+    if group == "QB":
+        if overall < 78 and potential < 84:
+            upside_bonus = 1.0
+        elif overall <= 72 and potential < 82:
+            upside_bonus = min(upside_bonus, 1.02)
+    if group in {"WR", "OT", "EDGE", "IDL", "CB", "S", "IOL", "TE", "LB"} and potential <= overall + 3:
+        if overall <= 72:
+            cap = min(cap, 8_500_000 if group not in {"OT", "EDGE"} else 10_500_000)
+        elif overall <= 74:
+            cap = min(cap, 10_500_000 if group not in {"OT", "EDGE"} else 12_500_000)
+        elif overall <= 76:
+            cap = min(cap, 12_500_000 if group not in {"OT", "EDGE"} else 14_000_000)
+        elif overall <= 78:
+            cap = min(cap, 15_500_000 if group not in {"OT", "EDGE"} else 16_500_000)
     age = int(row_value(row, "age", 28) or 28)
     if group not in {"QB", "ST"}:
         old_age = POSITION_OLD_AGE.get(group, 31)
@@ -1052,6 +1316,19 @@ def is_post_draft_market_context(con: sqlite3.Connection, league_year: int) -> b
     current_date = current_game_date_value(con)
     if phase_code in {"OFFSEASON_OPEN", "CAMP_REPORTING", "TRAINING_CAMP", "FINAL_CUTDOWN", "REGULAR_SEASON"}:
         return True
+    if table_exists(con, "draft_room_state"):
+        row = con.execute(
+            """
+            SELECT 1
+            FROM draft_room_state
+            WHERE draft_year = ?
+              AND status = 'complete'
+            LIMIT 1
+            """,
+            (league_year,),
+        ).fetchone()
+        if row:
+            return True
     if current_date and current_date >= f"{league_year}-05-01":
         return True
     return False
@@ -1064,7 +1341,7 @@ def veteran_floor_aav(row: sqlite3.Row | dict[str, Any], *, post_draft: bool) ->
     tier = normalized_tier(row)
     age_value = row_value(row, "age")
     age = int(age_value) if age_value is not None else None
-    score = int(row_value(row, "market_score", row_value(row, "overall", 60)) or 60)
+    score = market_tier_score(row)
     if age is None or age < POSITION_OLD_AGE.get(group, 31) or score < 64:
         return 840_000
     if tier == "Premium":
@@ -1086,13 +1363,201 @@ def veteran_floor_aav(row: sqlite3.Row | dict[str, Any], *, post_draft: bool) ->
         "TE": 0.95,
         "S": 0.90,
         "LB": 0.88,
-        "RB": 0.72,
+        "RB": 0.95,
         "ST": 0.55,
     }.get(group, 0.90)
     score_multiplier = 1.0 + clamp((score - 70) * 0.035, -0.15, 0.55)
     age_penalty = 1.0 - max(0, age - POSITION_OLD_AGE.get(group, 31)) * 0.035
     floor = base * group_multiplier * score_multiplier * clamp(age_penalty, 0.70, 1.0)
     return max(840_000, round_to(floor, 100_000))
+
+
+def calendar_event_date(
+    con: sqlite3.Connection,
+    league_year: int,
+    event_code: str,
+    fallback_month: int,
+    fallback_day: int,
+) -> str:
+    if table_exists(con, "league_calendar_events"):
+        row = con.execute(
+            """
+            SELECT event_start_date
+            FROM league_calendar_events
+            WHERE league_year = ?
+              AND event_code = ?
+            LIMIT 1
+            """,
+            (league_year, event_code),
+        ).fetchone()
+        if row and row["event_start_date"]:
+            return str(row["event_start_date"])
+    return date_text(date(league_year, fallback_month, fallback_day))
+
+
+def post_draft_holdout_date(con: sqlite3.Connection, league_year: int, player_id: int, rng: random.Random) -> str:
+    roll = rng.random()
+    if roll < 0.54:
+        return calendar_event_date(con, league_year, "VETERAN_TRAINING_CAMP_REPORTING", 7, 22)
+    if roll < 0.88:
+        return calendar_event_date(con, league_year, "PRESEASON_WEEK_2", 8, 15)
+    return calendar_event_date(con, league_year, "FINAL_ROSTER_CUTDOWN_53", 8, 26)
+
+
+def post_draft_market_strategy(
+    con: sqlite3.Connection,
+    row: sqlite3.Row | dict[str, Any],
+    league_year: int,
+    *,
+    post_draft: bool,
+) -> tuple[str, str | None, str | None]:
+    if not post_draft:
+        return "normal", None, None
+    player_id = int(row_value(row, "player_id", 0) or 0)
+    rng = random.Random(f"fa-post-draft-strategy:{league_year}:{player_id}")
+    tier = normalized_tier(row)
+    group = normalized_group(row)
+    score = market_tier_score(row)
+    age = int(row_value(row, "age", 28) or 28)
+    patience = int(row_value(row, "patience", 8) or 8)
+    money_priority = int(row_value(row, "money_priority", row_value(row, "contract_priority", 10)) or 10)
+    role_priority = int(row_value(row, "role_priority", 10) or 10)
+    old_age = POSITION_OLD_AGE.get(group, 31)
+    established = tier in {"Premium", "Starter"} and score >= 70
+    credible_veteran = tier == "Rotation" and score >= 65 and age >= old_age - 1
+
+    injury_wait_probability = 0.0
+    if established and group in {"QB", "WR", "TE", "OT", "IOL", "EDGE", "IDL", "CB", "S"}:
+        injury_wait_probability = 0.080
+        injury_wait_probability += max(0, patience - 10) * 0.010
+        injury_wait_probability += max(0, money_priority - 11) * 0.010
+        if score >= 78:
+            injury_wait_probability += 0.040
+        if age >= old_age:
+            injury_wait_probability += 0.055
+        if group in {"QB", "OT", "EDGE", "CB", "WR"}:
+            injury_wait_probability += 0.025
+        if role_priority >= 14:
+            injury_wait_probability += 0.020
+        injury_wait_probability = clamp(injury_wait_probability, 0.04, 0.36)
+    elif credible_veteran and group in {"QB", "WR", "TE", "OT", "IOL", "EDGE", "IDL", "CB", "S"}:
+        injury_wait_probability = 0.045 + max(0, patience - 10) * 0.008
+        if group in {"OT", "EDGE", "CB", "QB"}:
+            injury_wait_probability += 0.025
+        injury_wait_probability = clamp(injury_wait_probability, 0.025, 0.16)
+    elif established and group == "RB" and score >= 76 and age <= 28:
+        injury_wait_probability = 0.035
+
+    if injury_wait_probability and rng.random() < injury_wait_probability:
+        return (
+            "injury_wait",
+            post_draft_holdout_date(con, league_year, player_id, rng),
+            "Holding firm for possible training-camp or injury leverage.",
+        )
+
+    firm_probability = 0.0
+    if established:
+        firm_probability = 0.28
+        if tier == "Premium":
+            firm_probability += 0.12
+        if age >= old_age:
+            firm_probability += 0.08
+        if patience >= 12:
+            firm_probability += 0.08
+        if money_priority >= 13:
+            firm_probability += 0.06
+        firm_probability = clamp(firm_probability, 0.12, 0.54)
+    elif credible_veteran:
+        firm_probability = 0.20
+    if firm_probability and rng.random() < firm_probability:
+        return "firm_floor", None, "Keeping a veteran floor rather than chasing the first cheap deal."
+
+    if tier in {"Depth", "Camp"} or score < 66 or patience <= 7:
+        soften_probability = 0.52
+        if group == "RB" and age >= 27:
+            soften_probability += 0.18
+        if age >= old_age + 2:
+            soften_probability += 0.14
+        if rng.random() < clamp(soften_probability, 0.34, 0.82):
+            return "soften", None, "Post-draft depth market softened the asking price."
+
+    return "normal", None, None
+
+
+def apply_post_draft_strategy_prices(
+    row: sqlite3.Row | dict[str, Any],
+    asking: int,
+    minimum: int,
+    *,
+    strategy: str,
+    post_draft: bool,
+) -> tuple[int, int]:
+    if not post_draft:
+        return asking, minimum
+    strategy = strategy if strategy in POST_DRAFT_STRATEGIES else "normal"
+    ceiling = market_price_ceiling(row, normalized_tier(row), post_draft=True)
+    ceiling = min(ceiling, cpu_true_quality_aav_cap(row))
+    veteran_floor = veteran_floor_aav(row, post_draft=True)
+    if strategy == "injury_wait":
+        floor = max(minimum, veteran_floor, round_to(asking * 0.70, 100_000))
+        asking = min(ceiling, max(asking, round_to(asking * 1.10, 100_000), round_to(floor * 1.30, 100_000)))
+        minimum = max(minimum, floor, round_to(asking * 0.68, 100_000))
+    elif strategy == "firm_floor":
+        floor = max(minimum, veteran_floor, round_to(asking * 0.58, 100_000))
+        asking = min(ceiling, max(asking, round_to(asking * 1.03, 100_000), floor))
+        minimum = max(minimum, floor, round_to(asking * 0.60, 100_000))
+    elif strategy == "soften":
+        floor = max(840_000, int(veteran_floor * 0.78))
+        asking = max(floor, round_to(asking * 0.90, 100_000))
+        minimum = max(floor, round_to(minimum * 0.90, 100_000), round_to(asking * 0.44, 100_000))
+    return int(max(840_000, asking)), int(min(max(840_000, minimum), max(840_000, asking)))
+
+
+def active_fa_injury_pressure_groups(con: sqlite3.Connection) -> set[tuple[int, str]]:
+    if not table_exists(con, "active_player_injuries"):
+        return set()
+    rows = con.execute(
+        """
+        SELECT
+            p.team_id,
+            p.position,
+            api.status,
+            COALESCE(api.expected_games, 0) AS expected_games
+        FROM active_player_injuries api
+        JOIN players p ON p.player_id = api.player_id
+        WHERE p.team_id IS NOT NULL
+          AND api.resolved_at IS NULL
+          AND api.status IN ('Doubtful', 'Out', 'IR', 'PUP', 'NFI')
+          AND COALESCE(p.status, 'Active') NOT IN ('Free Agent', 'Retired')
+        """
+    ).fetchall()
+    pressure: set[tuple[int, str]] = set()
+    for row in rows:
+        expected_games = int(row["expected_games"] or 0)
+        if expected_games < 1 and str(row["status"] or "") not in {"IR", "PUP", "NFI"}:
+            continue
+        pressure.add((int(row["team_id"]), position_group_for(str(row["position"] or ""))))
+    return pressure
+
+
+def post_draft_strategy_allows_offer(
+    con: sqlite3.Connection,
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    team_id: int | None = None,
+    pressure_groups: set[tuple[int, str]] | None = None,
+) -> bool:
+    if str(row_value(player, "post_draft_strategy", "normal") or "normal") != "injury_wait":
+        return True
+    current_date = current_game_date_value(con)
+    holdout_until = str(row_value(player, "holdout_until", "") or "")
+    if current_date and holdout_until and current_date >= holdout_until:
+        return True
+    group = normalized_group(player)
+    pressure_groups = pressure_groups if pressure_groups is not None else active_fa_injury_pressure_groups(con)
+    if team_id is None:
+        return any(pressure_group == group for _team_id, pressure_group in pressure_groups)
+    return (team_id, group) in pressure_groups
 
 
 def adjusted_market_prices(row: sqlite3.Row, league_year: int, *, post_draft: bool = False) -> tuple[int, int]:
@@ -1105,7 +1570,7 @@ def adjusted_market_prices(row: sqlite3.Row, league_year: int, *, post_draft: bo
     tier = normalized_tier(row)
     group = normalized_group(row)
     age = int(row["age"]) if row["age"] is not None else None
-    score = int(row_value(row, "market_score", 60) or 60)
+    score = market_tier_score(row)
     ceiling = market_price_ceiling(row, tier, post_draft=post_draft)
     ceiling = min(ceiling, cpu_true_quality_aav_cap(row))
     profile_ask = min(ceiling, max(915_000, int(row_value(row, "asking_aav", 1_500_000) or 1_500_000)))
@@ -1174,6 +1639,8 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
             COALESCE(fap.minimum_aav, 915000) AS minimum_aav,
             COALESCE(pref.contract_year_preference, fap.preferred_years, 1) AS preferred_years,
             COALESCE(fap.guarantee_pct, 0) AS guarantee_pct,
+            COALESCE(pref.money_priority, fap.contract_priority, 10) AS money_priority,
+            COALESCE(pref.role_priority, fap.role_priority, 10) AS role_priority,
             MAX(1, MIN(20, COALESCE(fap.patience, 8) + COALESCE(pref.market_patience_modifier, 0))) AS patience,
             COALESCE(score.role_score, p.overall, 60) AS market_score
         FROM players p
@@ -1199,10 +1666,23 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
     for row in rows:
         tier = normalized_tier(row)
         asking_aav, minimum_aav = adjusted_market_prices(row, league_year, post_draft=post_draft_market)
+        strategy, holdout_until, holdout_reason = post_draft_market_strategy(
+            con,
+            row,
+            league_year,
+            post_draft=post_draft_market,
+        )
+        asking_aav, minimum_aav = apply_post_draft_strategy_prices(
+            row,
+            asking_aav,
+            minimum_aav,
+            strategy=strategy,
+            post_draft=post_draft_market,
+        )
         heat = market_heat_for(
             tier,
             asking_aav,
-            int(row["market_score"] or 60),
+            market_tier_score(row),
             int(row["age"]) if row["age"] is not None else None,
         )
         cur = con.execute(
@@ -1210,9 +1690,10 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
             INSERT INTO free_agency_player_markets (
                 league_year, player_id, position_group, market_tier,
                 asking_aav, minimum_aav, preferred_years, guarantee_pct,
-                market_heat, patience, status, updated_at
+                market_heat, patience, post_draft_strategy, holdout_until,
+                holdout_reason, status, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'available', datetime('now'))
             ON CONFLICT(league_year, player_id) DO UPDATE SET
                 position_group = excluded.position_group,
                 market_tier = excluded.market_tier,
@@ -1222,6 +1703,9 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
                 guarantee_pct = excluded.guarantee_pct,
                 market_heat = excluded.market_heat,
                 patience = excluded.patience,
+                post_draft_strategy = excluded.post_draft_strategy,
+                holdout_until = excluded.holdout_until,
+                holdout_reason = excluded.holdout_reason,
                 status = CASE
                     WHEN free_agency_player_markets.status = 'signed' THEN free_agency_player_markets.status
                     ELSE 'available'
@@ -1239,6 +1723,9 @@ def ensure_market(con: sqlite3.Connection, league_year: int) -> int:
                 int(row["guarantee_pct"]),
                 heat,
                 int(row["patience"]),
+                strategy,
+                holdout_until,
+                holdout_reason,
             ),
         )
         if cur.rowcount:
@@ -1405,7 +1892,13 @@ def close_elapsed_period_if_needed(con: sqlite3.Connection, league_year: int) ->
 
 def reconcile_market_state(con: sqlite3.Connection, league_year: int, *, stale_offer_days: int = 14) -> dict[str, int]:
     current_date = current_game_date_value(con)
-    result = {"rostered_markets": 0, "stale_offers": 0, "closed_period": 0, "resolved_before_stale": 0}
+    result = {
+        "rostered_markets": 0,
+        "released_signed_markets": 0,
+        "stale_offers": 0,
+        "closed_period": 0,
+        "resolved_before_stale": 0,
+    }
     if close_elapsed_period_if_needed(con, league_year):
         result["closed_period"] = 1
     sync_period_to_game_date(con, league_year)
@@ -1431,31 +1924,46 @@ def reconcile_market_state(con: sqlite3.Connection, league_year: int, *, stale_o
     )
     result["rostered_markets"] = int(cur.rowcount or 0)
 
+    cur = con.execute(
+        """
+        UPDATE free_agency_player_markets
+        SET status = 'available',
+            signed_team_id = NULL,
+            signed_offer_id = NULL,
+            last_offer_at = NULL,
+            decision_notes = TRIM(COALESCE(decision_notes || ' ', '') || 'Returned to market after release.'),
+            updated_at = datetime('now')
+        WHERE league_year = ?
+          AND status = 'signed'
+          AND EXISTS (
+              SELECT 1
+              FROM players p
+              WHERE p.player_id = free_agency_player_markets.player_id
+                AND p.team_id IS NULL
+                AND COALESCE(p.status, '') = 'Free Agent'
+          )
+        """,
+        (league_year,),
+    )
+    result["released_signed_markets"] = int(cur.rowcount or 0)
+
     period = current_period(con, league_year)
     if period and period["status"] == "active":
         current_date = str(period["current_date"])
     if current_date:
+        result["stale_offers"] = expire_stale_pending_offers(
+            con,
+            league_year=league_year,
+            current_date=current_date,
+            stale_offer_days=stale_offer_days,
+            note="Expired after sitting pending too long.",
+        )
         if period and period["status"] == "active":
             result["resolved_before_stale"] = resolve_pending_offers(
                 con,
                 period,
                 write_cap_snapshot=False,
             )
-        cur = con.execute(
-            """
-            UPDATE free_agency_offers
-            SET status = 'expired',
-                decided_date = ?,
-                decided_hour = NULL,
-                notes = COALESCE(notes || ' | ', '') || 'Expired after sitting pending too long.',
-                updated_at = datetime('now')
-            WHERE league_year = ?
-              AND status = 'pending'
-              AND julianday(?) - julianday(submitted_date) >= ?
-            """,
-            (current_date, league_year, current_date, stale_offer_days),
-        )
-        result["stale_offers"] = int(cur.rowcount or 0)
     return result
 
 
@@ -1548,6 +2056,13 @@ def active_period(con: sqlite3.Connection, league_year: int) -> sqlite3.Row:
 
 
 def upsert_setting(con: sqlite3.Connection, key: str, value: str) -> None:
+    if key == "current_game_date":
+        existing = con.execute(
+            "SELECT setting_value FROM game_settings WHERE setting_key = ?",
+            (key,),
+        ).fetchone()
+        if existing and str(existing["setting_value"] or "") > str(value):
+            value = str(existing["setting_value"])
     con.execute(
         """
         INSERT INTO game_settings (setting_key, setting_value, updated_at)
@@ -1575,6 +2090,12 @@ def sync_active_game_to_date(con: sqlite3.Connection, target_date: str) -> None:
     if not row:
         return
     if str(row["current_date"]) >= target_date:
+        phase = league_calendar.phase_for_date(con, str(row["current_date"]))
+        if phase:
+            upsert_setting(con, "current_game_date", str(row["current_date"]))
+            upsert_setting(con, "current_league_year", str(int(phase["league_year"])))
+            upsert_setting(con, "current_season", str(int(phase["league_year"])))
+            upsert_setting(con, "current_calendar_phase", str(phase["phase_code"]))
         return
     phase = league_calendar.phase_for_date(con, target_date)
     if not phase:
@@ -1642,6 +2163,54 @@ def cpu_re_sign_probability(player: dict[str, Any] | sqlite3.Row) -> float:
     if group == "RB" and age >= 28:
         base -= 0.18
     return max(0.03, min(0.97, base))
+
+
+def cpu_must_protect_expiring_player(player: dict[str, Any] | sqlite3.Row) -> bool:
+    group = str(row_value(player, "position_group", "") or "").upper()
+    score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+    overall = int(row_value(player, "overall", score) or score)
+    potential = int(row_value(player, "potential", overall) or overall)
+    age = int(row_value(player, "age", 28) or 28)
+    if group == "QB":
+        return overall >= 81 and potential >= 84 and age <= 33
+    if group == "WR":
+        return age <= 29 and (overall >= 84 or (overall >= 82 and potential >= 88) or score >= 86)
+    if group in {"OT", "EDGE", "CB", "IDL"}:
+        return age <= 30 and (overall >= 84 or (overall >= 81 and potential >= 87) or score >= 86)
+    if group == "IOL":
+        return age <= 30 and (overall >= 86 or (overall >= 82 and potential >= 88))
+    if group == "TE":
+        return age <= 30 and (overall >= 86 or (overall >= 82 and potential >= 89))
+    if group in {"S", "LB"}:
+        return age <= 30 and (overall >= 85 or (overall >= 82 and potential >= 88))
+    return score >= 90
+
+
+def cpu_offer_year_cap(player: sqlite3.Row | dict[str, Any], *, own_retention: bool = False) -> int:
+    group = normalized_group(player)
+    score = true_overall(player)
+    potential = int(row_value(player, "potential", score) or score)
+    age = int(row_value(player, "age", 28) or 28)
+    if group == "QB":
+        if age >= 38:
+            return 1
+        if age >= 36:
+            return 2
+        if score <= 76 and potential < 82:
+            return 2 if own_retention else 1
+        if score < 78 and potential < 84:
+            return 2
+        if score < 80 and potential < 84:
+            return 3
+        return 5
+    old_age = POSITION_OLD_AGE.get(group, 31)
+    if age >= old_age + 2 and score < 84:
+        return 1
+    if age >= old_age and score < 82:
+        return 2
+    if group == "RB":
+        return 2 if score < 78 or age >= 28 else 3
+    return 5
 
 
 def preferred_years_for_offer(player: sqlite3.Row, rng: random.Random, *, max_years: int = 5) -> int:
@@ -1819,7 +2388,11 @@ def retire_no_interest_free_agents(
 ) -> int:
     retired = 0
     event_date, event_hour = event_time(period)
+    pressure_groups = active_fa_injury_pressure_groups(con)
     for row in rows:
+        if str(row_value(row, "post_draft_strategy", "normal") or "normal") == "injury_wait":
+            if not post_draft_strategy_allows_offer(con, row, pressure_groups=pressure_groups):
+                continue
         probability = retirement_probability_for_no_interest(row, days=max(1, days))
         if probability <= 0:
             continue
@@ -1887,6 +2460,9 @@ def apply_no_interest_demand_decay(
             m.minimum_aav,
             m.market_heat,
             m.patience,
+            COALESCE(m.post_draft_strategy, 'normal') AS post_draft_strategy,
+            m.holdout_until,
+            m.holdout_reason,
             ? AS period_stage,
             ? AS day_count,
             p.position,
@@ -1925,14 +2501,36 @@ def apply_no_interest_demand_decay(
 
     changed = 0
     post_draft_market = is_post_draft_market_context(con, int(period["league_year"]))
+    pressure_groups = active_fa_injury_pressure_groups(con) if post_draft_market else set()
     for row in rows:
         old_ask = int(row["asking_aav"] or 0)
         old_min = int(row["minimum_aav"] or 0)
         if old_ask <= 0:
             continue
+        strategy = str(row_value(row, "post_draft_strategy", "normal") or "normal")
+        if strategy == "injury_wait" and not post_draft_strategy_allows_offer(
+            con,
+            row,
+            pressure_groups=pressure_groups,
+        ):
+            continue
         rate = no_interest_decay_rate(row, opening_phase_ended=opening_phase_ended, days=max(1, days))
+        if post_draft_market:
+            if strategy == "injury_wait":
+                rate *= 0.28
+            elif strategy == "firm_floor":
+                rate *= 0.58
+            elif strategy == "soften":
+                rate *= 1.32
         profile_minimum = max(840_000, int(row["profile_minimum_aav"] or 840_000))
         floor = max(veteran_floor_aav(row, post_draft=post_draft_market), int(profile_minimum * (0.72 if post_draft_market else 1.0)))
+        if post_draft_market:
+            if strategy == "injury_wait":
+                floor = max(floor, round_to(old_ask * 0.64, 100_000))
+            elif strategy == "firm_floor":
+                floor = max(floor, round_to(old_ask * 0.54, 100_000))
+            elif strategy == "soften":
+                floor = max(840_000, int(floor * 0.82))
         new_ask = max(floor, round_to(old_ask * (1.0 - rate), 100_000))
         new_minimum = max(floor, round_to(old_min * (1.0 - rate * 0.90), 100_000))
         new_minimum = min(new_minimum, new_ask)
@@ -2029,6 +2627,69 @@ def cpu_signing_bonus_for_offer(
     return round_to(total * rng.uniform(low, high), 50_000)
 
 
+def normalized_contract_structure(value: Any) -> str:
+    label = str(value or "balanced").strip().lower().replace("_", "-")
+    if label in {"backload", "backloaded", "back-loaded"}:
+        return "backloaded"
+    if label in {"frontload", "frontloaded", "front-loaded"}:
+        return "frontloaded"
+    if label in {"bonus-heavy", "bonus", "low-year-one", "low-year-1"}:
+        return "bonus-heavy"
+    return "balanced"
+
+
+def first_year_cap_estimate(*, aav: int, years: int, signing_bonus: int, structure: str) -> int:
+    years = max(1, int(years or 1))
+    total_value = int(aav) * years
+    proration = int(int(signing_bonus or 0) / max(1, min(5, years)))
+    base_pool = max(0, total_value - int(signing_bonus or 0))
+    label = normalized_contract_structure(structure)
+    if years <= 1 or label == "balanced":
+        base = max(0, int(aav) - proration)
+    else:
+        if label == "frontloaded":
+            weights = [1.34, 1.18, 1.02, 0.90, 0.80, 0.72]
+        elif label == "bonus-heavy":
+            weights = [0.62, 0.92, 1.12, 1.28, 1.42, 1.56]
+        else:
+            weights = [0.72, 0.90, 1.08, 1.24, 1.38, 1.52]
+        used = [weights[index] if index < len(weights) else weights[-1] for index in range(years)]
+        base = int(base_pool * (used[0] / sum(used)))
+    return max(0, base + proration)
+
+
+def cpu_contract_structure_for_offer(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    team_cap_space: int | None,
+    aav: int,
+    years: int,
+    guarantee_pct: int,
+    rng: random.Random,
+    own_retention: bool = False,
+) -> str:
+    if years <= 1:
+        return "balanced"
+    group = normalized_group(player)
+    tier = normalized_tier(player)
+    score = true_overall(player)
+    age = int(row_value(player, "age", 27) or 27)
+    cap_space = int(team_cap_space or 0)
+    first_year_flat = aav
+    if group == "RB" or age >= POSITION_OLD_AGE.get(group, 31) + 1:
+        return "frontloaded" if guarantee_pct >= 28 or own_retention else "balanced"
+    if tier == "Premium" or score >= 78:
+        if cap_space and cap_space < int(first_year_flat * 1.35):
+            return "backloaded"
+        if group in {"QB", "WR", "OT", "EDGE", "CB"} and years >= 3 and rng.random() < 0.45:
+            return "backloaded"
+    if guarantee_pct >= 45 and years >= 3 and rng.random() < 0.25:
+        return "bonus-heavy"
+    if cap_space and cap_space > int(first_year_flat * 2.5) and rng.random() < 0.18:
+        return "frontloaded"
+    return "balanced"
+
+
 def need_threshold_for_market_pressure(player: sqlite3.Row | dict[str, Any]) -> float:
     group = normalized_group(player)
     if group == "QB":
@@ -2076,6 +2737,131 @@ def recent_team_release_for_player(
     return row is not None
 
 
+def recent_rejected_offer_for_player(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    team_id: int,
+    player_id: int,
+    current_date: str,
+    cooldown_days: int = 21,
+) -> bool:
+    if not table_exists(con, "free_agency_offers") or not current_date:
+        return False
+    row = con.execute(
+        """
+        SELECT 1
+        FROM free_agency_offers
+        WHERE league_year = ?
+          AND team_id = ?
+          AND player_id = ?
+          AND status = 'rejected'
+          AND julianday(?) - julianday(COALESCE(decided_date, submitted_date)) < ?
+        LIMIT 1
+        """,
+        (int(league_year), int(team_id), int(player_id), str(current_date), int(cooldown_days)),
+    ).fetchone()
+    return row is not None
+
+
+def recent_rejected_offer_count_for_group(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    team_id: int,
+    group: str,
+    current_date: str,
+    cooldown_days: int = 21,
+) -> int:
+    if not table_exists(con, "free_agency_offers") or not current_date:
+        return 0
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM free_agency_offers o
+        JOIN free_agency_player_markets m
+          ON m.league_year = o.league_year
+         AND m.player_id = o.player_id
+        WHERE o.league_year = ?
+          AND o.team_id = ?
+          AND m.position_group = ?
+          AND o.status = 'rejected'
+          AND julianday(?) - julianday(COALESCE(o.decided_date, o.submitted_date)) < ?
+        """,
+        (int(league_year), int(team_id), str(group), str(current_date), int(cooldown_days)),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def expire_stale_pending_offers(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    current_date: str,
+    stale_offer_days: int,
+    note: str = "Expired after sitting pending too long.",
+) -> int:
+    if not table_exists(con, "free_agency_offers") or not current_date:
+        return 0
+    cur = con.execute(
+        """
+        UPDATE free_agency_offers
+        SET status = 'expired',
+            decided_date = ?,
+            decided_hour = NULL,
+            notes = COALESCE(notes || ' | ', '') || ?,
+            updated_at = datetime('now')
+        WHERE league_year = ?
+          AND status = 'pending'
+          AND julianday(?) - julianday(submitted_date) >= ?
+        """,
+        (str(current_date), str(note), int(league_year), str(current_date), int(stale_offer_days)),
+    )
+    return int(cur.rowcount or 0)
+
+
+def stale_offer_days_for_period(con: sqlite3.Connection, period: sqlite3.Row | dict[str, Any]) -> int:
+    league_year = int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con))
+    if is_post_draft_market_context(con, league_year):
+        return 7
+    if cpu_late_market(period):
+        return 10
+    return 21
+
+
+def current_year_fa_contract(
+    con: sqlite3.Connection,
+    *,
+    contract_id: int,
+    player_id: int,
+    team_id: int,
+    league_year: int,
+) -> bool:
+    if not table_exists(con, "free_agency_offers"):
+        return False
+    row = con.execute(
+        """
+        SELECT 1
+        FROM free_agency_offers o
+        WHERE o.league_year = ?
+          AND o.player_id = ?
+          AND o.team_id = ?
+          AND o.status = 'accepted'
+          AND EXISTS (
+              SELECT 1
+              FROM contracts c
+              WHERE c.contract_id = ?
+                AND c.player_id = o.player_id
+                AND c.team_id = o.team_id
+                AND c.start_year = o.league_year
+          )
+        LIMIT 1
+        """,
+        (int(league_year), int(player_id), int(team_id), int(contract_id)),
+    ).fetchone()
+    return row is not None
+
+
 def cpu_extend_expiring_players(
     con: sqlite3.Connection,
     *,
@@ -2102,18 +2888,77 @@ def cpu_extend_expiring_players(
             rows = contract_negotiations.expiring_players(con, abbr, expiring_season)
         except Exception:
             continue
+        rows.sort(
+            key=lambda player: (
+                1 if cpu_must_protect_expiring_player(player) else 0,
+                float(row_value(player, "market_score", 60) or 60),
+                int(row_value(player, "potential", row_value(player, "overall", 60)) or 60),
+                -int(row_value(player, "age", 28) or 28),
+            ),
+            reverse=True,
+        )
         kept_for_team = 0
         for player in rows:
-            if kept_for_team >= per_team:
-                break
+            must_protect = cpu_must_protect_expiring_player(player)
+            if kept_for_team >= per_team and not must_protect:
+                continue
+            team_id = int(row_value(player, "team_id", 0) or 0)
+            if team_id <= 0:
+                team_row = con.execute("SELECT team_id FROM teams WHERE abbreviation = ?", (abbr,)).fetchone()
+                team_id = int(team_row["team_id"] or 0) if team_row else 0
             score = float(row_value(player, "market_score", 60) or 60)
             group = str(row_value(player, "position_group", "") or "")
-            must_protect = score >= 88 or (score >= 84 and group in {"QB", "OT", "EDGE", "WR", "CB"})
+            must_protect = must_protect or score >= 88 or (score >= 84 and group in {"QB", "OT", "EDGE", "WR", "CB"})
             if not must_protect and rng.random() > cpu_re_sign_probability(player):
                 continue
             low, high = cpu_aav_bounds(player)
+            if team_id > 0 and group == "QB":
+                room = team_group_room_context(
+                    con,
+                    team_id,
+                    "QB",
+                    exclude_player_id=int(row_value(player, "player_id", 0) or 0),
+                )
+                qb_limits = qb_room_offer_limits(
+                    con,
+                    player,
+                    team_qb_scores=[float(value) for value in room["scores"]],
+                    team_need=load_team_need_scores(con).get((team_id, "QB"), 0.0),
+                    roster_qb_count=int(room["count"]),
+                )
+                if not qb_limits["allowed"]:
+                    continue
+                if qb_limits["backup_cap"]:
+                    high = min(high, int(qb_limits["backup_cap"]))
+                    low = min(low, high)
             aav = round_to(rng.randint(low, high), 100_000)
-            years = max(1, int(player["suggested_years"] or 1))
+            years = min(max(1, int(player["suggested_years"] or 1)), cpu_offer_year_cap(player, own_retention=True))
+            if group == "QB" and team_id > 0:
+                room = team_group_room_context(
+                    con,
+                    team_id,
+                    "QB",
+                    exclude_player_id=int(row_value(player, "player_id", 0) or 0),
+                )
+                if int(room["best"]) >= 82 and score <= float(room["best"]) - 4:
+                    years = 1
+            guard_period = {"league_year": league_year, "current_date": f"{league_year}-03-10", "current_hour": 9}
+            guard_offer = {
+                "team_id": team_id,
+                "player_id": int(row_value(player, "player_id", 0) or 0),
+                "aav": aav,
+                "years": years,
+                "signing_bonus": 0,
+            }
+            allowed, _reason = cpu_final_signing_guardrails(
+                con,
+                guard_period,
+                guard_offer,
+                dict(player),
+                own_retention=True,
+            )
+            if not allowed:
+                continue
             try:
                 contract_negotiations.extend_player(
                     con,
@@ -2185,7 +3030,16 @@ def cpu_apply_pre_fa_tags(
             if group == "RB":
                 eligible = score >= 88 and age <= 27 and franchise <= cap_space - 5_000_000
             elif group == "QB":
-                eligible = score >= 82 and franchise <= cap_space - 10_000_000
+                overall = int(player.get("overall") or score)
+                potential = int(player.get("potential") or overall)
+                current_aav = int(player.get("aav") or 0)
+                eligible = (
+                    score >= 88
+                    and overall >= 84
+                    and potential >= 86
+                    and franchise <= cap_space - 10_000_000
+                    and franchise <= max(int(current_aav * 2.25), int(player.get("asking_aav") or 0) + 12_000_000)
+                )
             elif group == "WR" and int(player.get("overall") or score) >= 84 and int(player.get("potential") or score) >= 87 and age <= 29:
                 eligible = franchise <= cap_space - 5_000_000
             elif group in {"WR", "OT", "EDGE", "CB", "IDL"}:
@@ -2197,7 +3051,7 @@ def cpu_apply_pre_fa_tags(
             else:
                 eligible = score >= 88 and franchise <= cap_space - 7_500_000
             transition_threshold = {
-                "QB": 80,
+                "QB": 88,
                 "WR": 84,
                 "OT": 83,
                 "EDGE": 83,
@@ -2209,6 +3063,16 @@ def cpu_apply_pre_fa_tags(
                 "LB": 85,
             }.get(group, 86)
             transition_ok = score >= transition_threshold and group not in {"RB", "ST"} and transition <= cap_space - 6_000_000
+            if group == "QB":
+                overall = int(player.get("overall") or score)
+                potential = int(player.get("potential") or overall)
+                current_aav = int(player.get("aav") or 0)
+                transition_ok = (
+                    transition_ok
+                    and overall >= 84
+                    and potential >= 86
+                    and transition <= max(int(current_aav * 2.25), int(player.get("asking_aav") or 0) + 12_000_000)
+                )
             if eligible:
                 surplus = max(0, int(player.get("asking_aav") or 0) - franchise)
                 if score >= 90:
@@ -2423,6 +3287,7 @@ def cpu_apply_fifth_year_options(
 def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     sync_active_game_to_date(con, str(args.start_date))
     user_team = cpu_excluded_user_team(con, args)
+    market_user_team = general_market_excluded_user_team(con, args)
     write_cap_snapshot = not getattr(args, "no_cap_snapshot", False)
     deactivate_elapsed_active_contracts(con, int(args.league_year))
     cpu_extensions = 0
@@ -2473,11 +3338,13 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             transaction_date=str(args.start_date),
             write_cap_snapshot=write_cap_snapshot,
         )
+        deactivated_elapsed_after_rights = deactivate_elapsed_active_contracts(con, int(args.league_year))
     else:
         rollover_result = {"teams": []}
         cpu_options = 0
         cpu_tags = 0
         cpu_tenders = 0
+        deactivated_elapsed_after_rights = deactivate_elapsed_active_contracts(con, int(args.league_year))
         contract_negotiations.set_current_contract_year(con, int(args.league_year))
     ensure_market(con, args.league_year)
     con.execute(
@@ -2527,17 +3394,45 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         seed=args.seed,
         write_cap_snapshot=write_cap_snapshot,
     )
-    opening_cpu_offers = create_cpu_offers(con, period, args.opening_cpu_offers, args.seed, user_team=user_team)
+    user_plan = apply_cpu_controlled_user_free_agent_plan(
+        con,
+        period,
+        args,
+        max_offers=max(2, min(5, int(args.opening_cpu_offers or 0) // 8 if int(args.opening_cpu_offers or 0) else 4)),
+    )
+    opening_cpu_offers = create_cpu_offers(
+        con,
+        period,
+        args.opening_cpu_offers,
+        args.seed,
+        user_team=market_user_team,
+    )
     cap_cleanup = cpu_cap_compliance_sweep(
         con,
         int(args.league_year),
         user_team=user_team,
-        min_space=2_000_000,
+        min_space=8_000_000,
         max_moves_per_team=5,
         max_teams=32,
         time_budget_seconds=45.0,
         write_snapshot=write_cap_snapshot,
     )
+    if int(cap_cleanup.get("still_over") or 0) > 0:
+        followup_cleanup = cpu_cap_compliance_sweep(
+            con,
+            int(args.league_year),
+            user_team=user_team,
+            min_space=4_000_000,
+            max_moves_per_team=3,
+            max_teams=32,
+            time_budget_seconds=30.0,
+            write_snapshot=write_cap_snapshot,
+        )
+        for key, value in followup_cleanup.items():
+            if key == "still_over":
+                cap_cleanup[key] = value
+            else:
+                cap_cleanup[key] = int(cap_cleanup.get(key) or 0) + int(value or 0)
     log_event(
         con,
         league_year=args.league_year,
@@ -2556,7 +3451,9 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             f"CPU cap releases: {cpu_cap_releases}. "
             f"CPU strategic releases: {cpu_strategic_releases}. "
             f"CPU own-player FA re-signings: {cpu_retained}. "
+            f"User auto-FA plan offers: {user_plan.get('offers', 0)}. "
             f"Opening CPU offers: {opening_cpu_offers}. "
+            f"Elapsed contract cleanup: {deactivated_elapsed_after_rights}. "
             f"Cap compliance: {cap_cleanup.get('teams', 0)} team(s), "
             f"{cap_cleanup.get('restructures', 0)} restructure(s), "
             f"{cap_cleanup.get('releases', 0)} release(s), "
@@ -2578,17 +3475,19 @@ def submit_offer(
     guarantee_pct: int,
     submitted_date: str,
     submitted_hour: int | None,
+    contract_structure: str = "balanced",
     notes: str | None = None,
 ) -> int:
     total_value = int(aav) * int(years)
+    structure = normalized_contract_structure(contract_structure)
     cur = con.execute(
         """
         INSERT INTO free_agency_offers (
             league_year, player_id, team_id, years, aav, total_value,
-            signing_bonus, guarantee_pct, status, submitted_date,
+            signing_bonus, guarantee_pct, contract_structure, status, submitted_date,
             submitted_hour, notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
         """,
         (
             league_year,
@@ -2599,6 +3498,7 @@ def submit_offer(
             total_value,
             int(signing_bonus),
             int(guarantee_pct),
+            structure,
             submitted_date,
             submitted_hour,
             notes,
@@ -2637,6 +3537,7 @@ def action_offer_inner(con: sqlite3.Connection, args: argparse.Namespace) -> dic
     offer_date, offer_hour = event_time(period)
     aav = roster_actions.parse_money(args.aav)
     bonus = roster_actions.parse_money(args.bonus or 0)
+    contract_structure = normalized_contract_structure(getattr(args, "structure", None))
     if aav < int(market["minimum_aav"]) and not args.force_market:
         raise ValueError(
             f"Offer is below minimum AAV ({money(market['minimum_aav'])}). Use --force-market to override."
@@ -2650,6 +3551,7 @@ def action_offer_inner(con: sqlite3.Connection, args: argparse.Namespace) -> dic
         aav=aav,
         signing_bonus=bonus,
         guarantee_pct=args.guarantee_pct,
+        contract_structure=contract_structure,
         submitted_date=offer_date,
         submitted_hour=offer_hour,
         notes=args.notes,
@@ -2665,7 +3567,7 @@ def action_offer_inner(con: sqlite3.Connection, args: argparse.Namespace) -> dic
         offer_id=offer_id,
         message=(
             f"{team['abbreviation']} offered {player['first_name']} {player['last_name']} "
-            f"{args.years} year(s), {money(aav)} AAV."
+            f"{args.years} year(s), {money(aav)} AAV ({contract_structure})."
         ),
     )
     cpu_offers = create_cpu_competing_offers(
@@ -2900,6 +3802,47 @@ def expensive_room_offer_allowed(
     return False
 
 
+def qb_room_offer_limits(
+    con: sqlite3.Connection,
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    team_qb_scores: list[float],
+    team_need: float,
+    roster_qb_count: int,
+) -> dict[str, Any]:
+    """Guard against teams with franchise QBs repeatedly chasing starter-priced backups."""
+    incoming_score = float(true_overall(player))
+    incoming_potential = int(row_value(player, "potential", incoming_score) or incoming_score)
+    if not team_qb_scores:
+        return {"allowed": True, "backup_cap": None}
+
+    incumbent = max(float(score) for score in team_qb_scores)
+    backup_history = player_has_backup_qb_history(con, int(row_value(player, "player_id", 0) or 0))
+    starter_path = incoming_score >= incumbent - 2 or team_need >= 82
+    if starter_path:
+        return {"allowed": True, "backup_cap": None}
+
+    if incumbent >= 86 and incoming_score >= 70 and incoming_score <= incumbent - 3:
+        if incoming_score >= 74 or incoming_potential >= 80 or not backup_history:
+            return {"allowed": False, "backup_cap": 0}
+
+    if incumbent >= 82 and incoming_score <= incumbent - 3:
+        if roster_qb_count >= 2 and incoming_score >= 72 and not backup_history:
+            return {"allowed": False, "backup_cap": 0}
+        if incoming_score >= 72:
+            cap = 8_000_000 if backup_history else 6_500_000
+        elif incoming_score >= 68:
+            cap = 6_500_000 if backup_history else 5_500_000
+        else:
+            cap = 4_500_000
+        return {"allowed": True, "backup_cap": cap}
+
+    if incumbent >= 78 and roster_qb_count >= 2 and incoming_score < incumbent - 5 and team_need < 62:
+        return {"allowed": True, "backup_cap": 5_500_000 if incoming_score < 70 else 7_000_000}
+
+    return {"allowed": True, "backup_cap": None}
+
+
 def team_group_room_context(
     con: sqlite3.Connection,
     team_id: int,
@@ -2948,6 +3891,268 @@ def team_group_room_context(
     }
 
 
+def rb_starter_stack_block_reason(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    room: dict[str, Any],
+    team_need: float,
+    offer_aav: int,
+) -> str | None:
+    """Prevent CPU teams from hoarding multiple lead-back expectation signings.
+
+    Depth and committee backs are still fine. This only pushes back when a team
+    already has a credible lead back and the incoming RB expects starter money
+    or starter usage without being a clear upgrade.
+    """
+    if normalized_group(player) != "RB":
+        return None
+    score = true_overall(player)
+    potential = int(row_value(player, "potential", score) or score)
+    tier = normalized_tier(player)
+    count = int(room.get("count", 0) or 0)
+    best = int(room.get("best", 0) or 0)
+    starter_floor = int(room.get("starter_floor", 0) or 0)
+    starter_expectation = score >= 72 or offer_aav >= 5_500_000 or (tier in {"Premium", "Starter"} and score >= 70)
+    if not starter_expectation:
+        return None
+    clear_upgrade = score >= best + 4 or (score >= 82 and best < 78) or (potential >= 86 and score >= best + 2)
+    if count >= 1 and best >= 74 and not clear_upgrade and team_need < 74:
+        return "lead RB already in place; incoming back lacks a clear starter path."
+    if count >= 2 and starter_floor >= 68 and score <= best + 2 and team_need < 82:
+        return "RB room already has enough starter-level options."
+    return None
+
+
+def team_group_active_spend(
+    con: sqlite3.Connection,
+    team_id: int,
+    group: str,
+    *,
+    exclude_player_id: int | None = None,
+) -> dict[str, int]:
+    rows = con.execute(
+        """
+        SELECT p.player_id, p.position, COALESCE(c.aav, 0) AS aav
+        FROM players p
+        LEFT JOIN contracts c
+          ON c.player_id = p.player_id
+         AND c.is_active = 1
+        WHERE p.team_id = ?
+          AND p.status IN ('Active', 'IR', 'PUP', 'Reserve/Future')
+          AND (? IS NULL OR p.player_id <> ?)
+        """,
+        (int(team_id), exclude_player_id, exclude_player_id),
+    ).fetchall()
+    total = 0
+    premium_count = 0
+    starter_money_count = 0
+    premium_floor = {
+        "QB": 14_000_000,
+        "RB": 8_000_000,
+        "WR": 13_000_000,
+        "TE": 10_000_000,
+        "OT": 14_000_000,
+        "IOL": 10_000_000,
+        "EDGE": 13_000_000,
+        "IDL": 13_000_000,
+        "LB": 10_000_000,
+        "CB": 12_000_000,
+        "S": 10_000_000,
+        "ST": 3_000_000,
+    }.get(group, 10_000_000)
+    starter_floor = max(5_000_000, int(premium_floor * 0.62))
+    for row in rows:
+        if position_group_for(str(row["position"])) != group:
+            continue
+        aav = int(row["aav"] or 0)
+        total += aav
+        if aav >= premium_floor:
+            premium_count += 1
+        if aav >= starter_floor:
+            starter_money_count += 1
+    return {
+        "total": total,
+        "premium_count": premium_count,
+        "starter_money_count": starter_money_count,
+    }
+
+
+def cpu_offer_notes(notes: Any) -> bool:
+    text = str(notes or "").lower()
+    return text.startswith("cpu") or "cpu " in text or "post-draft depth" in text
+
+
+def cpu_final_signing_guardrails(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    offer: sqlite3.Row | dict[str, Any],
+    market: sqlite3.Row | dict[str, Any],
+    *,
+    own_retention: bool = False,
+) -> tuple[bool, str]:
+    """Last line of defense before a CPU FA contract is written.
+
+    Offer creation has its own heuristics, but multiple code paths can create
+    offers or sign own players directly. This guard is intentionally repeated
+    at signing time using the current roster/cap state so earlier moves in the
+    same FA wave cannot make a later signing nonsensical.
+    """
+    team_id = int(row_value(offer, "team_id", 0) or 0)
+    player_id = int(row_value(offer, "player_id", row_value(market, "player_id", 0)) or 0)
+    aav = int(row_value(offer, "aav", 0) or 0)
+    years = int(row_value(offer, "years", 1) or 1)
+    signing_bonus = int(row_value(offer, "signing_bonus", 0) or 0)
+    group = position_group_for(str(row_value(market, "position_group", row_value(market, "position", ""))))
+    score = float(row_value(market, "market_score", row_value(market, "overall", 60)) or 60)
+    potential = int(row_value(market, "potential", score) or score)
+    age = int(row_value(market, "age", 28) or 28)
+    team_need = load_team_need_scores(con).get((team_id, group), 0.0)
+    room = team_group_room_context(con, team_id, group, exclude_player_id=player_id)
+    room_spend = team_group_active_spend(con, team_id, group, exclude_player_id=player_id)
+    active_spend = int(room_spend["total"])
+    premium_count = int(room_spend["premium_count"])
+    starter_money_count = int(room_spend["starter_money_count"])
+    starter_slots = int(room["starter_slots"])
+    ideal = int(room["ideal"])
+    count = int(room["count"])
+    best = int(room["best"])
+    starter_floor = int(room["starter_floor"])
+    reserve = max(CPU_FINAL_SIGNING_MIN_BUFFER, cpu_cap_reserve_for_period(period))
+
+    cap = roster_actions.cap_row(con, team_id)
+    cap_space = int(cap["cap_space"] or 0) if cap else 0
+    projected_first_year_cost = first_year_cap_estimate(
+        aav=aav,
+        years=years,
+        signing_bonus=signing_bonus,
+        structure=str(row_value(offer, "contract_structure", "balanced")),
+    )
+    if cap_space - projected_first_year_cost < reserve:
+        return False, (
+            f"CPU signing blocked: cap buffer would fall below {money(reserve)} "
+            f"after {money(projected_first_year_cost)} first-year cost."
+        )
+
+    quality_cap = cpu_true_quality_aav_cap(market)
+    if own_retention and (score >= 82 or potential >= 88):
+        quality_cap = int(quality_cap * 1.10)
+    if aav > int(quality_cap * 1.08):
+        return False, (
+            f"CPU signing blocked: {money(aav)} AAV exceeds quality cap "
+            f"{money(quality_cap)} for {int(score)} OVR/{potential} POT."
+        )
+    if age >= POSITION_OLD_AGE.get(group, 31) + 2 and score < 76 and aav > int(quality_cap * 0.96):
+        return False, "CPU signing blocked: aging low-70s veteran priced too close to ceiling."
+    actual_overall = true_overall(market)
+    if (
+        group in {"WR", "OT", "EDGE", "CB", "IDL", "TE", "LB", "S", "IOL"}
+        and actual_overall <= 73
+        and potential < 78
+        and aav >= 12_000_000
+    ):
+        return False, "CPU signing blocked: low-ceiling role player above starter price."
+    if (
+        group in {"CB", "S", "IOL"}
+        and actual_overall <= 73
+        and potential <= 78
+        and aav >= 12_000_000
+    ):
+        return False, "CPU signing blocked: low-70s secondary/interior player above starter price."
+
+    room_scores = [float(value) for value in room.get("scores", [])]
+    high_upside_candidate = potential >= max(84, actual_overall + 7) and age <= 26
+    premium_room_groups = {"WR", "EDGE", "CB", "OT", "IDL", "TE", "IOL", "S", "LB"}
+    if group in premium_room_groups and aav >= 12_000_000 and not high_upside_candidate:
+        comparable = sum(1 for value in room_scores if value >= actual_overall - 2)
+        much_better = sum(1 for value in room_scores if value >= actual_overall + 5)
+        if actual_overall < 80 and comparable >= starter_slots and team_need < 82:
+            return False, "CPU signing blocked: expensive addition lacks a starter path in a playable room."
+        if group == "WR" and actual_overall < 80 and comparable >= 2 and aav >= 14_000_000:
+            return False, "CPU signing blocked: expensive WR3/WR4 target in an already playable room."
+        if actual_overall < 80 and much_better >= 1 and count >= starter_slots and aav >= 14_000_000 and team_need < 86:
+            return False, "CPU signing blocked: expensive non-upgrade behind a clearly better starter."
+
+    if group == "RB":
+        rb_block = rb_starter_stack_block_reason(
+            market,
+            room=room,
+            team_need=team_need,
+            offer_aav=aav,
+        )
+        if rb_block:
+            return False, f"CPU signing blocked: {rb_block}"
+
+    if group == "QB":
+        qb_limits = qb_room_offer_limits(
+            con,
+            market,
+            team_qb_scores=[float(value) for value in room["scores"]],
+            team_need=team_need,
+            roster_qb_count=count,
+        )
+        if not qb_limits["allowed"]:
+            return False, "CPU signing blocked: no realistic QB starter path."
+        backup_cap = qb_limits["backup_cap"]
+        incumbent = float(best)
+        if (
+            int(room.get("young_upside", 0) or 0) > 0
+            and incumbent >= 70
+            and age >= 27
+            and actual_overall <= incumbent + 3
+            and aav >= 12_000_000
+            and team_need < 84
+        ):
+            return False, "CPU signing blocked: veteran QB would block a young high-upside starter without being a clear upgrade."
+        if backup_cap and aav > int(backup_cap):
+            return False, f"CPU signing blocked: backup QB cap is {money(int(backup_cap))}."
+        if incumbent >= 84 and score <= incumbent - 4 and aav > 8_500_000:
+            return False, "CPU signing blocked: starter-priced QB behind established franchise QB."
+        if incumbent >= 82 and actual_overall <= incumbent - 3 and aav >= 8_500_000:
+            return False, "CPU signing blocked: actual QB grade is too far behind the established starter."
+        if actual_overall <= 72 and aav > 10_000_000:
+            if not (count == 0 and team_need >= 84 and potential >= 82):
+                return False, "CPU signing blocked: low-70s QB above bridge-starter price."
+        if count >= 1 and actual_overall <= 72 and aav >= 8_500_000:
+            return False, "CPU signing blocked: backup QB price exceeds the room need."
+        if count >= 2 and team_need < 75 and aav > 8_000_000:
+            return False, "CPU signing blocked: expensive third QB without a major QB need."
+        if actual_overall <= 76 and potential < 82 and aav > 16_500_000:
+            return False, "CPU signing blocked: bridge QB above mid-tier starter price."
+        if actual_overall < 78 and potential < 84 and years > 2:
+            return False, "CPU signing blocked: bridge QB should not receive a long-term starter deal."
+        if actual_overall <= 76 and potential < 82 and years > 1 and not own_retention:
+            return False, "CPU signing blocked: low-upside bridge QB should be a short-term deal."
+        return True, "ok"
+
+    clear_upgrade = score >= best + 3 or (score >= starter_floor + 5 and count < ideal)
+    high_upside = potential >= max(82, int(score) + 7) and age <= 26
+    elite_target = cpu_elite_free_agent(market)
+    if group == "TE" and premium_count >= 1 and aav >= 10_000_000:
+        major_upgrade = actual_overall >= best + 4 or (potential >= best + 7 and age <= 25)
+        if not (team_need >= 82 and major_upgrade):
+            return False, "CPU signing blocked: already has TE1 money or young TE upside in the room."
+    if count >= ideal and score <= starter_floor + 2 and aav >= 8_000_000 and team_need < 66:
+        return False, "CPU signing blocked: crowded room and no clear role upgrade."
+    if count >= starter_slots and score <= starter_floor + 1 and aav >= 10_000_000 and team_need < 58:
+        return False, "CPU signing blocked: starter-money offer without starter path."
+    if premium_count >= starter_slots and aav >= 12_000_000 and not (clear_upgrade or elite_target or team_need >= 74):
+        return False, "CPU signing blocked: already has premium money committed at position."
+    if starter_money_count >= ideal and aav >= 7_000_000 and not (high_upside and team_need >= 45):
+        return False, "CPU signing blocked: position room already has enough paid depth."
+    if not expensive_room_offer_allowed(
+        group=group,
+        team_need=team_need,
+        active_spend=active_spend,
+        pending_spend=0,
+        offer_aav=aav,
+        player_score=score,
+        player_potential=potential,
+        elite_target=elite_target,
+    ):
+        return False, "CPU signing blocked: projected room spend exceeds need/value guardrail."
+    return True, "ok"
+
+
 def strategic_cap_casualty_grade(
     con: sqlite3.Connection,
     candidate: dict[str, Any],
@@ -2955,6 +4160,14 @@ def strategic_cap_casualty_grade(
     team_id: int,
     cap_space: int | None = None,
 ) -> tuple[bool, str]:
+    if current_year_fa_contract(
+        con,
+        contract_id=int(candidate.get("contract_id") or 0),
+        player_id=int(candidate.get("player_id") or 0),
+        team_id=team_id,
+        league_year=int(candidate.get("season") or candidate.get("league_year") or default_league_year(con)),
+    ):
+        return False, "fresh FA signing protected"
     group = position_group_for(str(candidate.get("position") or ""))
     if group in {"QB", "K", "P", "LS", "ST"}:
         return False, "protected position"
@@ -3072,6 +4285,7 @@ def offer_score(
     years = int(offer["years"])
     signing_bonus = int(offer["signing_bonus"] or 0)
     guarantee_pct = int(offer["guarantee_pct"] or 0)
+    structure = normalized_contract_structure(row_value(offer, "contract_structure", "balanced"))
 
     money_priority = int(row_value(market, "money_priority", 10))
     security_priority = int(row_value(market, "security_priority", 10))
@@ -3098,6 +4312,12 @@ def offer_score(
     score -= year_gap * (1.2 + security_priority * 0.22)
     if years >= preferred_years and security_priority >= 14:
         score += min(5, (years - preferred_years + 1) * 0.9)
+    if structure == "backloaded":
+        score -= 1.5 if security_priority >= 13 else 0.5
+    elif structure == "frontloaded":
+        score += 1.2 if security_priority >= 10 else 0.4
+    elif structure == "bonus-heavy":
+        score += min(3.0, security_priority * 0.18)
 
     offer_team = str(row_value(offer, "team", "") or "").upper()
     previous_team = str(row_value(market, "previous_team", "") or "").upper()
@@ -3130,11 +4350,19 @@ def should_accept_best(period: sqlite3.Row, market: sqlite3.Row, best_offer: sql
     aav = int(best_offer["aav"])
     tier = str(market["market_tier"])
     patience = int(market["patience"] or 8)
+    strategy = str(row_value(market, "post_draft_strategy", "normal") or "normal")
+    holdout_until = str(row_value(market, "holdout_until", "") or "")
+    current_date = str(row_value(period, "current_date", "") or "")
+    injury_leverage_offer = "injury" in str(row_value(best_offer, "notes", "") or "").lower()
 
-    if aav >= int(asking * 1.08):
-        return True
     if aav < minimum:
         return False
+    if strategy == "injury_wait" and holdout_until and current_date and current_date < holdout_until:
+        if injury_leverage_offer and aav >= int(asking * 0.96) and score >= 67:
+            return True
+        return aav >= int(asking * 1.14) and score >= 76
+    if aav >= int(asking * 1.08):
+        return True
     if period["current_stage"] == "day_one_hourly":
         hour = int(period["current_hour"])
         if tier in {"Premium", "Starter"} and hour < 17 and aav < asking:
@@ -3152,11 +4380,21 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
         raise ValueError("Offer references a missing player or team.")
     if player["team_id"] is not None or player["status"] != "Free Agent":
         raise ValueError(f"{player['first_name']} {player['last_name']} is no longer a free agent.")
+    if cpu_offer_notes(offer["notes"]):
+        allowed, reason = cpu_final_signing_guardrails(con, period, offer, market)
+        if not allowed:
+            raise ValueError(reason)
 
     season = int(period["league_year"])
     signed_date = str(period["current_date"])
     before = roster_actions.cap_row(con, int(team["team_id"]))
-    projected_first_year_cost = int(offer["aav"]) + int(int(offer["signing_bonus"] or 0) / max(1, min(5, int(offer["years"] or 1))))
+    offer_structure = normalized_contract_structure(row_value(offer, "contract_structure", "balanced"))
+    projected_first_year_cost = first_year_cap_estimate(
+        aav=int(offer["aav"]),
+        years=int(offer["years"] or 1),
+        signing_bonus=int(offer["signing_bonus"] or 0),
+        structure=offer_structure,
+    )
     if int(before["cap_space"] or 0) < projected_first_year_cost:
         raise ValueError(f"{team['abbreviation']} does not have enough practical cap room for this offer.")
     if str(offer["notes"] or "").startswith("CPU"):
@@ -3169,9 +4407,10 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
         INSERT INTO contracts (
             player_id, team_id, signed_date, start_year, end_year, total_value,
             total_years, aav, signing_bonus, roster_bonus, workout_bonus,
-            is_guaranteed, dead_cap_current, dead_cap_next, contract_type, is_active
+            is_guaranteed, guarantee_pct, dead_cap_current, dead_cap_next,
+            contract_type, salary_structure, is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 'Standard', 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, 0, 'FreeAgent', ?, 1)
         """,
         (
             offer["player_id"],
@@ -3184,6 +4423,8 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
             int(offer["aav"]),
             int(offer["signing_bonus"]),
             1 if int(offer["guarantee_pct"] or 0) >= 50 else 0,
+            int(offer["guarantee_pct"] or 0),
+            offer_structure,
         ),
     )
     contract_id = int(cur.lastrowid)
@@ -3196,6 +4437,11 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
     con.execute(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (offer["team_id"], offer["player_id"]),
+    )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        str(team["abbreviation"]),
+        reason="Free-agent signing changed roster composition.",
     )
     roster_actions.ensure_player_normalized_ratings(
         con,
@@ -3305,6 +4551,15 @@ def resolve_pending_offers(
     *,
     write_cap_snapshot: bool = True,
 ) -> int:
+    current_date = str(row_value(period, "current_date", "") or "")
+    if current_date:
+        expire_stale_pending_offers(
+            con,
+            league_year=int(period["league_year"]),
+            current_date=current_date,
+            stale_offer_days=stale_offer_days_for_period(con, period),
+            note="Expired before resolution because the market moved on.",
+        )
     prior_season = int(period["league_year"]) - 1
     team_context = load_team_context(con, prior_season)
     competition = load_playing_time_competition(con, prior_season)
@@ -3446,7 +4701,11 @@ def cpu_retain_own_free_agents(
         aav = preference_adjusted_aav(player, aav, rng)
         if cap and int(cap["cap_space"] or 0) - team_spend.get(int(player["previous_team_id"]), 0) < aav:
             continue
-        years = preferred_years_for_offer(player, rng, max_years=5)
+        years = preferred_years_for_offer(
+            player,
+            rng,
+            max_years=cpu_offer_year_cap(player, own_retention=True),
+        )
         guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0), rng)
         bonus = cpu_signing_bonus_for_offer(
             player,
@@ -3456,6 +4715,43 @@ def cpu_retain_own_free_agents(
             rng=rng,
             own_retention=True,
         )
+        structure = cpu_contract_structure_for_offer(
+            player,
+            team_cap_space=int(cap["cap_space"] or 0) if cap else None,
+            aav=aav,
+            years=years,
+            guarantee_pct=guarantee,
+            rng=rng,
+            own_retention=True,
+        )
+        synthetic_offer = {
+            "team_id": int(player["previous_team_id"]),
+            "player_id": int(player["player_id"]),
+            "years": years,
+            "aav": aav,
+            "signing_bonus": bonus,
+            "contract_structure": structure,
+            "notes": "CPU own-player retention offer",
+        }
+        allowed, reason = cpu_final_signing_guardrails(
+            con,
+            period,
+            synthetic_offer,
+            player,
+            own_retention=True,
+        )
+        if not allowed:
+            log_event(
+                con,
+                league_year=int(period["league_year"]),
+                event_date=event_date,
+                event_hour=event_hour,
+                event_type="cpu_re_signing_skipped",
+                team_id=int(player["previous_team_id"]),
+                player_id=int(player["player_id"]),
+                message=f"{previous_team} passed on retaining {player['player_name']}: {reason}",
+            )
+            continue
         offer_id = submit_offer(
             con,
             league_year=int(period["league_year"]),
@@ -3467,6 +4763,7 @@ def cpu_retain_own_free_agents(
             guarantee_pct=guarantee,
             submitted_date=event_date,
             submitted_hour=event_hour,
+            contract_structure=structure,
             notes="CPU own-player retention offer",
         )
         contract_id = con.execute(
@@ -3474,9 +4771,10 @@ def cpu_retain_own_free_agents(
             INSERT INTO contracts (
                 player_id, team_id, signed_date, start_year, end_year, total_value,
                 total_years, aav, signing_bonus, roster_bonus, workout_bonus,
-                is_guaranteed, dead_cap_current, dead_cap_next, contract_type, is_active
+                is_guaranteed, guarantee_pct, dead_cap_current, dead_cap_next,
+                contract_type, salary_structure, is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0, 0, 'Standard', 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, 0, 0, 'Standard', ?, 1)
             """,
             (
                 int(player["player_id"]),
@@ -3489,6 +4787,8 @@ def cpu_retain_own_free_agents(
                 aav,
                 bonus,
                 1 if guarantee >= 50 else 0,
+                guarantee,
+                structure,
             ),
         ).lastrowid
         deactivate_prior_player_contracts(
@@ -3723,6 +5023,15 @@ def create_cpu_competing_offers(
         high = min(high, max(low, quality_cap))
         aav = preference_adjusted_aav(player, round_to(rng.randint(low, high)), rng)
         aav = min(aav, max(low, quality_cap))
+        if player_group == "RB":
+            rb_block = rb_starter_stack_block_reason(
+                player,
+                room=team_group_room_context(con, team_id, player_group),
+                team_need=team_need,
+                offer_aav=aav,
+            )
+            if rb_block:
+                continue
         if not expensive_room_offer_allowed(
             group=player_group,
             team_need=team_need,
@@ -3744,6 +5053,15 @@ def create_cpu_competing_offers(
             rng=rng,
             response_offer=True,
         )
+        cap_row = roster_actions.cap_row(con, int(team["team_id"]))
+        structure = cpu_contract_structure_for_offer(
+            player,
+            team_cap_space=int(cap_row["cap_space"] or 0) if cap_row else None,
+            aav=aav,
+            years=years,
+            guarantee_pct=guarantee,
+            rng=rng,
+        )
         offer_id = submit_offer(
             con,
             league_year=int(period["league_year"]),
@@ -3755,6 +5073,7 @@ def create_cpu_competing_offers(
             guarantee_pct=guarantee,
             submitted_date=event_date,
             submitted_hour=event_hour,
+            contract_structure=structure,
             notes="CPU response offer after user bid",
         )
         log_event(
@@ -3851,6 +5170,14 @@ def cpu_release_bad_contracts_for_fa(
             overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
             savings = int(candidate.get("net_savings_pre_june1") or 0)
             cap_hit = int(candidate.get("cap_hit") or 0)
+            if current_year_fa_contract(
+                con,
+                contract_id=int(candidate.get("contract_id") or 0),
+                player_id=int(candidate.get("player_id") or 0),
+                team_id=int(team["team_id"]),
+                league_year=league_year,
+            ):
+                continue
             if savings < 2_000_000:
                 continue
             if group == "QB" and overall >= 68:
@@ -3874,6 +5201,11 @@ def cpu_release_bad_contracts_for_fa(
                     sync_cap=False,
                     write_cap_snapshot=False,
                     quiet=True,
+                )
+                cpu_depth_chart.mark_depth_chart_stale(
+                    con,
+                    str(team["abbreviation"]),
+                    reason="Free-agency cap release changed roster composition.",
                 )
                 released += 1
                 log_event(
@@ -3971,6 +5303,11 @@ def cpu_release_strategic_cap_casualties_for_fa(
                 )
             except Exception:
                 continue
+            cpu_depth_chart.mark_depth_chart_stale(
+                con,
+                str(team["abbreviation"]),
+                reason="Strategic cap release changed roster composition.",
+            )
             released += 1
             released_by_team[team_id] = released_by_team.get(team_id, 0) + 1
             log_event(
@@ -4094,10 +5431,22 @@ def quick_restructure_candidates(
             cy.base_salary,
             cy.cap_hit,
             c.end_year,
+            c.aav,
+            c.contract_type,
+            c.salary_structure,
             p.first_name || ' ' || p.last_name AS player_name,
             p.position,
             p.age,
-            p.overall
+            p.overall,
+            p.potential,
+            EXISTS (
+                SELECT 1
+                FROM free_agency_offers o
+                WHERE o.league_year = ?
+                  AND o.player_id = cy.player_id
+                  AND o.team_id = cy.team_id
+                  AND o.status = 'accepted'
+            ) AS recent_fa_signing
         FROM contract_years cy
         JOIN contracts c ON c.contract_id = cy.contract_id
         JOIN players p ON p.player_id = cy.player_id
@@ -4121,6 +5470,7 @@ def quick_restructure_candidates(
         LIMIT ?
         """,
         (
+            league_year,
             team_id,
             league_year,
             league_year,
@@ -4132,6 +5482,8 @@ def quick_restructure_candidates(
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     for row in rows:
+        if int(row["recent_fa_signing"] or 0):
+            continue
         remaining_years = max(1, int(row["end_year"] or league_year) - league_year + 1)
         proration_years = min(5, remaining_years)
         max_convert = max(0, int(row["base_salary"] or 0) - contract_negotiations.MIN_RESTRUCTURE_BASE_FLOOR)
@@ -4168,10 +5520,22 @@ def quick_cap_release_candidates(
             cy.cap_hit,
             cy.dead_cap_if_cut_pre_june1,
             c.end_year,
+            c.aav,
+            c.contract_type,
+            c.salary_structure,
             p.first_name || ' ' || p.last_name AS player_name,
             p.position,
             p.age,
-            p.overall
+            p.overall,
+            p.potential,
+            EXISTS (
+                SELECT 1
+                FROM free_agency_offers o
+                WHERE o.league_year = ?
+                  AND o.player_id = cy.player_id
+                  AND o.team_id = cy.team_id
+                  AND o.status = 'accepted'
+            ) AS recent_fa_signing
         FROM contract_years cy
         JOIN contracts c ON c.contract_id = cy.contract_id
         JOIN players p ON p.player_id = cy.player_id
@@ -4186,7 +5550,7 @@ def quick_cap_release_candidates(
         ORDER BY (cy.cap_hit - cy.dead_cap_if_cut_pre_june1) DESC, cy.cap_hit DESC
         LIMIT ?
         """,
-        (team_id, league_year, max(limit * 3, limit)),
+        (league_year, team_id, league_year, max(limit * 3, limit)),
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     for row in rows:
@@ -4203,6 +5567,96 @@ def quick_cap_release_candidates(
         )
         candidates.append(item)
     candidates.sort(key=lambda item: int(item.get("net_savings_pre_june1") or 0), reverse=True)
+    return candidates[:limit]
+
+
+def quick_extension_restructure_candidates(
+    con: sqlite3.Connection,
+    team_id: int,
+    league_year: int,
+    *,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    rows = con.execute(
+        """
+        SELECT
+            cy.contract_id,
+            cy.player_id,
+            cy.base_salary,
+            cy.cap_hit,
+            c.end_year,
+            c.start_year,
+            c.total_years,
+            c.total_value,
+            c.aav,
+            c.contract_type,
+            c.salary_structure,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            p.age,
+            p.overall,
+            p.potential
+        FROM contract_years cy
+        JOIN contracts c ON c.contract_id = cy.contract_id
+        JOIN players p ON p.player_id = cy.player_id
+        LEFT JOIN roster_status_types rst ON rst.status_code = p.status
+        WHERE cy.team_id = ?
+          AND cy.season = ?
+          AND cy.is_active = 1
+          AND c.is_active = 1
+          AND p.team_id = cy.team_id
+          AND COALESCE(rst.counts_against_top51, 1) = 1
+          AND COALESCE(c.end_year, ?) <= ?
+          AND cy.base_salary > ?
+          AND lower(COALESCE(c.contract_type, '')) NOT LIKE '%rookie%'
+          AND COALESCE(c.contract_type, '') NOT IN ('FifthYearOption', 'FranchiseTag', 'TransitionTag', 'RFAROFRTender', 'RFAOriginalRoundTender', 'RFASecondRoundTender', 'RFAFirstRoundTender', 'ERFATender')
+          AND NOT EXISTS (
+              SELECT 1
+              FROM contract_restructures rr
+              WHERE rr.contract_id = cy.contract_id
+                AND rr.restructure_season = ?
+                AND rr.is_active = 1
+          )
+        ORDER BY cy.base_salary DESC, cy.cap_hit DESC
+        LIMIT ?
+        """,
+        (
+            team_id,
+            league_year,
+            league_year,
+            league_year,
+            contract_negotiations.MIN_RESTRUCTURE_BASE_FLOOR + contract_negotiations.MIN_RESTRUCTURE_SAVINGS,
+            league_year,
+            max(limit * 3, limit),
+        ),
+    ).fetchall()
+    candidates: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        group = position_group_for(str(item.get("position") or ""))
+        age = int(item.get("age") or 28)
+        extension_years = 2
+        if group == "QB" and age <= 34:
+            extension_years = 3
+        elif group in {"WR", "TE", "OT", "IOL", "EDGE", "IDL", "CB", "S"} and age <= 30:
+            extension_years = 3
+        proration_years = min(5, 1 + extension_years)
+        max_convert = max(0, int(item.get("base_salary") or 0) - contract_negotiations.MIN_RESTRUCTURE_BASE_FLOOR)
+        suggested_convert = min(max_convert, round_to(int(item.get("base_salary") or 0) * 0.60, 50_000))
+        current_savings = suggested_convert - int(suggested_convert / proration_years) if suggested_convert else 0
+        if current_savings < contract_negotiations.MIN_RESTRUCTURE_SAVINGS:
+            continue
+        item.update(
+            {
+                "extension_years": extension_years,
+                "remaining_contract_years": 1 + extension_years,
+                "proration_years": proration_years,
+                "suggested_convert": suggested_convert,
+                "estimated_current_savings": current_savings,
+            }
+        )
+        candidates.append(item)
+    candidates.sort(key=lambda item: int(item.get("estimated_current_savings") or 0), reverse=True)
     return candidates[:limit]
 
 
@@ -4245,6 +5699,59 @@ def apply_quick_cap_restructure(
         converted_salary=converted,
         proration_years=proration_years,
     )
+    sync_team_cap_space(con)
+    return converted - current_proration
+
+
+def apply_quick_cap_extension_restructure(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    league_year: int,
+    candidate: dict[str, Any],
+) -> int:
+    converted = int(candidate.get("suggested_convert") or 0)
+    extension_years = max(1, int(candidate.get("extension_years") or 2))
+    old_end = int(candidate.get("end_year") or league_year)
+    new_end = old_end + extension_years
+    proration_years = max(1, min(5, int(candidate.get("proration_years") or (1 + extension_years))))
+    if converted <= 0:
+        raise ValueError("No extension restructure amount available.")
+    current_proration = int(converted / proration_years)
+    aav = int(candidate.get("aav") or 0)
+    added_value = max(0, aav * extension_years)
+    con.execute(
+        """
+        UPDATE contracts
+        SET end_year = ?,
+            total_years = COALESCE(total_years, 0) + ?,
+            total_value = COALESCE(total_value, 0) + ?,
+            salary_structure = COALESCE(NULLIF(salary_structure, ''), 'balanced')
+        WHERE contract_id = ?
+        """,
+        (new_end, extension_years, added_value, int(candidate["contract_id"])),
+    )
+    con.execute(
+        """
+        INSERT INTO contract_restructures (
+            contract_id, player_id, team_id, restructure_season, converted_salary,
+            proration_years, current_year_proration, source, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(candidate["contract_id"]),
+            int(candidate["player_id"]),
+            team_id,
+            league_year,
+            converted,
+            proration_years,
+            current_proration,
+            SOURCE,
+            f"CPU cap compliance extension restructure through {new_end}.",
+        ),
+    )
+    rebuild_contract_year(con, int(candidate["contract_id"]))
     sync_team_cap_space(con)
     return converted - current_proration
 
@@ -4293,6 +5800,27 @@ def apply_quick_cap_release(
     con.execute(
         "UPDATE players SET team_id = NULL, status = 'Free Agent' WHERE player_id = ?",
         (player_id,),
+    )
+    if table_exists(con, "free_agency_player_markets"):
+        con.execute(
+            """
+            UPDATE free_agency_player_markets
+            SET status = 'available',
+                signed_team_id = NULL,
+                signed_offer_id = NULL,
+                last_offer_at = NULL,
+                decision_notes = TRIM(COALESCE(decision_notes || ' ', '') || 'Returned to market after cap-compliance release.'),
+                updated_at = datetime('now')
+            WHERE league_year = ?
+              AND player_id = ?
+              AND status = 'signed'
+            """,
+            (league_year, player_id),
+        )
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        team_id=team_id,
+        reason="Cap-compliance release changed roster composition.",
     )
     if table_exists(con, "depth_charts"):
         con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))
@@ -4343,15 +5871,160 @@ def apply_quick_cap_release(
     return savings
 
 
+def cap_restructure_keeper_score(candidate: dict[str, Any]) -> int:
+    group = position_group_for(str(candidate.get("position") or ""))
+    overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
+    potential = int(candidate.get("potential") or overall)
+    age = int(candidate.get("age") or 28)
+    score = overall
+    if group == "QB":
+        score += 10
+    elif group in {"WR", "TE", "OT", "EDGE", "IDL", "CB"}:
+        score += 4
+    elif group in {"IOL", "LB", "S"}:
+        score += 2
+    elif group == "RB":
+        score -= 2
+    if age <= 26 and potential >= overall + 5:
+        score += min(9, potential - overall)
+    if age <= 25 and potential >= 86:
+        score += 4
+    old_age = POSITION_OLD_AGE.get(group, 31)
+    if age > old_age:
+        score -= (age - old_age) * 2
+    if group == "RB" and age >= 28:
+        score -= 3
+    if group in {"K", "P", "LS", "ST"}:
+        score -= 30
+    return score
+
+
+def cap_compliance_restructure_grade(
+    candidate: dict[str, Any],
+    *,
+    cap_space: int,
+    min_space: int,
+) -> tuple[bool, str]:
+    group = position_group_for(str(candidate.get("position") or ""))
+    if group in {"K", "P", "LS", "ST"}:
+        return False, "specialist restructure avoided"
+    if int(candidate.get("recent_fa_signing") or 0):
+        return False, "fresh FA signing restructure avoided"
+
+    savings = int(candidate.get("estimated_current_savings") or 0)
+    remaining_years = int(candidate.get("remaining_contract_years") or 1)
+    if remaining_years < 2:
+        return False, "not enough years left"
+
+    savings_floor = 2_000_000
+    required_score = 80
+    if cap_space < 0:
+        savings_floor = 1_250_000
+        required_score = 75
+    elif cap_space < min_space:
+        savings_floor = 1_500_000
+        required_score = 77
+    if savings < savings_floor:
+        return False, "not enough current-year savings"
+
+    overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
+    potential = int(candidate.get("potential") or overall)
+    contract_type = str(candidate.get("contract_type") or "").lower()
+    rookie_scale = "rookie" in contract_type or "draft" in contract_type
+    keeper_score = cap_restructure_keeper_score(candidate)
+    if rookie_scale and not (
+        cap_space < 0
+        and savings >= 1_250_000
+        and (potential >= 84 or overall >= 74)
+    ):
+        return False, "rookie-scale deal protected from routine restructure"
+    if keeper_score < required_score:
+        return False, f"keeper score {keeper_score} below {required_score}"
+    return True, f"keeper score {keeper_score}"
+
+
+def cap_compliance_release_grade(
+    con: sqlite3.Connection,
+    candidate: dict[str, Any],
+    *,
+    team_id: int,
+    cap_space: int,
+    min_space: int,
+) -> tuple[bool, str]:
+    group = position_group_for(str(candidate.get("position") or ""))
+    overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
+    potential = int(candidate.get("potential") or overall)
+    age = int(candidate.get("age") or 28)
+    savings = int(candidate.get("net_savings_pre_june1") or 0)
+    cap_hit = int(candidate.get("cap_hit") or 0)
+    needed_savings = max(1_500_000, min_space - cap_space)
+    cap_pressure = cap_space < min_space
+    cap_emergency = cap_space < 0
+    recent_fa = bool(int(candidate.get("recent_fa_signing") or 0))
+
+    if savings < 1_250_000 or cap_hit < 2_500_000:
+        return False, "not enough cap impact"
+    if group in {"K", "P", "LS", "ST"}:
+        return False, "specialist protected"
+    if group == "QB" and (overall >= 66 or potential >= 75):
+        return False, "QB room protected"
+    if overall >= 82:
+        return False, "core starter protected"
+    if age <= 25 and potential >= 84:
+        return False, "young high-upside player protected"
+    if group in {"WR", "TE", "OT", "EDGE", "IDL", "CB"} and overall >= 79 and age <= 30:
+        return False, "premium-position starter protected"
+    if group == "RB" and overall >= 80 and age <= 27 and savings < 14_000_000:
+        return False, "prime feature back protected"
+
+    room = team_group_room_context(
+        con,
+        team_id,
+        group,
+        exclude_player_id=int(candidate["player_id"]),
+    )
+    count = int(room["count"])
+    starters = int(room["starter_slots"])
+    ideal = int(room["ideal"])
+    starter_floor = int(room["starter_floor"])
+    best = int(room["best"])
+    target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
+    comparable_cover = count >= starters and starter_floor >= min(overall - 4, target_floor - 2)
+    deep_room = count >= max(starters + 1, ideal - 1)
+    buried = count >= starters and best >= overall + 3
+
+    if recent_fa:
+        recent_floor = 4_000_000 if cap_emergency else 6_000_000
+        if not cap_pressure:
+            return False, "fresh FA signing protected without cap pressure"
+        if savings < recent_floor and not (cap_emergency and overall <= 69 and savings >= 2_500_000):
+            return False, "fresh FA signing savings not worth reversal"
+
+    capped_needed = min(needed_savings, 8_000_000)
+    if overall <= 69 and savings >= max(1_500_000, int(capped_needed * 0.35)) and (comparable_cover or deep_room or cap_emergency):
+        return True, "expensive sub-70 depth"
+    if overall <= 72 and savings >= max(2_500_000, int(capped_needed * 0.45)) and (comparable_cover or deep_room or cap_emergency):
+        return True, "replaceable low-70s contract"
+    if overall <= 75 and savings >= max(4_000_000, int(capped_needed * 0.60)) and (
+        comparable_cover or deep_room or buried or (cap_emergency and (age >= 30 or group in {"RB", "LB", "S", "IOL", "IDL"}))
+    ):
+        return True, "mid-tier veteran cap casualty"
+    if group in {"RB", "LB", "S"} and overall <= 78 and age >= 28 and savings >= 4_000_000 and (comparable_cover or cap_emergency):
+        return True, "replaceable veteran at devalued position"
+    if age >= POSITION_OLD_AGE.get(group, 31) + 1 and overall <= 76 and savings >= 6_000_000 and (comparable_cover or deep_room):
+        return True, "aging expensive veteran with cover"
+    return False, "room/value does not justify release"
+
+
 def cpu_cap_compliance_sweep(
     con: sqlite3.Connection,
     league_year: int,
     *,
     user_team: str | None = None,
     min_space: int = 1_000_000,
-    max_moves_per_team: int = 3,
-    max_teams: int = 10,
-    time_budget_seconds: float = 25.0,
+    max_moves_per_team: int = 6,
+    max_teams: int = 32,
+    time_budget_seconds: float = 35.0,
     write_snapshot: bool = False,
 ) -> dict[str, int]:
     """Bring CPU teams back toward cap compliance after FA/draft commitments.
@@ -4396,25 +6069,16 @@ def cpu_cap_compliance_sweep(
 
             moved = False
             try:
-                restructures = quick_restructure_candidates(con, team_id, league_year, limit=8)
+                restructures = quick_restructure_candidates(con, team_id, league_year, limit=12)
             except Exception:
                 restructures = []
             for candidate in restructures:
-                group = position_group_for(str(candidate.get("position") or ""))
-                overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
-                age = int(candidate.get("age") or 28)
-                savings = int(candidate.get("estimated_current_savings") or 0)
-                remaining_years = int(candidate.get("remaining_contract_years") or 1)
-                core_player = (
-                    (group == "QB" and overall >= 76 and age <= 35)
-                    or (group in {"WR", "TE", "OT", "IOL", "EDGE", "IDL", "CB"} and overall >= 78 and age <= 31)
-                    or (group in {"LB", "S"} and overall >= 79 and age <= 30)
-                    or (group == "RB" and overall >= 82 and age <= 27)
+                restructure_ok, _reason = cap_compliance_restructure_grade(
+                    candidate,
+                    cap_space=cap_space,
+                    min_space=min_space,
                 )
-                emergency_viable_starter = cap_space < 0 and overall >= 72 and age <= 30 and savings >= 2_500_000
-                if group in {"K", "P", "LS", "ST"}:
-                    emergency_viable_starter = False
-                if not (core_player or emergency_viable_starter) or savings < 2_000_000 or remaining_years < 2:
+                if not restructure_ok:
                     continue
                 try:
                     applied_savings = apply_quick_cap_restructure(
@@ -4450,24 +6114,63 @@ def cpu_cap_compliance_sweep(
                 continue
 
             try:
-                releases = quick_cap_release_candidates(con, team_id, league_year, limit=10)
+                extension_restructures = quick_extension_restructure_candidates(con, team_id, league_year, limit=10)
+            except Exception:
+                extension_restructures = []
+            for candidate in extension_restructures:
+                restructure_ok, _reason = cap_compliance_restructure_grade(
+                    candidate,
+                    cap_space=cap_space,
+                    min_space=min_space,
+                )
+                if not restructure_ok:
+                    continue
+                try:
+                    applied_savings = apply_quick_cap_extension_restructure(
+                        con,
+                        team_id=team_id,
+                        league_year=league_year,
+                        candidate=candidate,
+                    )
+                except Exception:
+                    continue
+                if applied_savings <= 0:
+                    continue
+                totals["restructures"] += 1
+                moves += 1
+                touched = True
+                moved = True
+                log_event(
+                    con,
+                    league_year=league_year,
+                    event_date=event_date,
+                    event_hour=None,
+                    event_type="cpu_cap_compliance_restructure",
+                    team_id=team_id,
+                    player_id=int(candidate["player_id"]),
+                    message=(
+                        f"{team['abbreviation']} extended and restructured {candidate['player_name']} "
+                        f"during the post-draft cap compliance sweep."
+                    ),
+                )
+                break
+            if moved:
+                sync_team_cap_space(con)
+                continue
+
+            try:
+                releases = quick_cap_release_candidates(con, team_id, league_year, limit=16)
             except Exception:
                 releases = []
             for candidate in releases:
-                group = position_group_for(str(candidate.get("position") or ""))
-                overall = int(candidate.get("overall") or candidate.get("market_score") or 60)
-                savings = int(candidate.get("net_savings_pre_june1") or 0)
-                cap_hit = int(candidate.get("cap_hit") or 0)
-                age = int(candidate.get("age") or 28)
-                if savings < 1_500_000 or cap_hit < 2_500_000:
-                    continue
-                if group == "QB" and overall >= 66:
-                    continue
-                if overall >= 80:
-                    continue
-                if overall >= 76 and (savings < 7_000_000 or age <= 29):
-                    continue
-                if overall >= 72 and savings < 4_000_000:
+                release_ok, _reason = cap_compliance_release_grade(
+                    con,
+                    candidate,
+                    team_id=team_id,
+                    cap_space=cap_space,
+                    min_space=min_space,
+                )
+                if not release_ok:
                     continue
                 try:
                     applied_savings = apply_quick_cap_release(
@@ -4602,8 +6305,10 @@ def create_cpu_offers(
     competition = load_playing_time_competition(con, int(period["league_year"]) - 1)
     group_counts = load_team_group_counts(con)
     active_group_spend = load_team_active_group_spend(con)
+    pressure_groups = active_fa_injury_pressure_groups(con)
     early_wave = str(period["current_stage"] or "") == "day_one_hourly" and int(period["day_count"] or 1) <= 1
     late_market = cpu_late_market(period)
+    post_draft_context = is_post_draft_market_context(con, int(period["league_year"]))
     if late_market:
         candidates.sort(
             key=lambda player: (
@@ -4629,6 +6334,12 @@ def create_cpu_offers(
     for player in candidates:
         player_group = position_group_for(str(row_value(player, "position_group", row_value(player, "position", ""))))
         player_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+        if not post_draft_strategy_allows_offer(
+            con,
+            player,
+            pressure_groups=pressure_groups,
+        ):
+            continue
         top_remaining = cpu_top_remaining_free_agent(player)
         floor_ratio = 0.72
         if late_market and top_remaining:
@@ -4689,6 +6400,17 @@ def create_cpu_offers(
         )
         for team in affordable_teams[:slots]:
             team_id = int(team["team_id"])
+            if not post_draft_strategy_allows_offer(
+                con,
+                player,
+                team_id=team_id,
+                pressure_groups=pressure_groups,
+            ):
+                continue
+            injury_leverage_offer = (
+                str(row_value(player, "post_draft_strategy", "normal") or "normal") == "injury_wait"
+                and (team_id, player_group) in pressure_groups
+            )
             if cpu_should_block_cap_casualty_reunion(
                 player,
                 str(team["abbreviation"]),
@@ -4703,6 +6425,15 @@ def create_cpu_offers(
                 since_date=f"{int(period['league_year'])}-03-01",
             ):
                 continue
+            if recent_rejected_offer_for_player(
+                con,
+                league_year=int(period["league_year"]),
+                team_id=team_id,
+                player_id=int(player["player_id"]),
+                current_date=str(event_date),
+                cooldown_days=14 if late_market or post_draft_context else 21,
+            ):
+                continue
             group_key = (team_id, player_group)
             group_spend = team_group_spend.get(group_key, 0)
             active_spend = active_group_spend.get(group_key, 0)
@@ -4711,7 +6442,14 @@ def create_cpu_offers(
             group_count_limit = CPU_GROUP_OFFER_COUNT_LIMITS.get(player_group, 2)
             roster_group_count = group_counts.get(group_key, 0)
             group_depth_limit = CPU_GROUP_DEPTH_COUNT_LIMITS.get(player_group, ROOM_IDEAL_BY_GROUP.get(player_group, 5) + 1)
+            room_context = team_group_room_context(con, team_id, player_group)
+            room_ideal = int(room_context["ideal"])
+            room_starters = int(room_context["starter_slots"])
+            room_starter_floor = int(room_context["starter_floor"])
             late_need_exception = late_market and top_remaining and team_need >= 28
+            if player_group == "RB" and group_offer_count >= 1 and player_score >= 70 and team_need < 82 and not late_need_exception:
+                continue
+            qb_backup_cap: int | None = None
             if player_group == "QB":
                 if roster_group_count >= group_depth_limit and team_need < 70:
                     continue
@@ -4719,7 +6457,36 @@ def create_cpu_offers(
                     continue
                 if group_spend > 0 and team_need < 75:
                     continue
+                if (
+                    int(room_context.get("young_upside", 0) or 0) > 0
+                    and int(room_context.get("best", 0) or 0) >= 70
+                    and int(row_value(player, "age", 28) or 28) >= 27
+                    and true_overall(player) <= int(room_context.get("best", 0) or 0) + 3
+                    and team_need < 84
+                ):
+                    continue
+                qb_limits = qb_room_offer_limits(
+                    con,
+                    player,
+                    team_qb_scores=competition.get((team_id, "QB"), []),
+                    team_need=team_need,
+                    roster_qb_count=roster_group_count,
+                )
+                if not qb_limits["allowed"]:
+                    continue
+                qb_backup_cap = qb_limits["backup_cap"]
             elif roster_group_count >= group_depth_limit and group_offer_count >= 1 and team_need < 40 and not late_need_exception:
+                continue
+            elif roster_group_count >= room_ideal and group_offer_count >= 1 and team_need < 64 and not late_need_exception:
+                continue
+            elif (
+                roster_group_count >= room_ideal + 1
+                and player_score <= room_starter_floor + 2
+                and team_need < 72
+                and not late_need_exception
+            ):
+                continue
+            elif roster_group_count >= room_starters and group_offer_count >= 2:
                 continue
             if group_offer_count >= group_count_limit and team_need < 48 and not late_need_exception:
                 continue
@@ -4797,6 +6564,10 @@ def create_cpu_offers(
                 quality_cap = int(quality_cap * 0.82)
             if player_group == "QB" and qb_backup_multiplier < 1.0:
                 quality_cap = int(quality_cap * qb_backup_multiplier)
+            if player_group == "QB" and qb_backup_cap:
+                if int(player["minimum_aav"] or 0) > int(qb_backup_cap):
+                    continue
+                quality_cap = min(quality_cap, int(qb_backup_cap))
             if group_spend:
                 remaining_group_room = max(0, group_spend_limit - group_spend)
                 if team_need < 62 and not late_need_exception:
@@ -4809,6 +6580,14 @@ def create_cpu_offers(
             high = min(high, max(low, quality_cap))
             aav = preference_adjusted_aav(player, int(round(rng.randint(low, high) / 50_000) * 50_000), rng)
             aav = min(aav, max(low, quality_cap))
+            rb_block = rb_starter_stack_block_reason(
+                player,
+                room=room_context,
+                team_need=team_need,
+                offer_aav=aav,
+            )
+            if rb_block and not late_need_exception:
+                continue
             if not expensive_room_offer_allowed(
                 group=player_group,
                 team_need=team_need,
@@ -4820,16 +6599,32 @@ def create_cpu_offers(
                 elite_target=cpu_elite_free_agent(player),
             ):
                 continue
-            years = preferred_years_for_offer(player, rng, max_years=5)
+            years = preferred_years_for_offer(
+                player,
+                rng,
+                max_years=cpu_offer_year_cap(player),
+            )
             if player_group == "QB" and qb_backup_multiplier < 1.0:
                 years = min(years, 1 if qb_backup_multiplier < 0.70 else 2)
             if player_group == "QB" and player_score < 72:
                 years = min(years, 2)
+            if player_group == "QB" and true_overall(player) <= 76 and int(row_value(player, "potential", 0) or 0) < 82:
+                years = min(years, 1)
             if player_group == "QB" and player_score < 75 and team_need < 75:
                 years = min(years, 1)
                 aav = min(aav, max(low, round_to(quality_cap * 0.92, 50_000)))
-            if player_group == "RB":
-                years = min(years, 2 if player_score < 78 else 3)
+            if post_draft_context:
+                starter_path = (
+                    team_need >= 82
+                    or player_score >= max(75, room_starter_floor + 4)
+                    or (cpu_elite_free_agent(player) and team_need >= 42)
+                )
+                if not starter_path:
+                    years = 1
+                elif player_score < 76 or int(row_value(player, "age", 29) or 29) >= POSITION_OLD_AGE.get(player_group, 31):
+                    years = min(years, 1)
+                elif player_score < 78 and int(row_value(player, "potential", player_score) or player_score) < 82:
+                    years = min(years, 2)
             guarantee = guarantee_for_preference(player, int(player["guarantee_pct"] or 0) + 5, rng)
             bonus = cpu_signing_bonus_for_offer(
                 player,
@@ -4838,6 +6633,29 @@ def create_cpu_offers(
                 guarantee_pct=guarantee,
                 rng=rng,
             )
+            structure = cpu_contract_structure_for_offer(
+                player,
+                team_cap_space=max_room,
+                aav=aav,
+                years=years,
+                guarantee_pct=guarantee,
+                rng=rng,
+            )
+            offer_preview = {
+                "league_year": int(period["league_year"]),
+                "team_id": team_id,
+                "player_id": int(player["player_id"]),
+                "years": years,
+                "aav": aav,
+                "total_value": aav * years,
+                "signing_bonus": bonus,
+                "guarantee_pct": guarantee,
+                "contract_structure": structure,
+                "notes": "CPU injury-leverage market offer" if injury_leverage_offer else "CPU market offer",
+            }
+            allowed, _reason = cpu_final_signing_guardrails(con, period, offer_preview, player)
+            if not allowed:
+                continue
             offer_id = submit_offer(
                 con,
                 league_year=int(period["league_year"]),
@@ -4849,7 +6667,8 @@ def create_cpu_offers(
                 guarantee_pct=guarantee,
                 submitted_date=event_date,
                 submitted_hour=event_hour,
-                notes="CPU market offer",
+                contract_structure=structure,
+                notes="CPU injury-leverage market offer" if injury_leverage_offer else "CPU market offer",
             )
             offers_by_team[team_id] = offers_by_team.get(team_id, 0) + 1
             team_spend[team_id] = team_spend.get(team_id, 0) + aav
@@ -4876,6 +6695,342 @@ def create_cpu_offers(
         if created >= count:
             break
     return created
+
+
+def post_draft_depth_offer_aav(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    starter_hole: bool,
+    rng: random.Random,
+) -> int:
+    tier = normalized_tier(player)
+    group = normalized_group(player)
+    asking = int(row_value(player, "asking_aav", 1_500_000) or 1_500_000)
+    minimum = int(row_value(player, "minimum_aav", 915_000) or 915_000)
+    score = true_overall(player)
+    strategy = str(row_value(player, "post_draft_strategy", "normal") or "normal")
+    discount = {
+        "Premium": 0.78,
+        "Starter": 0.70,
+        "Rotation": 0.60,
+        "Depth": 0.54,
+        "Camp": 0.50,
+    }.get(tier, 0.56)
+    if starter_hole:
+        discount += 0.06
+    if group == "QB":
+        discount -= 0.06
+    if score < 70:
+        discount -= 0.04
+    if strategy == "injury_wait":
+        discount = max(discount, 0.92 if starter_hole else 0.86)
+    elif strategy == "firm_floor":
+        discount = max(discount, 0.76 if starter_hole else 0.70)
+    elif strategy == "soften":
+        discount -= 0.06
+    discount = clamp(discount + rng.gauss(0.0, 0.035), 0.48, 0.86)
+    if strategy == "injury_wait":
+        discount = max(discount, 0.86)
+    cap_multiplier = 0.82 if starter_hole else 0.68
+    if group == "QB":
+        cap_multiplier = 0.62 if not starter_hole else 0.72
+    quality_cap = int(cpu_true_quality_aav_cap(player) * cap_multiplier)
+    return round_to(max(minimum, min(int(asking * discount), quality_cap)), 50_000)
+
+
+def post_draft_depth_market_period(con: sqlite3.Connection, league_year: int) -> sqlite3.Row | dict[str, Any]:
+    sync_period_to_game_date(con, league_year)
+    period = current_period(con, league_year)
+    if period and period["status"] == "active":
+        return period
+    current_date = current_game_date_value(con) or f"{league_year}-04-30"
+    return {
+        "league_year": league_year,
+        "current_date": current_date,
+        "current_hour": 12,
+        "current_stage": "daily",
+        "day_count": 45,
+        "first_day_end_hour": 18,
+        "status": "active",
+    }
+
+
+def cpu_post_draft_depth_signings(
+    con: sqlite3.Connection,
+    league_year: int,
+    *,
+    user_team: str | None = None,
+    max_per_team: int = 3,
+    max_total: int = 56,
+    seed: int | None = None,
+    fill_specialists: bool = True,
+    event_date_override: str | None = None,
+) -> dict[str, int]:
+    """Small post-draft wave where CPU teams fill weak depth with discounted veterans."""
+    ensure_schema(con)
+    rng = random.Random(seed or f"post-draft-depth:{league_year}")
+    reconcile_market_state(con, league_year, stale_offer_days=7)
+    ensure_market(con, league_year)
+    period = post_draft_depth_market_period(con, league_year)
+    if event_date_override:
+        period = dict(period)
+        period["current_date"] = event_date_override
+        period["current_hour"] = 12
+        period["current_stage"] = "daily"
+    specialist_signings = (
+        ensure_missing_specialists_for_fa(
+            con,
+            period,
+            user_team=user_team,
+            max_total=96,
+        )
+        if fill_specialists
+        else 0
+    )
+    event_date, event_hour = event_time(period)
+    cap_reserve = cpu_cap_reserve_for_period(period)
+    teams = con.execute(
+        """
+        SELECT t.team_id, t.abbreviation, COALESCE(cap.cap_space, t.salary_cap) AS cap_space
+        FROM teams t
+        LEFT JOIN team_cap_view cap ON cap.team_id = t.team_id
+        WHERE COALESCE(cap.cap_space, t.salary_cap) > ?
+          AND (? IS NULL OR t.abbreviation <> ?)
+        ORDER BY t.abbreviation
+        """,
+        (cap_reserve + 1_500_000, user_team, user_team),
+    ).fetchall()
+    if not teams:
+        return {"signings": 0, "teams": 0, "specialist_signings": specialist_signings}
+
+    candidates = con.execute(
+        """
+        SELECT *
+        FROM free_agency_board_view
+        WHERE league_year = ?
+          AND market_status = 'available'
+          AND COALESCE(pending_offers, 0) = 0
+        ORDER BY market_score DESC, potential DESC, asking_aav ASC, player_id
+        LIMIT 500
+        """,
+        (league_year,),
+    ).fetchall()
+    signed_players: set[int] = set()
+    signed_teams: set[int] = set()
+    total_signed = 0
+    need_scores = load_team_need_scores(con)
+    competition = load_playing_time_competition(con, league_year - 1)
+    pressure_groups = active_fa_injury_pressure_groups(con)
+
+    for team in teams:
+        if total_signed >= max_total:
+            break
+        team_id = int(team["team_id"])
+        team_signed = 0
+        group_order = sorted(
+            ROOM_IDEAL_BY_GROUP.keys(),
+            key=lambda group: (
+                -need_scores.get((team_id, group), 0.0),
+                0 if group in {"QB", "OT", "EDGE", "CB", "WR"} else 1,
+                group,
+            ),
+        )
+        for group in group_order:
+            if team_signed >= max_per_team or total_signed >= max_total:
+                break
+            if group in {"LS", "ST"}:
+                continue
+            context = team_group_room_context(con, team_id, group)
+            count = int(context["count"])
+            ideal = int(context["ideal"])
+            starters = int(context["starter_slots"])
+            best = int(context["best"])
+            starter_floor = int(context["starter_floor"])
+            target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
+            need = need_scores.get((team_id, group), 0.0)
+            starter_hole = count < starters or starter_floor < target_floor - 4
+            depth_hole = count < ideal or (count < ideal + 1 and need >= 42)
+            if group == "QB":
+                qb_scores = competition.get((team_id, "QB"), [])
+                best_qb = max(qb_scores) if qb_scores else float(best)
+                depth_hole = count < 2 or (count < 3 and need >= 62)
+                starter_hole = count == 0 or best_qb < 70
+                if not starter_hole and not depth_hole:
+                    continue
+            elif not starter_hole and not depth_hole:
+                continue
+            elif (
+                count >= ideal
+                and need < 70
+                and starter_floor >= max(62, target_floor - 2)
+            ):
+                continue
+
+            group_recent_rejections = recent_rejected_offer_count_for_group(
+                con,
+                league_year=league_year,
+                team_id=team_id,
+                group=group,
+                current_date=str(event_date),
+                cooldown_days=21,
+            )
+            group_candidates = [
+                player for player in candidates
+                if int(row_value(player, "player_id", 0) or 0) not in signed_players
+                and position_group_for(str(row_value(player, "position_group", row_value(player, "position", "")))) == group
+                and not recent_rejected_offer_for_player(
+                    con,
+                    league_year=league_year,
+                    team_id=team_id,
+                    player_id=int(row_value(player, "player_id", 0) or 0),
+                    current_date=str(event_date),
+                    cooldown_days=21,
+                )
+            ]
+            if not group_candidates:
+                continue
+            group_candidates.sort(
+                key=lambda player: (
+                    0 if starter_hole and true_overall(player) >= max(64, starter_floor + 2) else 1,
+                    0 if group_recent_rejections < 3 or true_overall(player) >= max(63, starter_floor + 1) else 1,
+                    -min(8, max(0, true_overall(player) - max(starter_floor, 58))),
+                    int(row_value(player, "asking_aav", 0) or 0),
+                    rng.random(),
+                )
+            )
+            for player in group_candidates[:28]:
+                player_id = int(row_value(player, "player_id", 0) or 0)
+                player_score = float(row_value(player, "market_score", row_value(player, "overall", 60)) or 60)
+                if not post_draft_strategy_allows_offer(
+                    con,
+                    player,
+                    team_id=team_id,
+                    pressure_groups=pressure_groups,
+                ):
+                    continue
+                if starter_hole:
+                    if group != "QB" and player_score < max(62, min(target_floor + 2, starter_floor + 5)):
+                        continue
+                elif player_score < 58:
+                    continue
+                elif count >= ideal and need < 70:
+                    continue
+                elif count >= starters and starter_floor >= target_floor - 2 and player_score <= starter_floor - 3 and need < 74:
+                    continue
+                elif count >= ideal - 1 and best >= target_floor + 8 and player_score < max(60, starter_floor) and need < 80:
+                    continue
+                qb_backup_cap: int | None = None
+                if group == "QB":
+                    qb_limits = qb_room_offer_limits(
+                        con,
+                        player,
+                        team_qb_scores=competition.get((team_id, "QB"), []),
+                        team_need=need,
+                        roster_qb_count=count,
+                    )
+                    if not qb_limits["allowed"]:
+                        continue
+                    qb_backup_cap = qb_limits["backup_cap"]
+                cap_row = roster_actions.cap_row(con, team_id)
+                cap_room = int(cap_row["cap_space"] or 0) - cap_reserve
+                if cap_room <= 950_000:
+                    break
+                aav = post_draft_depth_offer_aav(player, starter_hole=starter_hole, rng=rng)
+                if qb_backup_cap:
+                    aav = min(aav, int(qb_backup_cap))
+                if group == "QB" and not starter_hole:
+                    aav = min(aav, 8_000_000 if player_score >= 70 else 6_000_000)
+                if aav > int(cap_room * 0.86):
+                    continue
+                years = 1
+                if starter_hole and true_overall(player) >= 75 and int(row_value(player, "age", 29) or 29) <= 29:
+                    years = 2
+                guarantee = min(35, int(row_value(player, "guarantee_pct", 0) or 0))
+                bonus = cpu_signing_bonus_for_offer(
+                    player,
+                    aav=aav,
+                    years=years,
+                    guarantee_pct=guarantee,
+                    rng=rng,
+                )
+                offer_preview = {
+                    "league_year": league_year,
+                    "team_id": team_id,
+                    "player_id": player_id,
+                    "years": years,
+                    "aav": aav,
+                    "total_value": aav * years,
+                    "signing_bonus": bonus,
+                    "guarantee_pct": guarantee,
+                    "contract_structure": "balanced",
+                    "notes": (
+                        "CPU injury-leverage post-draft depth signing"
+                        if (team_id, group) in pressure_groups
+                        and str(row_value(player, "post_draft_strategy", "normal") or "normal") == "injury_wait"
+                        else "CPU post-draft depth signing"
+                    ),
+                }
+                allowed, _reason = cpu_final_signing_guardrails(con, period, offer_preview, player)
+                if not allowed:
+                    continue
+                offer_id = submit_offer(
+                    con,
+                    league_year=league_year,
+                    team_id=team_id,
+                    player_id=player_id,
+                    years=years,
+                    aav=aav,
+                    signing_bonus=bonus,
+                    guarantee_pct=guarantee,
+                    submitted_date=event_date,
+                    submitted_hour=event_hour,
+                    contract_structure="balanced",
+                    notes=str(offer_preview["notes"]),
+                )
+                offer = con.execute("SELECT * FROM free_agency_offers WHERE offer_id = ?", (offer_id,)).fetchone()
+                market = con.execute(
+                    "SELECT * FROM free_agency_board_view WHERE league_year = ? AND player_id = ?",
+                    (league_year, player_id),
+                ).fetchone()
+                if not offer or not market:
+                    continue
+                try:
+                    sign_offer(con, period, offer, market)
+                except Exception:
+                    con.execute(
+                        """
+                        UPDATE free_agency_offers
+                        SET status = 'rejected',
+                            decided_date = ?,
+                            decided_hour = ?,
+                            updated_at = datetime('now')
+                        WHERE offer_id = ?
+                        """,
+                        (event_date, event_hour, offer_id),
+                    )
+                    continue
+                signed_players.add(player_id)
+                signed_teams.add(team_id)
+                total_signed += 1
+                team_signed += 1
+                log_event(
+                    con,
+                    league_year=league_year,
+                    event_date=event_date,
+                    event_hour=event_hour,
+                    event_type="post_draft_depth_signing",
+                    team_id=team_id,
+                    player_id=player_id,
+                    offer_id=offer_id,
+                    message=(
+                        f"{team['abbreviation']} filled a post-draft {group} need with "
+                        f"{player['player_name']} at {money(aav)} AAV."
+                    ),
+                )
+                break
+    if total_signed:
+        sync_team_cap_space(con)
+    return {"signings": total_signed, "teams": len(signed_teams), "specialist_signings": specialist_signings}
 
 
 def advance_period_clock(con: sqlite3.Connection, period: sqlite3.Row, *, days: int = 0, hours: int = 0) -> None:
@@ -4928,6 +7083,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         raise ValueError("Day 1 is still in hourly mode. Use advance-hour, or pass --force to jump to daily.")
 
     user_team = cpu_excluded_user_team(con, args)
+    market_user_team = general_market_excluded_user_team(con, args)
     cpu_restructures = cpu_restructure_core_contracts_for_fa(con, period, user_team=user_team, max_total=8)
     cpu_cap_releases = cpu_release_bad_contracts_for_fa(con, period, user_team=user_team, max_total=16)
     cpu_strategic_releases = cpu_release_strategic_cap_casualties_for_fa(
@@ -4937,7 +7093,13 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         max_total=4,
         max_per_team=1,
     )
-    created = create_cpu_offers(con, period, args.cpu_offers, args.seed, user_team=user_team)
+    user_plan = apply_cpu_controlled_user_free_agent_plan(
+        con,
+        period,
+        args,
+        max_offers=max(1, min(3, int(args.cpu_offers or 0) // 12 if int(args.cpu_offers or 0) else 2)),
+    )
+    created = create_cpu_offers(con, period, args.cpu_offers, args.seed, user_team=market_user_team)
     signed = resolve_pending_offers(
         con,
         period,
@@ -4948,6 +7110,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
     advance_period_clock(con, period, days=days, hours=hours)
     fresh_period_for_resolution = current_period(con, args.league_year)
     signed_after_advance = 0
+    specialist_signings = 0
     if fresh_period_for_resolution and fresh_period_for_resolution["status"] == "active":
         signed_after_advance = resolve_pending_offers(
             con,
@@ -4956,17 +7119,39 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
             write_cap_snapshot=False,
         )
         signed += signed_after_advance
+        if cpu_late_market(fresh_period_for_resolution) or is_post_draft_market_context(con, int(args.league_year)):
+            specialist_signings = ensure_missing_specialists_for_fa(
+                con,
+                fresh_period_for_resolution,
+                user_team=user_team,
+            )
     cleanup = reconcile_market_state(con, args.league_year)
     cap_cleanup = cpu_cap_compliance_sweep(
         con,
         int(args.league_year),
         user_team=user_team,
-        min_space=2_000_000,
+        min_space=8_000_000,
         max_moves_per_team=5,
         max_teams=32,
         time_budget_seconds=45.0,
         write_snapshot=not getattr(args, "no_cap_snapshot", False),
     )
+    if int(cap_cleanup.get("still_over") or 0) > 0:
+        followup_cleanup = cpu_cap_compliance_sweep(
+            con,
+            int(args.league_year),
+            user_team=user_team,
+            min_space=4_000_000,
+            max_moves_per_team=3,
+            max_teams=32,
+            time_budget_seconds=30.0,
+            write_snapshot=not getattr(args, "no_cap_snapshot", False),
+        )
+        for key, value in followup_cleanup.items():
+            if key == "still_over":
+                cap_cleanup[key] = value
+            else:
+                cap_cleanup[key] = int(cap_cleanup.get(key) or 0) + int(value or 0)
     fresh_period = active_period(con, args.league_year)
     log_event(
         con,
@@ -4975,7 +7160,8 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         event_hour=int(fresh_period["current_hour"]) if fresh_period["current_stage"] == "day_one_hourly" else None,
         event_type="market_advanced",
         message=(
-            f"Free agency advanced. CPU offers: {created}. Signings: {signed}. "
+            f"Free agency advanced. CPU offers: {created}. User auto-plan offers: {user_plan.get('offers', 0)}. "
+            f"Signings: {signed}. Specialist signings: {specialist_signings}. "
             f"Demand drops: {demand_drops}. Retirements: {retirements}. "
             f"Strategic releases: {cpu_strategic_releases}."
         ),
@@ -4991,7 +7177,9 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         )
     return {
         "cpu_offers": created,
+        "user_auto_plan_offers": user_plan.get("offers", 0),
         "signings": signed,
+        "specialist_signings": specialist_signings,
         "demand_drops": demand_drops,
         "retirements": retirements,
         "restructures": cpu_restructures,
@@ -5156,7 +7344,8 @@ def action_advance_hour(args: argparse.Namespace) -> None:
         result = run_mutation(con, args, lambda c, a: process_tick(c, a, hours=1))
     print(
         f"Advanced one free-agency hour ({'saved' if args.apply else 'dry run'}): "
-        f"{result['cpu_offers']} CPU offer(s), {result['signings']} signing(s), "
+        f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
+        f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
         f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
     )
 
@@ -5166,7 +7355,8 @@ def action_advance_day(args: argparse.Namespace) -> None:
         result = run_mutation(con, args, lambda c, a: process_tick(c, a, days=args.days))
     print(
         f"Advanced {args.days} free-agency day(s) ({'saved' if args.apply else 'dry run'}): "
-        f"{result['cpu_offers']} CPU offer(s), {result['signings']} signing(s), "
+        f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
+        f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
         f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
     )
 
@@ -5195,6 +7385,7 @@ def action_cpu_seed(args: argparse.Namespace) -> None:
             ensure_schema(c)
             period = active_period(c, a.league_year)
             user_team = cpu_excluded_user_team(c, a)
+            market_user_team = general_market_excluded_user_team(c, a)
             retained = cpu_retain_own_free_agents(
                 c,
                 period,
@@ -5203,21 +7394,34 @@ def action_cpu_seed(args: argparse.Namespace) -> None:
                 seed=a.seed,
                 write_cap_snapshot=not getattr(a, "no_cap_snapshot", False),
             )
-            offers = create_cpu_offers(c, period, a.cpu_offers, a.seed, user_team=user_team)
+            user_plan = apply_cpu_controlled_user_free_agent_plan(
+                c,
+                period,
+                a,
+                max_offers=max(1, min(3, int(a.cpu_offers or 0) // 12 if int(a.cpu_offers or 0) else 2)),
+            )
+            offers = create_cpu_offers(c, period, a.cpu_offers, a.seed, user_team=market_user_team)
             log_event(
                 c,
                 league_year=a.league_year,
                 event_date=str(period["current_date"]),
                 event_hour=int(period["current_hour"]) if period["current_stage"] == "day_one_hourly" else None,
                 event_type="cpu_market_seed",
-                message=f"Seeded CPU market activity. Own-player re-signings: {retained}. Open offers: {offers}.",
+                message=(
+                    "Seeded CPU market activity. "
+                    f"Own-player re-signings: {retained}. "
+                    f"User auto-plan offers: {user_plan.get('offers', 0)}. "
+                    f"Open offers: {offers}."
+                ),
             )
-            return {"retained": retained, "cpu_offers": offers}
+            return {"retained": retained, "cpu_offers": offers, "user_auto_plan_offers": user_plan.get("offers", 0)}
 
         result = run_mutation(con, args, run_seed)
     print(
         f"CPU market seed ({'saved' if args.apply else 'dry run'}): "
-        f"{result['retained']} own-player re-signing(s), {result['cpu_offers']} open offer(s)."
+        f"{result['retained']} own-player re-signing(s), "
+        f"{result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
+        f"{result['cpu_offers']} open offer(s)."
     )
 
 
@@ -5275,6 +7479,12 @@ def build_parser() -> argparse.ArgumentParser:
     offer.add_argument("--aav", required=True)
     offer.add_argument("--bonus", default="0")
     offer.add_argument("--guarantee-pct", type=int, default=0)
+    offer.add_argument(
+        "--structure",
+        choices=["balanced", "backloaded", "frontloaded", "bonus-heavy"],
+        default="balanced",
+        help="Year-by-year contract shape for cap/cash accounting.",
+    )
     offer.add_argument("--notes")
     offer.add_argument("--force-market", action="store_true")
     offer.add_argument("--cpu-response-offers", type=int, default=2)

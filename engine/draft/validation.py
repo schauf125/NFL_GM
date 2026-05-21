@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import csv
+import ast
 from collections import Counter, defaultdict
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
+
+from .college import (
+    BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES,
+    ELITE_DRAFT_PIPELINE_COLLEGES,
+    STRONG_DRAFT_PIPELINE_COLLEGES,
+)
+from .names import NameGenerator, normalize_name_key
 
 
 AGE_RANGES = (
@@ -233,8 +241,19 @@ def build_preview_report(rows: list[Any]) -> str:
     lines.extend(_counter_lines(Counter(row.get("ethnicity_key", "") for row in data), len(data)))
 
     lines.append("")
+    lines.append("Name / Appearance QA")
+    name_qa = _name_appearance_qa(data)
+    lines.extend(name_qa["lines"])
+    for warning in name_qa["warnings"]:
+        lines.append(f"WARNING: {warning}")
+
+    lines.append("")
     lines.append("Countries")
     lines.extend(_counter_lines(Counter(row.get("birth_country", "") for row in data), len(data), limit=12))
+
+    lines.append("")
+    lines.append("College / Talent Pipeline QA")
+    lines.extend(_college_pipeline_qa(data))
 
     lines.append("")
     lines.append("Position Ethnicity Snapshot")
@@ -253,6 +272,16 @@ def build_preview_report(rows: list[Any]) -> str:
             f"{group}: ht {_avg(heights):.1f} in, wt {_avg(weights):.1f} lb, "
             f"arm {_avg(arms):.2f}, hand {_avg(hands):.2f}"
         )
+
+    lines.append("")
+    lines.append("Body / Attribute QA")
+    body_flags = _body_attribute_flags(data)
+    if body_flags:
+        lines.extend(body_flags[:16])
+        if len(body_flags) > 16:
+            lines.append(f"... {len(body_flags) - 16} more body/attribute flag(s).")
+    else:
+        lines.append("No major body/attribute contradiction flags.")
 
     lines.append("")
     lines.append("Appearance")
@@ -296,6 +325,208 @@ def build_preview_report(rows: list[Any]) -> str:
     lines.append("Handedness")
     lines.extend(_counter_lines(Counter(row.get("handedness", "") for row in data), len(data)))
     return "\n".join(lines) + "\n"
+
+
+def _name_appearance_qa(rows: list[dict[str, Any]]) -> dict[str, list[str]]:
+    warnings: list[str] = []
+    lines: list[str] = []
+    try:
+        generator = NameGenerator(seed="validation-name-style-lookup")
+        style_lookup = generator.component_style_lookup
+    except Exception as exc:
+        return {
+            "lines": [f"Name style lookup unavailable: {exc}"],
+            "warnings": [],
+        }
+
+    black_coded = {"african_american", "west_african", "caribbean"}
+    culturally_flagged_white: list[str] = []
+    culturally_flagged_white_primary: list[str] = []
+    international_mismatches: list[str] = []
+    repeated_rare = Counter[str]()
+    hyphenated_last = 0
+    suffix_count = 0
+    for row in rows:
+        first = str(row.get("first_name") or "")
+        last = str(row.get("last_name") or "")
+        styles = style_lookup.get(("first", normalize_name_key(first)), set())
+        full_name = str(row.get("full_name") or f"{first} {last}").strip()
+        ethnicity_key = str(row.get("ethnicity_key") or "")
+        primary = str(row.get("primary_ethnicity") or "")
+        country = str(row.get("birth_country") or "")
+        if ethnicity_key == "white" and styles & black_coded:
+            culturally_flagged_white.append(f"{full_name} ({', '.join(sorted(styles & black_coded))})")
+        if primary == "White" and styles & black_coded:
+            culturally_flagged_white_primary.append(f"{full_name} ({ethnicity_key}; {', '.join(sorted(styles & black_coded))})")
+        if country and country != "United States":
+            origin_key = str(row.get("origin_ethnicity_key") or "")
+            if origin_key and ethnicity_key and origin_key != ethnicity_key:
+                international_mismatches.append(f"{full_name}: {country} maps {origin_key}, row {ethnicity_key}")
+        if any(marker in str(row.get("name_background_note") or "").lower() for marker in ("distinctive", "nickname")):
+            repeated_rare[first] += 1
+        if "-" in last:
+            hyphenated_last += 1
+        if any(last.endswith(f" {suffix}") for suffix in ("Jr.", "II", "III", "IV")):
+            suffix_count += 1
+
+    lines.append(f"White ethnicity with strongly Black-style first name: {len(culturally_flagged_white)}")
+    lines.append(f"White-primary appearance with strongly Black-style first name: {len(culturally_flagged_white_primary)}")
+    lines.append(f"International country/ethnicity mismatches: {len(international_mismatches)}")
+    lines.append(f"Hyphenated last names: {hyphenated_last} ({hyphenated_last / len(rows) * 100:.1f}%)")
+    lines.append(f"Family suffixes: {suffix_count} ({suffix_count / len(rows) * 100:.1f}%)")
+    repeated = [f"{name} x{count}" for name, count in repeated_rare.items() if count > 1]
+    lines.append(f"Repeated rare/nickname first names: {', '.join(repeated[:8]) if repeated else 'none'}")
+    if culturally_flagged_white:
+        warnings.append("White ethnicity/name-culture mismatch: " + "; ".join(culturally_flagged_white[:6]))
+    if culturally_flagged_white_primary:
+        warnings.append("White-primary appearance/name-culture mismatch: " + "; ".join(culturally_flagged_white_primary[:6]))
+    if len(international_mismatches) > 2:
+        warnings.append("Too many international country/name ethnicity mismatches: " + "; ".join(international_mismatches[:6]))
+    if hyphenated_last > max(4, int(len(rows) * 0.025)):
+        warnings.append(f"Hyphenated last names are high ({hyphenated_last}).")
+    if suffix_count > max(28, int(len(rows) * 0.095)):
+        warnings.append(f"Family suffixes are high ({suffix_count}).")
+    if repeated:
+        warnings.append("Rare/nickname first names repeated: " + ", ".join(repeated[:8]))
+    return {"lines": lines, "warnings": warnings}
+
+
+def _college_pipeline_qa(rows: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    top_50 = [row for row in rows if 1 <= _int(row.get("rank")) <= 50]
+    top_100 = [row for row in rows if 1 <= _int(row.get("rank")) <= 100]
+    first_four_rounds = [row for row in rows if 1 <= _int(row.get("rank")) <= 140]
+    if top_50:
+        tiers = Counter(str(row.get("college_tier") or "") for row in top_50)
+        powerish = tiers.get("Power", 0)
+        blue_blood = [
+            row
+            for row in top_50
+            if str(row.get("college") or "") in BLUE_BLOOD_DRAFT_PIPELINE_COLLEGES
+        ]
+        elite_pipeline = [
+            row
+            for row in top_50
+            if str(row.get("college") or "") in ELITE_DRAFT_PIPELINE_COLLEGES
+        ]
+        strong_plus = [
+            row
+            for row in top_50
+            if str(row.get("college") or "") in ELITE_DRAFT_PIPELINE_COLLEGES
+            or str(row.get("college") or "") in STRONG_DRAFT_PIPELINE_COLLEGES
+        ]
+        lines.append(f"Top-50 college tiers: {_format_counter(tiers, len(top_50), 6)}")
+        lines.append(f"Top-50 Power share: {powerish}/{len(top_50)} ({powerish / len(top_50) * 100:.1f}%)")
+        lines.append(
+            f"Top-50 blue-blood share: {len(blue_blood)}/{len(top_50)} "
+            f"({len(blue_blood) / len(top_50) * 100:.1f}%)"
+        )
+        lines.append(
+            f"Top-50 elite pipeline share: {len(elite_pipeline)}/{len(top_50)} "
+            f"({len(elite_pipeline) / len(top_50) * 100:.1f}%)"
+        )
+        lines.append(
+            f"Top-50 elite/strong pipeline share: {len(strong_plus)}/{len(top_50)} "
+            f"({len(strong_plus) / len(top_50) * 100:.1f}%)"
+        )
+        small_top_50 = [row for row in top_50 if str(row.get("college_tier") or "") in {"Small", "International"}]
+        if small_top_50:
+            lines.append("Top-50 small/international outliers: " + "; ".join(_player_label(row) for row in small_top_50[:8]))
+        if powerish / len(top_50) < 0.86:
+            lines.append("WARNING: Top-50 Power-school share is lower than target.")
+        if len(blue_blood) / len(top_50) < 0.45:
+            lines.append("WARNING: Top-50 blue-blood share is lower than target.")
+        if len(small_top_50) > 2:
+            lines.append("WARNING: Too many top-50 small/international prospects.")
+    if top_100:
+        lines.append(f"Top-100 schools: {_format_counter(Counter(str(row.get('college') or '') for row in top_100), len(top_100), 12)}")
+    if first_four_rounds:
+        first_four_tiers = Counter(str(row.get("college_tier") or "") for row in first_four_rounds)
+        first_four_power = first_four_tiers.get("Power", 0)
+        first_four_small = [
+            row
+            for row in first_four_rounds
+            if str(row.get("college_tier") or "") in {"Small", "International"}
+        ]
+        lines.append(
+            f"Rounds 1-4 Power share: {first_four_power}/{len(first_four_rounds)} "
+            f"({first_four_power / len(first_four_rounds) * 100:.1f}%)"
+        )
+        lines.append(
+            f"Rounds 1-4 small/international: {len(first_four_small)}/{len(first_four_rounds)} "
+            f"({len(first_four_small) / len(first_four_rounds) * 100:.1f}%)"
+        )
+        if first_four_power / len(first_four_rounds) < 0.74:
+            lines.append("WARNING: Rounds 1-4 Power-school share is lower than target.")
+        if len(first_four_small) > 12:
+            lines.append("WARNING: Rounds 1-4 has too many small/international prospects.")
+    senior_top_50 = [
+        row
+        for row in top_50
+        if _int(row.get("age")) >= 23
+    ]
+    if top_50:
+        lines.append(
+            f"Top-50 older prospects age 23+: {len(senior_top_50)} "
+            f"({len(senior_top_50) / len(top_50) * 100:.1f}%)"
+        )
+        if len(senior_top_50) > 14:
+            lines.append("WARNING: Top of class is heavy on older/senior prospects.")
+    return lines
+
+
+def _body_attribute_flags(rows: list[dict[str, Any]]) -> list[str]:
+    flags: list[str] = []
+    for row in rows:
+        ratings = _ratings_dict(row.get("ratings"))
+        if not ratings:
+            continue
+        position = str(row.get("position") or "").upper()
+        weight = _int(row.get("weight_lbs"))
+        height = _int(row.get("height_in"))
+        strength = _rating(ratings, "strength")
+        speed = _rating(ratings, "speed")
+        agility = _rating(ratings, "agility")
+        hands = _rating(ratings, "hands")
+        hand_size = _float(row.get("hand_size_in"))
+        if position in {"WR", "CB", "NB", "FS"} and weight >= 222 and speed >= 90 and agility >= 88:
+            flags.append(f"{_player_label(row)}: big {position} still has elite speed/agility ({weight} lb, SPD {speed}, AGI {agility}).")
+        if position in {"OT", "OG", "C", "IDL"} and weight < 292 and strength >= 86:
+            flags.append(f"{_player_label(row)}: light trench body with elite strength ({weight} lb, STR {strength}).")
+        if position in {"IDL", "OT", "OG"} and height >= 78 and weight >= 320 and strength < 62:
+            flags.append(f"{_player_label(row)}: huge trench body with low strength ({height} in/{weight} lb, STR {strength}).")
+        if position in {"WR", "TE"} and hand_size >= 10.25 and hands <= 55:
+            flags.append(f"{_player_label(row)}: large hands but poor hands rating ({hand_size:.2f}, hands {hands}).")
+        if position in {"RB", "FB"} and weight >= 230 and _rating(ratings, "contact_power") <= 56:
+            flags.append(f"{_player_label(row)}: big back with low contact power ({weight} lb).")
+    return flags
+
+
+def _ratings_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _rating(ratings: dict[str, Any], key: str) -> int:
+    try:
+        return int(ratings.get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _player_label(row: dict[str, Any]) -> str:
+    rank = _int(row.get("rank"))
+    name = str(row.get("full_name") or f"{row.get('first_name', '')} {row.get('last_name', '')}").strip()
+    position = str(row.get("position") or "")
+    college = str(row.get("college") or "")
+    return f"#{rank} {name}, {position}, {college}"
 
 
 def _row_dict(row: Any) -> dict[str, Any]:

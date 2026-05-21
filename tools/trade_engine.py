@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 import roster_rules
+import cpu_depth_chart
 from setup_transactions_cap_ledger import (
     ensure_schema as ensure_transaction_schema,
     insert_transaction,
@@ -2069,6 +2070,16 @@ def _transfer_asset(
             con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player_id,))
         except sqlite3.OperationalError:
             pass
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=from_team,
+            reason="Player trade changed roster composition.",
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=to_team,
+            reason="Player trade changed roster composition.",
+        )
 
     elif asset["asset_type"] == "DraftPick":
         pick_id = int(asset["pick_id"]) if asset.get("pick_id") else None

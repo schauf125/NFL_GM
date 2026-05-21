@@ -365,10 +365,12 @@ def draft_room_stories(con: sqlite3.Connection, *, game_id: str, limit: int = 12
         LEFT JOIN teams t ON t.team_id = dre.team_id
         LEFT JOIN players p ON p.player_id = dre.player_id
         LEFT JOIN draft_prospects dp ON dp.prospect_id = dre.prospect_id
+        WHERE COALESCE(dre.round, 99) = 1
+           OR LOWER(COALESCE(dre.event_type, '')) LIKE '%trade%'
         ORDER BY dre.created_at DESC, dre.event_id DESC
         LIMIT ?
         """,
-        (limit,),
+        (max(1, min(limit, 6)),),
     ).fetchall()
     stories = []
     for row in rows:
@@ -484,8 +486,8 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 60) -> dict[str, A
     if story:
         synthetic.append(story)
     synthetic.extend(scouting_stories(con, game_id=game_id))
-    synthetic.extend(game_flow_stories(con, game_id=game_id))
-    synthetic.extend(draft_room_stories(con, game_id=game_id))
+    synthetic.extend(game_flow_stories(con, game_id=game_id, limit=3))
+    synthetic.extend(draft_room_stories(con, game_id=game_id, limit=6))
 
     seen = {str(item.get("fingerprint") or item.get("news_id")) for item in items}
     for item in synthetic:
@@ -494,7 +496,7 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 60) -> dict[str, A
             items.append(item)
             seen.add(key)
     items.sort(key=lambda item: (str(item.get("news_date") or ""), int(item.get("is_major") or 0)), reverse=True)
-    items = items[:limit]
+    items = curate_news_items(items, limit=limit)
     categories = sorted({str(item.get("category") or "League") for item in items})
     return {
         "gameId": game_id,
@@ -508,6 +510,31 @@ def build_ui_payload(con: sqlite3.Connection, *, limit: int = 60) -> dict[str, A
         },
         "updatedAt": current_date(con),
     }
+
+
+def curate_news_items(items: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    curated: list[dict[str, Any]] = []
+    category_date_counts: dict[tuple[str, str], int] = {}
+    source_date_counts: dict[tuple[str, str], int] = {}
+    for item in items:
+        category = str(item.get("category") or "League")
+        news_date = str(item.get("news_date") or "")
+        source = str(item.get("source") or "")
+        is_major = bool(int(item.get("is_major") or 0))
+        category_key = (news_date, category)
+        source_key = (news_date, source)
+        category_limit = 3 if is_major else 2
+        source_limit = 4 if is_major else 2
+        if category_date_counts.get(category_key, 0) >= category_limit:
+            continue
+        if source_date_counts.get(source_key, 0) >= source_limit:
+            continue
+        curated.append(item)
+        category_date_counts[category_key] = category_date_counts.get(category_key, 0) + 1
+        source_date_counts[source_key] = source_date_counts.get(source_key, 0) + 1
+        if len(curated) >= limit:
+            break
+    return curated
 
 
 def seed_baseline(con: sqlite3.Connection, *, game_id: str | None = None) -> dict[str, int]:

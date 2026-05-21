@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from engine import match_engine  # noqa: E402
 from engine import injury_model  # noqa: E402
 import injury_notifications  # noqa: E402
+import cpu_depth_chart  # noqa: E402
 import preseason_processor  # noqa: E402
 import sim_control  # noqa: E402
 import weekly_processor  # noqa: E402
@@ -468,6 +469,10 @@ def process_weekly_hooks_for_rows(
                 simulate_games=False,
             )
             print(preseason_processor.result_summary(result))
+            cpu_depth_chart.mark_all_cpu_depth_charts_stale(
+                con,
+                reason=f"Preseason Week {week} completed.",
+            )
         return
     if game_type != "REG":
         print(f"No weekly hooks configured for game type {game_type}.")
@@ -539,6 +544,10 @@ def action_week(args: argparse.Namespace) -> None:
         if not rows:
             print(f"No unsimmed games found for {args.season} Week {args.week}.")
             return
+        if args.apply:
+            refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+            if int(refresh.get("teams", 0) or 0):
+                print(f"Depth charts refreshed before Week {args.week}: {refresh['teams']} CPU team(s).")
         _simulated, saved = simulate_scheduled_rows(
             con,
             rows,
@@ -558,6 +567,9 @@ def action_week(args: argparse.Namespace) -> None:
                     ai_gm_enabled=not args.no_ai_gm,
                     cancel_db_path=args.db,
                 )
+            refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+            if int(refresh.get("teams", 0) or 0):
+                print(f"Depth charts refreshed after Week {args.week} hooks: {refresh['teams']} CPU team(s).")
             con.commit()
             print(f"Saved {saved} game result(s).")
         else:
@@ -604,6 +616,9 @@ def action_season(args: argparse.Namespace) -> None:
             week_rows = rows_by_week[week]
             if args.apply:
                 sim_control.raise_if_cancelled(args.db, f"before simulating {args.season} Week {week}.")
+                refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+                if int(refresh.get("teams", 0) or 0):
+                    print(f"Depth charts refreshed before Week {week}: {refresh['teams']} CPU team(s).")
             week_simulated, week_saved = simulate_scheduled_rows(
                 con,
                 week_rows,
@@ -625,6 +640,9 @@ def action_season(args: argparse.Namespace) -> None:
                         ai_gm_enabled=not args.no_ai_gm,
                         cancel_db_path=args.db,
                     )
+                refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+                if int(refresh.get("teams", 0) or 0):
+                    print(f"Depth charts refreshed after Week {week} hooks: {refresh['teams']} CPU team(s).")
                 con.commit()
                 print(f"Week {week} checkpoint saved ({week_saved} game result(s)).")
         if args.apply:

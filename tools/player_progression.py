@@ -1002,6 +1002,138 @@ def load_qb_reboot_context(con: sqlite3.Connection, season: int) -> dict[int, di
     return context
 
 
+def load_qb_succession_context(con: sqlite3.Connection, season: int) -> dict[int, dict[str, float]]:
+    required_tables = {"game_sim_runs", "game_player_stats", "season_games", "players"}
+    if not all(table_exists(con, table) for table in required_tables):
+        return {}
+    rows = con.execute(
+        """
+        SELECT
+            p.player_id,
+            gps.team_id,
+            p.age,
+            p.years_exp,
+            p.is_rookie,
+            p.overall,
+            p.potential,
+            p.dev_trait,
+            sg.week,
+            SUM(CASE WHEN gps.stat_key = 'pass_attempts' THEN gps.stat_value ELSE 0 END) AS attempts,
+            SUM(CASE WHEN gps.stat_key = 'offensive_snaps' THEN gps.stat_value ELSE 0 END) AS snaps
+        FROM game_player_stats gps
+        JOIN game_sim_runs gsr ON gsr.run_id = gps.run_id
+        JOIN season_games sg ON sg.game_id = gsr.schedule_game_id
+        JOIN players p ON p.player_id = gps.player_id
+        WHERE gsr.season = ?
+          AND COALESCE(gsr.counts_for_stats, 1) = 1
+          AND COALESCE(sg.game_type, 'REG') = 'REG'
+          AND p.position = 'QB'
+          AND gps.team_id IS NOT NULL
+          AND gps.stat_key IN ('pass_attempts', 'offensive_snaps')
+          AND sg.week IS NOT NULL
+        GROUP BY p.player_id, gps.team_id, sg.week
+        """,
+        (season,),
+    ).fetchall()
+    by_player_team: dict[tuple[int, int], list[dict[str, float]]] = {}
+    player_info: dict[int, dict[str, float]] = {}
+    for row in rows:
+        player_id = int(row["player_id"])
+        team_id = int(row["team_id"])
+        week = int(row["week"] or 0)
+        attempts = float(row["attempts"] or 0.0)
+        snaps = float(row["snaps"] or 0.0)
+        player_info[player_id] = {
+            "age": float(row["age"] or 26),
+            "years_exp": float(row["years_exp"] or 0),
+            "is_rookie": float(row["is_rookie"] or 0),
+            "overall": float(row["overall"] or 0),
+            "potential": float(row["potential"] or row["overall"] or 0),
+            "dev_bonus": 1.0
+            if str(row["dev_trait"] or "Normal") in {"Star", "Impact", "Superstar", "Elite", "X-Factor"}
+            else 0.0,
+        }
+        by_player_team.setdefault((player_id, team_id), []).append(
+            {"week": float(week), "attempts": attempts, "snaps": snaps}
+        )
+
+    context: dict[int, dict[str, float]] = {}
+    for (player_id, team_id), weeks in by_player_team.items():
+        info = player_info.get(player_id, {})
+        is_young_qb = bool(info.get("is_rookie")) or (info.get("age", 26.0) <= 24 and info.get("years_exp", 0.0) <= 2)
+        if not is_young_qb:
+            continue
+        total_attempts = sum(item["attempts"] for item in weeks)
+        total_snaps = sum(item["snaps"] for item in weeks)
+        meaningful_weeks = [
+            item
+            for item in weeks
+            if item["week"] > 0 and (item["attempts"] >= 18.0 or item["snaps"] >= 35.0)
+        ]
+        if not meaningful_weeks:
+            continue
+        first_meaningful_week = int(min(item["week"] for item in meaningful_weeks))
+        veteran_pre_attempts = 0.0
+        for (other_player_id, other_team_id), other_weeks in by_player_team.items():
+            if other_team_id != team_id or other_player_id == player_id:
+                continue
+            other_info = player_info.get(other_player_id, {})
+            older_bridge = other_info.get("age", 0.0) >= 30.0 or other_info.get("years_exp", 0.0) >= 6.0
+            if not older_bridge:
+                continue
+            veteran_pre_attempts += sum(
+                item["attempts"]
+                for item in other_weeks
+                if item["week"] > 0 and item["week"] < first_meaningful_week
+            )
+        learned_then_started = 1.0 if first_meaningful_week >= 7 and veteran_pre_attempts >= 80.0 else 0.0
+        best = context.get(player_id)
+        candidate = {
+            "first_meaningful_week": float(first_meaningful_week),
+            "attempts": total_attempts,
+            "snaps": total_snaps,
+            "meaningful_games": float(len(meaningful_weeks)),
+            "veteran_pre_attempts": veteran_pre_attempts,
+            "learned_then_started": learned_then_started,
+            "dev_bonus": info.get("dev_bonus", 0.0),
+        }
+        if not best or candidate["attempts"] > best.get("attempts", 0.0):
+            context[player_id] = candidate
+    return context
+
+
+def qb_succession_development_score(
+    context: Mapping[str, float],
+    *,
+    position: str,
+    band: str,
+    years_exp: int,
+    old_overall: int,
+    potential_gap: int,
+    coaching_score: float,
+    mentor_score: float,
+) -> float:
+    if position != "QB" or not context or band not in {"rookie", "young"}:
+        return 0.0
+    if years_exp > 2 or potential_gap < 6:
+        return 0.0
+    first_week = int(context.get("first_meaningful_week", 0.0) or 0)
+    attempts = float(context.get("attempts", 0.0) or 0.0)
+    veteran_pre_attempts = float(context.get("veteran_pre_attempts", 0.0) or 0.0)
+    if first_week < 7 or attempts < 120.0 or veteran_pre_attempts < 80.0:
+        return 0.0
+    score = 0.18
+    score += min(0.24, max(0, first_week - 6) * 0.035)
+    score += min(0.26, max(0.0, attempts - 120.0) / 480.0 * 0.26)
+    score += min(0.14, max(0.0, veteran_pre_attempts - 80.0) / 260.0 * 0.14)
+    score += min(0.12, max(0.0, coaching_score) * 0.025)
+    score += min(0.12, max(0.0, mentor_score) * 0.12)
+    score += 0.08 if context.get("dev_bonus", 0.0) else 0.0
+    if old_overall < 70:
+        score *= 0.65
+    return clamp(score, 0.0, 0.90)
+
+
 def mentor_room_scores(
     players: list[sqlite3.Row],
     traits_by_player: dict[int, dict[str, int]],
@@ -2383,6 +2515,7 @@ def build_contexts(
     preseason_context = load_preseason_development_context(con, game_id=game_id, season=from_season)
     storyline_context = season_storylines.load_progression_context(con, game_id=game_id, season=from_season)
     qb_reboot_context = load_qb_reboot_context(con, from_season)
+    qb_succession_context = load_qb_succession_context(con, from_season)
     mentor_scores = mentor_room_scores(players, personality_traits)
     coach_scores = coach_position_scores(con)
     rating_rows = load_ratings(con, from_season)
@@ -2495,6 +2628,16 @@ def build_contexts(
         mentor_score = 0.0
         if player["team_id"] is not None:
             mentor_score = mentor_scores.get((int(player["team_id"]), group), 0.0)
+        qb_succession = qb_succession_development_score(
+            qb_succession_context.get(player_id, {}),
+            position=position,
+            band=band,
+            years_exp=years_exp,
+            old_overall=old_overall,
+            potential_gap=potential_gap,
+            coaching_score=coaching_score,
+            mentor_score=mentor_score,
+        )
         random_score = rng.gauss(0.0, personality_sigma(band, traits))
         boom = breakout_delta(
             rng,
@@ -2604,6 +2747,7 @@ def build_contexts(
             + practice_squad_score
             + preseason_score
             + qb_reboot
+            + qb_succession
             + ps_late_bloomer
             + veteran_variance
             + random_score
@@ -2631,7 +2775,7 @@ def build_contexts(
             mods=mods,
             profile=profile,
             performance=player_perf_score,
-            breakout=boom + ps_late_bloomer * 0.55 + qb_reboot * 0.60,
+            breakout=boom + ps_late_bloomer * 0.55 + qb_reboot * 0.60 + qb_succession * 0.35,
             decline=bust,
             position_age_score=position_age_score,
             injury_score=player_injury_score,
@@ -2664,6 +2808,7 @@ def build_contexts(
             potential_miss,
             ps_late_bloomer,
             qb_reboot,
+            qb_succession,
             veteran_variance,
             preseason_score,
             storyline_effect,
@@ -2894,6 +3039,7 @@ def context_notes(
     potential_miss: float,
     ps_late_bloomer: float,
     qb_reboot: float,
+    qb_succession: float,
     veteran_variance: float,
     preseason_score: float,
     storyline_score: float,
@@ -2929,6 +3075,8 @@ def context_notes(
         bits.append(f"PS late bloomer +{ps_late_bloomer:.1f}")
     if qb_reboot >= 1.0:
         bits.append(f"QB career reboot +{qb_reboot:.1f}")
+    if qb_succession >= 0.25:
+        bits.append(f"QB succession +{qb_succession:.1f}")
     if abs(veteran_variance) >= 0.35:
         bits.append(f"veteran variance {veteran_variance:+.1f}")
     if abs(preseason_score) >= 0.35:

@@ -1005,6 +1005,14 @@ def table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
     return {row["name"] if isinstance(row, sqlite3.Row) else row[1] for row in rows}
 
 
+def table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def ensure_column(con: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
     if column_name not in table_columns(con, table_name):
         con.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
@@ -1433,6 +1441,36 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         (season, *player_ids),
     ).fetchall():
         season_stats[int(row["player_id"])][str(row["stat_key"])] = float(row["stat_value"] or 0)
+
+    contracts_by_player: dict[int, dict[str, object]] = {}
+    if table_exists(con, "contracts"):
+        for row in con.execute(
+            f"""
+            SELECT
+                player_id,
+                COALESCE(aav, 0) AS aav,
+                COALESCE(contract_type, '') AS contract_type,
+                COALESCE(signed_date, '') AS signed_date,
+                COALESCE(start_year, 0) AS start_year,
+                COALESCE(end_year, 0) AS end_year
+            FROM contracts
+            WHERE is_active = 1
+              AND player_id IN ({placeholders})
+            ORDER BY COALESCE(aav, 0) DESC, contract_id DESC
+            """,
+            player_ids,
+        ).fetchall():
+            player_id = int(row["player_id"])
+            contracts_by_player.setdefault(
+                player_id,
+                {
+                    "contract_aav": int(row["aav"] or 0),
+                    "contract_type": str(row["contract_type"] or ""),
+                    "contract_signed_date": str(row["signed_date"] or ""),
+                    "contract_start_year": int(row["start_year"] or 0),
+                    "contract_end_year": int(row["end_year"] or 0),
+                },
+            )
     record_row = con.execute(
         """
         SELECT wins, losses, ties, points_for, points_against
@@ -1463,6 +1501,7 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
             "active_injuries": active_injuries.get(player_id, []),
             "season_stats": season_stats.get(player_id, {}),
         }
+        metadata.update(contracts_by_player.get(player_id, {}))
         metadata.update(draft_context.get(player_id, {}))
         if player_id in qb_behavior_by_player:
             profile, source = qb_behavior_by_player[player_id]
@@ -1926,10 +1965,19 @@ class MatchEngine:
         starter_score = team.score_for_slot(starter, "QB")
         starter_struggle = self.qb_struggle_score(starter)
         week = int(self.week or team.games_played() + 1 or 1)
+        games_played = team.games_played()
         win_pct = team.win_pct()
-        point_diff_per_game = team.point_diff / max(1, team.games_played())
-        losing_context = win_pct < 0.45 or point_diff_per_game < -3.5
-        contention_protection = win_pct >= 0.60 and point_diff_per_game >= 1.0 and starter_struggle < 0.42
+        point_diff_per_game = team.point_diff / max(1, games_played)
+        losing_context = games_played >= 4 and (win_pct < 0.45 or point_diff_per_game < -3.5)
+        fringe_context = games_played >= 4 and win_pct < 0.53
+        playoff_pace = games_played >= 4 and win_pct >= 0.53 and point_diff_per_game >= -1.5
+        starter_playing_ok = starter_struggle < 0.35
+        contention_protection = (
+            games_played >= 4
+            and win_pct >= 0.60
+            and point_diff_per_game >= 1.0
+            and starter_struggle < 0.42
+        )
 
         best_candidate = starter
         best_case = 0.0
@@ -1946,23 +1994,39 @@ class MatchEngine:
             draft_round = candidate.metadata.get("draft_round")
             high_investment = draft_round == 1 or investment >= 0.54
             raw = quality_gap > 6.0 or overall < 68
+            franchise_succession_candidate = high_investment and potential >= 84 and overall >= 70 and quality_gap <= 4.5
+            playoff_pace_protected = playoff_pace and starter_playing_ok and franchise_succession_candidate
+            succession_case = (
+                week >= 8
+                and franchise_succession_candidate
+                and not playoff_pace_protected
+                and (losing_context or starter_struggle >= 0.28 or (week >= 10 and fringe_context))
+            )
             readiness = clamp((candidate_score - 62.0) / 18.0, 0.0, 1.0)
             case = investment * 0.38 + readiness * 0.22 + starter_struggle * 0.30
             if losing_context:
                 case += 0.16
             if week >= 7 and high_investment:
-                case += 0.13
-            if week >= 10 and (losing_context or starter_struggle >= 0.38):
+                case += 0.08 if (losing_context or starter_struggle >= 0.24 or fringe_context) else 0.02
+            if week >= 10 and (
+                losing_context
+                or starter_struggle >= 0.32
+                or (franchise_succession_candidate and not playoff_pace_protected and fringe_context)
+            ):
                 case += 0.14
             if week >= 13 and win_pct < 0.50:
                 case += 0.14
             if potential >= 84:
                 case += 0.05
             case -= max(0.0, quality_gap - 2.0) * (0.030 if raw else 0.018)
-            if contention_protection:
+            if succession_case:
+                case += 0.20
+            if playoff_pace_protected:
+                case -= 0.30
+            elif contention_protection:
                 case -= 0.24
             if high_investment and quality_gap <= 2.0 and overall >= 70:
-                case += 0.18
+                case += 0.18 if (succession_case or starter_struggle >= 0.28) else 0.08
             threshold = 0.68
             if week <= 4 and not (quality_gap <= 1.0 and overall >= 71):
                 threshold += 0.18
@@ -2620,6 +2684,10 @@ class MatchEngine:
             pass_rate += min(0.20, abs(score_diff) * 0.012)
         elif late and score_diff > 0:
             pass_rate -= min(0.18, score_diff * 0.010)
+        if self.quarter >= 3 and score_diff >= 17:
+            pass_rate -= min(0.30, 0.10 + (score_diff - 17) * 0.006)
+        if self.quarter == 4 and score_diff >= 28:
+            pass_rate -= 0.10
 
         qb = self.active_starter(offense, "QB")
         pass_identity = weighted_average(qb, QB_PASS_WEIGHTS)
@@ -2630,7 +2698,8 @@ class MatchEngine:
         pass_rate += (rb_profile.pass_game_usage - 50) * 0.0008
         if down <= 2 and distance <= 3:
             pass_rate -= (rb_profile.short_yardage_trust - 50) * 0.0008
-        return self.rng.random() < clamp(pass_rate, 0.25, 0.86)
+        min_pass_rate = 0.16 if score_diff >= 17 and self.quarter >= 3 else 0.25
+        return self.rng.random() < clamp(pass_rate, min_pass_rate, 0.86)
 
     def fourth_down_decision(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> str:
         fg_distance = 100 - field_pos + 17
@@ -2748,7 +2817,8 @@ class MatchEngine:
     def should_spike(self, offense: TeamSnapshot, down: int, field_pos: int) -> bool:
         if self.quarter not in {2, 4, 5} or down >= 4:
             return False
-        if self.current_score_diff(offense) > 0 or self.timeouts[offense.team_id] > 0:
+        score_diff = self.current_score_diff(offense)
+        if score_diff > 0 or score_diff < -16 or self.timeouts[offense.team_id] > 0:
             return False
         return self.clock_tenths <= 38 * TENTHS_PER_SECOND and field_pos >= 45
 

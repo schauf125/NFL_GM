@@ -473,16 +473,6 @@ def action_complete(args: argparse.Namespace) -> None:
         for warning in validation.warnings:
             print(f"Schedule warning: {warning}")
 
-        advanced = False
-        if args.no_advance_date:
-            print("Skipped active game date advance.")
-        else:
-            advanced = advance_active_game(
-                con,
-                target_offseason_date,
-                process_days=args.process_days_on_advance,
-            )
-
         progression_result = None
         if args.no_progression:
             print("Skipped offseason progression/regression.")
@@ -508,6 +498,16 @@ def action_complete(args: argparse.Namespace) -> None:
                 decision_date=target_offseason_date,
                 seed=retirement_seed(args.season, args.retirement_seed),
                 force=args.force_retirements,
+            )
+
+        advanced = False
+        if args.no_advance_date:
+            print("Skipped active game date advance.")
+        else:
+            advanced = advance_active_game(
+                con,
+                target_offseason_date,
+                process_days=args.process_days_on_advance,
             )
 
         post = postseason_status(con, args.season)
