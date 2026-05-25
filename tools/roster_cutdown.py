@@ -167,7 +167,17 @@ def current_date(con: sqlite3.Connection) -> str:
     row = con.execute(
         "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
     ).fetchone()
-    return row["setting_value"] if row else datetime.now().date().isoformat()
+    if row and row["setting_value"]:
+        return str(row["setting_value"])
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute('SELECT "current_date" FROM active_game_save_view LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    if table_exists(con, "game_saves"):
+        row = con.execute('SELECT "current_date" FROM game_saves ORDER BY updated_at DESC LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    return f"{current_season(con)}-06-01"
 
 
 def backup_database(db_path: Path) -> Path:
@@ -256,7 +266,13 @@ def active_depth_slots_for_team(con: sqlite3.Connection, team_id: int, season: i
     ).fetchone()
     if not row:
         return None
-    info = depth_packages.scheme_packages_from_row(row)
+    info = depth_packages.team_package_profile_from_db(
+        con,
+        team_id,
+        season,
+        row,
+        team_abbr=str(row["team"] or ""),
+    )
     return set(
         depth_packages.active_depth_slots(
             list(info.get("offensePackages") or ["11", "12"]),
@@ -839,6 +855,25 @@ def release_player(
     old_status = player["status"] or ACTIVE_STATUS
     from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
     contract_id = active_contract_id(con, player_id)
+    if (
+        from_team_id is not None
+        and old_status != PRACTICE_SQUAD_STATUS
+        and roster_rules.waiver_required_for_player(con, player, season=season, waiver_date=current_date(con))
+    ):
+        roster_rules.place_player_on_waivers(
+            con,
+            player=player,
+            season=season,
+            waiver_date=current_date(con),
+            reason=notes,
+            source=source,
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=from_team_id,
+            reason="Player waiver changed roster composition.",
+        )
+        return
     if contract_id:
         con.execute("UPDATE contracts SET is_active = 0 WHERE contract_id = ?", (contract_id,))
         if table_exists(con, "contract_years"):

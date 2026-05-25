@@ -893,7 +893,13 @@ def load_depth_rank(con: sqlite3.Connection, season: int | None = None) -> dict[
             """,
             (season,),
         ).fetchall():
-            info = depth_packages.scheme_packages_from_row(row)
+            info = depth_packages.team_package_profile_from_db(
+                con,
+                int(row["team_id"]),
+                season,
+                row,
+                team_abbr=str(row["team"] or ""),
+            )
             active_slots_by_team[int(row["team_id"])] = set(
                 depth_packages.active_depth_slots(
                     list(info.get("offensePackages") or ["11", "12"]),
@@ -3260,7 +3266,19 @@ def current_alert_date(con: sqlite3.Connection) -> str:
         row = con.execute("SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'").fetchone()
         if row and row["setting_value"]:
             return str(row["setting_value"])
-    return date.today().isoformat()
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute('SELECT "current_date" FROM active_game_save_view LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    if table_exists(con, "game_saves"):
+        row = con.execute('SELECT "current_date" FROM game_saves ORDER BY updated_at DESC LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    if table_exists(con, "game_settings"):
+        row = con.execute("SELECT setting_value FROM game_settings WHERE setting_key = 'current_season'").fetchone()
+        if row and row["setting_value"]:
+            return f"{int(row['setting_value'])}-06-01"
+    return "2026-06-01"
 
 
 def alert_already_exists(

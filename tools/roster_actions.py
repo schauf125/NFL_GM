@@ -25,6 +25,7 @@ from setup_contract_years import ensure_schema as ensure_contract_schema
 from setup_contract_years import rebuild_contract_years, sync_team_cap_space
 from setup_transactions_cap_ledger import ensure_schema as ensure_transaction_schema
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger
+import roster_rules
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,11 @@ def current_season(con: sqlite3.Connection) -> int:
 
 
 def today(con: sqlite3.Connection) -> str:
+    row = con.execute(
+        "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
+    ).fetchone()
+    if row and row[0]:
+        return str(row[0])
     return con.execute("SELECT date('now')").fetchone()[0]
 
 
@@ -508,6 +514,23 @@ def action_release(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     from_team_id = player["team_id"]
     before = cap_row(con, from_team_id)
     season = current_season(con)
+    if roster_rules.waiver_required_for_player(con, player, season=season, waiver_date=today(con)):
+        roster_rules.ensure_schema(con)
+        waiver_id = roster_rules.place_player_on_waivers(
+            con,
+            player=player,
+            season=season,
+            waiver_date=today(con),
+            reason="Released and subject to waivers.",
+            source=SOURCE,
+        )
+        rebuild_financials(con)
+        after = cap_row(con, from_team_id)
+        print(
+            f"Waived {player['first_name']} {player['last_name']} "
+            f"(entry {waiver_id}). Current space: {format_money(after['cap_space'])}."
+        )
+        return
     contract = active_contract(con, player["player_id"])
     dead_cap = 0
     contract_id = None

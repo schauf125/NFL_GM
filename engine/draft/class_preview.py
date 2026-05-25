@@ -19,6 +19,8 @@ from .names import GeneratedName, NameGenerator, UNITED_STATES
 from .physical import PhysicalProfileGenerator, PhysicalTraits, format_height, format_measurement
 from .scouting import ScoutingReportGenerator
 from .workouts import PrivateWorkoutGenerator, ProDayGenerator
+from engine.special_teams_flex import SPECIAL_TEAMS_FLEX_LABELS, flex_json_for_profile
+from engine.specialist_behavior import generated_specialist_behavior_profile
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -406,6 +408,7 @@ class DraftClassPreviewRow:
     secondary_role_score: float | None
     ratings: dict[str, int]
     role_scores: dict[str, float]
+    special_teams_flex: dict[str, dict[str, object]]
     top_ratings: str
     weak_ratings: str
     scout_lens: str
@@ -647,6 +650,56 @@ class DraftClassPreviewGenerator:
                 discovery_profile=discovery_profile,
                 college_tier=college.college_tier,
             )
+            special_teams_flex = self._special_teams_flex(
+                position=position,
+                attributes=attributes,
+                age=college.age,
+                draft_year=draft_year,
+                rank=index,
+                college_tier=college.college_tier,
+                discovery_profile=discovery_profile,
+            )
+            special_teams_note = self._special_teams_scouting_note(
+                position=position,
+                rank=index,
+                college_tier=college.college_tier,
+                discovery_profile=discovery_profile,
+                flex=special_teams_flex,
+            )
+            special_teams_story = self._special_teams_storyline_note(
+                rank=index,
+                college_tier=college.college_tier,
+                discovery_profile=discovery_profile,
+                flex=special_teams_flex,
+            )
+            scouting_summary = self._append_sentence(
+                self._append_pathway_summary(
+                    self._append_archetype_summary(
+                        scouting_report.summary,
+                        archetype=attributes.archetype,
+                        primary_role=attributes.primary_role,
+                        secondary_role=attributes.secondary_role,
+                        identity_status=attributes.archetype_identity_status,
+                    ),
+                    development_pathway=development_pathway,
+                    pipeline_note=pipeline_note,
+                    birth_country=generated_name.country,
+                    college_tier=college.college_tier,
+                ),
+                special_teams_note,
+            )
+            scouting_full_report = self._append_sentence(scouting_report.full_text, special_teams_note)
+            discovery_notes = self._append_sentence(
+                self._discovery_notes(
+                    college_tier=college.college_tier,
+                    discovery_profile=discovery_profile,
+                    development_pathway=development_pathway,
+                    pipeline_note=pipeline_note,
+                    birth_country=generated_name.country,
+                    is_international=generated_name.is_international,
+                ),
+                special_teams_story,
+            )
             origin_ethnicity_key = (
                 self.name_generator.ethnicity_key_for_country(generated_name.country)
                 or generated_name.ethnicity_key
@@ -665,14 +718,7 @@ class DraftClassPreviewGenerator:
                         scout_confidence=scouting_report.scout_confidence,
                         discovery_profile=discovery_profile,
                     ),
-                    discovery_notes=self._discovery_notes(
-                        college_tier=college.college_tier,
-                        discovery_profile=discovery_profile,
-                        development_pathway=development_pathway,
-                        pipeline_note=pipeline_note,
-                        birth_country=generated_name.country,
-                        is_international=generated_name.is_international,
-                    ),
+                    discovery_notes=discovery_notes,
                     development_pathway=development_pathway,
                     pipeline_note=pipeline_note,
                     display_name=name_metadata["display_name"],
@@ -769,6 +815,7 @@ class DraftClassPreviewGenerator:
                     secondary_role_score=attributes.secondary_role_score,
                     ratings=dict(attributes.ratings),
                     role_scores=dict(attributes.role_scores),
+                    special_teams_flex=special_teams_flex,
                     top_ratings=attributes.top_ratings,
                     weak_ratings=attributes.weak_ratings,
                     scout_lens=scouting_report.scout_label,
@@ -776,23 +823,11 @@ class DraftClassPreviewGenerator:
                     scout_grade=scouting_report.perceived_grade,
                     scout_ceiling=scouting_report.perceived_ceiling,
                     scout_risk=scouting_report.perceived_risk,
-                    scouting_summary=self._append_pathway_summary(
-                        self._append_archetype_summary(
-                            scouting_report.summary,
-                            archetype=attributes.archetype,
-                            primary_role=attributes.primary_role,
-                            secondary_role=attributes.secondary_role,
-                            identity_status=attributes.archetype_identity_status,
-                        ),
-                        development_pathway=development_pathway,
-                        pipeline_note=pipeline_note,
-                        birth_country=generated_name.country,
-                        college_tier=college.college_tier,
-                    ),
+                    scouting_summary=scouting_summary,
                     scouting_strengths=scouting_report.strengths_text,
                     scouting_concerns=scouting_report.concerns_text,
                     scouting_projection=scouting_report.projection,
-                    scouting_report=scouting_report.full_text,
+                    scouting_report=scouting_full_report,
                     ethnicity_key=generated_name.ethnicity_key,
                     ethnicity=appearance.ethnicity_note,
                     primary_ethnicity=appearance.primary_ethnicity_label,
@@ -1208,7 +1243,25 @@ class DraftClassPreviewGenerator:
             component -= 1.4
         elif row.medical_risk == "Red flag":
             component -= 3.5
+        component += self._special_teams_board_component(row)
         return component
+
+    def _special_teams_board_component(self, row: DraftClassPreviewRow) -> float:
+        best_role = self._notable_special_teams_role(row.special_teams_flex)
+        if not best_role:
+            return 0.0
+        role, current, _potential = best_role
+        rank = int(row.public_board_rank or row.rank or 999)
+        if rank <= 32 and role not in {"PR", "KR"}:
+            return 0.0
+        component = max(0.0, current - 5) * 0.22
+        if row.college_tier == "Small":
+            component += 0.22
+        if row.public_board_status == "off_public_board":
+            component += 0.18
+        if role in {"PR", "KR"} and row.position.upper() in {"WR", "RB", "CB", "NB", "FS", "SS"}:
+            component += 0.18
+        return min(component, 1.15)
 
     def _development_pathway(
         self,
@@ -1537,6 +1590,8 @@ class DraftClassPreviewGenerator:
                 reasons.append("private workouts gave teams more conviction")
             if row.college_tier == "Small":
                 reasons.append("area scouts kept pushing his small-school file up the board")
+            if self._notable_special_teams_role(row.special_teams_flex):
+                reasons.append("special-teams value gave coaches a cleaner active-day path")
             reason = self.rng.choice(reasons)
             return "Riser", f"Moved up about {board_delta} slots as {reason}."
         if board_delta <= -55:
@@ -1716,6 +1771,120 @@ class DraftClassPreviewGenerator:
         )
 
     @staticmethod
+    def _append_sentence(text: str, sentence: str) -> str:
+        text = (text or "").strip()
+        sentence = (sentence or "").strip()
+        if not sentence:
+            return text
+        if sentence in text:
+            return text
+        return f"{text} {sentence}".strip()
+
+    def _special_teams_scouting_note(
+        self,
+        *,
+        position: str,
+        rank: int,
+        college_tier: str,
+        discovery_profile: str,
+        flex: dict[str, dict[str, object]],
+    ) -> str:
+        position = str(position or "").upper()
+        if position in {"QB", "K", "P", "LS"}:
+            return ""
+        notable = self._notable_special_teams_role(flex)
+        if not notable:
+            return ""
+
+        role, current, potential = notable
+        return_role = role in {"PR", "KR"}
+        hidden_like = discovery_profile in {HIDDEN_DISCOVERY_PROFILE, "undiscovered", "off_public_board"}
+        late_or_hidden = rank > 96 or hidden_like
+        small_school = college_tier == "Small"
+        chance = 0.0
+        if current >= 7:
+            chance = 0.42
+        elif current >= 6 and (small_school or late_or_hidden):
+            chance = 0.26
+        elif return_role and current >= 6:
+            chance = 0.22
+        elif current >= 5 and small_school and late_or_hidden:
+            chance = 0.10
+
+        if rank <= 32:
+            chance = 0.16 if return_role and current >= 6 else 0.03
+        elif rank <= 64 and not (return_role or small_school):
+            chance *= 0.55
+        if potential >= 9 and (small_school or late_or_hidden):
+            chance += 0.04
+        if self.rng.random() >= min(chance, 0.55):
+            return ""
+
+        label = SPECIAL_TEAMS_FLEX_LABELS.get(role, role)
+        if return_role:
+            return self.rng.choice([
+                f"Special teams note: scouts have him in the {label.lower()} conversation if ball security checks out.",
+                "Special teams note: return-game traits are visible enough to matter on game-day roster math.",
+                f"Special teams note: he has a real {label.lower()} path, though offensive/defensive value still drives the grade.",
+            ])
+        if small_school:
+            return self.rng.choice([
+                f"Special teams note: area scouts think {label.lower()} work could be his first Sunday ticket.",
+                "Special teams note: small-school tape shows enough coverage-unit value to help him stick early.",
+                f"Special teams note: coaches may notice the {label.lower()} profile before the main role fully translates.",
+            ])
+        if late_or_hidden:
+            return self.rng.choice([
+                f"Special teams note: the cleanest early path may be {label.lower()} work while the main position develops.",
+                "Special teams note: teams looking late could see a core-unit contributor, not just a camp body.",
+            ])
+        return f"Special teams note: {label.lower()} value is a small but real part of the evaluation."
+
+    def _special_teams_storyline_note(
+        self,
+        *,
+        rank: int,
+        college_tier: str,
+        discovery_profile: str,
+        flex: dict[str, dict[str, object]],
+    ) -> str:
+        notable = self._notable_special_teams_role(flex)
+        if not notable:
+            return ""
+        _role, current, potential = notable
+        if current < 6 and potential < 9:
+            return ""
+        hidden_like = discovery_profile in {HIDDEN_DISCOVERY_PROFILE, "undiscovered", "off_public_board"}
+        if not (college_tier == "Small" or hidden_like or rank > 160):
+            return ""
+        if self.rng.random() > 0.16:
+            return ""
+        return "Area notes include a special-teams path that could help him dress before the full position grade arrives."
+
+    @staticmethod
+    def _notable_special_teams_role(
+        flex: dict[str, dict[str, object]] | None,
+    ) -> tuple[str, int, int] | None:
+        best: tuple[str, int, int] | None = None
+        best_score = -1
+        for role, item in (flex or {}).items():
+            try:
+                current = int(item.get("current") or item.get("experience") or 0)
+                potential = int(item.get("potential") or current)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            role_key = str(role or "").upper()
+            score = current * 10 + min(potential, 10)
+            if role_key in {"PR", "KR"}:
+                score += 3
+            if score > best_score:
+                best = (role_key, current, potential)
+                best_score = score
+        if best and (best[1] >= 6 or best[2] >= 9):
+            return best
+        return None
+
+    @staticmethod
     def _projected_round(public_rank: int) -> int | None:
         if public_rank > 256:
             return None
@@ -1751,6 +1920,37 @@ class DraftClassPreviewGenerator:
             ages.append(age)
         self.rng.shuffle(ages)
         return ages
+
+    def _special_teams_flex(
+        self,
+        *,
+        position: str,
+        attributes: object,
+        age: int,
+        draft_year: int,
+        rank: int,
+        college_tier: str = "",
+        discovery_profile: str = "",
+    ) -> dict[str, dict[str, object]]:
+        specialist_profile = generated_specialist_behavior_profile(
+            attributes.archetype,
+            attributes.ratings,
+            position=position.upper(),
+        )
+        return flex_json_for_profile(
+            position=position,
+            ratings=attributes.ratings,
+            specialist_profile=specialist_profile.as_dict(),
+            role_scores=attributes.role_scores,
+            overall=attributes.true_grade,
+            potential_overall=attributes.ceiling_grade,
+            age=age,
+            is_rookie=True,
+            draft_rank=rank,
+            college_tier=college_tier,
+            discovery_profile=discovery_profile,
+            seed_key=f"{self.seed}:{draft_year}:{rank}:special-teams-flex",
+        )
 
     def _position_list(self, count: int) -> list[str]:
         positions: list[str] = []
@@ -1998,6 +2198,7 @@ HIDDEN_EXPORT_FIELDS = {
     "secondary_role_score",
     "ratings",
     "role_scores",
+    "special_teams_flex",
     "top_ratings",
     "weak_ratings",
     "private_workout_status",

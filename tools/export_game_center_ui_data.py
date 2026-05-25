@@ -512,13 +512,22 @@ def default_export_db() -> Path:
 
 
 def upcoming_events(conn: sqlite3.Connection, limit: int = 18) -> list[dict[str, Any]]:
-    if not table_exists(conn, "upcoming_league_events_view"):
+    if not table_exists(conn, "league_calendar_view") or not table_exists(conn, "game_settings"):
         return []
     rows = conn.execute(
         """
-        SELECT event_start_date, event_name, event_category, phase_name, event_time_et, notes
-        FROM upcoming_league_events_view
-        ORDER BY event_start_date, sort_order
+        SELECT
+            lcv.event_start_date,
+            lcv.event_name,
+            lcv.event_category,
+            lcv.phase_name,
+            lcv.event_time_et,
+            lcv.notes
+        FROM league_calendar_view lcv
+        JOIN game_settings gs
+          ON gs.setting_key = 'current_game_date'
+        WHERE date(lcv.event_start_date) > date(gs.setting_value)
+        ORDER BY lcv.event_start_date, lcv.sort_order
         LIMIT ?
         """,
         (limit,),
@@ -606,7 +615,7 @@ def parse_iso_date(value: str | None, fallback: date) -> date:
 
 
 def calendar_bounds(current_date: str | None) -> tuple[date, date, date]:
-    focus = parse_iso_date(current_date, date.today())
+    focus = parse_iso_date(current_date, date(2026, 6, 1))
     first_of_month = focus.replace(day=1)
     days_since_sunday = (first_of_month.weekday() + 1) % 7
     start = first_of_month - timedelta(days=days_since_sunday)
@@ -756,21 +765,6 @@ def calendar_news_rows(
             """,
             (game_id or "default", start_date, end_date),
         ).fetchall()
-    )
-
-
-def next_calendar_event(conn: sqlite3.Connection) -> dict[str, Any] | None:
-    if not table_exists(conn, "upcoming_league_events_view"):
-        return None
-    return one_as_dict(
-        conn.execute(
-            """
-            SELECT event_start_date, event_name, event_category, phase_name, event_time_et, notes
-            FROM upcoming_league_events_view
-            ORDER BY event_start_date, sort_order
-            LIMIT 1
-            """
-        ).fetchone()
     )
 
 
@@ -991,14 +985,12 @@ def calendar_summary(
         )
         cursor += timedelta(days=1)
 
-    next_event = next_calendar_event(conn)
     upcoming_events = upcoming_calendar_events(conn, current_date=current_date, limit=12)
     next_games = upcoming_calendar_games(conn, season=season, current_date=current_date, user_team_id=user_team_id)
     preseason_matchups = user_preseason_matchups_by_week(conn, season=season, user_team_id=user_team_id)
     attach_preseason_matchups(events, matchups_by_week=preseason_matchups)
     attach_preseason_matchups(upcoming_events, matchups_by_week=preseason_matchups)
-    if next_event:
-        attach_preseason_matchups([next_event], matchups_by_week=preseason_matchups)
+    next_event = upcoming_events[0] if upcoming_events else None
     return {
         "focusDate": display_date,
         "saveDate": current_date,
@@ -1141,9 +1133,9 @@ def injury_center_summary(
             "active": [],
             "recent": [],
             "counts": {"active": 0, "userActive": 0, "majorActive": 0, "recent": 0, "userRecent": 0},
-            "updatedAt": datetime.now().isoformat(timespec="seconds"),
+            "updatedAt": current_date or "",
         }
-    today = current_date or date.today().isoformat()
+    today = current_date or "2026-06-01"
     active_rows = conn.execute(
         """
         SELECT
@@ -1281,7 +1273,7 @@ def injury_center_summary(
         "active": active,
         "recent": recent,
         "counts": counts,
-        "updatedAt": datetime.now().isoformat(timespec="seconds"),
+        "updatedAt": today,
     }
 
 
@@ -3095,6 +3087,120 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
     }
 
 
+def waiver_summary(conn: sqlite3.Connection, season: int, user_team_id: int | None = None) -> dict[str, Any]:
+    try:
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        roster_rules.seed_waiver_priority(conn, season)
+    except Exception:
+        if not table_exists(conn, "waiver_wire"):
+            return {"season": season, "wire": [], "claims": [], "claimOrder": [], "counts": {"open": 0, "claims": 0}}
+    logos = team_logo_map(conn)
+    wire = []
+    if table_exists(conn, "waiver_wire"):
+        wire = rows_as_dicts(
+            conn.execute(
+                """
+                SELECT
+                    ww.waiver_id,
+                    ww.player_id,
+                    p.first_name || ' ' || p.last_name AS player_name,
+                    p.position,
+                    p.age,
+                    p.years_exp,
+                    p.overall,
+                    p.potential,
+                    ww.original_team_id,
+                    ot.abbreviation AS original_team,
+                    ww.waiver_date,
+                    ww.claim_deadline,
+                    ww.season,
+                    ww.status,
+                    ww.reason,
+                    ww.resolved_at,
+                    COUNT(wc.claim_id) AS claim_count,
+                    MAX(CASE WHEN wc.claiming_team_id = ? THEN wc.status END) AS user_claim_status,
+                    COALESCE(cy.cap_hit, c.aav, 0) AS cap_hit,
+                    c.aav,
+                    c.end_year
+                FROM waiver_wire ww
+                JOIN players p ON p.player_id = ww.player_id
+                LEFT JOIN teams ot ON ot.team_id = ww.original_team_id
+                LEFT JOIN waiver_claims wc ON wc.waiver_id = ww.waiver_id
+                LEFT JOIN contracts c ON c.player_id = p.player_id AND COALESCE(c.is_active, 1) = 1
+                LEFT JOIN contract_years cy
+                  ON cy.contract_id = c.contract_id
+                 AND cy.season = ww.season
+                 AND COALESCE(cy.is_active, 1) = 1
+                WHERE ww.season = ?
+                  AND (ww.status = 'Open' OR ww.resolved_at IS NOT NULL)
+                GROUP BY ww.waiver_id
+                ORDER BY
+                    CASE ww.status WHEN 'Open' THEN 0 WHEN 'Claimed' THEN 1 WHEN 'Cleared' THEN 2 ELSE 3 END,
+                    ww.claim_deadline,
+                    p.potential DESC,
+                    p.overall DESC
+                LIMIT 160
+                """,
+                (user_team_id, season),
+            ).fetchall()
+        )
+    for row in wire:
+        row["originalTeamLogo"] = logos.get(str(row.get("original_team") or ""))
+        money_value = int(row.get("cap_hit") or row.get("aav") or 0)
+        if money_value >= 1_000_000:
+            row["contractLabel"] = f"${money_value / 1_000_000:.1f}M"
+        elif money_value > 0:
+            row["contractLabel"] = f"${money_value // 1_000}K"
+        else:
+            row["contractLabel"] = "-"
+    claims = []
+    if table_exists(conn, "waiver_claims_view"):
+        claims = rows_as_dicts(
+            conn.execute(
+                """
+                SELECT *
+                FROM waiver_claims_view
+                WHERE (? IS NULL OR claiming_team_id = ?)
+                ORDER BY claim_date DESC, claim_order, claim_id DESC
+                LIMIT 80
+                """,
+                (user_team_id, user_team_id),
+            ).fetchall()
+        )
+    claim_order = []
+    if table_exists(conn, "waiver_priority"):
+        claim_order = rows_as_dicts(
+            conn.execute(
+                """
+                SELECT wp.priority, wp.team_id, t.abbreviation AS team,
+                       t.city || ' ' || t.nickname AS team_name,
+                       wp.source, wp.notes
+                FROM waiver_priority wp
+                JOIN teams t ON t.team_id = wp.team_id
+                WHERE wp.season = ?
+                ORDER BY wp.priority
+                LIMIT 32
+                """,
+                (season,),
+            ).fetchall()
+        )
+        for row in claim_order:
+            row["teamLogo"] = logos.get(str(row.get("team") or ""))
+    return {
+        "season": season,
+        "wire": wire,
+        "claims": claims,
+        "claimOrder": claim_order,
+        "basis": claim_order[0]["source"] if claim_order else None,
+        "counts": {
+            "open": len([row for row in wire if row.get("status") == "Open"]),
+            "claims": len(claims),
+            "userPending": len([row for row in wire if row.get("user_claim_status") == "Pending"]),
+        },
+    }
+
+
 def free_agency_start_date(conn: sqlite3.Connection, league_year: int) -> str:
     if table_exists(conn, "league_calendar_events"):
         row = conn.execute(
@@ -3291,6 +3397,31 @@ def stat_leaders(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
         row["field_goal_attempts"] = row.get("fg_attempts") or 0
         row["extra_points_made"] = row.get("xp_made") or 0
         row["extra_point_attempts"] = row.get("xp_attempts") or 0
+    kick_returns = player_leaders(
+        conn,
+        season,
+        stat_keys=["kickoff_returns", "kickoff_return_yards", "kickoff_return_tds", "special_teams_tds"],
+        sort_key="kickoff_return_yards",
+    )
+    punt_returns = player_leaders(
+        conn,
+        season,
+        stat_keys=["punt_returns", "punt_return_yards", "punt_return_tds", "fair_catches", "special_teams_tds"],
+        sort_key="punt_return_yards",
+    )
+    special_teams_tackles = player_leaders(
+        conn,
+        season,
+        stat_keys=[
+            "special_teams_tackles",
+            "special_teams_solo_tackles",
+            "special_teams_assisted_tackles",
+            "special_teams_stops",
+            "special_teams_snaps",
+        ],
+        sort_key="special_teams_tackles",
+        exclude_positions=["QB", "K", "PK", "P"],
+    )
 
     return {
         "passing": passing,
@@ -3328,6 +3459,9 @@ def stat_leaders(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
             exclude_positions=["QB"],
         ),
         "kicking": kicking,
+        "kickReturns": kick_returns,
+        "puntReturns": punt_returns,
+        "specialTeamsTackles": special_teams_tackles,
         "snaps": player_leaders(
             conn,
             season,
@@ -3377,19 +3511,24 @@ def flex_positions(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int,
     placeholders = ",".join("?" for _ in player_ids)
     rows = conn.execute(
         f"""
-        SELECT player_id, position, experience, potential, is_primary
-        FROM player_position_flex
-        WHERE player_id IN ({placeholders})
-        ORDER BY player_id, is_primary DESC, experience DESC, potential DESC, position
+        SELECT f.player_id, f.position, f.experience, f.potential, f.is_primary,
+               COALESCE(p.is_rookie, 0) AS is_rookie
+        FROM player_position_flex f
+        JOIN players p ON p.player_id = f.player_id
+        WHERE f.player_id IN ({placeholders})
+        ORDER BY f.player_id, f.is_primary DESC, f.experience DESC, f.potential DESC, f.position
         """,
         player_ids,
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
+        position = str(row["position"] or "")
+        potential_hidden = position.upper() in {"GUN", "PR", "KR", "ST"} and bool(row["is_rookie"])
         grouped.setdefault(int(row["player_id"]), []).append({
-            "position": row["position"],
+            "position": position,
             "current": int(row["experience"] or 0),
-            "potential": int(row["potential"] or 0),
+            "potential": int(row["experience"] or 0) if potential_hidden else int(row["potential"] or 0),
+            "potentialHidden": potential_hidden,
             "primary": bool(row["is_primary"]),
         })
     return grouped
@@ -3420,7 +3559,13 @@ def depth_chart_summary(
             """,
             (team_id, season),
         ).fetchone()
-    scheme = depth_packages.scheme_packages_from_row(scheme_row)
+    scheme = depth_packages.team_package_profile_from_db(
+        conn,
+        team_id,
+        season,
+        scheme_row,
+        team_abbr=str(team_row["abbreviation"] or ""),
+    )
     active_slots = set(
         depth_packages.active_depth_slots(
             list(scheme.get("offensePackages") or ["11", "12"]),
@@ -3578,6 +3723,16 @@ def depth_chart_summary(
         unit = units.setdefault(row["unit"], {"unit": row["unit"], "slots": {}})
         slot = unit["slots"].setdefault(row["slot"], {"slot": row["slot"], "players": []})
         slot["players"].append(row)
+    offense_slots = {"QB", "RB", "FB", "LWR", "RWR", "SWR", "TE", "LT", "LG", "C", "RG", "RT"}
+    for slot_key in sorted(active_slots):
+        if slot_key in depth_packages.SPECIAL_TEAMS_SLOTS:
+            unit_name = "Special Teams"
+        elif slot_key in offense_slots:
+            unit_name = "Offense"
+        else:
+            unit_name = "Defense"
+        unit = units.setdefault(unit_name, {"unit": unit_name, "slots": {}})
+        unit["slots"].setdefault(slot_key, {"slot": slot_key, "players": []})
     unit_list = []
     for unit in units.values():
         unit_list.append({
@@ -4312,6 +4467,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             },
             "scouting": scouting_payload,
             "freeAgency": free_agency_summary(conn, fa_league_year),
+            "waivers": waiver_summary(conn, current_season, user_team_id),
             "aiGm": ai_gm_summary(conn, user_team, game_id, current_season),
             "commands": command_set(
                 current_season,

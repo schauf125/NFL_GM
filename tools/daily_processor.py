@@ -701,6 +701,24 @@ def process_calendar_events(
                 f"{details} {draft_year} draft class setup pending; "
                 "choose Generate or Import Draft Class from the game UI."
             ).strip()
+        if event["event_code"] == "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN":
+            claim_result = roster_rules.seed_cpu_waiver_claims(
+                con,
+                season=int(event["league_year"]),
+                game_id=game_id,
+                include_user_team=False,
+                max_claims_per_team=3,
+                max_claims_total=64,
+                post_cutdown=True,
+            )
+            roster_rules.action_process_waivers(
+                con,
+                argparse.Namespace(date=target_date, all_open=False),
+            )
+            details = (
+                f"{details} Waiver claims processed: "
+                f"{claim_result.get('claims', 0)} CPU claim(s) filed."
+            ).strip()
         preseason_result = preseason_processor.run_for_event(
             con,
             game_id=game_id,

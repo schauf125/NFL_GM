@@ -65,6 +65,7 @@ ROW_DEFAULTS: dict[str, Any] = {
     "smile_profile": "",
     "media_style": "",
     "accessory_style": "",
+    "special_teams_flex": {},
 }
 
 

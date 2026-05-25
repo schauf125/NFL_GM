@@ -14,6 +14,7 @@ import sys
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import daily_processor
 import game_flow
@@ -819,6 +820,29 @@ def apply_cpu_roster_cutdowns_if_due(
         ]
         roster_cutdown.rebuild_contract_years(con)
         roster_cutdown.sync_team_cap_space(con)
+        waiver_deadline = calendar_event_date(
+            con,
+            int(game.current_league_year),
+            "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN",
+        )
+        if waiver_deadline and target >= date.fromisoformat(str(waiver_deadline)):
+            claim_result = roster_rules.seed_cpu_waiver_claims(
+                con,
+                season=int(game.current_league_year),
+                game_id=target_game_id,
+                include_user_team=include_user_team,
+                max_claims_per_team=3,
+                max_claims_total=64,
+                post_cutdown=True,
+            )
+            roster_rules.action_process_waivers(
+                con,
+                SimpleNamespace(date=str(target_date), all_open=False),
+            )
+            print(
+                "Post-cutdown waivers processed: "
+                f"{claim_result.get('claims', 0)} CPU claim(s) submitted."
+            )
         con.commit()
     if include_user_team:
         print(f"Automatic roster cutdowns applied for {len(results)} team(s), including the user team when needed.")
@@ -1565,12 +1589,21 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         if not game:
             raise ValueError("No active game. Run start first.")
         start_date = str(game.current_date)
+        requested_date = str(args.date)
+        if date.fromisoformat(requested_date) <= date.fromisoformat(start_date):
+            if getattr(args, "auto_sim_preseason", False):
+                simulate_preseason_before_target(game_id, game.current_league_year, requested_date)
+            print(f"Already at or past {requested_date}; current save date is {start_date}.")
+            sync_save(game_id)
+            return
         target_date, gate_message = gated_calendar_target(
             con,
             game,
-            args.date,
+            requested_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
         )
+    if getattr(args, "auto_sim_preseason", False):
+        simulate_preseason_before_target(game_id, game.current_league_year, target_date)
     if gate_message:
         print(gate_message)
     auto_top30_before_calendar_advance(game_id, target_date)
@@ -1589,6 +1622,122 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
     )
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
+
+
+def preseason_week_event_date(con: sqlite3.Connection, season: int, week: int) -> str | None:
+    return calendar_event_date(con, season, f"PRESEASON_WEEK_{int(week)}")
+
+
+def next_preseason_checkpoint(con: sqlite3.Connection, season: int) -> str | None:
+    if not table_exists(con, "season_games"):
+        return None
+    row = con.execute(
+        """
+        SELECT MIN(week) AS next_week
+        FROM season_games
+        WHERE season = ?
+          AND game_type = 'PRE'
+          AND COALESCE(played, 0) = 0
+        """,
+        (int(season),),
+    ).fetchone()
+    if row and row["next_week"] is not None:
+        event_date = preseason_week_event_date(con, season, int(row["next_week"]))
+        if event_date:
+            return event_date
+    return calendar_event_date(con, season, "FINAL_ROSTER_CUTDOWN_53")
+
+
+def advance_calendar_to_preseason_checkpoint(game_id: str | None, season: int) -> None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        game = game_flow.active_game(con)
+        if not game:
+            return
+        target_date = next_preseason_checkpoint(con, int(season))
+        if not target_date:
+            return
+        if date.fromisoformat(str(target_date)) <= date.fromisoformat(str(game.current_date)):
+            return
+        print(f"Advancing calendar to preseason checkpoint {target_date}.")
+        game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
+    sync_save(target_game_id)
+
+
+def simulate_preseason_before_target(game_id: str | None, season: int, target_date: str) -> None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        if not table_exists(con, "season_games"):
+            return
+        rows = con.execute(
+            """
+            SELECT
+                week,
+                COUNT(*) AS games,
+                SUM(CASE WHEN COALESCE(played, 0) = 1 THEN 1 ELSE 0 END) AS played,
+                MAX(game_date) AS last_date
+            FROM season_games
+            WHERE season = ?
+              AND game_type = 'PRE'
+            GROUP BY week
+            HAVING date(MAX(game_date)) < date(?)
+               AND SUM(CASE WHEN COALESCE(played, 0) = 1 THEN 1 ELSE 0 END) < COUNT(*)
+            ORDER BY week
+            """,
+            (int(season), str(target_date)),
+        ).fetchall()
+    for row in rows:
+        week = int(row["week"])
+        print(f"Simulating preseason Week {week} before advancing to {target_date}.")
+        run_tool_script(
+            target_game_id,
+            "sim_game.py",
+            [
+                "week",
+                str(week),
+                "--season",
+                str(int(season)),
+                "--game-type",
+                "PRE",
+                "--apply",
+            ],
+        )
+
+
+def next_unplayed_preseason_week(game_id: str | None, season: int, requested_week: int | None = None) -> int | None:
+    _target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        if not table_exists(con, "season_games"):
+            return None
+        params: list[Any] = [int(season)]
+        week_filter = ""
+        if requested_week is not None:
+            week_filter = "AND week >= ?"
+            params.append(int(requested_week))
+        row = con.execute(
+            f"""
+            SELECT MIN(week) AS week
+            FROM season_games
+            WHERE season = ?
+              AND game_type = 'PRE'
+              AND COALESCE(played, 0) = 0
+              {week_filter}
+            """,
+            tuple(params),
+        ).fetchone()
+        if row and row["week"] is not None:
+            return int(row["week"])
+        row = con.execute(
+            """
+            SELECT MIN(week) AS week
+            FROM season_games
+            WHERE season = ?
+              AND game_type = 'PRE'
+              AND COALESCE(played, 0) = 0
+            """,
+            (int(season),),
+        ).fetchone()
+        return int(row["week"]) if row and row["week"] is not None else None
 
 
 def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
@@ -2068,6 +2217,16 @@ def action_playtest_logs(args: argparse.Namespace) -> None:
 def action_sim_week(args: argparse.Namespace) -> None:
     args.game_id = sync_active_game_row_to_settings(args.game_id)
     game_type = str(getattr(args, "game_type", "REG") or "REG").upper()
+    if args.apply and game_type == "PRE":
+        requested_week = int(args.week)
+        playable_week = next_unplayed_preseason_week(args.game_id, args.season, requested_week)
+        if playable_week is None:
+            print("No unplayed preseason games remain.")
+            advance_calendar_to_preseason_checkpoint(args.game_id, args.season)
+            return
+        if playable_week != requested_week:
+            print(f"Preseason Week {requested_week} is already complete; simulating Week {playable_week} instead.")
+            args.week = playable_week
     if args.apply:
         if game_type == "REG" and not args.skip_roster_gate and stop_for_user_roster_cutdown_if_due(args.game_id, args.season):
             return
@@ -2089,6 +2248,8 @@ def action_sim_week(args: argparse.Namespace) -> None:
     if not args.weekly_hooks:
         script_args.append("--no-weekly-hooks")
     run_tool_script(args.game_id, "sim_game.py", script_args)
+    if args.apply and args.limit is None and game_type == "PRE":
+        advance_calendar_to_preseason_checkpoint(args.game_id, args.season)
     if args.apply and args.limit is None and game_type == "REG":
         ensure_playoff_tree_if_ready(args.game_id, args.season)
 
@@ -2121,6 +2282,8 @@ def action_sim_season(args: argparse.Namespace) -> None:
     if not args.weekly_hooks:
         script_args.append("--no-weekly-hooks")
     run_tool_script(args.game_id, "sim_game.py", script_args)
+    if args.apply and args.limit is None and game_type == "PRE":
+        advance_calendar_to_preseason_checkpoint(args.game_id, args.season)
     if args.apply and args.limit is None and game_type == "REG":
         ensure_playoff_tree_if_ready(args.game_id, args.season)
 
@@ -2446,6 +2609,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-roster-cutdown",
         action="store_true",
         help="Automatically handle the user team's roster cutdown if this advance crosses cutdown day.",
+    )
+    date_parser.add_argument(
+        "--auto-sim-preseason",
+        action="store_true",
+        help="Simulate any earlier unplayed preseason weeks before advancing to the requested date.",
     )
     date_parser.set_defaults(func=action_advance_to_date)
 

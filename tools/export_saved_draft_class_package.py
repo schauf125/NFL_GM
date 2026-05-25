@@ -125,6 +125,32 @@ def load_role_scores(con: sqlite3.Connection, draft_class_id: int) -> dict[int, 
     return scores
 
 
+def load_special_teams_flex(con: sqlite3.Connection, draft_class_id: int) -> dict[int, dict[str, dict[str, Any]]]:
+    flex: dict[int, dict[str, dict[str, Any]]] = {}
+    if not table_exists(con, "draft_prospect_special_teams_flex"):
+        return flex
+    rows = con.execute(
+        """
+        SELECT st.prospect_id, st.role_key, st.experience, st.potential, st.notes
+        FROM draft_prospect_special_teams_flex st
+        JOIN draft_prospects dp ON dp.prospect_id = st.prospect_id
+        WHERE dp.draft_class_id = ?
+        ORDER BY st.prospect_id, st.role_key
+        """,
+        (draft_class_id,),
+    ).fetchall()
+    for row in rows:
+        prospect_id = int(row["prospect_id"])
+        role_key = str(row["role_key"] or "").upper()
+        flex.setdefault(prospect_id, {})[role_key] = {
+            "role": role_key,
+            "current": int(row["experience"] or 0),
+            "potential": int(row["potential"] or 0),
+            "notes": row["notes"] or "",
+        }
+    return flex
+
+
 def load_single_row_map(con: sqlite3.Connection, table: str, draft_class_id: int, order_by: str = "") -> dict[int, sqlite3.Row]:
     if not table_exists(con, table):
         return {}
@@ -158,6 +184,7 @@ def draft_rows(con: sqlite3.Connection, draft_class: sqlite3.Row) -> list[DraftC
     draft_class_id = int(draft_class["draft_class_id"])
     ratings_by_prospect, _confidence_by_prospect = load_rating_maps(con, draft_class_id)
     role_scores_by_prospect = load_role_scores(con, draft_class_id)
+    special_teams_flex_by_prospect = load_special_teams_flex(con, draft_class_id)
     combine_by_prospect = load_single_row_map(con, "draft_prospect_combine_results", draft_class_id)
     pro_day_by_prospect = load_single_row_map(con, "draft_prospect_pro_day_results", draft_class_id)
     private_by_prospect = load_single_row_map(
@@ -291,6 +318,7 @@ def draft_rows(con: sqlite3.Connection, draft_class: sqlite3.Row) -> list[DraftC
             "secondary_role_score": role_scores.get(secondary_role),
             "ratings": ratings,
             "role_scores": role_scores,
+            "special_teams_flex": special_teams_flex_by_prospect.get(prospect_id, {}),
             "top_ratings": top_ratings,
             "weak_ratings": weak_ratings,
             "scout_lens": dp["scout_lens"] or "",

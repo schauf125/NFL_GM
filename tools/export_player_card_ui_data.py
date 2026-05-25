@@ -185,10 +185,18 @@ POSITION_LABELS = {
     "OG": "Guard",
     "C": "Center",
     "IDL": "Interior Defensive Line",
+    "DT": "Defensive Tackle",
+    "DE": "Defensive End",
+    "NT": "Nose Tackle",
     "EDGE": "Edge Defender",
     "LB": "Linebacker",
+    "ILB": "Inside Linebacker",
+    "OLB": "Outside Linebacker",
     "CB": "Cornerback",
+    "NB": "Nickel Back",
     "S": "Safety",
+    "FS": "Free Safety",
+    "SS": "Strong Safety",
     "K": "Kicker",
     "P": "Punter",
     "LS": "Long Snapper",
@@ -279,7 +287,7 @@ def role_label(role_key: str | None) -> str:
 
 
 def position_keys(position: str) -> list[str]:
-    return POSITION_RATING_KEYS.get(position, [
+    return POSITION_RATING_KEYS.get(position_group_key(position), [
         "speed",
         "strength",
         "agility",
@@ -291,10 +299,27 @@ def position_keys(position: str) -> list[str]:
 
 
 def position_relevant_metric(position: str, metric: dict[str, Any]) -> bool:
-    allowed = ATTRIBUTE_GROUPS_BY_POSITION.get(str(position or "").upper())
+    allowed = ATTRIBUTE_GROUPS_BY_POSITION.get(position_group_key(position))
     if not allowed:
         return True
     return str(metric.get("group") or "") in allowed
+
+
+def position_group_key(position: str | None) -> str:
+    key = str(position or "").upper()
+    if key in ATTRIBUTE_GROUPS_BY_POSITION or key in POSITION_RATING_KEYS:
+        return key
+    if key in {"DL", "DT", "DE", "NT"}:
+        return "IDL"
+    if key.endswith("LB"):
+        return "LB"
+    if key in {"DB", "CB", "NB"}:
+        return "CB"
+    if key in {"SAF", "FS", "SS"}:
+        return "S"
+    if key in {"OL", "LT", "RT", "LG", "RG", "G"}:
+        return "OG"
+    return key
 
 
 def relative_ui_path(local_path: str | None) -> str | None:

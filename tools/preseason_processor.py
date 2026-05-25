@@ -1237,6 +1237,26 @@ def action_event(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
         ensure_schema(con)
         con.commit()
+        event_date = args.event_date
+        if not event_date:
+            row = con.execute(
+                """
+                SELECT event_start_date
+                FROM calendar_events
+                WHERE league_year = ?
+                  AND event_code = ?
+                ORDER BY event_start_date
+                LIMIT 1
+                """,
+                (int(args.season), str(args.event_code)),
+            ).fetchone()
+            if row and row["event_start_date"]:
+                event_date = str(row["event_start_date"])
+            else:
+                setting = con.execute(
+                    "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
+                ).fetchone()
+                event_date = str(setting["setting_value"]) if setting and setting["setting_value"] else f"{int(args.season)}-08-01"
         con.execute("BEGIN")
         try:
             result = run_for_event(
@@ -1244,7 +1264,7 @@ def action_event(args: argparse.Namespace) -> None:
                 game_id=args.game_id,
                 season=args.season,
                 event_code=args.event_code,
-                event_date=args.event_date,
+                event_date=event_date,
                 seed=args.seed,
                 emit_messages=args.apply,
                 process_market=args.apply,
@@ -1274,7 +1294,7 @@ def build_parser() -> argparse.ArgumentParser:
     event.add_argument("--game-id", required=True)
     event.add_argument("--season", type=int, required=True)
     event.add_argument("--event-code", required=True)
-    event.add_argument("--event-date", default=datetime.now().date().isoformat())
+    event.add_argument("--event-date")
     event.add_argument("--seed")
     event.add_argument("--apply", action="store_true")
     event.add_argument(

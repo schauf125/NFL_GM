@@ -31,6 +31,7 @@ import export_player_card_ui_data
 import export_player_profile_ui_data
 import free_agency_processor
 import injury_notifications
+import roster_actions
 import roster_rules
 import sim_control
 import trade_engine
@@ -75,6 +76,9 @@ PLAYER_EXPORT_ACTIONS = {
     "free_agency_resolve",
     "free_agency_offer",
     "free_agency_cpu_seed",
+    "waiver_claim",
+    "waiver_cpu_seed",
+    "waiver_process",
     "contract_extend",
     "contract_tag",
     "contract_option_exercise",
@@ -83,7 +87,9 @@ PLAYER_EXPORT_ACTIONS = {
     "contract_restructure",
     "depth_chart_set",
     "depth_chart_move",
+    "depth_chart_swap",
     "roster_release_player",
+    "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
     "practice_squad_release",
@@ -112,7 +118,9 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "contract_restructure",
     "depth_chart_set",
     "depth_chart_move",
+    "depth_chart_swap",
     "roster_release_player",
+    "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
     "practice_squad_release",
@@ -122,6 +130,9 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "free_agency_advance_day",
     "free_agency_resolve",
     "free_agency_offer",
+    "waiver_claim",
+    "waiver_cpu_seed",
+    "waiver_process",
 }
 SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_extend",
@@ -131,6 +142,7 @@ SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_release",
     "contract_restructure",
     "roster_release_player",
+    "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
     "practice_squad_release",
@@ -155,6 +167,11 @@ FREE_AGENCY_RUN_ACTIONS = {
     "free_agency_advance_day",
     "free_agency_resolve",
     "free_agency_offer",
+}
+WAIVER_RUN_ACTIONS = {
+    "waiver_claim",
+    "waiver_cpu_seed",
+    "waiver_process",
 }
 TRADE_RUN_ACTIONS = {
     "trade_submit",
@@ -584,6 +601,28 @@ def free_agency_state_patch(db_path: Path) -> dict[str, Any]:
     }
 
 
+def waiver_state_patch(db_path: Path) -> dict[str, Any]:
+    context = game_context(db_path)
+    target_season = int(context["currentSeason"])
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        active = export_game_center_ui_data.active_save(conn) or {}
+        waivers = export_game_center_ui_data.waiver_summary(
+            conn,
+            target_season,
+            active.get("user_team_id"),
+        )
+    return {
+        "currentDate": context["currentDate"],
+        "currentSeason": context["currentSeason"],
+        "currentPhase": context["currentPhase"],
+        "settings": context["settings"],
+        "activeSave": context["activeSave"],
+        "waivers": waivers,
+        "waiversGeneratedAt": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[str, Any]]:
     if action in {"new_june1_save", "load_game", "delete_save"}:
         return {}, export_app_shell_default()
@@ -591,11 +630,14 @@ def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[
     if action in DRAFT_RUN_ACTIONS:
         patch = draft_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
-    if action in {"depth_chart_set", "depth_chart_move", "roster_release_player", "roster_change_number", "practice_squad_assign", "practice_squad_release"}:
+    if action in {"depth_chart_set", "depth_chart_move", "depth_chart_swap", "roster_release_player", "roster_cutdown_apply", "roster_change_number", "practice_squad_assign", "practice_squad_release"}:
         patch = depth_chart_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     if action in FREE_AGENCY_RUN_ACTIONS:
         patch = free_agency_state_patch(db_path)
+        return patch, app_shell_payload_for_active_db()
+    if action in WAIVER_RUN_ACTIONS:
+        patch = waiver_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     return write_contract_exports()
 
@@ -1354,6 +1396,21 @@ def free_agency_payload_for_active_db(league_year: int | None = None) -> dict[st
     }
 
 
+def waiver_payload_for_active_db(season: int | None = None) -> dict[str, Any]:
+    db_path = active_db_path()
+    context = game_context(db_path)
+    target_season = int(season or context["currentSeason"])
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        active = export_game_center_ui_data.active_save(conn) or {}
+        waivers = export_game_center_ui_data.waiver_summary(conn, target_season, active.get("user_team_id"))
+    return {
+        "season": target_season,
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "waivers": waivers,
+    }
+
+
 def contracts_payload_for_active_db(season: int | None = None) -> dict[str, Any]:
     db_path = active_db_path()
     context = game_context(db_path)
@@ -1654,6 +1711,73 @@ def release_practice_squad_player(player_id: int, team: str, season: int) -> str
     return f"Released {roster_rules.player_name(player)} from {team} practice squad (transaction {transaction_id})."
 
 
+def release_rostered_player_for_cutdown(player_id: int, team: str, season: int, post_june1: bool = False) -> str:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        roster_actions.ensure_all_schema(conn)
+        player = conn.execute(
+            """
+            SELECT p.player_id, p.first_name || ' ' || p.last_name AS player_name
+            FROM players p
+            JOIN teams t ON t.team_id = p.team_id
+            WHERE p.player_id = ?
+              AND UPPER(t.abbreviation) = UPPER(?)
+              AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+            """,
+            (player_id, team),
+        ).fetchone()
+        if not player:
+            raise ValueError(f"Player {player_id} is not on the active {team} roster.")
+        conn.commit()
+        args = argparse.Namespace(
+            player=player["player_name"],
+            team=team,
+            post_june1=post_june1,
+            dry_run=False,
+        )
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            roster_actions.run_mutation(conn, roster_actions.action_release, args)
+        message = first_output_line(buffer.getvalue(), "")
+    return message or f"Released {player['player_name']} from {team}."
+
+
+def apply_roster_cutdown_moves(moves: list[dict[str, Any]], team: str, season: int) -> str:
+    if not moves:
+        raise ValueError("No roster cutdown moves were selected.")
+    normalized: dict[int, dict[str, Any]] = {}
+    for raw in moves:
+        if not isinstance(raw, dict):
+            continue
+        player_id = int(raw.get("player_id") or 0)
+        move = str(raw.get("move") or raw.get("action") or "").strip().lower()
+        if player_id and move in {"practice_squad", "release", "release_ps"}:
+            normalized[player_id] = {"player_id": player_id, "move": move}
+    if not normalized:
+        raise ValueError("No valid roster cutdown moves were selected.")
+
+    priority = {"release_ps": 0, "release": 1, "practice_squad": 2}
+    ordered = sorted(normalized.values(), key=lambda item: (priority[item["move"]], item["player_id"]))
+    messages: list[str] = []
+    failures: list[str] = []
+    for move in ordered:
+        try:
+            if move["move"] == "practice_squad":
+                messages.append(assign_practice_squad_player(int(move["player_id"]), team, season))
+            elif move["move"] == "release_ps":
+                messages.append(release_practice_squad_player(int(move["player_id"]), team, season))
+            else:
+                messages.append(release_rostered_player_for_cutdown(int(move["player_id"]), team, season))
+        except Exception as exc:
+            failures.append(f"{move['player_id']}: {exc}")
+    if failures:
+        detail = "; ".join(failures[:6])
+        raise ValueError(f"Applied {len(messages)} roster cutdown move(s), but {len(failures)} failed: {detail}")
+    return f"Applied {len(messages)} roster cutdown move(s). " + " ".join(messages[:4])
+
+
 def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -> list[str]:
     season = int(state.get("currentSeason") or 2026)
     draft_year = int(state.get("draft", {}).get("year") or season + 1)
@@ -1762,6 +1886,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = play("advance-to-date", "--date", target_date)
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
+        if params.get("auto_sim_preseason"):
+            command.append("--auto-sim-preseason")
         return command
     if action == "validate_rosters":
         return play("validate-rosters", "--summary-only")
@@ -1964,6 +2090,12 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             raise ValueError("practice_squad_release requires player_id.")
         message = release_practice_squad_player(int(player_id), str(user_team), season)
         return [sys.executable, "-c", f"print({json.dumps(message)})"]
+    if action == "roster_cutdown_apply":
+        if not user_team:
+            raise ValueError("Roster cutdown moves require a team-controlled save.")
+        moves = params.get("moves") if isinstance(params.get("moves"), list) else []
+        message = apply_roster_cutdown_moves(moves, str(user_team), season)
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
     if action == "depth_chart_set":
         player_id = params.get("player_id")
         position = params.get("position")
@@ -2003,6 +2135,28 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(player_id)),
             "--direction",
             str(direction),
+            "--apply",
+        )
+    if action == "depth_chart_swap":
+        first_position = params.get("first_position")
+        first_rank = params.get("first_rank")
+        second_position = params.get("second_position")
+        second_rank = params.get("second_rank")
+        if not first_position or not first_rank or not second_position or not second_rank:
+            raise ValueError("depth_chart_swap requires first/second position and rank.")
+        return play(
+            "depth-chart",
+            "swap",
+            "--team",
+            str(user_team),
+            "--first-position",
+            str(first_position),
+            "--first-rank",
+            str(int(first_rank)),
+            "--second-position",
+            str(second_position),
+            "--second-rank",
+            str(int(second_rank)),
             "--apply",
         )
     if action == "free_agency_start":
@@ -2097,6 +2251,52 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--no-cap-snapshot",
             "--apply",
         )
+    if action == "waiver_claim":
+        if not user_team:
+            raise ValueError("Waiver claims require a team-controlled save.")
+        waiver_id = params.get("waiver_id")
+        if not waiver_id:
+            raise ValueError("waiver_claim requires waiver_id.")
+        return play(
+            "roster-rules",
+            "claim-waiver",
+            "--waiver-id",
+            str(int(waiver_id)),
+            "--team",
+            str(user_team),
+            "--season",
+            str(season),
+            "--notes",
+            "Claim submitted by user GM.",
+        )
+    if action == "waiver_cpu_seed":
+        command = play(
+            "roster-rules",
+            "cpu-waiver-claims",
+            "--season",
+            str(season),
+            "--max-claims-per-team",
+            str(int(params.get("max_claims_per_team") or 3)),
+            "--max-claims-total",
+            str(int(params.get("max_claims_total") or 64)),
+        )
+        if active_save.get("game_id") or active_save.get("save_id"):
+            command.extend(["--game-id", str(active_save.get("game_id") or active_save.get("save_id"))])
+        if params.get("post_cutdown"):
+            command.append("--post-cutdown")
+        if params.get("include_user_team"):
+            command.append("--include-user-team")
+        return command
+    if action == "waiver_process":
+        command = play(
+            "roster-rules",
+            "process-waivers",
+            "--date",
+            str(state.get("currentDate") or f"{season}-09-02"),
+        )
+        if params.get("all_open"):
+            command.append("--all-open")
+        return command
     if action == "advance_to_draft":
         command = play("advance-to-draft", "--draft-year", str(draft_year))
         if user_team:
@@ -2717,6 +2917,13 @@ def action_response_summary(
             "free_agency_resolve": "Free Agency Resolved",
             "free_agency_offer": "Free-Agent Offer Submitted",
         }.get(action, "Free Agency Updated")
+    elif action in WAIVER_RUN_ACTIONS:
+        summary["affectedPanels"] = ["waivers", "transactions", "roster", "depth", "contracts"]
+        summary["title"] = {
+            "waiver_claim": "Waiver Claim Submitted",
+            "waiver_cpu_seed": "CPU Waiver Claims Run",
+            "waiver_process": "Waivers Processed",
+        }.get(action, "Waivers Updated")
     elif action in CALENDAR_RUN_ACTIONS:
         summary["affectedPanels"] = ["calendar", "season", "inbox", "leagueNews"]
         summary["title"] = {
@@ -2728,6 +2935,9 @@ def action_response_summary(
     elif action == "auto_cutdown":
         summary["affectedPanels"] = ["roster", "depth", "contracts", "transactions"]
         summary["title"] = "Auto Cutdown Complete"
+    elif action == "roster_cutdown_apply":
+        summary["affectedPanels"] = ["roster", "depth", "contracts", "transactions", "waivers"]
+        summary["title"] = "Roster Cutdown Moves Applied"
     if params.get("apply"):
         summary["mode"] = "applied"
     elif "dry" in action or "dry run" in (stdout or "").lower():
@@ -3355,6 +3565,15 @@ class UiHandler(SimpleHTTPRequestHandler):
                 requested_year = params.get("league_year") or params.get("year")
                 league_year = int(requested_year[0]) if requested_year and requested_year[0] else None
                 self.write_json(HTTPStatus.OK, free_agency_payload_for_active_db(league_year))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/waivers":
+            try:
+                params = parse_qs(parsed.query)
+                requested_season = params.get("season")
+                season = int(requested_season[0]) if requested_season and requested_season[0] else None
+                self.write_json(HTTPStatus.OK, waiver_payload_for_active_db(season))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return

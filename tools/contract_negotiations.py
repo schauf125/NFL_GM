@@ -25,6 +25,7 @@ from tools import setup_contract_years  # noqa: E402
 from tools import setup_transactions_cap_ledger  # noqa: E402
 from tools import roster_actions  # noqa: E402
 from tools import cpu_depth_chart  # noqa: E402
+from tools import roster_rules  # noqa: E402
 
 
 SOURCE = "contract_negotiations"
@@ -2375,6 +2376,42 @@ def release_player(
             raise ValueError("No active projected contract year found for that player.")
         target = dict(row)
         target["team"] = team["abbreviation"]
+
+    player_row = con.execute("SELECT * FROM players WHERE player_id = ?", (player_id,)).fetchone()
+    if (
+        player_row
+        and player_row["team_id"] is not None
+        and roster_rules.waiver_required_for_player(con, player_row, season=season, waiver_date=current_game_date(con))
+    ):
+        roster_rules.ensure_schema(con)
+        waiver_id = roster_rules.place_player_on_waivers(
+            con,
+            player=player_row,
+            season=season,
+            waiver_date=current_game_date(con),
+            reason="Released and subject to waivers.",
+            source=SOURCE,
+        )
+        cpu_depth_chart.mark_depth_chart_stale(
+            con,
+            team_id=int(team["team_id"]),
+            reason="Player waiver changed roster composition.",
+        )
+        if rebuild_all_contracts:
+            setup_contract_years.rebuild_contract_years(con)
+        if sync_cap:
+            setup_contract_years.sync_team_cap_space(con)
+        if write_cap_snapshot:
+            setup_transactions_cap_ledger.snapshot_cap_ledger(
+                con,
+                label=f"after_waiver_{waiver_id}",
+                phase=current_phase(con),
+                source=SOURCE,
+                replace=True,
+            )
+        if not quiet:
+            print(f"Waived {target['player_name']} from {team['abbreviation']} (entry {waiver_id}).")
+        return
 
     dead_current = int(
         target["dead_cap_if_cut_post_june1_current"]

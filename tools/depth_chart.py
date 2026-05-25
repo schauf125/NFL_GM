@@ -204,6 +204,56 @@ def move_player(
     print(f"Moved {name} to {team_row['abbreviation']} {slot} #{target_rank}.")
 
 
+def swap_slots(
+    con: sqlite3.Connection,
+    *,
+    team: str,
+    first_position: str,
+    first_rank: int,
+    second_position: str,
+    second_rank: int,
+    apply: bool,
+) -> None:
+    if first_rank < 1 or second_rank < 1:
+        raise ValueError("Depth ranks must be 1 or higher.")
+    team_row = get_team(con, team)
+    team_id = int(team_row["team_id"])
+    first_slot = first_position.upper()
+    second_slot = second_position.upper()
+    first = depth_row(con, team_id=team_id, position=first_slot, rank=first_rank)
+    second = depth_row(con, team_id=team_id, position=second_slot, rank=second_rank)
+    if not first:
+        raise ValueError(f"No player is listed at {team_row['abbreviation']} {first_slot} #{first_rank}.")
+    if not second:
+        raise ValueError(f"No player is listed at {team_row['abbreviation']} {second_slot} #{second_rank}.")
+    if int(first["depth_chart_id"]) == int(second["depth_chart_id"]):
+        print("No change: same depth chart slot.")
+        return
+    first_player = get_player(con, int(first["player_id"]), team_id)
+    second_player = get_player(con, int(second["player_id"]), team_id)
+    first_name = f"{first_player['first_name']} {first_player['last_name']}".strip()
+    second_name = f"{second_player['first_name']} {second_player['last_name']}".strip()
+    if not apply:
+        print(
+            f"DRY RUN: swap {first_name} ({first_slot} #{first_rank}) "
+            f"with {second_name} ({second_slot} #{second_rank})."
+        )
+        return
+    con.execute(
+        "UPDATE depth_charts SET player_id = ? WHERE depth_chart_id = ?",
+        (int(second["player_id"]), int(first["depth_chart_id"])),
+    )
+    con.execute(
+        "UPDATE depth_charts SET player_id = ? WHERE depth_chart_id = ?",
+        (int(first["player_id"]), int(second["depth_chart_id"])),
+    )
+    con.commit()
+    print(
+        f"Swapped {first_name} ({first_slot} #{first_rank}) "
+        f"with {second_name} ({second_slot} #{second_rank})."
+    )
+
+
 def show_team(con: sqlite3.Connection, team: str) -> None:
     team_row = get_team(con, team)
     rows = con.execute(
@@ -254,6 +304,14 @@ def build_parser() -> argparse.ArgumentParser:
     move_parser.add_argument("--player-id", type=int, required=True)
     move_parser.add_argument("--direction", choices=["up", "down"], required=True)
     move_parser.add_argument("--apply", action="store_true")
+
+    swap_parser = subparsers.add_parser("swap", help="Swap players between two depth chart slots/ranks.")
+    swap_parser.add_argument("--team", required=True)
+    swap_parser.add_argument("--first-position", required=True)
+    swap_parser.add_argument("--first-rank", type=int, required=True)
+    swap_parser.add_argument("--second-position", required=True)
+    swap_parser.add_argument("--second-rank", type=int, required=True)
+    swap_parser.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -280,6 +338,16 @@ def main() -> int:
                 position=args.position,
                 player_id=args.player_id,
                 direction=args.direction,
+                apply=args.apply,
+            )
+        elif args.command == "swap":
+            swap_slots(
+                con,
+                team=args.team,
+                first_position=args.first_position,
+                first_rank=args.first_rank,
+                second_position=args.second_position,
+                second_rank=args.second_rank,
                 apply=args.apply,
             )
     finally:

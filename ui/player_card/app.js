@@ -84,12 +84,38 @@
     };
   }
 
+  function currentPageHref() {
+    return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  }
+
+  function safeLocalHref(value) {
+    if (!value) return "";
+    try {
+      const url = new URL(value, window.location.href);
+      if (url.origin !== window.location.origin) return "";
+      const target = `${url.pathname}${url.search}${url.hash}`;
+      return target === currentPageHref() ? "" : target;
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function explicitReturnHref() {
+    const params = new URLSearchParams(window.location.search);
+    return safeLocalHref(params.get("returnTo") || params.get("return") || "");
+  }
+
+  function referrerReturnHref() {
+    return safeLocalHref(document.referrer || "");
+  }
+
   function hintedPlayerUrl(basePath, player) {
     const url = new URL(basePath, window.location.href);
     url.searchParams.set("player", playerId(player));
     url.searchParams.set("name", player.name || "");
     url.searchParams.set("team", playerTeam(player));
     url.searchParams.set("position", player.position || "");
+    url.searchParams.set("returnTo", currentPageHref());
     return `${url.pathname}${url.search}`;
   }
 
@@ -251,7 +277,7 @@
     const stats = player.seasonStats || {};
     const season = stats.selectedSeason;
     elements.statsSeasonLabel.textContent = season
-      ? `${season}${stats.isExportSeason ? "" : " latest"}${stats.selectedTeam ? ` | ${stats.selectedTeam}` : ""}${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`
+      ? `${season}${stats.isExportSeason ? "" : " latest"}${stats.selectedTeam ? ` | ${stats.selectedTeam}` : ""}`
       : "No stat line";
 
     elements.statsSnapshot.replaceChildren();
@@ -413,7 +439,7 @@
         loadSelectedPlayer(selectedId, { force: true })
           .catch((error) => console.warn("Using list player card data.", error))
           .finally(() => {
-            elements.playerCount.textContent = `${data.playerCount || players.length} players${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`;
+            elements.playerCount.textContent = `${data.playerCount || players.length} players`;
             renderPlayer(playerDetails.get(String(selectedId)) || player);
           });
       });
@@ -513,11 +539,7 @@
 
   function bindEvents() {
     const goBack = () => {
-      if (window.history.length > 1) {
-        window.history.back();
-      } else {
-        window.location.href = "../game_center/index.html";
-      }
+      window.location.href = explicitReturnHref() || referrerReturnHref() || "../game_center/index.html";
     };
     elements.backButton?.addEventListener("click", goBack);
     elements.railBackButton?.addEventListener("click", goBack);
@@ -526,7 +548,7 @@
   }
 
   async function init() {
-    elements.playerCount.textContent = `${data.playerCount || players.length} players${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`;
+    elements.playerCount.textContent = `${data.playerCount || players.length} players`;
     populateTeams();
 
     const params = new URLSearchParams(window.location.search);
@@ -551,7 +573,7 @@
     }
     await loadSelectedPlayer(selectedId, { force: true }).catch((error) => console.warn("Using list player card data.", error));
     populateTeams();
-    elements.playerCount.textContent = `${data.playerCount || players.length} players${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`;
+    elements.playerCount.textContent = `${data.playerCount || players.length} players`;
     renderList();
   }
 

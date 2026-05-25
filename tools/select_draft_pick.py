@@ -1160,6 +1160,55 @@ def copy_specialist_behavior_profile(con: sqlite3.Connection, prospect_id: int, 
     return 1
 
 
+def copy_special_teams_flex(con: sqlite3.Connection, prospect_id: int, player_id: int) -> int:
+    table = con.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'draft_prospect_special_teams_flex'
+        """
+    ).fetchone()
+    if not table:
+        return 0
+    rows = con.execute(
+        """
+        SELECT role_key, experience, potential, notes
+        FROM draft_prospect_special_teams_flex
+        WHERE prospect_id = ?
+        ORDER BY role_key
+        """,
+        (prospect_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+    con.executemany(
+        """
+        INSERT INTO player_position_flex (
+            player_id, position, experience, potential, is_primary, source, notes
+        )
+        VALUES (?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(player_id, position) DO UPDATE SET
+            experience = excluded.experience,
+            potential = excluded.potential,
+            is_primary = CASE WHEN player_position_flex.is_primary = 1 THEN 1 ELSE 0 END,
+            source = excluded.source,
+            notes = excluded.notes
+        """,
+        [
+            (
+                player_id,
+                str(row["role_key"]).upper(),
+                int(row["experience"]),
+                int(row["potential"]),
+                SOURCE,
+                row["notes"] or "Copied from generated draft prospect special teams flex.",
+            )
+            for row in rows
+        ],
+    )
+    return len(rows)
+
+
 def convert_undrafted_prospect_to_free_agent(
     con: sqlite3.Connection,
     *,
@@ -1202,6 +1251,7 @@ def convert_undrafted_prospect_to_free_agent(
     specialist_behavior_rows = copy_specialist_behavior_profile(con, int(prospect["prospect_id"]), player_id, draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, draft_year)
     insert_primary_flex(con, prospect, player_id)
+    special_teams_flex_rows = copy_special_teams_flex(con, int(prospect["prospect_id"]), player_id)
     insert_career_shell(con, player_id, "FA")
     personality_rows = copy_draft_personalities(
         con,
@@ -1261,6 +1311,7 @@ def convert_undrafted_prospect_to_free_agent(
         "lb_behavior_profiles": lb_behavior_rows,
         "secondary_behavior_profiles": secondary_behavior_rows,
         "specialist_behavior_profiles": specialist_behavior_rows,
+        "special_teams_flex": special_teams_flex_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1702,6 +1753,7 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
     specialist_behavior_rows = copy_specialist_behavior_profile(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     role_assignment_rows, role_score_rows = copy_roles(con, int(prospect["prospect_id"]), player_id, args.draft_year)
     insert_primary_flex(con, prospect, player_id)
+    special_teams_flex_rows = copy_special_teams_flex(con, int(prospect["prospect_id"]), player_id)
     insert_career_shell(con, player_id, team_abbr)
     contract_id = insert_rookie_contract(
         con,
@@ -1773,6 +1825,7 @@ def select_prospect(con: sqlite3.Connection, args: argparse.Namespace) -> dict[s
         "lb_behavior_profiles": lb_behavior_rows,
         "secondary_behavior_profiles": secondary_behavior_rows,
         "specialist_behavior_profiles": specialist_behavior_rows,
+        "special_teams_flex": special_teams_flex_rows,
         "role_assignments": role_assignment_rows,
         "role_scores": role_score_rows,
         "personalities": personality_rows,
@@ -1813,6 +1866,7 @@ def print_selection(result: dict[str, Any], *, dry_run: bool) -> None:
         f"{result.get('lb_behavior_profiles', 0)} LB behavior profiles, "
         f"{result.get('secondary_behavior_profiles', 0)} secondary behavior profiles, "
         f"{result.get('specialist_behavior_profiles', 0)} specialist behavior profiles, "
+        f"{result.get('special_teams_flex', 0)} special teams flex roles, "
         f"{result['role_scores']} role scores, {result['personalities']} hidden personality traits, "
         f"{result.get('development_modifiers', 0)} development modifiers, "
         f"{result.get('scheme_fits', 0)} scheme fits"

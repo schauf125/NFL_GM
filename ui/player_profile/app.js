@@ -41,10 +41,18 @@
     OG: new Set(["universal", "blocker"]),
     C: new Set(["universal", "blocker"]),
     IDL: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
+    DT: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
+    DE: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
+    NT: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
     EDGE: new Set(["universal", "pass_rusher", "run_defender", "tackler"]),
     LB: new Set(["universal", "run_defender", "coverage", "tackler", "pass_rusher"]),
+    ILB: new Set(["universal", "run_defender", "coverage", "tackler", "pass_rusher"]),
+    OLB: new Set(["universal", "run_defender", "coverage", "tackler", "pass_rusher"]),
     CB: new Set(["universal", "coverage", "tackler"]),
+    NB: new Set(["universal", "coverage", "tackler"]),
     S: new Set(["universal", "coverage", "tackler", "run_defender"]),
+    FS: new Set(["universal", "coverage", "tackler", "run_defender"]),
+    SS: new Set(["universal", "coverage", "tackler", "run_defender"]),
     K: new Set(["universal", "specialist"]),
     P: new Set(["universal", "specialist"]),
     LS: new Set(["universal", "specialist", "tackler"]),
@@ -167,12 +175,38 @@
     };
   }
 
+  function currentPageHref() {
+    return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  }
+
+  function safeLocalHref(value) {
+    if (!value) return "";
+    try {
+      const url = new URL(value, window.location.href);
+      if (url.origin !== window.location.origin) return "";
+      const target = `${url.pathname}${url.search}${url.hash}`;
+      return target === currentPageHref() ? "" : target;
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function explicitReturnHref() {
+    const params = new URLSearchParams(window.location.search);
+    return safeLocalHref(params.get("returnTo") || params.get("return") || "");
+  }
+
+  function referrerReturnHref() {
+    return safeLocalHref(document.referrer || "");
+  }
+
   function hintedPlayerUrl(basePath, player) {
     const url = new URL(basePath, window.location.href);
     url.searchParams.set("player", playerId(player));
     url.searchParams.set("name", player.name || "");
     url.searchParams.set("team", playerTeam(player));
     url.searchParams.set("position", player.position || "");
+    url.searchParams.set("returnTo", currentPageHref());
     return `${url.pathname}${url.search}`;
   }
 
@@ -311,7 +345,7 @@
   }
 
   function renderFilters() {
-    refs.seasonLabel.textContent = `${data.season || ""}${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`;
+    refs.seasonLabel.textContent = `${data.season || ""}`;
     const teams = Array.from(new Set(players.map((player) => player.team.abbr))).sort();
     const positions = Array.from(new Set(players.map((player) => player.position))).sort();
 
@@ -432,9 +466,32 @@
   }
 
   function relevantRatings(player) {
-    const allowed = ATTRIBUTE_GROUPS_BY_POSITION[String(player?.position || "").toUpperCase()];
+    const allowed = attributeGroupsForPosition(player?.position);
     if (!allowed) return [...(player?.ratings || [])];
     return (player?.ratings || []).filter((rating) => allowed.has(String(rating.group || "")));
+  }
+
+  function attributeGroupsForPosition(position) {
+    const key = String(position || "").toUpperCase();
+    if (ATTRIBUTE_GROUPS_BY_POSITION[key]) {
+      return ATTRIBUTE_GROUPS_BY_POSITION[key];
+    }
+    if (["DL", "DT", "DE", "NT"].includes(key)) {
+      return ATTRIBUTE_GROUPS_BY_POSITION.IDL;
+    }
+    if (key.endsWith("LB")) {
+      return ATTRIBUTE_GROUPS_BY_POSITION.LB;
+    }
+    if (["DB", "CB", "NB"].includes(key)) {
+      return ATTRIBUTE_GROUPS_BY_POSITION.CB;
+    }
+    if (["SAF", "FS", "SS"].includes(key)) {
+      return ATTRIBUTE_GROUPS_BY_POSITION.S;
+    }
+    if (["OL", "LT", "RT", "LG", "RG", "G"].includes(key)) {
+      return ATTRIBUTE_GROUPS_BY_POSITION.OG;
+    }
+    return null;
   }
 
   function roleRows(roles) {
@@ -455,11 +512,25 @@
     }
     flex.forEach((item) => {
       const row = node("div", "flex-row");
-      const name = append(node("div"), [node("strong", null, item.position), node("div", "subtle", item.primary ? "Primary position" : item.notes || "Secondary fit")]);
-      append(row, [name, roleBar(item.current, 10), node("span", "grade", `${item.current}/${item.potential}`)]);
+      const label = flexLabel(item.position);
+      const gradeText = item.potentialHidden ? `${item.current}/?` : `${item.current}/${item.potential}`;
+      const note = item.potentialHidden ? "Potential hidden" : item.primary ? "Primary position" : item.notes || "Secondary fit";
+      const name = append(node("div"), [node("strong", null, label), node("div", "subtle", note)]);
+      append(row, [name, roleBar(item.current, 10), node("span", "grade", gradeText)]);
       stack.append(row);
     });
     return stack;
+  }
+
+  function flexLabel(position) {
+    const key = String(position || "").toUpperCase();
+    const labels = {
+      GUN: "Gunner",
+      PR: "Punt Return",
+      KR: "Kick Return",
+      ST: "General ST",
+    };
+    return labels[key] || position;
   }
 
   function renderOverview(player) {
@@ -564,27 +635,36 @@
     refs.view.replaceChildren(root);
   }
 
-  function statsColumns(player) {
+  function statsColumns(player, rows = []) {
     const pos = player.position;
+    const hasReturns = rows.some((row) => Number(row.kickoff_returns || 0) > 0 || Number(row.punt_returns || 0) > 0);
+    const returnColumns = hasReturns
+      ? [["kickoff_returns", "KR"], ["kickoff_return_yards", "KR Yds"], ["kr_avg", "KR Avg"], ["punt_returns", "PR"], ["punt_return_yards", "PR Yds"], ["pr_avg", "PR Avg"]]
+      : [];
+    let columns;
     if (pos === "QB") {
-      return [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["completions", "Cmp"], ["passing_attempts", "Att"], ["passing_yards", "Yds"], ["passing_tds", "TD"], ["passing_interceptions", "INT"], ["sacks_suffered", "Sck"], ["rushing_yards", "Rush"], ["rushing_tds", "RuTD"]];
+      columns = [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["completions", "Cmp"], ["passing_attempts", "Att"], ["passing_yards", "Yds"], ["passing_tds", "TD"], ["passing_interceptions", "INT"], ["sacks_suffered", "Sck"], ["rushing_yards", "Rush"], ["rushing_tds", "RuTD"]];
+      return columns;
     }
     if (["RB", "FB"].includes(pos)) {
-      return [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["carries", "Car"], ["rushing_yards", "Rush"], ["ypc", "YPC"], ["rushing_tds", "TD"], ["receptions", "Rec"], ["targets", "Tgt"], ["receiving_yards", "Rec Yds"], ["receiving_tds", "Rec TD"]];
+      columns = [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["carries", "Car"], ["rushing_yards", "Rush"], ["ypc", "YPC"], ["rushing_tds", "TD"], ["receptions", "Rec"], ["targets", "Tgt"], ["receiving_yards", "Rec Yds"], ["receiving_tds", "Rec TD"]];
+      return columns.concat(returnColumns);
     }
     if (["WR", "TE"].includes(pos)) {
-      return [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["receptions", "Rec"], ["targets", "Tgt"], ["receiving_yards", "Yds"], ["ypr", "Avg"], ["receiving_tds", "TD"], ["carries", "Car"], ["rushing_yards", "Rush"]];
+      columns = [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["receptions", "Rec"], ["targets", "Tgt"], ["receiving_yards", "Yds"], ["ypr", "Avg"], ["receiving_tds", "TD"], ["carries", "Car"], ["rushing_yards", "Rush"]];
+      return columns.concat(returnColumns);
     }
     if (["K", "P"].includes(pos)) {
       return [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["fg_made", "FGM"], ["fg_att", "FGA"], ["fg_pct", "FG%"], ["pat_made", "XPM"], ["pat_att", "XPA"]];
     }
-    return [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["def_tackles_solo", "Solo"], ["def_tackles_with_assist", "Ast"], ["def_sacks", "Sck"], ["def_qb_hits", "QB Hit"], ["def_interceptions", "INT"], ["def_pass_defended", "PD"]];
+    columns = [["season", "Year"], ["stat_team", "Team"], ["games", "G"], ["def_tackles_solo", "Solo"], ["def_tackles_with_assist", "Ast"], ["def_sacks", "Sck"], ["def_qb_hits", "QB Hit"], ["def_interceptions", "INT"], ["def_pass_defended", "PD"]];
+    return columns.concat(returnColumns);
   }
 
   function renderStats(player) {
     const root = document.createDocumentFragment();
     const career = player.career || {};
-    const careerPanel = panel("Career Totals", `${fmt(career.teams_played_for || player.team.abbr)}${state.liveGeneratedAt ? ` | refreshed ${shortDateTime(state.liveGeneratedAt)}` : ""}`);
+    const careerPanel = panel("Career Totals", `${fmt(career.teams_played_for || player.team.abbr)}`);
     const metrics = node("section", "metric-grid");
     const statBits = careerMetricSet(player, career);
     statBits.forEach(([label, value, note]) => metrics.append(metric(label, fmt(value), note)));
@@ -595,23 +675,36 @@
     if (!player.seasonStats || !player.seasonStats.length) {
       seasonPanel.append(node("div", "empty-state", "No season stat rows yet."));
     } else {
-      seasonPanel.append(statTable(player.seasonStats, statsColumns(player)));
+      seasonPanel.append(statTable(player.seasonStats, statsColumns(player, player.seasonStats)));
     }
     root.append(seasonPanel);
     refs.view.replaceChildren(root);
   }
 
   function careerMetricSet(player, career) {
+    const returns = returnMetricSet(career);
     if (player.position === "QB") {
       return [["Games", career.career_games], ["Pass Yards", career.passing_yards], ["Pass TD", career.passing_tds], ["INT", career.passing_interceptions], ["Rush Yards", career.rushing_yards], ["Rush TD", career.rushing_tds], ["Sacks Taken", career.sacks_suffered], ["PPR", career.fantasy_points_ppr]];
     }
     if (["RB", "FB", "WR", "TE"].includes(player.position)) {
-      return [["Games", career.career_games], ["Rush Yards", career.rushing_yards], ["Rush TD", career.rushing_tds], ["Receptions", career.receptions], ["Targets", career.targets], ["Rec Yards", career.receiving_yards], ["Rec TD", career.receiving_tds], ["Scrimmage", career.scrimmage_yards]];
+      return [["Games", career.career_games], ["Rush Yards", career.rushing_yards], ["Rush TD", career.rushing_tds], ["Receptions", career.receptions], ["Targets", career.targets], ["Rec Yards", career.receiving_yards], ["Rec TD", career.receiving_tds], ["Scrimmage", career.scrimmage_yards]].concat(returns);
     }
     if (["K", "P"].includes(player.position)) {
       return [["Games", career.career_games], ["FG Made", career.fg_made], ["FG Att", career.fg_att], ["FG%", pct(career.fg_pct)], ["FG Long", career.fg_long], ["PAT Made", career.pat_made], ["PAT Att", career.pat_att], ["PAT%", pct(career.pat_pct)]];
     }
-    return [["Games", career.career_games], ["Solo", career.def_tackles_solo], ["Combined", career.def_tackles_combined], ["TFL", career.def_tackles_for_loss], ["Sacks", career.def_sacks], ["QB Hits", career.def_qb_hits], ["INT", career.def_interceptions], ["PD", career.def_pass_defended]];
+    return [["Games", career.career_games], ["Solo", career.def_tackles_solo], ["Combined", career.def_tackles_combined], ["TFL", career.def_tackles_for_loss], ["Sacks", career.def_sacks], ["QB Hits", career.def_qb_hits], ["INT", career.def_interceptions], ["PD", career.def_pass_defended]].concat(returns);
+  }
+
+  function returnMetricSet(career) {
+    const kickReturns = Number(career.kickoff_returns || 0);
+    const puntReturns = Number(career.punt_returns || 0);
+    if (!kickReturns && !puntReturns) return [];
+    return [
+      ["Kick Returns", kickReturns],
+      ["KR Yards", career.kickoff_return_yards],
+      ["Punt Returns", puntReturns],
+      ["PR Yards", career.punt_return_yards],
+    ];
   }
 
   function renderMedical(player) {
@@ -686,6 +779,10 @@
           value = rate(row.rushing_yards, row.carries);
         } else if (key === "ypr") {
           value = rate(row.receiving_yards, row.receptions);
+        } else if (key === "kr_avg") {
+          value = rate(row.kickoff_return_yards, row.kickoff_returns);
+        } else if (key === "pr_avg") {
+          value = rate(row.punt_return_yards, row.punt_returns);
         }
         tr.append(node("td", null, value));
       });
@@ -951,11 +1048,7 @@
 
   function bindEvents() {
     const goBack = () => {
-      if (window.history.length > 1) {
-        window.history.back();
-      } else {
-        window.location.href = "../game_center/index.html";
-      }
+      window.location.href = explicitReturnHref() || referrerReturnHref() || "../game_center/index.html";
     };
     refs.backButton?.addEventListener("click", goBack);
     refs.railBackButton?.addEventListener("click", goBack);

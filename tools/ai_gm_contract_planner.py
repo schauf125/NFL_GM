@@ -107,7 +107,13 @@ def current_date(con: sqlite3.Connection) -> str:
     row = con.execute(
         "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
     ).fetchone()
-    return str(row["setting_value"]) if row else datetime.now().date().isoformat()
+    if row and row["setting_value"]:
+        return str(row["setting_value"])
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute('SELECT "current_date" FROM active_game_save_view LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    return f"{current_season(con)}-06-01"
 
 
 def get_team(con: sqlite3.Connection, team_abbr: str) -> sqlite3.Row:

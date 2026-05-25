@@ -342,19 +342,25 @@ def flex_by_player(conn: sqlite3.Connection, player_ids: list[int]) -> dict[int,
     placeholders = ",".join("?" for _ in player_ids)
     rows = conn.execute(
         f"""
-        SELECT player_id, position, experience, potential, is_primary, source, notes
-        FROM player_position_flex
-        WHERE player_id IN ({placeholders})
-        ORDER BY player_id, is_primary DESC, experience DESC, potential DESC, position
+        SELECT f.player_id, f.position, f.experience, f.potential, f.is_primary, f.source, f.notes,
+               COALESCE(p.is_rookie, 0) AS is_rookie
+        FROM player_position_flex f
+        JOIN players p ON p.player_id = f.player_id
+        WHERE f.player_id IN ({placeholders})
+        ORDER BY f.player_id, f.is_primary DESC, f.experience DESC, f.potential DESC, f.position
         """,
         player_ids,
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
+        position = str(row["position"] or "")
+        potential_hidden = position.upper() in {"GUN", "PR", "KR", "ST"} and bool(row["is_rookie"])
+        potential = int(row["potential"]) if not potential_hidden else int(row["experience"])
         grouped.setdefault(int(row["player_id"]), []).append({
-            "position": row["position"],
+            "position": position,
             "current": int(row["experience"]),
-            "potential": int(row["potential"]),
+            "potential": potential,
+            "potentialHidden": potential_hidden,
             "primary": bool(row["is_primary"]),
             "source": row["source"] or "",
             "notes": row["notes"] or "",

@@ -371,6 +371,49 @@ def depth_sort_score(
             primary -= (70.0 - overall) * 0.45
     elif slot == "FB":
         primary = overall * 0.72 + role_score * 0.18 + position_bonus
+    elif slot in {"KR", "PR"}:
+        athletic = (
+            player.rating("speed")
+            + player.rating("acceleration")
+            + player.rating("agility")
+            + player.rating("ball_security")
+            + player.rating("play_recognition")
+        ) / 5.0
+        contract_aav = float(player.metadata.get("contract_aav") or 0)
+        star_protection = max(0.0, overall - 80.0) * 1.45
+        if contract_aav > 8_000_000:
+            star_protection += min(10.0, (contract_aav - 8_000_000.0) / 2_500_000.0)
+        age_penalty = max(0.0, age - 27.0) * 1.40
+        if player.position == "RB" and age >= 29:
+            age_penalty += 5.0
+        if slot == "PR":
+            return_position_bonus = {
+                "WR": 2.75,
+                "CB": 2.25,
+                "NB": 2.25,
+                "FS": 1.0,
+                "SS": 1.0,
+                "S": 1.0,
+                "RB": 0.25,
+            }.get(player.position, 0.0)
+        else:
+            return_position_bonus = {
+                "WR": 2.5,
+                "RB": 2.5,
+                "CB": 1.5,
+                "NB": 1.5,
+                "FS": 0.75,
+                "SS": 0.75,
+                "S": 0.75,
+            }.get(player.position, 0.0)
+        primary = (
+            role_score * 0.62
+            + athletic * 0.30
+            + overall * 0.08
+            + return_position_bonus
+            - star_protection
+            - age_penalty
+        )
     else:
         primary = overall * 0.45 + role_score * 0.55 + position_bonus
     youth_tiebreak = max(0.0, potential - overall) * 0.35 - max(0.0, age - 30.0) * 0.20

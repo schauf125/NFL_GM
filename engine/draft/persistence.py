@@ -50,6 +50,7 @@ from engine.idl_behavior import generated_idl_behavior_profile
 from engine.lb_behavior import generated_lb_behavior_profile
 from engine.secondary_behavior import generated_secondary_behavior_profile
 from engine.specialist_behavior import generated_specialist_behavior_profile
+from engine.special_teams_flex import flex_json_for_profile
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,21 @@ def persist_draft_class(
             row.ratings,
             position=row.position.upper(),
         )
+        special_teams_flex = row.special_teams_flex or flex_json_for_profile(
+            position=row.position,
+            ratings=row.ratings,
+            specialist_profile=specialist_profile.as_dict(),
+            role_scores=row.role_scores,
+            overall=row.true_grade,
+            potential_overall=row.ceiling_grade,
+            age=row.age,
+            is_rookie=True,
+            draft_rank=row.public_board_rank or row.rank,
+            college_tier=row.college_tier,
+            discovery_profile=row.discovery_status or row.public_board_status,
+            seed_key=f"{draft_year}:{row.rank}:{row.full_name}:special-teams-flex",
+        )
+        _replace_prospect_special_teams_flex(con, prospect_id, special_teams_flex)
         replace_prospect_specialist_behavior_profile(
             con,
             prospect_id,
@@ -398,6 +414,53 @@ def persist_draft_class(
         prospect_count=len(rows),
         replaced_existing=replaced_existing,
     )
+
+
+def _replace_prospect_special_teams_flex(
+    con: sqlite3.Connection,
+    prospect_id: int,
+    flex: dict[str, dict[str, Any]],
+) -> None:
+    con.execute(
+        "DELETE FROM draft_prospect_special_teams_flex WHERE prospect_id = ?",
+        (prospect_id,),
+    )
+    rows = []
+    for role_key, item in sorted((flex or {}).items()):
+        try:
+            current = int(item.get("current") or item.get("experience") or 0)
+            potential = int(item.get("potential") or current)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if current <= 0 and potential <= 0:
+            continue
+        current = max(1, min(10, current))
+        potential = max(current, min(10, potential))
+        rows.append(
+            (
+                prospect_id,
+                str(role_key).upper(),
+                current,
+                potential,
+                str(item.get("notes") or item.get("label") or "Generated special teams flex profile."),
+            )
+        )
+    if rows:
+        con.executemany(
+            """
+            INSERT INTO draft_prospect_special_teams_flex (
+                prospect_id, role_key, experience, potential, source, notes, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'draft_generator', ?, datetime('now'))
+            ON CONFLICT(prospect_id, role_key) DO UPDATE SET
+                experience = excluded.experience,
+                potential = excluded.potential,
+                source = excluded.source,
+                notes = excluded.notes,
+                updated_at = datetime('now')
+            """,
+            rows,
+        )
 
 
 def _insert_prospect(

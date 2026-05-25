@@ -523,6 +523,20 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             PRIMARY KEY(team_id, season)
         );
 
+        CREATE TABLE IF NOT EXISTS team_depth_package_preferences (
+            team_id INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            side TEXT NOT NULL CHECK(side IN ('offense', 'defense')),
+            package_key TEXT NOT NULL,
+            snap_share REAL NOT NULL DEFAULT 0,
+            is_visible INTEGER NOT NULL DEFAULT 1,
+            is_default INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL,
+            notes TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY(team_id, season, side, package_key)
+        );
+
         CREATE TABLE IF NOT EXISTS player_scheme_fits (
             player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
             season INTEGER NOT NULL,
@@ -1064,6 +1078,40 @@ def seed_team_identities(con: sqlite3.Connection, season: int) -> int:
     return len(rows)
 
 
+def team_package_preference_rows(con: sqlite3.Connection, season: int) -> list[tuple[Any, ...]]:
+    minnesota = con.execute("SELECT team_id FROM teams WHERE abbreviation = 'MIN'").fetchone()
+    if not minnesota:
+        return []
+    team_id = int(minnesota["team_id"])
+    note = "Nickel-heavy Vikings defensive profile with base 3-4 available as a secondary package."
+    return [
+        (team_id, season, "defense", "nickel", 0.82, 1, 1, SOURCE, note),
+        (team_id, season, "defense", "base34", 0.18, 1, 0, SOURCE, note),
+    ]
+
+
+def seed_team_package_preferences(con: sqlite3.Connection, season: int) -> int:
+    rows = team_package_preference_rows(con, season)
+    con.executemany(
+        """
+        INSERT INTO team_depth_package_preferences (
+            team_id, season, side, package_key, snap_share, is_visible,
+            is_default, source, notes, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(team_id, season, side, package_key) DO UPDATE SET
+            snap_share = excluded.snap_share,
+            is_visible = excluded.is_visible,
+            is_default = excluded.is_default,
+            source = excluded.source,
+            notes = excluded.notes,
+            updated_at = datetime('now')
+        """,
+        rows,
+    )
+    return len(rows)
+
+
 def seed_player_scheme_fits(
     con: sqlite3.Connection,
     season: int,
@@ -1100,18 +1148,22 @@ def seed_all(con: sqlite3.Connection, *, season: int, dry_run: bool = False) -> 
             "schemes": len(SCHEMES),
             "coach_fits": coach_count,
             "teams": con.execute("SELECT COUNT(*) FROM teams").fetchone()[0],
+            "package_preferences": len(team_package_preference_rows(con, season)),
             "player_fits": len(player_scheme_rows(con, season)),
         }
     con.execute("DELETE FROM coach_scheme_fits WHERE season = ?", (season,))
     con.execute("DELETE FROM team_scheme_identities WHERE season = ?", (season,))
+    con.execute("DELETE FROM team_depth_package_preferences WHERE season = ?", (season,))
     con.execute("DELETE FROM player_scheme_fits WHERE season = ?", (season,))
     coach_count = seed_coach_scheme_fits(con, season)
     team_count = seed_team_identities(con, season)
+    package_count = seed_team_package_preferences(con, season)
     player_count = seed_player_scheme_fits(con, season)
     return {
         "schemes": len(SCHEMES),
         "coach_fits": coach_count,
         "teams": team_count,
+        "package_preferences": package_count,
         "player_fits": player_count,
     }
 
@@ -1133,6 +1185,7 @@ def action_seed(args: argparse.Namespace) -> None:
     print(f"Scheme definitions: {result['schemes']}")
     print(f"Coach scheme fits: {result['coach_fits']}")
     print(f"Team scheme identities: {result['teams']}")
+    print(f"Team package preferences: {result['package_preferences']}")
     print(f"Player scheme fit rows: {result['player_fits']}")
 
 

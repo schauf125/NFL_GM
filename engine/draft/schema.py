@@ -454,6 +454,17 @@ CREATE TABLE IF NOT EXISTS draft_prospect_specialist_behavior_profiles (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS draft_prospect_special_teams_flex (
+    prospect_id INTEGER NOT NULL REFERENCES draft_prospects(prospect_id) ON DELETE CASCADE,
+    role_key TEXT NOT NULL,
+    experience INTEGER NOT NULL CHECK (experience BETWEEN 1 AND 10),
+    potential INTEGER NOT NULL CHECK (potential BETWEEN 1 AND 10),
+    source TEXT NOT NULL DEFAULT 'draft_generator',
+    notes TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (prospect_id, role_key)
+);
+
 CREATE INDEX IF NOT EXISTS idx_draft_prospects_class_rank
     ON draft_prospects(draft_class_id, scouting_rank);
 

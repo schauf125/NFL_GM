@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from setup_contract_years import ensure_schema as ensure_contract_schema
+from setup_contract_years import rebuild_contract_years, sync_team_cap_space
 from setup_transactions_cap_ledger import ensure_schema as ensure_transaction_schema
 from setup_transactions_cap_ledger import insert_transaction
 
@@ -44,6 +45,25 @@ PRACTICE_SQUAD_DEVELOPMENTAL_LIMIT = 10
 PRACTICE_SQUAD_VETERAN_EXCEPTION_LIMIT = 6
 PRACTICE_SQUAD_ELEVATION_LIMIT = 3
 PRACTICE_SQUAD_WEEKLY_ELEVATION_LIMIT = 2
+
+POSITION_GROUPS: dict[str, tuple[str, ...]] = {
+    "QB": ("QB",),
+    "RB": ("RB", "FB"),
+    "WR": ("WR",),
+    "TE": ("TE",),
+    "OL": ("OT", "OG", "C"),
+    "EDGE": ("EDGE", "DE"),
+    "IDL": ("IDL", "DT", "NT"),
+    "LB": ("ILB", "OLB", "LB"),
+    "CB": ("CB", "NB"),
+    "S": ("FS", "SS", "S"),
+    "ST": ("K", "P", "LS"),
+}
+POSITION_TO_GROUP = {
+    position: group
+    for group, positions in POSITION_GROUPS.items()
+    for position in positions
+}
 
 
 @dataclass(frozen=True)
@@ -940,20 +960,24 @@ def record_practice_squad_move(
 
 
 def seed_waiver_priority(con: sqlite3.Connection, season: int, *, force: bool = False) -> int:
+    expected_source, draft_order_year = waiver_priority_basis(con, season)
     if force:
         con.execute("DELETE FROM waiver_priority WHERE season = ?", (season,))
     existing = con.execute(
-        "SELECT COUNT(*) FROM waiver_priority WHERE season = ?",
+        "SELECT COUNT(*) AS count, MIN(source) AS source, MAX(source) AS max_source FROM waiver_priority WHERE season = ?",
         (season,),
-    ).fetchone()[0]
-    if existing:
+    ).fetchone()
+    existing_count = int(existing["count"] or 0) if existing else 0
+    if existing_count and existing["source"] == existing["max_source"] == expected_source:
         return 0
+    if existing_count:
+        con.execute("DELETE FROM waiver_priority WHERE season = ?", (season,))
 
     ordered_team_ids: list[int] = []
     seen: set[int] = set()
 
-    source = "current_standings"
-    if table_exists(con, "season_team_records"):
+    source = expected_source
+    if source == "current_standings" and table_exists(con, "season_team_records"):
         standings_rows = con.execute(
             """
             SELECT str.team_id
@@ -984,8 +1008,18 @@ def seed_waiver_priority(con: sqlite3.Connection, season: int, *, force: bool = 
             WHERE draft_year = ? AND round = 1 AND original_team_id IS NOT NULL
             ORDER BY COALESCE(pick_number, pick_id), pick_id
             """,
-            (season + 1,),
+            (draft_order_year or season,),
         ).fetchall()
+        if len(draft_rows) < 32 and (draft_order_year or season) != season + 1:
+            draft_rows = con.execute(
+                """
+                SELECT original_team_id
+                FROM draft_picks
+                WHERE draft_year = ? AND round = 1 AND original_team_id IS NOT NULL
+                ORDER BY COALESCE(pick_number, pick_id), pick_id
+                """,
+                (season + 1,),
+            ).fetchall()
         for row in draft_rows:
             team_id = int(row["original_team_id"])
             if team_id not in seen:
@@ -1065,6 +1099,224 @@ def find_open_waiver(con: sqlite3.Connection, player_search: str) -> sqlite3.Row
 
 def default_claim_deadline(waiver_date: str) -> str:
     return (datetime.fromisoformat(waiver_date) + timedelta(hours=DEFAULT_WAIVER_HOURS)).date().isoformat()
+
+
+def league_trade_deadline(con: sqlite3.Connection, season: int) -> str | None:
+    if not table_exists(con, "league_calendar_events"):
+        return None
+    row = con.execute(
+        """
+        SELECT event_start_date
+        FROM league_calendar_events
+        WHERE league_year = ?
+          AND event_code = 'TRADE_DEADLINE'
+        ORDER BY event_start_date
+        LIMIT 1
+        """,
+        (season,),
+    ).fetchone()
+    return str(row["event_start_date"]) if row and row["event_start_date"] else None
+
+
+def week_four_start(con: sqlite3.Connection, season: int) -> str | None:
+    if not table_exists(con, "season_games"):
+        return None
+    row = con.execute(
+        """
+        SELECT MIN(game_date) AS week_four
+        FROM season_games
+        WHERE season = ?
+          AND game_type = 'REG'
+          AND week = 4
+        """,
+        (season,),
+    ).fetchone()
+    return str(row["week_four"]) if row and row["week_four"] else None
+
+
+def waiver_priority_basis(con: sqlite3.Connection, season: int, as_of_date: str | None = None) -> tuple[str, int | None]:
+    """Return the NFL-style priority basis.
+
+    Before Week 4, the league uses the prior draft order. After Week 3, it
+    tracks reverse current standings. We use the most recent draft order as the
+    proxy because the sim already stores pick order by draft year.
+    """
+    date_value = as_of_date or today(con)
+    week4 = week_four_start(con, season)
+    if week4 and date_value >= week4:
+        return "current_standings", None
+    return "draft_order_proxy", season
+
+
+def waiver_required_for_player(
+    con: sqlite3.Connection,
+    player: sqlite3.Row | dict[str, object],
+    *,
+    season: int,
+    waiver_date: str | None = None,
+) -> bool:
+    status = str(player["status"] if isinstance(player, sqlite3.Row) else player.get("status") or "")
+    if status == PRACTICE_SQUAD_STATUS:
+        return False
+    years_exp = row_int(player, "years_exp", 0)
+    if years_exp < 4:
+        return True
+    deadline = league_trade_deadline(con, season)
+    date_value = waiver_date or today(con)
+    if deadline and date_value >= deadline:
+        return True
+    return False
+
+
+def player_group(position: str | None) -> str:
+    return POSITION_TO_GROUP.get(str(position or "").upper(), str(position or "OTHER").upper())
+
+
+def active_group_count(con: sqlite3.Connection, team_id: int, group: str) -> int:
+    positions = POSITION_GROUPS.get(group, (group,))
+    placeholders = ",".join("?" for _ in positions)
+    row = con.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM players
+        WHERE team_id = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND position IN ({placeholders})
+        """,
+        (team_id, *positions),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def active_group_quality(con: sqlite3.Connection, team_id: int, group: str) -> float:
+    positions = POSITION_GROUPS.get(group, (group,))
+    placeholders = ",".join("?" for _ in positions)
+    rows = con.execute(
+        f"""
+        SELECT COALESCE(overall, 50) AS overall
+        FROM players
+        WHERE team_id = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND position IN ({placeholders})
+        ORDER BY COALESCE(overall, 50) DESC
+        LIMIT 5
+        """,
+        (team_id, *positions),
+    ).fetchall()
+    if not rows:
+        return 45.0
+    return sum(float(row["overall"] or 50) for row in rows) / max(1, len(rows))
+
+
+def active_contract_cap_hit(con: sqlite3.Connection, player_id: int, season: int) -> int:
+    if table_exists(con, "contract_years"):
+        row = con.execute(
+            """
+            SELECT COALESCE(cy.cap_hit, c.aav, 0) AS cap_hit
+            FROM contracts c
+            LEFT JOIN contract_years cy
+              ON cy.contract_id = c.contract_id
+             AND cy.season = ?
+             AND COALESCE(cy.is_active, 1) = 1
+            WHERE c.player_id = ?
+              AND COALESCE(c.is_active, 1) = 1
+            ORDER BY c.contract_id DESC
+            LIMIT 1
+            """,
+            (season, player_id),
+        ).fetchone()
+    else:
+        row = con.execute(
+            """
+            SELECT COALESCE(aav, 0) AS cap_hit
+            FROM contracts
+            WHERE player_id = ?
+              AND COALESCE(is_active, 1) = 1
+            ORDER BY contract_id DESC
+            LIMIT 1
+            """,
+            (player_id,),
+        ).fetchone()
+    return int(row["cap_hit"] or 0) if row else 0
+
+
+def team_cap_space(con: sqlite3.Connection, team_id: int) -> int:
+    if not table_exists(con, "team_cap_view"):
+        return 999_000_000
+    row = con.execute(
+        "SELECT COALESCE(cap_space, 0) AS cap_space FROM team_cap_view WHERE team_id = ?",
+        (team_id,),
+    ).fetchone()
+    return int(row["cap_space"] or 0) if row else 999_000_000
+
+
+def place_player_on_waivers(
+    con: sqlite3.Connection,
+    *,
+    player: sqlite3.Row,
+    season: int,
+    waiver_date: str | None = None,
+    claim_deadline: str | None = None,
+    reason: str | None = None,
+    source: str = SOURCE,
+) -> int:
+    if player["status"] in {"Free Agent", "Retired", WAIVED_STATUS}:
+        raise ValueError(f"{player_name(player)} cannot be waived from status {player['status']}.")
+    open_existing = con.execute(
+        """
+        SELECT waiver_id
+        FROM waiver_wire
+        WHERE player_id = ? AND status = 'Open'
+        """,
+        (player["player_id"],),
+    ).fetchone()
+    if open_existing:
+        return int(open_existing["waiver_id"])
+    waiver_date = waiver_date or today(con)
+    claim_deadline = claim_deadline or default_claim_deadline(waiver_date)
+    from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
+    contract = active_contract(con, player["player_id"])
+    contract_id = int(contract["contract_id"]) if contract else None
+    set_player_status(
+        con,
+        player=player,
+        team_id=None,
+        new_status=WAIVED_STATUS,
+        season=season,
+        reason=reason or "Placed on waivers.",
+    )
+    clear_depth_chart(con, int(player["player_id"]))
+    cur = con.execute(
+        """
+        INSERT INTO waiver_wire (
+            player_id, original_team_id, waiver_date, claim_deadline,
+            season, status, reason, source
+        )
+        VALUES (?, ?, ?, ?, ?, 'Open', ?, ?)
+        """,
+        (
+            int(player["player_id"]),
+            from_team_id,
+            waiver_date,
+            claim_deadline,
+            season,
+            reason,
+            source,
+        ),
+    )
+    log_transaction(
+        con,
+        transaction_type="Waiver",
+        season=season,
+        team_id=from_team_id,
+        player_id=int(player["player_id"]),
+        contract_id=contract_id,
+        from_team_id=from_team_id,
+        old_status=player["status"],
+        new_status=WAIVED_STATUS,
+        description=f"Placed {player_name(player)} on waivers. Claim deadline: {claim_deadline}.",
+    )
+    return int(cur.lastrowid)
 
 
 def validation_issue(
@@ -1632,67 +1884,20 @@ def action_waive(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         team_id=team["team_id"] if team else None,
         require_rostered=True,
     )
-    if player["status"] in {"Free Agent", "Retired", WAIVED_STATUS}:
-        raise ValueError(f"{player_name(player)} cannot be waived from status {player['status']}.")
-    open_existing = con.execute(
-        """
-        SELECT waiver_id
-        FROM waiver_wire
-        WHERE player_id = ? AND status = 'Open'
-        """,
-        (player["player_id"],),
-    ).fetchone()
-    if open_existing:
-        raise ValueError(f"{player_name(player)} is already on waivers as entry {open_existing['waiver_id']}.")
-
     waiver_date = args.waiver_date or today(con)
     claim_deadline = args.deadline_date or default_claim_deadline(waiver_date)
-    from_team_id = int(player["team_id"])
-    contract = active_contract(con, player["player_id"])
-    contract_id = int(contract["contract_id"]) if contract else None
-
-    set_player_status(
+    waiver_id = place_player_on_waivers(
         con,
         player=player,
-        team_id=None,
-        new_status=WAIVED_STATUS,
         season=season,
+        waiver_date=waiver_date,
+        claim_deadline=claim_deadline,
         reason=args.reason or "Placed on waivers.",
-    )
-    clear_depth_chart(con, player["player_id"])
-    cur = con.execute(
-        """
-        INSERT INTO waiver_wire (
-            player_id, original_team_id, waiver_date, claim_deadline,
-            season, status, reason, source
-        )
-        VALUES (?, ?, ?, ?, ?, 'Open', ?, ?)
-        """,
-        (
-            player["player_id"],
-            from_team_id,
-            waiver_date,
-            claim_deadline,
-            season,
-            args.reason,
-            SOURCE,
-        ),
-    )
-    transaction_id = log_transaction(
-        con,
-        transaction_type="Waiver",
-        season=season,
-        team_id=from_team_id,
-        player_id=player["player_id"],
-        contract_id=contract_id,
-        from_team_id=from_team_id,
-        old_status=player["status"],
-        new_status=WAIVED_STATUS,
-        description=f"Placed {player_name(player)} on waivers. Claim deadline: {claim_deadline}.",
+        source=SOURCE,
     )
     print(
-        f"Waived {player_name(player)} from team_id {from_team_id}. "
-        f"Waiver entry {cur.lastrowid}, transaction {transaction_id}, deadline {claim_deadline}."
+        f"Waived {player_name(player)}. "
+        f"Waiver entry {waiver_id}, deadline {claim_deadline}."
     )
 
 
@@ -1703,11 +1908,36 @@ def action_claim_waiver(con: sqlite3.Connection, args: argparse.Namespace) -> No
     seed_waiver_priority(con, season)
     team = get_team(con, args.team)
     waiver = get_waiver(con, args.waiver_id) if args.waiver_id else find_open_waiver(con, args.player)
+    claim_order = submit_waiver_claim(
+        con,
+        waiver=waiver,
+        team_id=int(team["team_id"]),
+        season=season,
+        notes=args.notes,
+    )
+    player = con.execute(
+        "SELECT first_name, last_name FROM players WHERE player_id = ?",
+        (waiver["player_id"],),
+    ).fetchone()
+    print(
+        f"{team['abbreviation']} claimed {player['first_name']} {player['last_name']} "
+        f"on waiver entry {waiver['waiver_id']} with priority {claim_order}."
+    )
+
+
+def submit_waiver_claim(
+    con: sqlite3.Connection,
+    *,
+    waiver: sqlite3.Row,
+    team_id: int,
+    season: int,
+    notes: str | None,
+) -> int:
     if waiver["status"] != "Open":
         raise ValueError(f"Waiver entry {waiver['waiver_id']} is {waiver['status']}, not Open.")
-    if waiver["original_team_id"] == team["team_id"]:
+    if waiver["original_team_id"] == team_id:
         raise ValueError("Original team cannot claim its own waiver entry.")
-    claim_order = waiver_priority_for_team(con, season, int(team["team_id"]))
+    claim_order = waiver_priority_for_team(con, season, team_id)
     con.execute(
         """
         INSERT INTO waiver_claims (
@@ -1722,20 +1952,478 @@ def action_claim_waiver(con: sqlite3.Connection, args: argparse.Namespace) -> No
         """,
         (
             waiver["waiver_id"],
-            team["team_id"],
+            team_id,
             claim_order,
             today(con),
-            args.notes,
+            notes,
         ),
     )
-    player = con.execute(
-        "SELECT first_name, last_name FROM players WHERE player_id = ?",
-        (waiver["player_id"],),
+    return claim_order
+
+
+def active_roster_limit_for_claim(con: sqlite3.Connection, season: int) -> int:
+    try:
+        phase = phase_for_transactions(con)
+        rule_set = get_rule_set(con, season, phase)
+    except Exception:
+        try:
+            rule_set = get_rule_set(con, season, "Regular Season")
+        except Exception:
+            return 53
+    return int(rule_set["active_roster_limit"] or 53)
+
+
+def team_has_claim_roster_path(con: sqlite3.Connection, team_id: int, group: str, season: int) -> bool:
+    active_limit = active_roster_limit_for_claim(con, season)
+    if active_roster_count(con, team_id) < active_limit:
+        return True
+    positions = POSITION_GROUPS.get(group, (group,))
+    placeholders = ",".join("?" for _ in positions)
+    replacement = con.execute(
+        f"""
+        SELECT player_id
+        FROM players
+        WHERE team_id = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND position IN ({placeholders})
+          AND COALESCE(overall, 50) < 67
+          AND COALESCE(potential, overall, 50) < 74
+        ORDER BY COALESCE(overall, 50), COALESCE(potential, overall, 50), age DESC
+        LIMIT 1
+        """,
+        (team_id, *positions),
     ).fetchone()
-    print(
-        f"{team['abbreviation']} claimed {player['first_name']} {player['last_name']} "
-        f"on waiver entry {waiver['waiver_id']} with priority {claim_order}."
+    if replacement:
+        return True
+    if group not in {"QB", "ST"}:
+        replacement = con.execute(
+            """
+            SELECT player_id
+            FROM players
+            WHERE team_id = ?
+              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+              AND COALESCE(overall, 50) < 64
+              AND COALESCE(potential, overall, 50) < 72
+            ORDER BY COALESCE(overall, 50), COALESCE(potential, overall, 50), age DESC
+            LIMIT 1
+            """,
+            (team_id,),
+        ).fetchone()
+        return replacement is not None
+    return False
+
+
+def waiver_claim_fit_score(
+    con: sqlite3.Connection,
+    *,
+    waiver: sqlite3.Row,
+    player: sqlite3.Row,
+    team: sqlite3.Row,
+    season: int,
+    post_cutdown: bool,
+) -> tuple[float, str]:
+    team_id = int(team["team_id"])
+    group = player_group(player["position"])
+    overall = row_int(player, "overall", 50)
+    potential = row_int(player, "potential", overall)
+    age = row_int(player, "age", 26)
+    years_exp = row_int(player, "years_exp", 0)
+    group_count = active_group_count(con, team_id, group)
+    quality = active_group_quality(con, team_id, group)
+    group_targets = {
+        "QB": 2,
+        "RB": 3,
+        "WR": 5,
+        "TE": 3,
+        "OL": 8,
+        "EDGE": 4,
+        "IDL": 4,
+        "LB": 5,
+        "CB": 5,
+        "S": 4,
+        "ST": 3,
+    }
+    target = group_targets.get(group, 4)
+    deficit = max(0, target - group_count)
+    cap_hit = active_contract_cap_hit(con, int(player["player_id"]), season)
+    cap_space = team_cap_space(con, team_id)
+    if cap_hit > max(1_500_000, cap_space + 1_000_000):
+        return -100.0, f"cap space cannot absorb {format_money(cap_hit)} claim"
+    if not team_has_claim_roster_path(con, team_id, group, season):
+        return -80.0, "no clear roster spot or expendable same-group player"
+
+    youth_bonus = max(0, 26 - age) * 1.8 + (5.0 if years_exp <= 1 else 2.0 if years_exp <= 2 else 0.0)
+    need_bonus = deficit * 13.0 + max(0.0, 70.0 - quality) * 0.8
+    upside_bonus = max(0, potential - overall) * 1.6 + max(0, potential - 72) * 1.1
+    starter_bonus = 7.5 if overall >= max(64, quality - 2) and group_count < target + 1 else 0.0
+    post_cutdown_bonus = 8.0 if post_cutdown and (age <= 25 or potential >= 73) else 0.0
+    contract_penalty = min(24.0, cap_hit / 1_000_000 * (1.4 if age >= 28 else 0.8))
+    crowd_penalty = max(0, group_count - target - 1) * 8.0
+    if group == "QB" and group_count >= 3 and overall < 68 and potential < 78:
+        crowd_penalty += 18.0
+    score = (
+        overall * 0.66
+        + potential * 0.38
+        + youth_bonus
+        + need_bonus
+        + upside_bonus
+        + starter_bonus
+        + post_cutdown_bonus
+        - contract_penalty
+        - crowd_penalty
     )
+    reason = (
+        f"{group} need {group_count}/{target}, group quality {quality:.1f}, "
+        f"{overall}/{potential} rating, cap hit {format_money(cap_hit)}"
+    )
+    return score, reason
+
+
+def seed_cpu_waiver_claims(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    game_id: str | None = None,
+    include_user_team: bool = False,
+    max_claims_per_team: int = 3,
+    max_claims_total: int = 48,
+    post_cutdown: bool = False,
+) -> dict[str, int]:
+    ensure_schema(con)
+    seed_rules(con)
+    seed_waiver_priority(con, season)
+    user_team_id: int | None = None
+    if game_id and table_exists(con, "game_saves"):
+        row = con.execute("SELECT user_team_id, control_mode FROM game_saves WHERE game_id = ?", (game_id,)).fetchone()
+        if row and str(row["control_mode"] or "team").lower() != "observe" and row["user_team_id"] is not None:
+            user_team_id = int(row["user_team_id"])
+    waivers = con.execute(
+        """
+        SELECT ww.*, p.first_name, p.last_name, p.position, p.age, p.years_exp,
+               p.is_rookie, p.overall, p.potential
+        FROM waiver_wire ww
+        JOIN players p ON p.player_id = ww.player_id
+        WHERE ww.status = 'Open'
+        ORDER BY ww.claim_deadline, p.potential DESC, p.overall DESC, ww.waiver_id
+        """
+    ).fetchall()
+    teams = con.execute("SELECT * FROM teams ORDER BY abbreviation").fetchall()
+    claims_by_team: dict[int, int] = {}
+    submitted = 0
+    evaluated = 0
+    for waiver in waivers:
+        if submitted >= max_claims_total:
+            break
+        player = con.execute("SELECT * FROM players WHERE player_id = ?", (waiver["player_id"],)).fetchone()
+        if not player:
+            continue
+        fits: list[tuple[float, str, sqlite3.Row]] = []
+        for team in teams:
+            team_id = int(team["team_id"])
+            if team_id == int(waiver["original_team_id"] or 0):
+                continue
+            if not include_user_team and user_team_id is not None and team_id == user_team_id:
+                continue
+            if claims_by_team.get(team_id, 0) >= max_claims_per_team:
+                continue
+            evaluated += 1
+            score, reason = waiver_claim_fit_score(
+                con,
+                waiver=waiver,
+                player=player,
+                team=team,
+                season=season,
+                post_cutdown=post_cutdown,
+            )
+            if score >= (77.0 if post_cutdown else 84.0):
+                fits.append((score, reason, team))
+        for score, reason, team in sorted(fits, key=lambda item: item[0], reverse=True)[:5]:
+            if submitted >= max_claims_total:
+                break
+            team_id = int(team["team_id"])
+            if claims_by_team.get(team_id, 0) >= max_claims_per_team:
+                continue
+            note = f"CPU waiver claim score {score:.1f}: {reason}."
+            submit_waiver_claim(con, waiver=waiver, team_id=team_id, season=season, notes=note)
+            claims_by_team[team_id] = claims_by_team.get(team_id, 0) + 1
+            submitted += 1
+    return {"open_waivers": len(waivers), "evaluated": evaluated, "claims": submitted, "teams": len(claims_by_team)}
+
+
+def action_cpu_waiver_claims(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+    ensure_schema(con)
+    seed_rules(con)
+    season = args.season if args.season is not None else current_season(con)
+    result = seed_cpu_waiver_claims(
+        con,
+        season=season,
+        game_id=args.game_id,
+        include_user_team=args.include_user_team,
+        max_claims_per_team=args.max_claims_per_team,
+        max_claims_total=args.max_claims_total,
+        post_cutdown=args.post_cutdown,
+    )
+    print(
+        "CPU waiver claims: "
+        f"{result['claims']} claim(s) from {result['teams']} team(s), "
+        f"{result['open_waivers']} open waiver(s) reviewed."
+    )
+
+
+def release_player_after_waiver_roster_move(
+    con: sqlite3.Connection,
+    *,
+    player: sqlite3.Row,
+    season: int,
+    reason: str,
+) -> None:
+    contract_id = deactivate_active_contract(con, int(player["player_id"]))
+    from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
+    apply_dead_cap_on_release(
+        con,
+        player_id=int(player["player_id"]),
+        team_id=from_team_id,
+        contract_id=contract_id,
+        season=season,
+        player_label=player_name(player),
+    )
+    set_player_status(
+        con,
+        player=player,
+        team_id=None,
+        new_status="Free Agent",
+        season=season,
+        reason=reason,
+    )
+    clear_depth_chart(con, int(player["player_id"]))
+    log_transaction(
+        con,
+        transaction_type="Release",
+        season=season,
+        team_id=from_team_id,
+        player_id=int(player["player_id"]),
+        contract_id=contract_id,
+        from_team_id=from_team_id,
+        old_status=player["status"],
+        new_status="Free Agent",
+        description=f"Released {player_name(player)} as the corresponding move after a waiver claim.",
+    )
+
+
+def apply_dead_cap_on_waiver_clear(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_id: int | None,
+    contract_id: int | None,
+    season: int,
+    player_label: str,
+    process_date: str | None = None,
+) -> int:
+    if not team_id or not contract_id or not table_exists(con, "team_cap_charges") or not table_exists(con, "contract_years"):
+        return 0
+    target_date = process_date or today(con)
+    post_june1 = target_date >= f"{season}-06-02"
+    row = con.execute(
+        """
+        SELECT
+            COALESCE(dead_cap_if_cut_pre_june1, 0) AS pre_june_dead_cap,
+            COALESCE(dead_cap_if_cut_post_june1_current, 0) AS post_june_current_dead_cap,
+            COALESCE(dead_cap_if_cut_post_june1_next, 0) AS post_june_next_dead_cap
+        FROM contract_years
+        WHERE contract_id = ?
+          AND season = ?
+        ORDER BY contract_year_id DESC
+        LIMIT 1
+        """,
+        (contract_id, season),
+    ).fetchone()
+    if not row:
+        return 0
+
+    current_dead_cap = int(
+        row["post_june_current_dead_cap"] if post_june1 else row["pre_june_dead_cap"]
+    )
+    next_dead_cap = int(row["post_june_next_dead_cap"] or 0) if post_june1 else 0
+    total_dead_cap = current_dead_cap + next_dead_cap
+    if total_dead_cap <= 0:
+        return 0
+
+    if current_dead_cap > 0:
+        con.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                season,
+                f"Dead cap from {player_label} clearing waivers.",
+                current_dead_cap,
+                player_id,
+                SOURCE,
+            ),
+        )
+    if next_dead_cap > 0:
+        con.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                season + 1,
+                f"Post-June 1 dead cap from {player_label} clearing waivers.",
+                next_dead_cap,
+                player_id,
+                SOURCE,
+            ),
+        )
+    return total_dead_cap
+
+
+def apply_dead_cap_on_release(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_id: int | None,
+    contract_id: int | None,
+    season: int,
+    player_label: str,
+    process_date: str | None = None,
+) -> int:
+    if not team_id or not contract_id or not table_exists(con, "team_cap_charges") or not table_exists(con, "contract_years"):
+        return 0
+    target_date = process_date or today(con)
+    post_june1 = target_date >= f"{season}-06-02"
+    row = con.execute(
+        """
+        SELECT
+            COALESCE(dead_cap_if_cut_pre_june1, 0) AS pre_june_dead_cap,
+            COALESCE(dead_cap_if_cut_post_june1_current, 0) AS post_june_current_dead_cap,
+            COALESCE(dead_cap_if_cut_post_june1_next, 0) AS post_june_next_dead_cap
+        FROM contract_years
+        WHERE contract_id = ?
+          AND season = ?
+        ORDER BY contract_year_id DESC
+        LIMIT 1
+        """,
+        (contract_id, season),
+    ).fetchone()
+    if not row:
+        return 0
+    current_dead_cap = int(
+        row["post_june_current_dead_cap"] if post_june1 else row["pre_june_dead_cap"]
+    )
+    next_dead_cap = int(row["post_june_next_dead_cap"] or 0) if post_june1 else 0
+    total_dead_cap = current_dead_cap + next_dead_cap
+    if total_dead_cap <= 0:
+        return 0
+    if current_dead_cap > 0:
+        con.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                season,
+                f"Dead cap from releasing {player_label}.",
+                current_dead_cap,
+                player_id,
+                SOURCE,
+            ),
+        )
+    if next_dead_cap > 0:
+        con.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                season + 1,
+                f"Post-June 1 dead cap from releasing {player_label}.",
+                next_dead_cap,
+                player_id,
+                SOURCE,
+            ),
+        )
+    return total_dead_cap
+
+
+def make_room_for_waiver_claim(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    claimed_player_id: int,
+    season: int,
+) -> int:
+    limit = active_roster_limit_for_claim(con, season)
+    moved = 0
+    while active_roster_count(con, team_id) > limit:
+        claimed = con.execute("SELECT position FROM players WHERE player_id = ?", (claimed_player_id,)).fetchone()
+        group = player_group(claimed["position"] if claimed else None)
+        positions = POSITION_GROUPS.get(group, (group,))
+        placeholders = ",".join("?" for _ in positions)
+        candidate = con.execute(
+            f"""
+            SELECT *
+            FROM players
+            WHERE team_id = ?
+              AND player_id != ?
+              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+              AND position IN ({placeholders})
+            ORDER BY
+              CASE WHEN COALESCE(overall, 50) >= 70 OR COALESCE(potential, overall, 50) >= 76 THEN 1 ELSE 0 END,
+              COALESCE(overall, 50),
+              COALESCE(potential, overall, 50),
+              age DESC
+            LIMIT 1
+            """,
+            (team_id, claimed_player_id, *positions),
+        ).fetchone()
+        if not candidate:
+            candidate = con.execute(
+                """
+                SELECT *
+                FROM players
+                WHERE team_id = ?
+                  AND player_id != ?
+                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                ORDER BY
+                  CASE WHEN position IN ('QB','K','P','LS') THEN 1 ELSE 0 END,
+                  CASE WHEN COALESCE(overall, 50) >= 70 OR COALESCE(potential, overall, 50) >= 76 THEN 1 ELSE 0 END,
+                  COALESCE(overall, 50),
+                  COALESCE(potential, overall, 50),
+                  age DESC
+                LIMIT 1
+                """,
+                (team_id, claimed_player_id),
+            ).fetchone()
+        if not candidate:
+            break
+        reason = "Corresponding roster move after waiver claim."
+        if waiver_required_for_player(con, candidate, season=season):
+            place_player_on_waivers(
+                con,
+                player=candidate,
+                season=season,
+                reason=reason,
+                source="waiver_claim_corresponding_move",
+            )
+        else:
+            release_player_after_waiver_roster_move(con, player=candidate, season=season, reason=reason)
+        moved += 1
+    return moved
 
 
 def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -1800,6 +2488,12 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 """,
                 (winner["claim_id"], waiver["waiver_id"]),
             )
+            corresponding_moves = make_room_for_waiver_claim(
+                con,
+                team_id=int(winner["claiming_team_id"]),
+                claimed_player_id=int(waiver["player_id"]),
+                season=int(waiver["season"]),
+            )
             transaction_id = log_transaction(
                 con,
                 transaction_type="Waiver Claim",
@@ -1816,10 +2510,20 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
             )
             print(
                 f"Awarded {player_name(player)} to {winner['claiming_team']} "
-                f"(waiver {waiver['waiver_id']}, transaction {transaction_id})."
+                f"(waiver {waiver['waiver_id']}, transaction {transaction_id}, "
+                f"{corresponding_moves} corresponding move(s))."
             )
         else:
             contract_id = deactivate_active_contract(con, waiver["player_id"])
+            apply_dead_cap_on_waiver_clear(
+                con,
+                player_id=int(waiver["player_id"]),
+                team_id=int(waiver["original_team_id"]) if waiver["original_team_id"] is not None else None,
+                contract_id=contract_id,
+                season=int(waiver["season"]),
+                player_label=player_name(player),
+                process_date=process_date,
+            )
             set_player_status(
                 con,
                 player=player,
@@ -1853,6 +2557,8 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 f"(waiver {waiver['waiver_id']}, transaction {transaction_id})."
             )
         processed += 1
+    rebuild_contract_years(con)
+    sync_team_cap_space(con)
     print(f"Processed {processed} waiver entr{'y' if processed == 1 else 'ies'}.")
 
 
@@ -2040,6 +2746,13 @@ def practice_squad_eligibility(
         blockers.append("Established veteran should be kept active or released, not stashed on the practice squad.")
     if player["status"] == "Active":
         reasons.append("Would need to be waived/cut down first and could be claimed before signing to the practice squad.")
+    if player["status"] == WAIVED_STATUS:
+        open_waiver = con.execute(
+            "SELECT waiver_id, claim_deadline FROM waiver_wire WHERE player_id = ? AND status = 'Open'",
+            (player["player_id"],),
+        ).fetchone()
+        if open_waiver:
+            blockers.append(f"Must clear waivers before practice-squad signing; deadline {open_waiver['claim_deadline']}.")
     if already_current:
         reasons.append("Already assigned to this practice squad.")
     elif player["status"] == PRACTICE_SQUAD_STATUS:
@@ -2453,6 +3166,15 @@ def main() -> int:
     claim_parser.add_argument("--notes")
     claim_parser.add_argument("--dry-run", action="store_true")
 
+    cpu_claim_parser = subparsers.add_parser("cpu-waiver-claims", help="Let CPU teams file realistic waiver claims.")
+    cpu_claim_parser.add_argument("--season", type=int)
+    cpu_claim_parser.add_argument("--game-id")
+    cpu_claim_parser.add_argument("--include-user-team", action="store_true")
+    cpu_claim_parser.add_argument("--post-cutdown", action="store_true")
+    cpu_claim_parser.add_argument("--max-claims-per-team", type=int, default=3)
+    cpu_claim_parser.add_argument("--max-claims-total", type=int, default=48)
+    cpu_claim_parser.add_argument("--dry-run", action="store_true")
+
     process_parser = subparsers.add_parser("process-waivers", help="Process waiver entries whose deadlines have passed.")
     process_parser.add_argument("--date")
     process_parser.add_argument("--all-open", action="store_true", help="Process all open waivers regardless of deadline.")
@@ -2525,6 +3247,9 @@ def main() -> int:
             should_commit = True
         elif args.command == "claim-waiver":
             action_claim_waiver(con, args)
+            should_commit = True
+        elif args.command == "cpu-waiver-claims":
+            action_cpu_waiver_claims(con, args)
             should_commit = True
         elif args.command == "process-waivers":
             action_process_waivers(con, args)

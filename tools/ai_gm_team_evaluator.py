@@ -150,7 +150,13 @@ def current_date(con: sqlite3.Connection) -> str:
     row = con.execute(
         "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
     ).fetchone()
-    return str(row["setting_value"]) if row else datetime.now().date().isoformat()
+    if row and row["setting_value"]:
+        return str(row["setting_value"])
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute('SELECT "current_date" FROM active_game_save_view LIMIT 1').fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    return f"{current_season(con)}-06-01"
 
 
 def is_before_roster_cutdown(evaluation_date: str, season: int) -> bool:
@@ -332,7 +338,13 @@ def depth_rank_map(con: sqlite3.Connection, season: int | None = None) -> dict[i
     active_slots_by_team: dict[int, set[str]] = {}
     if season is not None and table_exists(con, "team_scheme_identities_view"):
         for row in con.execute("SELECT * FROM team_scheme_identities_view WHERE season = ?", (season,)).fetchall():
-            info = depth_packages.scheme_packages_from_row(row)
+            info = depth_packages.team_package_profile_from_db(
+                con,
+                int(row["team_id"]),
+                season,
+                row,
+                team_abbr=str(row["team"] or ""),
+            )
             active_slots_by_team[int(row["team_id"])] = set(
                 depth_packages.active_depth_slots(
                     list(info.get("offensePackages") or ["11", "12"]),

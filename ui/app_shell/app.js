@@ -34,11 +34,17 @@
   let elapsedTimer = null;
 
   function defaultGameId(team) {
-    const stamp = new Date()
-      .toISOString()
-      .slice(0, 19)
-      .replace(/[-:T]/g, "")
-      .slice(0, 14);
+    const bytes = new Uint32Array(2);
+    if (window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+    } else {
+      bytes[0] = Math.floor(Math.random() * 0xffffffff);
+      bytes[1] = Math.floor(Math.random() * 0xffffffff);
+    }
+    const stamp = Array.from(bytes)
+      .map((value) => value.toString(16).padStart(8, "0"))
+      .join("")
+      .slice(0, 12);
     const prefix = String(team || "MIN").toLowerCase();
     return `${prefix}_june1_${stamp}`;
   }

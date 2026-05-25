@@ -1,7 +1,44 @@
 ﻿(function () {
   let data = window.GAME_CENTER_DATA || {};
+  const GAME_CENTER_VIEWS = new Set([
+    "calendar",
+    "inbox",
+    "season",
+    "playoffTree",
+    "stats",
+    "leagueNews",
+    "transactions",
+    "injuries",
+    "roster",
+    "practiceSquad",
+    "depth",
+    "contracts",
+    "scouting",
+    "freeAgency",
+    "waivers",
+    "trades",
+    "draft",
+    "aiGm",
+  ]);
+
+  function urlParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
+  function normalizeView(view) {
+    const key = String(view || "").trim();
+    return GAME_CENTER_VIEWS.has(key) ? key : "calendar";
+  }
+
+  function initialView() {
+    return normalizeView(urlParams().get("view"));
+  }
+
+  function initialRosterTeam() {
+    return String(urlParams().get("team") || "").trim().toUpperCase();
+  }
   const state = {
-    view: "calendar",
+    view: initialView(),
     runnerAvailable: location.protocol.startsWith("http"),
     runnerBusy: false,
     busyAction: null,
@@ -20,6 +57,8 @@
     selectedDepthSlot: null,
     depthOffensePersonnel: "11",
     depthDefensePackage: "nickel",
+    depthLayoutUnlocked: false,
+    depthLayoutOverrides: loadDepthLayoutOverrides(),
     selectedCalendarItem: null,
     calendarBoxScores: {},
     calendarBoxScoreLoadingId: null,
@@ -52,6 +91,7 @@
     practiceSquadLiveKey: null,
     practiceSquadLoading: false,
     practiceSquadFilter: "eligible",
+    pendingCutdownMoves: {},
     draftLiveKey: null,
     draftLoading: false,
     scoutingLiveKey: null,
@@ -60,6 +100,8 @@
     freeAgencyLoading: false,
     freeAgencyPositionFilter: "all",
     freeAgencyTierFilter: "all",
+    waiversLiveKey: null,
+    waiversLoading: false,
     tradeLiveKey: null,
     tradeLoading: false,
     tradePartnerTeam: "",
@@ -69,7 +111,7 @@
     rosterPositionFilter: "all",
     rosterGroupFilter: "all",
     rosterStatusFilter: "all",
-    rosterTeam: "",
+    rosterTeam: initialRosterTeam(),
     selectedRosterPlayerId: null,
     rosterSort: { key: "role", direction: "desc" },
     localScoutingKey: null,
@@ -229,10 +271,15 @@
     "contract_release",
     "contract_restructure",
     "roster_release_player",
+    "roster_cutdown_apply",
     "practice_squad_assign",
     "practice_squad_release",
+    "waiver_claim",
+    "waiver_cpu_seed",
+    "waiver_process",
     "depth_chart_set",
     "depth_chart_move",
+    "depth_chart_swap",
     "auto_cutdown",
     "auto_cutdown_continue",
     "take_over_team",
@@ -316,6 +363,23 @@
     "ai_gm_free_agent_plan_persist",
     "ai_gm_apply_free_agent_plan",
   ]);
+  const WAIVERS_REFRESH_ACTIONS = new Set([
+    "new_june1_save",
+    "load_game",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_to_draft",
+    "sim_week",
+    "sim_season",
+    "waiver_claim",
+    "waiver_cpu_seed",
+    "waiver_process",
+    "roster_release_player",
+    "roster_cutdown_apply",
+    "contract_release",
+    "auto_cutdown",
+    "auto_cutdown_continue",
+  ]);
   const CONTRACTS_REFRESH_ACTIONS = new Set([
     "new_june1_save",
     "load_game",
@@ -336,6 +400,9 @@
     "contract_option_decline",
     "contract_release",
     "contract_restructure",
+    "roster_cutdown_apply",
+    "waiver_claim",
+    "waiver_process",
     "ai_gm_contract_plan",
     "ai_gm_contract_plan_persist",
     "ai_gm_apply_contract_plan",
@@ -358,7 +425,11 @@
     "draft_finish",
     "depth_chart_set",
     "depth_chart_move",
+    "depth_chart_swap",
     "contract_release",
+    "waiver_claim",
+    "waiver_process",
+    "roster_cutdown_apply",
     "practice_squad_assign",
     "practice_squad_release",
     "ai_gm_cutdown_plan",
@@ -411,6 +482,8 @@
       "Depth Chart": "Dep",
       "Contract Talks": "Con",
       "Free Agency": "FA",
+      "Waivers": "Wav",
+      "Roster Cutdown": "Cut",
       "Draft Room": "Drf",
       "AI GMs": "AI",
       "Calendar": "Cal",
@@ -471,6 +544,22 @@
       if (child !== null && child !== undefined) parent.append(child);
     });
     return parent;
+  }
+
+  function loadDepthLayoutOverrides() {
+    try {
+      return JSON.parse(localStorage.getItem("nflGmDepthLayoutOverrides") || "{}");
+    } catch (_err) {
+      return {};
+    }
+  }
+
+  function saveDepthLayoutOverrides() {
+    try {
+      localStorage.setItem("nflGmDepthLayoutOverrides", JSON.stringify(state.depthLayoutOverrides || {}));
+    } catch (_err) {
+      // Cosmetic layout preferences can safely fail without blocking depth-chart edits.
+    }
   }
 
   function shortDate(value) {
@@ -668,10 +757,12 @@
     "SS",
     "PK",
     "KO",
+    "PT",
     "P",
     "LS",
     "KR",
     "PR",
+    "H",
   ];
   const OFFENSE_FORMATION_SLOTS = [
     { slot: "LWR", label: "X", row: 3, col: "1 / span 2" },
@@ -1024,7 +1115,7 @@
     if (team) params.set("team", team);
     if (position) params.set("position", position);
     const query = params.toString();
-    return `../player_profile/index.html${query ? `?${query}` : ""}`;
+    return withReturnTarget(`../player_profile/index.html${query ? `?${query}` : ""}`);
   }
 
   function playerCardHref({ playerId, name, team, position }) {
@@ -1034,7 +1125,7 @@
     if (team) params.set("team", team);
     if (position) params.set("position", position);
     const query = params.toString();
-    return `../player_card/index.html${query ? `?${query}` : ""}`;
+    return withReturnTarget(`../player_card/index.html${query ? `?${query}` : ""}`);
   }
 
   function playerLink(playerId, name, className, hints) {
@@ -1235,12 +1326,45 @@
     return state.runnerAvailable && location.protocol.startsWith("http");
   }
 
+  function syncGameCenterUrl() {
+    if (!window.history?.replaceState) return;
+    const url = new URL(window.location.href);
+    const view = normalizeView(state.view);
+    if (view === "calendar") url.searchParams.delete("view");
+    else url.searchParams.set("view", view);
+    if (view === "roster" && state.rosterTeam) {
+      url.searchParams.set("team", state.rosterTeam);
+    } else {
+      url.searchParams.delete("team");
+    }
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    if (next !== `${window.location.pathname}${window.location.search}${window.location.hash}`) {
+      window.history.replaceState({ view, team: state.rosterTeam || "" }, "", next);
+    }
+  }
+
+  function currentReturnHref() {
+    const url = new URL("../game_center/index.html", window.location.href);
+    const view = normalizeView(state.view);
+    if (view !== "calendar") url.searchParams.set("view", view);
+    if (view === "roster" && state.rosterTeam) url.searchParams.set("team", state.rosterTeam);
+    return `${url.pathname}${url.search}`;
+  }
+
+  function withReturnTarget(href) {
+    const url = new URL(href, window.location.href);
+    url.searchParams.set("returnTo", currentReturnHref());
+    return `${url.pathname}${url.search}${url.hash}`;
+  }
+
   function switchView(view, options = {}) {
+    view = normalizeView(view);
     if (view !== state.view && options.record !== false) {
       state.viewHistory.push(state.view);
       if (state.viewHistory.length > 30) state.viewHistory.shift();
     }
     state.view = view;
+    syncGameCenterUrl();
     render();
     if (options.scroll !== false) {
       refs.content?.scrollIntoView({ block: "start" });
@@ -1360,8 +1484,11 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body || {}),
       });
-      if (!response.ok) throw new Error(`${response.status} ${response.statusText || "request failed"}`.trim());
       const payload = await response.json();
+      if (!response.ok) {
+        if (payload?.state) data = payload.state;
+        throw new Error(payload?.error || `${response.status} ${response.statusText || "request failed"}`.trim());
+      }
       state.runnerAvailable = true;
       setLiveError(scope, null);
       return payload;
@@ -1549,6 +1676,23 @@
       fa.counts?.pendingOffers || 0,
       (fa.offers || []).length,
       event.created_at || event.message || "",
+    ].join(":");
+  }
+
+  function waiversLiveKey() {
+    const waivers = data.waivers || {};
+    const first = (waivers.wire || [])[0] || {};
+    const firstClaim = (waivers.claims || [])[0] || {};
+    return [
+      waivers.season || data.currentSeason || "",
+      data.currentDate || "",
+      waivers.counts?.open || 0,
+      waivers.counts?.claims || 0,
+      first.waiver_id || "",
+      first.status || "",
+      first.claim_count || 0,
+      firstClaim.claim_id || "",
+      firstClaim.status || "",
     ].join(":");
   }
 
@@ -1764,6 +1908,23 @@
     return true;
   }
 
+  async function loadLiveWaivers() {
+    if (!location.protocol.startsWith("http") || state.waiversLoading) return false;
+    const season = data.waivers?.season || data.currentSeason || "";
+    const payload = await apiGet("waivers", "/api/waivers", {
+      params: { season },
+      loadingKey: "waiversLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      waivers: payload.waivers || data.waivers || { wire: [], claims: [], claimOrder: [], counts: {} },
+      waiversGeneratedAt: payload.generatedAt,
+    };
+    state.waiversLiveKey = waiversLiveKey();
+    return true;
+  }
+
   async function loadLiveTrades() {
     if (!location.protocol.startsWith("http") || state.tradeLoading) return false;
     const partner = state.tradePartnerTeam || data.tradeCenter?.partnerTeam?.abbr || "";
@@ -1843,8 +2004,14 @@
     if (DEPTH_CHART_REFRESH_ACTIONS.has(action) || action.startsWith("depth_chart_") || action.startsWith("roster_")) {
       state.depthChartLiveKey = null;
       state.practiceSquadLiveKey = null;
+      if (action === "roster_cutdown_apply") {
+        state.waiversLiveKey = null;
+        state.contractsLiveKey = null;
+      }
       showToast("Refreshing depth chart...");
-      await Promise.allSettled([loadLiveDepthChart(), loadLivePracticeSquad()]);
+      const refreshes = [loadLiveDepthChart(), loadLivePracticeSquad()];
+      if (action === "roster_cutdown_apply") refreshes.push(loadLiveWaivers(), loadLiveContracts());
+      await Promise.allSettled(refreshes);
       return;
     }
     if (DRAFT_REFRESH_ACTIONS.has(action) || isDraftAction(action)) {
@@ -1861,6 +2028,7 @@
     state.draftLiveKey = null;
     state.scoutingLiveKey = null;
     state.freeAgencyLiveKey = null;
+    state.waiversLiveKey = null;
     state.tradeLiveKey = null;
     state.contractsLiveKey = null;
     state.depthChartLiveKey = null;
@@ -1898,6 +2066,9 @@
     }
     if (FREE_AGENCY_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveFreeAgency());
+    }
+    if (WAIVERS_REFRESH_ACTIONS.has(action)) {
+      refreshes.push(loadLiveWaivers());
     }
     if (TRADE_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveTrades());
@@ -1964,6 +2135,7 @@
     if (state.view === "depth") return [loadLiveDepthChart];
     if (state.view === "contracts") return [loadLiveContracts];
     if (state.view === "freeAgency") return [loadLiveFreeAgency];
+    if (state.view === "waivers") return [loadLiveWaivers];
     if (state.view === "trades") return [loadLiveTrades];
     if (state.view === "draft") return [loadLiveDraft, loadLiveScouting];
     if (state.view === "aiGm") return [loadLiveAiGm, loadLiveInbox, loadLiveLeagueNews];
@@ -2057,6 +2229,9 @@
       if (payload.statePatch) {
         applyStatePatch(payload.statePatch);
       }
+      if (action === "roster_cutdown_apply" && payload.returncode === 0) {
+        state.pendingCutdownMoves = {};
+      }
       state.lastResult = payload;
       if (action === "draft_user_trade") {
         handleDraftTradeResult(payload, params);
@@ -2064,8 +2239,9 @@
       if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
       }
-      if (payload.rosterGate && rosterGateStillRelevant()) {
+      if (payload.rosterGate && rosterGateStillRelevant() && !suppressRosterGatePrompt(action)) {
         payload.returncode = 1;
+        payload.rosterGate.key = payload.rosterGate.key || currentRosterGateKey();
         state.rosterCutdownPrompt = payload.rosterGate;
         state.lastResult = {
           ...payload,
@@ -2077,6 +2253,8 @@
             status: "warning",
           },
         };
+      } else if (payload.rosterGate) {
+        state.rosterCutdownPromptDismissedKey = currentRosterGateKey();
       }
       state.runnerAvailable = true;
       if (payload.returncode === 0 && action !== "box_score") {
@@ -2382,6 +2560,10 @@
     if (action === "roster_release_player") {
       return window.confirm("Release this player from your active roster?\n\nContinue?");
     }
+    if (action === "roster_cutdown_apply") {
+      const count = Array.isArray(params.moves) ? params.moves.length : 0;
+      return window.confirm(`Apply ${count} selected roster cutdown move${count === 1 ? "" : "s"}?\n\nPlayers marked for waive/release will enter the normal release and waiver flow.`);
+    }
     return true;
   }
 
@@ -2397,6 +2579,7 @@
       contract_release: "Release Player",
       contract_restructure: "Restructure Contract",
       roster_release_player: "Release Player",
+      roster_cutdown_apply: "Apply Roster Cutdown",
       roster_change_number: "Change Number",
       practice_squad_assign: "Assign Practice Squad",
       practice_squad_release: "Release Practice Squad Player",
@@ -2404,6 +2587,7 @@
       auto_cutdown_continue: "Auto Cutdown And Continue",
       depth_chart_set: "Set Depth Chart",
       depth_chart_move: "Move Depth Chart",
+      depth_chart_swap: "Swap Depth Chart",
       postseason: "Run Postseason",
       postseason_round: "Sim Playoff Round",
       validate_rosters: "Validate Rosters",
@@ -2416,6 +2600,9 @@
       free_agency_cpu_seed: "Seed CPU Offers",
       free_agency_advance_hour: "Advance FA Hour",
       free_agency_advance_day: "Advance FA Day",
+      waiver_claim: "Submit Waiver Claim",
+      waiver_cpu_seed: "Run CPU Waiver Claims",
+      waiver_process: "Process Waivers",
       trade_submit: "Submit Trade",
       trade_cpu_market: "Run CPU Trade Market",
       draft_skip: "Skip Draft Pick",
@@ -2595,9 +2782,8 @@
     return [...new Set(reasons)].slice(0, 3);
   }
 
-  function controlMetaLine({ generatedAt, reasons = [], fallback = "" } = {}) {
+  function controlMetaLine({ generatedAt: _generatedAt, reasons = [], fallback = "" } = {}) {
     const wrap = node("div", "control-meta-line");
-    if (generatedAt) wrap.append(tag(`Updated ${shortDateTime(String(generatedAt).replace("T", " "))}`, "good"));
     if (fallback) wrap.append(node("span", "muted", fallback));
     reasons.forEach((reason) => wrap.append(node("span", "control-reason", reason)));
     return wrap.children.length ? wrap : null;
@@ -3625,7 +3811,7 @@
 
     const body = node("div", "box-score-modal-body injury-alert-body");
     const actions = node("div", "control-bar roster-cutdown-actions");
-    const manage = node("button", "control-button good", "Open Practice Squad Selection");
+    const manage = node("button", "control-button good", "Open Roster Cutdown");
     manage.type = "button";
     manage.addEventListener("click", () => {
       state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
@@ -3996,18 +4182,23 @@
   }
 
   function currentRosterGateKey() {
-    const counts = rosterGateCountsFromState();
-    if (!counts) return "";
     return [
       data.activeSave?.game_id || data.activeSave?.save_id || "",
       data.currentDate || data.activeSave?.current_date || "",
-      counts.activeCount,
-      counts.practiceSquadCount,
+      data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "",
+      "roster-cutdown",
     ].join(":");
+  }
+
+  function suppressRosterGatePrompt(action = "") {
+    const name = String(action || "");
+    if (state.view === "practiceSquad") return true;
+    return name === "practice_squad_assign" || name === "practice_squad_release" || name === "roster_cutdown_apply";
   }
 
   function maybeShowRosterGatePromptFromState() {
     if (state.rosterCutdownPrompt || state.runnerBusy) return;
+    if (suppressRosterGatePrompt()) return;
     const phase = String(data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "").toLowerCase();
     if (!phase.includes("cutdown") && !phase.includes("practice squad")) return;
     if (!rosterGateStillRelevant()) return;
@@ -4381,7 +4572,7 @@
 
     const summary = node("section", "league-table-summary");
     append(summary, [
-      metric("Season", String(currentSeason || "-"), data.seasonGeneratedAt ? `Updated ${shortDateTime(data.seasonGeneratedAt.replace("T", " "))}` : "Current year"),
+      metric("Season", String(currentSeason || "-"), "Current year"),
       metric("Regular Season", `${season.totals?.played || 0}/${season.totals?.games || 0}`, `${season.totals?.remaining || 0} left`, season.totals?.remaining ? "warn" : "good"),
       metric("Next Week", season.nextWeek ? `Week ${season.nextWeek}` : "Done", "Schedule queue"),
       metric("Postseason", season.postseason?.remaining ? `${season.postseason.remaining} left` : "Idle", `${season.postseason?.games || 0} games`),
@@ -4516,7 +4707,7 @@
       return;
     }
 
-    const bracket = panel("Bracket", `${shortDateTime((data.seasonGeneratedAt || "").replace("T", " ")) || "Live"}`);
+    const bracket = panel("Bracket", "Playoff path");
     bracket.classList.add("playoff-tree-panel");
     const grid = node("div", "playoff-tree-grid");
     const roundKeys = [...new Set(matchups.map((game) => `${playoffRoundOrder(game.round_code)}:${game.round_code}:${game.round_name}`))]
@@ -4651,7 +4842,7 @@
     const userTeam = data.activeSave?.user_team || data.contractNegotiations?.team || "User";
     const currentCap = data.contractNegotiations?.currentCap || data.contractNegotiations?.cap || {};
     const capSpace = Number(currentCap.cap_space || 0);
-    const status = panel("Market Desk", `${period ? freeAgencyStageLabel(period.current_stage) : "Not Started"}${data.freeAgencyGeneratedAt ? ` | refreshed ${shortDateTime(data.freeAgencyGeneratedAt.replace("T", " "))}` : ""}`);
+    const status = panel("Market Desk", period ? freeAgencyStageLabel(period.current_stage) : "Not Started");
     status.classList.add("fa-status-panel");
     if (state.freeAgencyLoading) {
       panelBody(status).append(node("div", "empty-state", "Refreshing live free agency..."));
@@ -4988,6 +5179,127 @@
     return wrap;
   }
 
+  function waiverStatusTone(status) {
+    const value = String(status || "").toLowerCase();
+    if (value === "open" || value === "pending") return "warn";
+    if (value === "claimed" || value === "awarded") return "good";
+    if (value === "denied") return "bad";
+    return "";
+  }
+
+  function waiverClaimButton(row) {
+    const userTeamId = Number(data.activeSave?.user_team_id || 0);
+    const button = node("button", "run-button small", row.user_claim_status === "Pending" ? "Claim Filed" : "Claim");
+    button.type = "button";
+    const disabledReason = !runnerMode()
+      ? "Live actions are unavailable."
+      : !userTeamId
+        ? "Observe Mode has no user-controlled waiver claims."
+        : row.status !== "Open"
+          ? "Waiver is already resolved."
+          : Number(row.original_team_id || 0) === userTeamId
+            ? "Original team cannot claim its own waiver entry."
+            : row.user_claim_status === "Pending"
+              ? "Claim already filed."
+              : "";
+    button.disabled = state.runnerBusy || Boolean(disabledReason);
+    button.title = disabledReason || "Claim this player at his existing contract.";
+    button.addEventListener("click", () => runAction("waiver_claim", { waiver_id: row.waiver_id }));
+    return button;
+  }
+
+  function waiverWireTable(waivers) {
+    const rows = waivers.wire || [];
+    return table(["Player", "Pos", "Age", "Exp", "Read", "Old Team", "Contract", "Deadline", "Claims", "Status", "Action"], rows.map((row) => [
+      playerLink(row.player_id, row.player_name, "player-link strong-link", {
+        team: row.original_team,
+        position: row.position,
+      }),
+      row.position || "-",
+      row.age ?? "-",
+      row.years_exp ?? "-",
+      `${row.overall ?? "-"} / ${row.potential ?? "-"}`,
+      append(node("span", "team-inline"), [
+        teamLogo(row.originalTeamLogo, row.original_team, "mini-team-logo"),
+        node("span", null, row.original_team || "-"),
+      ]),
+      row.contractLabel || "-",
+      shortDate(row.claim_deadline),
+      String(row.claim_count || 0),
+      tag(row.user_claim_status || row.status || "Open", waiverStatusTone(row.user_claim_status || row.status)),
+      waiverClaimButton(row),
+    ]));
+  }
+
+  function waiverClaimOrderPanel(waivers) {
+    const basis = String(waivers.basis || "").replace(/_/g, " ") || "priority";
+    const p = panel("Claim Order", basis);
+    const rows = (waivers.claimOrder || []).slice(0, 12).map((row) => [
+      `#${row.priority}`,
+      append(node("span", "team-inline"), [
+        teamLogo(row.teamLogo, row.team, "mini-team-logo"),
+        node("span", null, row.team || "-"),
+      ]),
+      row.team_name || "",
+    ]);
+    panelBody(p).append(table(["Priority", "Team", "Club"], rows));
+    return p;
+  }
+
+  function waiverRecentClaimsPanel(waivers) {
+    const p = panel("Your Claims", `${(waivers.claims || []).length} recent`);
+    const rows = (waivers.claims || []).slice(0, 12).map((claim) => [
+      `#${claim.claim_order || "-"}`,
+      playerLink(claim.player_id, claim.player_name, "player-link strong-link", {
+        team: claim.original_team,
+        position: claim.position,
+      }),
+      claim.position || "-",
+      claim.original_team || "-",
+      tag(claim.status || "Pending", waiverStatusTone(claim.status)),
+      shortDate(claim.claim_date),
+    ]);
+    panelBody(p).append(table(["Order", "Player", "Pos", "From", "Status", "Date"], rows));
+    return p;
+  }
+
+  function renderWaivers() {
+    setHeader("Waivers", "Claim released players before they clear to free agency.");
+    const root = document.createDocumentFragment();
+    const waivers = data.waivers || { wire: [], claims: [], claimOrder: [], counts: {} };
+    if (runnerMode() && state.waiversLiveKey !== waiversLiveKey() && !state.waiversLoading) {
+      loadLiveWaivers().then((changed) => {
+        if (changed && state.view === "waivers") render();
+      });
+    }
+    const summary = panel("Waiver Wire", `${waivers.counts?.open || 0} open`);
+    const body = panelBody(summary);
+    const controls = node("div", "control-bar");
+    append(controls, [
+      controlButton({
+        label: "Run CPU Claims",
+        action: "waiver_cpu_seed",
+        params: { post_cutdown: true },
+        className: "draft-control-button",
+      }),
+      controlButton({
+        label: "Process Waivers",
+        action: "waiver_process",
+        params: {},
+        className: "draft-control-button",
+        tone: "good",
+      }),
+    ]);
+    body.append(controls);
+    if (state.waiversLoading) body.append(node("div", "empty-state", "Refreshing waiver wire..."));
+    body.append(waiverWireTable(waivers));
+    root.append(summary);
+    const side = node("div", "two-column");
+    side.append(waiverClaimOrderPanel(waivers), waiverRecentClaimsPanel(waivers));
+    root.append(side);
+    finishRender(root);
+  }
+
   function renderContracts() {
     setHeader("Contract Talks", "Own-team expiring contracts up top, projected cap-casualty decisions below.");
     const root = document.createDocumentFragment();
@@ -5000,7 +5312,7 @@
       loadLiveContracts().then(render);
     }
 
-    const summary = panel("Negotiation Snapshot", `${talks.team || data.activeSave?.user_team || ""}${data.contractsGeneratedAt ? ` | refreshed ${shortDateTime(data.contractsGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Negotiation Snapshot", `${talks.team || data.activeSave?.user_team || ""}`);
     if (state.contractsLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live contracts..."));
     }
@@ -5268,7 +5580,8 @@
 
   function slotBasePositions(slot) {
     const key = String(slot || "").toUpperCase();
-    if (["LWR", "RWR", "SWR", "KR", "PR"].includes(key)) return ["WR", "RB", "CB"];
+    if (["LWR", "RWR", "SWR"].includes(key)) return ["WR", "RB", "CB"];
+    if (["KR", "PR"].includes(key)) return ["WR", "RB", "CB", "NB", "FS", "SS", "S"];
     if (["LT", "RT"].includes(key)) return ["OT"];
     if (["LG", "RG"].includes(key)) return ["OG", "C"];
     if (key === "C") return ["C", "OG"];
@@ -5337,6 +5650,35 @@
     return Math.max(1, Number(meta?.rank || 1));
   }
 
+  function depthLayoutKey(unitName) {
+    const team = String(data.depthChart?.team || data.activeSave?.user_team || "TEAM").toUpperCase();
+    const packageKey = unitName === "Defense" ? state.depthDefensePackage : state.depthOffensePersonnel;
+    return `${team}:${unitName}:${packageKey}`;
+  }
+
+  function depthLayoutSlotKey(meta) {
+    return `${String(meta?.slot || "").toUpperCase()}:${formationRank(meta)}`;
+  }
+
+  function depthLayoutSpan(meta) {
+    const match = String(meta?.col || "").match(/span\s+(\d+)/i);
+    return match ? Math.max(1, Number(match[1] || 1)) : 1;
+  }
+
+  function formationMetaWithLayout(meta, unitName) {
+    const stored = state.depthLayoutOverrides?.[depthLayoutKey(unitName)]?.[depthLayoutSlotKey(meta)];
+    if (!stored) return meta;
+    return {
+      ...meta,
+      row: stored.row || meta.row,
+      col: stored.col || meta.col,
+    };
+  }
+
+  function depthLayoutGrid(unitName) {
+    return unitName === "Defense" ? { cols: 12, rows: 7 } : { cols: 13, rows: 7 };
+  }
+
   function activeFormationMetas() {
     return [...offensePersonnelSlots(), ...defensePackageSlots()].map((meta) => ({
       ...meta,
@@ -5385,6 +5727,86 @@
     if (!entry) return "";
     const rankText = entry.rank > 1 ? ` #${entry.rank}` : "";
     return `${entry.player?.player_name || "Player"} is already on the field at ${entry.label}${rankText}.`;
+  }
+
+  function depthDragPayload(event) {
+    const transfer = event?.dataTransfer;
+    if (!transfer) return null;
+    const raw = transfer.getData("application/x-nfl-gm-depth") || transfer.getData("text/plain");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function writeDepthDragPayload(event, payload) {
+    event.dataTransfer.setData("application/x-nfl-gm-depth", JSON.stringify(payload));
+    event.dataTransfer.setData("text/plain", JSON.stringify(payload));
+  }
+
+  function swapFormationPlayers(source, target) {
+    if (!source?.slot || !target?.slot || !source?.player_id || !target?.player_id) return;
+    if (String(source.slot).toUpperCase() === String(target.slot).toUpperCase() && Number(source.rank || 1) === Number(target.rank || 1)) return;
+    if (String(source.player_id) === String(target.player_id)) {
+      showToast("That player is already in both spots.");
+      return;
+    }
+    runAction("depth_chart_swap", {
+      first_position: source.slot,
+      first_rank: Number(source.rank || 1),
+      second_position: target.slot,
+      second_rank: Number(target.rank || 1),
+    });
+  }
+
+  function moveFormationBox(unitName, meta, field, event) {
+    if (!state.depthLayoutUnlocked || !field || !meta) return;
+    const rect = field.getBoundingClientRect();
+    const grid = depthLayoutGrid(unitName);
+    const span = depthLayoutSpan(meta);
+    const x = Math.max(0, Math.min(rect.width - 1, event.clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height - 1, event.clientY - rect.top));
+    const col = Math.max(1, Math.min(grid.cols - span + 1, Math.floor((x / rect.width) * grid.cols) + 1));
+    const row = Math.max(1, Math.min(grid.rows, Math.floor((y / rect.height) * grid.rows) + 1));
+    const key = depthLayoutKey(unitName);
+    const slotKey = depthLayoutSlotKey(meta);
+    state.depthLayoutOverrides[key] = {
+      ...(state.depthLayoutOverrides[key] || {}),
+      [slotKey]: {
+        row,
+        col: span > 1 ? `${col} / span ${span}` : String(col),
+      },
+    };
+    saveDepthLayoutOverrides();
+    render();
+  }
+
+  function resetCurrentDepthLayout() {
+    delete state.depthLayoutOverrides[depthLayoutKey("Offense")];
+    delete state.depthLayoutOverrides[depthLayoutKey("Defense")];
+    saveDepthLayoutOverrides();
+    render();
+  }
+
+  function depthFormationToolbar() {
+    const wrap = node("div", "formation-toolbar");
+    const lock = node("button", `run-button compact ${state.depthLayoutUnlocked ? "active" : ""}`.trim(), state.depthLayoutUnlocked ? "Lock Layout" : "Unlock Layout");
+    lock.type = "button";
+    lock.addEventListener("click", () => {
+      state.depthLayoutUnlocked = !state.depthLayoutUnlocked;
+      render();
+    });
+    const reset = node("button", "run-button compact", "Reset Layout");
+    reset.type = "button";
+    reset.disabled = !state.depthLayoutOverrides[depthLayoutKey("Offense")] && !state.depthLayoutOverrides[depthLayoutKey("Defense")];
+    reset.addEventListener("click", resetCurrentDepthLayout);
+    const hint = node("span", "formation-toolbar-hint", state.depthLayoutUnlocked
+      ? "Drag boxes to rearrange this formation visually."
+      : "Drag one occupied box onto another to swap depth chart spots.");
+    append(wrap, [lock, reset, hint]);
+    return wrap;
   }
 
   function depthSetRankButton(depth, slot, rank, player, label) {
@@ -5545,7 +5967,13 @@
       "21": { label: "21", detail: "2 WR FB" },
     };
     const packages = depth?.scheme?.offensePackages?.length ? depth.scheme.offensePackages : ["11", "12"];
-    return packages.map((value) => ({ value, ...(labels[value] || { label: value, detail: "Package" }) }));
+    const shares = depth?.scheme?.offensePackageShares || {};
+    return packages.map((value) => {
+      const base = labels[value] || { label: value, detail: "Package" };
+      const share = Number(shares[value] || 0);
+      const suffix = share > 0 ? ` | ${Math.round(share * 100)}%` : "";
+      return { value, label: base.label, detail: `${base.detail}${suffix}` };
+    });
   }
 
   function defensePackageOptions(depth) {
@@ -5555,7 +5983,13 @@
       base43: { label: "4-3", detail: "3 LB" },
     };
     const packages = depth?.scheme?.defensePackages?.length ? depth.scheme.defensePackages : ["nickel"];
-    return packages.map((value) => ({ value, ...(labels[value] || { label: value, detail: "Package" }) }));
+    const shares = depth?.scheme?.defensePackageShares || {};
+    return packages.map((value) => {
+      const base = labels[value] || { label: value, detail: "Package" };
+      const share = Number(shares[value] || 0);
+      const suffix = share > 0 ? ` | ${Math.round(share * 100)}%` : "";
+      return { value, label: base.label, detail: `${base.detail}${suffix}` };
+    });
   }
 
   function ensureDepthPackageSelection(depth) {
@@ -5616,14 +6050,21 @@
     return `${number}${player.player_name || "Player"}`;
   }
 
-  function formationSlotTile(depth, selected, slot, meta) {
+  function formationSlotTile(depth, selected, slot, meta, unitName) {
     const rankIndex = Math.max(0, Number(meta.rank || 1) - 1);
     const starter = (slot.players || [])[rankIndex];
     const duplicateIds = formationDuplicatePlayerIds(depth);
     const isDuplicate = starter?.player_id !== undefined && duplicateIds.has(String(starter.player_id));
-    const button = node("button", `formation-slot ${slot.slot === selected?.slot ? "active" : ""} ${isDuplicate ? "duplicate" : ""}`.trim());
+    const canSwap = Boolean(starter?.player_id) && runnerMode() && !state.runnerBusy;
+    const button = node(
+      "button",
+      `formation-slot ${slot.slot === selected?.slot ? "active" : ""} ${isDuplicate ? "duplicate" : ""} ${state.depthLayoutUnlocked ? "layout-unlocked" : ""}`.trim(),
+    );
     button.type = "button";
+    button.draggable = state.depthLayoutUnlocked || canSwap;
     if (isDuplicate) button.title = `${starter.player_name} is starting in more than one spot in this formation.`;
+    else if (state.depthLayoutUnlocked) button.title = "Drag to move this box cosmetically.";
+    else if (canSwap) button.title = "Drag onto another occupied box to swap depth chart spots.";
     if (meta.row) button.style.gridRow = String(meta.row);
     if (meta.col) button.style.gridColumn = String(meta.col);
     append(button, [
@@ -5631,6 +6072,52 @@
       node("strong", null, formationPlayerLabel(starter)),
       node("small", null, starter ? `${starter.position || slot.slot}${starter.overall ? ` | ${starter.overall} OVR` : ""}${meta.rank ? ` | #${meta.rank}` : ""}${isDuplicate ? " | duplicate" : ""}` : `${slot.slot} depth${meta.rank ? ` #${meta.rank}` : ""}`),
     ]);
+    button.addEventListener("dragstart", (event) => {
+      if (state.depthLayoutUnlocked) {
+        writeDepthDragPayload(event, {
+          type: "layout",
+          unit: unitName,
+          slot: slot.slot,
+          rank: formationRank(meta),
+          row: meta.row,
+          col: meta.col,
+        });
+        event.dataTransfer.effectAllowed = "move";
+        return;
+      }
+      if (!canSwap) {
+        event.preventDefault();
+        return;
+      }
+      writeDepthDragPayload(event, {
+        type: "player",
+        slot: slot.slot,
+        rank: formationRank(meta),
+        player_id: starter.player_id,
+      });
+      event.dataTransfer.effectAllowed = "move";
+    });
+    button.addEventListener("dragover", (event) => {
+      if (state.depthLayoutUnlocked || !canSwap || state.runnerBusy) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      button.classList.add("drop-target");
+    });
+    button.addEventListener("dragleave", () => {
+      button.classList.remove("drop-target");
+    });
+    button.addEventListener("drop", (event) => {
+      button.classList.remove("drop-target");
+      if (state.depthLayoutUnlocked || !canSwap || state.runnerBusy) return;
+      const payload = depthDragPayload(event);
+      if (!payload || payload.type !== "player") return;
+      event.preventDefault();
+      swapFormationPlayers(payload, {
+        slot: slot.slot,
+        rank: formationRank(meta),
+        player_id: starter.player_id,
+      });
+    });
     button.addEventListener("click", () => {
       state.selectedDepthSlot = slot.slot;
       render();
@@ -5644,6 +6131,7 @@
     const schemeText = [scheme.offenseScheme, scheme.defenseScheme].filter(Boolean).join(" | ") || "Click a position on the field";
     const panelNode = panel("Formation Board", schemeText);
     const body = panelBody(panelNode);
+    body.append(depthFormationToolbar());
     const unitBlocks = [
       { unit: "Offense", slots: offensePersonnelSlots() },
       { unit: "Defense", slots: defensePackageSlots() },
@@ -5655,20 +6143,35 @@
         node("strong", null, unit.unit),
         unit.unit === "Defense" ? defensePackageToggle(depth) : offensePersonnelToggle(depth),
       ]);
-      const field = node("div", `formation-field ${unit.unit === "Defense" ? "defense" : "offense"}`);
+      const field = node("div", `formation-field ${unit.unit === "Defense" ? "defense" : "offense"} ${state.depthLayoutUnlocked ? "layout-unlocked" : ""}`.trim());
+      field.addEventListener("dragover", (event) => {
+        if (!state.depthLayoutUnlocked) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      });
+      field.addEventListener("drop", (event) => {
+        if (!state.depthLayoutUnlocked) return;
+        const payload = depthDragPayload(event);
+        if (!payload || payload.type !== "layout" || payload.unit !== unit.unit) return;
+        event.preventDefault();
+        const original = unit.slots.find((item) => depthLayoutSlotKey(item) === depthLayoutSlotKey(payload));
+        moveFormationBox(unit.unit, original || payload, field, event);
+      });
       unit.slots.forEach((meta) => {
+        const displayMeta = formationMetaWithLayout(meta, unit.unit);
         const slot = map.get(meta.slot);
         if (!slot && meta.optional) return;
-        field.append(formationSlotTile(depth, selected, slot || { slot: meta.slot, players: [] }, meta));
+        field.append(formationSlotTile(depth, selected, slot || { slot: meta.slot, players: [] }, displayMeta, unit.unit));
       });
       append(section, [title, field]);
       body.append(section);
     });
     const specialists = node("div", "specialists-strip");
+    const activeSlots = new Set(depth.activeSlots || []);
     SPECIAL_TEAMS_FORMATION_SLOTS.forEach((meta) => {
       const slot = map.get(meta.slot);
-      if (!slot) return;
-      specialists.append(formationSlotTile(depth, selected, slot, meta));
+      if (!slot && !activeSlots.has(meta.slot)) return;
+      specialists.append(formationSlotTile(depth, selected, slot || { slot: meta.slot, players: [] }, meta, "Special Teams"));
     });
     if (specialists.children.length) body.append(sectionBlock("Special Teams", specialists));
     return panelNode;
@@ -5873,8 +6376,8 @@
     return first;
   }
 
-  function rosterTableHeader(label, key) {
-    const th = node("th");
+  function rosterTableHeader(label, key, className = "") {
+    const th = node("th", className);
     if (!key) {
       th.textContent = label || "";
       return th;
@@ -5907,17 +6410,32 @@
   function rosterPlayerTable(depth, rows, selected) {
     const wrap = node("div", "table-wrap roster-table-wrap");
     const table = node("table", "data-table roster-table");
+    const colGroup = node("colgroup");
+    [
+      "roster-col-photo",
+      "roster-col-number",
+      "roster-col-player",
+      "roster-col-position",
+      "roster-col-rating",
+      "roster-col-rating",
+      "roster-col-read",
+      "roster-col-age",
+      "roster-col-depth",
+      "roster-col-role",
+      "roster-col-contract",
+      "roster-col-status",
+    ].forEach((className) => colGroup.append(node("col", className)));
     const head = node("thead");
     const headRow = node("tr");
     [
-      rosterTableHeader("", null),
-      rosterTableHeader("#", "number"),
+      rosterTableHeader("", null, "roster-photo-head"),
+      rosterTableHeader("#", "number", "center"),
       rosterTableHeader("Player", "name"),
-      rosterTableHeader("Pos", "pos"),
-      rosterTableHeader("OVR", "overall"),
-      rosterTableHeader("POT", "potential"),
-      rosterTableHeader("Read", "confidence"),
-      rosterTableHeader("Age", "age"),
+      rosterTableHeader("Pos", "pos", "center"),
+      rosterTableHeader("OVR", "overall", "center"),
+      rosterTableHeader("POT", "potential", "center"),
+      rosterTableHeader("Read", "confidence", "center"),
+      rosterTableHeader("Age", "age", "center"),
       rosterTableHeader("Depth", "depth"),
       rosterTableHeader("Role", "role"),
       rosterTableHeader("Contract", "contract"),
@@ -5951,13 +6469,13 @@
         : (contract.type || "-");
       append(tr, [
         append(node("td", "roster-photo-cell"), [rosterHeadshot(player)]),
-        node("td", "numeric roster-number-cell", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
+        node("td", "center roster-number-cell", player.jersey_number === null || player.jersey_number === undefined ? "-" : `#${player.jersey_number}`),
         playerCell,
-        node("td", "numeric", player.position || "-"),
-        node("td", "numeric rating-cell", player.overall ?? "-"),
-        node("td", "numeric rating-cell", player.potential ?? "-"),
-        node("td", "numeric", player.evaluation_confidence || player.evaluation?.confidenceLabel || "-"),
-        node("td", "numeric", player.age ?? "-"),
+        node("td", "center", player.position || "-"),
+        node("td", "center rating-cell", player.overall ?? "-"),
+        node("td", "center rating-cell", player.potential ?? "-"),
+        node("td", "center", player.evaluation_confidence || player.evaluation?.confidenceLabel || "-"),
+        node("td", "center", player.age ?? "-"),
         node("td", null, assignment ? `${assignment.slot} #${assignment.rank}` : "-"),
         node("td", null, player.role?.key ? `${roleLabel(player.role.key)} ${oneDecimal(player.roleScore)}` : "-"),
         node("td", null, contractText),
@@ -5965,7 +6483,7 @@
       ]);
       body.append(tr);
     });
-    table.append(head, body);
+    table.append(colGroup, head, body);
     wrap.append(table);
     return wrap;
   }
@@ -6121,6 +6639,96 @@
     return "bad";
   }
 
+  function activeRosterStatus(status) {
+    return new Set(["Active", "Questionable", "Doubtful", "Out"]).has(String(status || "Active"));
+  }
+
+  function pendingCutdownMove(candidateOrId) {
+    const id = typeof candidateOrId === "object" ? candidateOrId?.player_id : candidateOrId;
+    return (state.pendingCutdownMoves || {})[String(id || "")] || null;
+  }
+
+  function pendingCutdownEntries() {
+    return Object.values(state.pendingCutdownMoves || {});
+  }
+
+  function pendingCutdownLabel(move) {
+    if (!move) return "";
+    return {
+      practice_squad: "Pending PS",
+      release: "Pending cut",
+      release_ps: "Pending PS release",
+    }[move.move] || "Pending";
+  }
+
+  function setPendingCutdownMove(candidate, move) {
+    if (!candidate?.player_id || state.runnerBusy) return;
+    const key = String(candidate.player_id);
+    const current = pendingCutdownMove(candidate);
+    const next = { player_id: Number(candidate.player_id), move, player_name: candidate.player_name || "" };
+    state.pendingCutdownMoves = { ...(state.pendingCutdownMoves || {}) };
+    if (current?.move === move) {
+      delete state.pendingCutdownMoves[key];
+    } else {
+      state.pendingCutdownMoves[key] = next;
+    }
+    render();
+  }
+
+  function clearPendingCutdownMoves() {
+    state.pendingCutdownMoves = {};
+    render();
+  }
+
+  function applyPendingCutdownMoves() {
+    const moves = pendingCutdownEntries();
+    if (!moves.length || state.runnerBusy) return;
+    runAction("roster_cutdown_apply", { moves });
+  }
+
+  function cutdownMoveButton(candidate, move, label, selectedLabel, className = "") {
+    const selected = pendingCutdownMove(candidate)?.move === move;
+    const button = node("button", `run-button compact ${className} ${selected ? "selected" : ""}`.trim(), selected ? selectedLabel : label);
+    button.type = "button";
+    button.disabled = state.runnerBusy;
+    button.addEventListener("click", () => setPendingCutdownMove(candidate, move));
+    return button;
+  }
+
+  function adjustPracticeSquadUsage(usage, bucket, delta) {
+    const next = { ...usage };
+    const inc = (key) => {
+      next[key] = Math.max(0, Number(next[key] || 0) + delta);
+    };
+    inc("total");
+    if (bucket === "veteran_exception") inc("veteran_exception_count");
+    else if (bucket === "international_exemption") inc("international_exemption_count");
+    else inc("developmental_count");
+    if (bucket !== "international_exemption") inc("base_count");
+    return next;
+  }
+
+  function projectedCutdownState(ps) {
+    const rowsById = new Map((ps.candidates || []).map((row) => [String(row.player_id), row]));
+    let activeCount = Number(ps.activeCount || 0);
+    let usage = { ...(ps.usage || {}) };
+    pendingCutdownEntries().forEach((move) => {
+      const row = rowsById.get(String(move.player_id));
+      if (!row) return;
+      const isActive = activeRosterStatus(row.current_status);
+      const isPracticeSquad = row.current_status === "Practice Squad";
+      if (move.move === "practice_squad") {
+        if (isActive) activeCount -= 1;
+        if (!isPracticeSquad) usage = adjustPracticeSquadUsage(usage, row.bucket, 1);
+      } else if (move.move === "release") {
+        if (isActive) activeCount -= 1;
+      } else if (move.move === "release_ps" && isPracticeSquad) {
+        usage = adjustPracticeSquadUsage(usage, row.bucket, -1);
+      }
+    });
+    return { activeCount: Math.max(0, activeCount), usage };
+  }
+
   function practiceSquadFilteredRows(rows) {
     if (state.practiceSquadFilter === "current") return rows.filter((row) => row.current_status === "Practice Squad");
     if (state.practiceSquadFilter === "eligible") return rows.filter((row) => row.eligible || row.current_status === "Practice Squad");
@@ -6152,17 +6760,125 @@
   function practiceSquadActionCell(candidate) {
     const wrap = node("div", "row-actions");
     if (candidate.current_status === "Practice Squad") {
-      wrap.append(rosterActionButton("Release PS", "practice_squad_release", { player_id: candidate.player_id }, "warn"));
+      wrap.append(cutdownMoveButton(candidate, "release_ps", "Release PS", "Selected Release", "warn"));
       return wrap;
     }
     if (candidate.eligible) {
-      wrap.append(rosterActionButton("Assign PS", "practice_squad_assign", { player_id: candidate.player_id }, "good"));
+      wrap.append(cutdownMoveButton(candidate, "practice_squad", "Assign PS", "Selected PS", "good"));
     }
-    if (candidate.current_status === "Active") {
-      wrap.append(rosterActionButton("Release", "roster_release_player", { player_id: candidate.player_id }, "warn"));
+    if (activeRosterStatus(candidate.current_status)) {
+      wrap.append(cutdownMoveButton(candidate, "release", "Waive/Release", "Selected Cut", "warn"));
     }
     if (!wrap.children.length) wrap.append(node("span", "muted", "No action"));
     return wrap;
+  }
+
+  function activeCutdownRows(ps) {
+    return (ps.candidates || [])
+      .filter((row) => activeRosterStatus(row.current_status))
+      .slice()
+      .sort((a, b) => {
+        const aScore = Number(a.overall || 0) * 1.1 + Number(a.potential || 0) * 0.55 - Number(a.age || 0) * 0.12;
+        const bScore = Number(b.overall || 0) * 1.1 + Number(b.potential || 0) * 0.55 - Number(b.age || 0) * 0.12;
+        if (aScore !== bScore) return aScore - bScore;
+        if (Number(a.overall || 0) !== Number(b.overall || 0)) return Number(a.overall || 0) - Number(b.overall || 0);
+        return String(a.player_name || "").localeCompare(String(b.player_name || ""));
+      });
+  }
+
+  function cutdownPathLabel(candidate) {
+    if (candidate.eligible) return "PS eligible";
+    const blockers = candidate.blockers || [];
+    if (blockers.some((item) => String(item).toLowerCase().includes("waiver"))) return "Waiver first";
+    if (blockers.some((item) => String(item).toLowerCase().includes("full"))) return "Slot full";
+    return "Release only";
+  }
+
+  function activeCutdownActionCell(candidate) {
+    const wrap = node("div", "row-actions cutdown-actions");
+    if (candidate.eligible) {
+      wrap.append(cutdownMoveButton(candidate, "practice_squad", "Move to PS", "Selected PS", "good"));
+    }
+    wrap.append(cutdownMoveButton(candidate, "release", "Waive/Release", "Selected Cut", "warn"));
+    return wrap;
+  }
+
+  function activeCutdownTable(ps) {
+    const rows = activeCutdownRows(ps);
+    if (!rows.length) return node("div", "empty-state", "No active-roster players are available for cutdown.");
+    const wrap = node("div", "table-wrap ps-registration-table cutdown-table-wrap");
+    const tableEl = node("table", "data-table compact-table cutdown-table");
+    const head = node("thead");
+    const trHead = node("tr");
+    ["Player", "Pos", "Ovr", "Pot", "Age", "Exp", "PS Path", "Read", "Action"].forEach((label) => trHead.append(node("th", null, label)));
+    head.append(trHead);
+    const body = node("tbody");
+    rows.forEach((candidate) => {
+      const read = candidate.eligible ? (candidate.reasons || []).join(" ") : (candidate.blockers || []).join(" ");
+      const pending = pendingCutdownMove(candidate);
+      const tr = node("tr", `${candidate.eligible ? "" : "muted-row"} ${pending ? "pending-cutdown-row" : ""}`.trim());
+      const pathCell = node("td");
+      pathCell.append(tag(cutdownPathLabel(candidate), candidate.eligible ? "good" : "warn"));
+      if (pending) pathCell.append(tag(pendingCutdownLabel(pending), pending.move === "release" ? "warn" : "good"));
+      append(tr, [
+        node("td", null, candidate.player_name || "-"),
+        node("td", "numeric", candidate.position || "-"),
+        node("td", "numeric rating-cell", candidate.overall ?? "-"),
+        node("td", "numeric rating-cell", candidate.potential ?? "-"),
+        node("td", "numeric", candidate.age ?? "-"),
+        node("td", "numeric", candidate.years_exp ?? "-"),
+        pathCell,
+        node("td", "small-note", read || "-"),
+        append(node("td"), [activeCutdownActionCell(candidate)]),
+      ]);
+      body.append(tr);
+    });
+    append(tableEl, [head, body]);
+    wrap.append(tableEl);
+    return wrap;
+  }
+
+  function cutdownSelectionControls() {
+    const moves = pendingCutdownEntries();
+    const wrap = node("div", "cutdown-selection-controls");
+    const summary = node("div", "small-note", moves.length ? `${moves.length} pending move${moves.length === 1 ? "" : "s"} selected.` : "Select players first, then apply the roster cutdown batch.");
+    const actions = node("div", "row-actions");
+    const clear = node("button", "run-button compact ghost", "Clear selections");
+    clear.type = "button";
+    clear.disabled = !moves.length || state.runnerBusy;
+    clear.addEventListener("click", clearPendingCutdownMoves);
+    const apply = node("button", "run-button compact good", state.runnerBusy ? "Running" : "Apply Selected Moves");
+    apply.type = "button";
+    apply.disabled = !moves.length || state.runnerBusy || !runnerMode();
+    apply.addEventListener("click", applyPendingCutdownMoves);
+    append(actions, [clear, apply]);
+    append(wrap, [summary, actions]);
+    return wrap;
+  }
+
+  function renderActiveCutdownPanel(ps, activeLimit, projected) {
+    const activeCount = Number(projected?.activeCount ?? ps.activeCount ?? 0);
+    const cutsNeeded = Math.max(0, activeCount - Number(activeLimit || 53));
+    const rows = activeCutdownRows(ps);
+    const card = panel("Active Roster Cutdown", cutsNeeded ? `${cutsNeeded} move${cutsNeeded === 1 ? "" : "s"} needed` : "53-man ready");
+    const body = panelBody(card);
+    body.append(cutdownSelectionControls());
+    const guide = node("div", "cutdown-guide");
+    append(guide, [
+      tag(`${activeCount}/${activeLimit || 53} projected active`, cutsNeeded ? "warn" : "good"),
+      tag(`${rows.filter((row) => row.eligible).length} PS eligible`, "good"),
+      tag("Waive/Release keeps waiver rules", "warn"),
+    ]);
+    body.append(guide);
+    body.append(node(
+      "p",
+      "small-note",
+      cutsNeeded
+        ? "Trim the active roster here, then use the practice-squad board below to fill the developmental and veteran slots."
+        : "You can still make final swaps, but the active roster is already at or below the regular-season limit."
+    ));
+    body.append(activeCutdownTable(ps));
+    return card;
   }
 
   function practiceSquadTable(ps) {
@@ -6176,8 +6892,12 @@
     head.append(trHead);
     const body = node("tbody");
     rows.forEach((candidate) => {
-      const tr = node("tr", candidate.eligible ? "" : "muted-row");
+      const pending = pendingCutdownMove(candidate);
+      const tr = node("tr", `${candidate.eligible ? "" : "muted-row"} ${pending ? "pending-cutdown-row" : ""}`.trim());
       const read = candidate.eligible ? (candidate.reasons || []).join(" ") : (candidate.blockers || []).join(" ");
+      const statusCell = node("td");
+      statusCell.append(tag(candidate.current_status || "Active", practiceSquadTone(candidate)));
+      if (pending) statusCell.append(tag(pendingCutdownLabel(pending), pending.move === "release" || pending.move === "release_ps" ? "warn" : "good"));
       append(tr, [
         node("td", null, candidate.player_name || "-"),
         node("td", "numeric", candidate.position || "-"),
@@ -6185,7 +6905,7 @@
         node("td", "numeric rating-cell", candidate.potential ?? "-"),
         node("td", "numeric", candidate.age ?? "-"),
         node("td", "numeric", candidate.years_exp ?? "-"),
-        append(node("td"), [tag(candidate.current_status || "Active", practiceSquadTone(candidate))]),
+        statusCell,
         node("td", null, bucketLabel(candidate.bucket)),
         node("td", "small-note", read || "-"),
         append(node("td"), [practiceSquadActionCell(candidate)]),
@@ -6227,20 +6947,21 @@
 
   function renderPracticeSquad() {
     const team = data.activeSave?.user_team || data.practiceSquad?.team || "MIN";
-    setHeader("Practice Squad Selection", `Set ${team}'s 53-man roster and practice squad before the regular season.`);
+    setHeader("Roster Cutdown", `Set ${team}'s 53-man roster and practice squad before the regular season.`);
     const root = document.createDocumentFragment();
     if (runnerMode() && state.practiceSquadLiveKey !== practiceSquadLiveKey() && !state.practiceSquadLoading) {
       loadLivePracticeSquad().then(render);
     }
     const ps = data.practiceSquad || { usage: {}, limits: {}, candidates: [] };
-    const usage = ps.usage || {};
+    const projected = projectedCutdownState(ps);
+    const usage = projected.usage || ps.usage || {};
     const limits = ps.limits || {};
     const activeLimit = ps.activeLimit || limits.active || 53;
-    const summary = panel("Registration Counter", `${ps.phase || "Regular Season"}${data.practiceSquadGeneratedAt ? ` | refreshed ${shortDateTime(data.practiceSquadGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Registration Counter", `${ps.phase || "Regular Season"}`);
     if (state.practiceSquadLoading) panelBody(summary).append(node("div", "empty-state", "Refreshing practice squad rules..."));
     const metrics = node("section", "metric-grid compact-metrics ps-registration-metrics");
     append(metrics, [
-      metric("Active Roster", `${ps.activeCount ?? 0}/${activeLimit}`, "Must be 53 or fewer", Number(ps.activeCount || 0) > Number(activeLimit) ? "warn" : "good"),
+      metric("Active Roster", `${projected.activeCount ?? ps.activeCount ?? 0}/${activeLimit}`, "Projected after selected moves", Number(projected.activeCount || 0) > Number(activeLimit) ? "warn" : "good"),
       metric("Practice Squad", `${usage.total || 0}/${limits.total || 17}`, "Normal slots plus IPP exemption", Number(usage.total || 0) >= Number(limits.total || 17) ? "warn" : ""),
       metric("Developmental", `${usage.developmental_count || 0}/${limits.developmental || 10}`, "Rookies and one/two-year players"),
       metric("Veteran Exceptions", `${usage.veteran_exception_count || 0}/${limits.veteranException || 6}`, "Three-plus accrued-season proxy"),
@@ -6248,6 +6969,8 @@
     ]);
     panelBody(summary).append(metrics);
     root.append(summary);
+
+    root.append(renderActiveCutdownPanel(ps, activeLimit, projected));
 
     const board = panel("Practice Squad Board", `${practiceSquadFilteredRows(ps.candidates || []).length} shown`);
     const body = panelBody(board);
@@ -6358,7 +7081,7 @@
     const partnerTeam = trade.partnerTeam || {};
     if (!state.tradePartnerTeam && partnerTeam.abbr) state.tradePartnerTeam = partnerTeam.abbr;
 
-    const toolbar = panel("Trade Setup", trade.generatedAt ? `Updated ${shortDateTime(trade.generatedAt)}` : "Live");
+    const toolbar = panel("Trade Setup", "Live market");
     const toolbarBody = panelBody(toolbar);
     const partnerSelect = node("select", "trade-team-select");
     (trade.teams || []).filter((team) => team.abbr !== userTeam.abbr).forEach((team) => {
@@ -6455,7 +7178,7 @@
     const starters = rows.filter((player) => player.primaryAssignment?.rank === 1).length;
     const rookies = rows.filter((player) => player.is_rookie).length;
     const contractAlerts = rows.filter((player) => player.contract?.alertType).length;
-    const summary = panel("Roster Snapshot", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Roster Snapshot", `${depth.teamName || team}`);
     if (state.depthChartLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live roster..."));
     }
@@ -6507,7 +7230,7 @@
       loadLiveDepthChart().then(render);
     }
 
-    const summary = panel("Coach Room", `${depth.teamName || team}${data.depthChartGeneratedAt ? ` | refreshed ${shortDateTime(data.depthChartGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Coach Room", `${depth.teamName || team}`);
     if (state.depthChartLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live depth chart..."));
     }
@@ -7922,7 +8645,7 @@
     root.append(renderInboxPanel({
       limit: 40,
       title: "Inbox",
-      kicker: `All Messages${data.inboxGeneratedAt ? ` | refreshed ${shortDateTime(data.inboxGeneratedAt.replace("T", " "))}` : ""}`,
+      kicker: "All Messages",
     }));
     const output = runnerOutputPanel();
     if (output) root.append(output);
@@ -8069,7 +8792,7 @@
       ? items
       : items.filter((item) => String(item.category || "League") === state.newsFilter);
 
-    const summary = panel("League Wire", `${news.updatedAt ? `Updated ${shortDate(news.updatedAt)}` : "Public Feed"}${data.leagueNewsGeneratedAt ? ` | refreshed ${shortDateTime(data.leagueNewsGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("League Wire", news.updatedAt ? `Through ${shortDate(news.updatedAt)}` : "Public Feed");
     const body = panelBody(summary);
     if (state.leagueNewsLoading) {
       body.append(node("div", "empty-state", "Refreshing live league news..."));
@@ -8202,7 +8925,7 @@
       ? items
       : items.filter((item) => String(item.category || "Other") === state.transactionsCategoryFilter);
 
-    const summary = panel("Transaction Ledger", `${data.transactionsGeneratedAt ? `refreshed ${shortDateTime(data.transactionsGeneratedAt.replace("T", " "))}` : "Newest first"}${transactions.includeBaseline ? " | including baseline imports" : " | baseline imports hidden"}`);
+    const summary = panel("Transaction Ledger", `${transactions.includeBaseline ? "including baseline imports" : "baseline imports hidden"}`);
     const body = panelBody(summary);
     if (state.transactionsLoading) body.append(node("div", "empty-state", "Refreshing live transactions..."));
     append(body, [
@@ -8325,7 +9048,7 @@
     }
     const activeItems = filterInjuryItems(injuries.active || []);
     const recentItems = filterInjuryItems(injuries.recent || []);
-    const summary = panel("Medical Center", `${data.injuriesGeneratedAt ? `refreshed ${shortDateTime(data.injuriesGeneratedAt.replace("T", " "))}` : injuries.updatedAt ? `updated ${shortDateTime(String(injuries.updatedAt).replace("T", " "))}` : "Live save data"}`);
+    const summary = panel("Medical Center", "Live save data");
     const body = panelBody(summary);
     if (state.injuriesLoading) body.append(node("div", "empty-state", "Refreshing injury report..."));
     append(body, [
@@ -8472,7 +9195,7 @@
   function renderScoutingDesk(options = {}) {
     const limit = Number(options.limit || 40);
     const scouting = data.scouting || {};
-    const p = panel("Scouting HQ", `${scouting.draftYear ? `${scouting.draftYear} Draft` : "Draft Class"}${data.scoutingGeneratedAt ? ` | refreshed ${shortDateTime(data.scoutingGeneratedAt.replace("T", " "))}` : ""}`);
+    const p = panel("Scouting HQ", scouting.draftYear ? `${scouting.draftYear} Draft` : "Draft Class");
     p.classList.add("scouting-desk-panel");
     const body = panelBody(p);
     if (state.scoutingLoading) {
@@ -9230,7 +9953,7 @@
       metric("Blocked", String(reviewStatusCounts.blocked || 0), "Needs follow-up", reviewStatusCounts.blocked ? "bad" : ""),
       metric("Model", config.model || "llama3.1:8b", config.endpoint || "Ollama default"),
       metric("Recent Logs", String(ai.counts?.logs || 0), "Advisory decisions"),
-      metric("League Office", state.aiGmLoading ? "Refreshing" : "Ready", data.aiGmGeneratedAt ? `Updated ${shortDateTime(data.aiGmGeneratedAt.replace("T", " "))}` : "Latest data"),
+      metric("League Office", state.aiGmLoading ? "Refreshing" : "Ready", "Latest data"),
     ]);
     panelBody(summary).append(metrics);
     panelBody(summary).append(node("div", "quiet cap-context", "The LLM can produce structured recommendations, but it is still advisory-only. It logs validated actions and does not directly mutate rosters, contracts, cap, or draft tables."));
@@ -9790,7 +10513,7 @@
   }
 
   function renderStats() {
-    setHeader("League Leaders", "Quick realism check for the completed season: passing, rushing, receiving, defense, kicking, and snap leaders.");
+    setHeader("League Leaders", "Quick realism check for the completed season: passing, rushing, receiving, defense, returns, kicking, and snap leaders.");
     const root = document.createDocumentFragment();
     const stats = data.stats || {};
     const season = data.currentSeason || data.season?.season || "";
@@ -9798,7 +10521,7 @@
       loadLiveLeaders().then(render);
     }
 
-    const summary = panel("Season Leaders", `${season}${data.statsGeneratedAt ? ` | refreshed ${shortDateTime(data.statsGeneratedAt.replace("T", " "))}` : ""}`);
+    const summary = panel("Season Leaders", `${season}`);
     if (state.statsLoading) {
       panelBody(summary).append(node("div", "empty-state", "Refreshing live league leaders..."));
     }
@@ -9806,6 +10529,8 @@
       ["Passing", statPlayerLink(stats.passing?.[0]), statTeamLink(stats.passing?.[0]?.team), stats.passing?.[0] ? `${whole(stats.passing[0].pass_yards)} yards` : "-"],
       ["Rushing", statPlayerLink(stats.rushing?.[0]), statTeamLink(stats.rushing?.[0]?.team), stats.rushing?.[0] ? `${whole(stats.rushing[0].rush_yards)} yards` : "-"],
       ["Receiving", statPlayerLink(stats.receiving?.[0]), statTeamLink(stats.receiving?.[0]?.team), stats.receiving?.[0] ? `${whole(stats.receiving[0].receiving_yards)} yards` : "-"],
+      ["Kick Returns", statPlayerLink(stats.kickReturns?.[0]), statTeamLink(stats.kickReturns?.[0]?.team), stats.kickReturns?.[0] ? `${whole(stats.kickReturns[0].kickoff_return_yards)} yards` : "-"],
+      ["Punt Returns", statPlayerLink(stats.puntReturns?.[0]), statTeamLink(stats.puntReturns?.[0]?.team), stats.puntReturns?.[0] ? `${whole(stats.puntReturns[0].punt_return_yards)} yards` : "-"],
       ["Sacks", statPlayerLink(stats.sacks?.[0]), statTeamLink(stats.sacks?.[0]?.team), stats.sacks?.[0] ? `${whole(stats.sacks[0].sacks)} sacks` : "-"],
       ["Tackles", statPlayerLink(stats.tackles?.[0]), statTeamLink(stats.tackles?.[0]?.team), stats.tackles?.[0] ? `${whole(stats.tackles[0].tackles)} tackles` : "-"],
       ["Snaps", statPlayerLink(stats.snaps?.[0]), statTeamLink(stats.snaps?.[0]?.team), stats.snaps?.[0] ? `${whole(stats.snaps[0].total_snaps)} snaps` : "-"],
@@ -9890,6 +10615,44 @@
     ])));
     root.append(kicking);
 
+    const returnsGrid = node("div", "grid");
+    const kickReturns = panel("Kick Returns", "Yards");
+    panelBody(kickReturns).append(table(["#", "Player", "Team", "KR", "Yds", "Avg", "TD"], (stats.kickReturns || []).map((p, idx) => [
+      idx + 1,
+      statPlayerLink(p),
+      statTeamLink(p.team),
+      whole(p.kickoff_returns),
+      whole(p.kickoff_return_yards),
+      oneDecimal(Number(p.kickoff_return_yards || 0) / Math.max(1, Number(p.kickoff_returns || 0))),
+      whole(p.kickoff_return_tds),
+    ])));
+    const puntReturns = panel("Punt Returns", "Yards");
+    panelBody(puntReturns).append(table(["#", "Player", "Team", "PR", "Yds", "Avg", "TD", "FC"], (stats.puntReturns || []).map((p, idx) => [
+      idx + 1,
+      statPlayerLink(p),
+      statTeamLink(p.team),
+      whole(p.punt_returns),
+      whole(p.punt_return_yards),
+      oneDecimal(Number(p.punt_return_yards || 0) / Math.max(1, Number(p.punt_returns || 0))),
+      whole(p.punt_return_tds),
+      whole(p.fair_catches),
+    ])));
+    append(returnsGrid, [kickReturns, puntReturns]);
+    root.append(returnsGrid);
+
+    const specialTeamsTackles = panel("Special Teams", "Coverage Tackles");
+    panelBody(specialTeamsTackles).append(table(["#", "Player", "Team", "Tkl", "Solo", "Ast", "Stops", "ST"], (stats.specialTeamsTackles || []).map((p, idx) => [
+      idx + 1,
+      statPlayerLink(p),
+      statTeamLink(p.team),
+      whole(p.special_teams_tackles),
+      whole(p.special_teams_solo_tackles),
+      whole(p.special_teams_assisted_tackles),
+      whole(p.special_teams_stops),
+      whole(p.special_teams_snaps),
+    ])));
+    root.append(specialTeamsTackles);
+
     const snaps = panel("Snaps", "Usage");
     panelBody(snaps).append(table(["#", "Player", "Team", "Off", "Def", "ST", "Total"], (stats.snaps || []).map((p, idx) => [
       idx + 1,
@@ -9970,7 +10733,7 @@
     }
 
     const scopeLabel = calendar.scope === "user_team" ? `${userTeam} Calendar` : "League Calendar";
-    const monthPanel = panel(calendar.monthLabel || "Calendar", `${scopeLabel} | ${shortDate(calendar.rangeStart)} - ${shortDate(calendar.rangeEnd)}${data.calendarGeneratedAt ? ` | refreshed ${shortDateTime(data.calendarGeneratedAt.replace("T", " "))}` : ""}`);
+    const monthPanel = panel(calendar.monthLabel || "Calendar", `${scopeLabel} | ${shortDate(calendar.rangeStart)} - ${shortDate(calendar.rangeEnd)}`);
     const monthBody = panelBody(monthPanel);
     if (state.calendarLoading) {
       monthBody.append(node("div", "empty-state", "Refreshing live calendar..."));
@@ -10111,7 +10874,9 @@
     );
     button.type = "button";
     button.disabled = state.runnerBusy || !runnerMode();
-    button.title = runnerMode() ? actionLabel("advance_to_date") : "Live actions are unavailable";
+    button.title = runnerMode()
+      ? (isPreseason ? "Sim earlier preseason games and advance to this week" : actionLabel("advance_to_date"))
+      : "Live actions are unavailable";
     if (matchup && isPreseason) {
       append(button, [
         teamLogo(matchup.awayLogo, matchup.away_team, "calendar-logo"),
@@ -10124,7 +10889,10 @@
     } else {
       button.textContent = `${shortDate(event.event_start_date)} ${event.event_name || "Calendar Event"}`;
     }
-    button.addEventListener("click", () => runAction("advance_to_date", { date: event.event_start_date }));
+    button.addEventListener("click", () => runAction("advance_to_date", {
+      date: event.event_start_date,
+      auto_sim_preseason: isPreseason,
+    }));
     return button;
   }
 
@@ -10411,6 +11179,8 @@
     if (isObserveMode() && observeHiddenViews().has(state.view)) {
       state.view = "calendar";
     }
+    state.view = normalizeView(state.view);
+    syncGameCenterUrl();
     maybeShowRosterGatePromptFromState();
     const previousView = state.lastRenderedView;
     const shouldRestoreScroll = previousView === state.view;
@@ -10431,6 +11201,7 @@
     else if (state.view === "depth") renderDepthChart();
     else if (state.view === "contracts") renderContracts();
     else if (state.view === "freeAgency") renderFreeAgency();
+    else if (state.view === "waivers") renderWaivers();
     else if (state.view === "trades") renderTradeCenter();
     else if (state.view === "draft") renderDraft();
     else if (state.view === "aiGm") renderAiGm();

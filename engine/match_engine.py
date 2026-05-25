@@ -105,6 +105,61 @@ OFFENSIVE_SLOT_STARTER_RATE = {
     "SWR": 0.74,
 }
 
+SCRIMMAGE_SLOT_SET = {
+    "QB",
+    "RB",
+    "FB",
+    "LT",
+    "LG",
+    "C",
+    "RG",
+    "RT",
+    "TE",
+    "LWR",
+    "RWR",
+    "SWR",
+    "LEDGE",
+    "REDGE",
+    "LDL",
+    "RDL",
+    "NT",
+    "MLB",
+    "WLB",
+    "SLB",
+    "LCB",
+    "RCB",
+    "NB",
+    "FS",
+    "SS",
+}
+
+OFFENSIVE_LINE_SLOTS = {"LT", "LG", "C", "RG", "RT"}
+
+PRESEASON_QB_SNAP_SHARES = {
+    1: [0.14, 0.46, 0.30, 0.10],
+    2: [0.18, 0.44, 0.28, 0.10],
+    3: [0.28, 0.40, 0.22, 0.10],
+}
+
+PRESEASON_SLOT_DEPTH_WEIGHTS = {
+    "QB": [0.14, 0.46, 0.30, 0.10],
+    "OL": [0.13, 0.31, 0.29, 0.18, 0.07, 0.02],
+    "SKILL": [0.15, 0.33, 0.27, 0.16, 0.07, 0.02],
+    "DEFENSE": [0.14, 0.33, 0.28, 0.16, 0.07, 0.02],
+}
+
+PRESEASON_STARTER_SNAP_CAP = {
+    1: 10,
+    2: 14,
+    3: 22,
+}
+
+PRESEASON_QB1_SNAP_CAP = {
+    1: 8,
+    2: 12,
+    3: 18,
+}
+
 DEVELOPMENTAL_ROTATION_SLOTS = {
     "RB",
     "FB",
@@ -189,6 +244,29 @@ SPECIAL_TEAMS_BLOCKER_PRIOR = {
     "FS": 0.90,
     "SS": 0.90,
 }
+
+SPECIAL_TEAMS_TACKLE_POSITION_PRIOR = {
+    "ILB": 1.28,
+    "LB": 1.26,
+    "OLB": 1.20,
+    "CB": 1.18,
+    "NB": 1.18,
+    "FS": 1.15,
+    "SS": 1.15,
+    "S": 1.15,
+    "WR": 1.08,
+    "FB": 1.05,
+    "RB": 1.00,
+    "TE": 0.98,
+    "EDGE": 0.72,
+    "DE": 0.70,
+    "IDL": 0.38,
+    "DT": 0.38,
+    "NT": 0.32,
+}
+
+SPECIAL_TEAMS_CORE_EXCLUDED_POSITIONS = {"QB", "K", "PK", "P", "PT", "KO"}
+COVERAGE_HEAVY_SPECIAL_TEAMS_PLAYS = {"kickoff", "safety_kick", "punt"}
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -360,6 +438,16 @@ def weighted_choice(rng: random.Random, items: list[tuple[object, float]]):
         if roll <= cursor:
             return item
     return clean[-1][0]
+
+
+def weighted_sample_without_replacement(rng: random.Random, items: list[tuple[object, float]], count: int) -> list[object]:
+    pool = [(item, max(0.01, float(weight))) for item, weight in items]
+    selected = []
+    while pool and len(selected) < count:
+        item = weighted_choice(rng, pool)
+        selected.append(item)
+        pool = [(candidate, weight) for candidate, weight in pool if candidate is not item]
+    return selected
 
 
 QB_PASS_WEIGHTS = {
@@ -536,6 +624,10 @@ SLOT_POSITION_FALLBACKS = {
     "KO": ["K"],
     "PT": ["P"],
     "P": ["P"],
+    "LS": ["LS", "C", "TE"],
+    "KR": ["WR", "RB", "CB", "NB", "FS", "SS", "S"],
+    "PR": ["WR", "RB", "CB", "NB", "FS", "SS", "S"],
+    "H": ["P", "QB", "K"],
 }
 
 
@@ -595,6 +687,8 @@ class TeamSnapshot:
     defense_scheme_key: str = "hybrid_multiple_front"
     defense_scheme: str = "Hybrid Multiple Front"
     defense_personnel: str = "multiple"
+    offense_package_shares: dict[str, float] = field(default_factory=dict)
+    defense_package_shares: dict[str, float] = field(default_factory=dict)
 
     @property
     def display_name(self) -> str:
@@ -620,9 +714,25 @@ class TeamSnapshot:
         return int(self.wins + self.losses + self.ties)
 
     def offense_packages(self) -> list[str]:
+        if self.offense_package_shares:
+            packages = [
+                package
+                for package in depth_packages.OFFENSE_PACKAGE_ORDER
+                if package in self.offense_package_shares
+            ]
+            if packages:
+                return packages
         return depth_packages.infer_offense_packages(self.offense_scheme_key, self.offense_personnel)
 
     def defense_packages(self) -> list[str]:
+        if self.defense_package_shares:
+            packages = [
+                package
+                for package in depth_packages.DEFENSE_PACKAGE_ORDER
+                if package in self.defense_package_shares
+            ]
+            if packages:
+                return packages
         return depth_packages.infer_defense_packages(self.defense_scheme_key, self.defense_personnel)
 
     def win_pct(self) -> float:
@@ -738,6 +848,19 @@ class TeamSnapshot:
         if slot == "LS":
             profile = specialist_behavior_profile(player)
             return player.general_score() * 0.25 + profile.snap_accuracy * 0.50 + profile.penalty_control * 0.15 + profile.coverage_tackle * 0.10
+        if slot in {"KR", "PR"}:
+            profile = specialist_behavior_profile(player)
+            role_bonus = (player.role("return_specialist") - 50) * 0.30
+            return special_teams_return_weight(player) * 0.70 + role_bonus + (profile.return_lane_vision - 50) * 0.025
+        if slot == "H":
+            profile = specialist_behavior_profile(player)
+            hold_operation = (
+                profile.snap_accuracy * 0.35
+                + profile.punt_placement * 0.30
+                + profile.penalty_control * 0.20
+                + profile.kick_operation * 0.15
+            )
+            return player.general_score() * 0.20 + hold_operation * 0.65 + profile.penalty_control * 0.15
         return player.general_score()
 
     def offensive_line(self) -> list[PlayerSnapshot]:
@@ -1501,7 +1624,13 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
             """,
             (team_id, season),
         ).fetchone()
-    scheme_info = depth_packages.scheme_packages_from_row(scheme_row)
+    scheme_info = depth_packages.team_package_profile_from_db(
+        con,
+        team_id,
+        season,
+        scheme_row,
+        team_abbr=str(team_row["abbreviation"] or ""),
+    )
 
     players_by_id = {}
     roster = []
@@ -1607,6 +1736,8 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
         defense_scheme_key=str(scheme_info.get("defenseSchemeKey") or "hybrid_multiple_front"),
         defense_scheme=str(scheme_info.get("defenseScheme") or "Hybrid Multiple Front"),
         defense_personnel=str(scheme_info.get("defensePersonnel") or "multiple"),
+        offense_package_shares=dict(scheme_info.get("offensePackageShares") or {}),
+        defense_package_shares=dict(scheme_info.get("defensePackageShares") or {}),
     )
 
 
@@ -1619,6 +1750,7 @@ class MatchEngine:
         season: int,
         week: int | None,
         schedule_game_id: int | None,
+        game_type: str | None = None,
         seed: int | None = None,
     ) -> None:
         self.away = away
@@ -1626,6 +1758,8 @@ class MatchEngine:
         self.season = season
         self.week = week
         self.schedule_game_id = schedule_game_id
+        self.game_type = str(game_type or "").upper()
+        self.is_preseason = self.game_type == "PRE"
         self.seed = int(seed if seed is not None else random.randrange(1, 2**31))
         self.rng = random.Random(self.seed)
         self.score = {away.team_id: 0, home.team_id: 0}
@@ -1645,6 +1779,7 @@ class MatchEngine:
         self.two_minute_warnings: set[int] = set()
         self._last_play_concept: str | None = None
         self._snap_overrides: dict[tuple[int, str], list[PlayerSnapshot]] = {}
+        self._special_teams_snap_overrides: dict[tuple[int, str], list[PlayerSnapshot]] = {}
         self.injury_events: list[injury_model.InjuryEvent] = []
         self.injured_player_ids: set[int] = set()
 
@@ -1912,9 +2047,171 @@ class MatchEngine:
             if player.player_id not in used and player.player_id not in self.injured_player_ids
         ]
 
+    def preseason_week_index(self) -> int:
+        return int(clamp(int(self.week or 2), 1, 3))
+
+    def preseason_slot_group(self, slot: str) -> str:
+        slot = slot.upper()
+        if slot == "QB":
+            return "QB"
+        if slot in OFFENSIVE_LINE_SLOTS:
+            return "OL"
+        if slot in {"RB", "FB", "TE", "LWR", "RWR", "SWR"}:
+            return "SKILL"
+        return "DEFENSE"
+
+    def preseason_starter_snap_cap(self, player: PlayerSnapshot, slot: str) -> int:
+        week = self.preseason_week_index()
+        if slot.upper() == "QB":
+            base = PRESEASON_QB1_SNAP_CAP.get(week, PRESEASON_QB1_SNAP_CAP[2])
+        else:
+            base = PRESEASON_STARTER_SNAP_CAP.get(week, PRESEASON_STARTER_SNAP_CAP[2])
+        overall = float(player.metadata.get("overall") or player.general_score())
+        age = int(player.metadata.get("age") or 26)
+        is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
+        years_exp = int(player.metadata.get("years_exp") or 0)
+        if is_rookie or (age <= 23 and years_exp <= 2):
+            base += 8
+        if overall < 74:
+            base += 5
+        elif overall >= 86:
+            base -= 4
+        elif overall >= 80 and age >= 28:
+            base -= 3
+        if age >= 31:
+            base -= 3
+        return max(4, int(base))
+
+    def preseason_depth_base_weight(self, slot: str, index: int) -> float:
+        group = self.preseason_slot_group(slot)
+        weights = PRESEASON_QB_SNAP_SHARES.get(self.preseason_week_index(), PRESEASON_SLOT_DEPTH_WEIGHTS[group])
+        if group != "QB":
+            weights = PRESEASON_SLOT_DEPTH_WEIGHTS[group]
+        if index < len(weights):
+            base = weights[index]
+        else:
+            base = max(0.01, weights[-1] * (0.55 ** (index - len(weights) + 1)))
+        if self.preseason_week_index() == 3 and index == 0 and group != "QB":
+            base *= 1.28
+        elif self.preseason_week_index() == 1 and index == 0:
+            base *= 0.82
+        return base
+
+    def preseason_player_selection_weight(
+        self,
+        team: TeamSnapshot,
+        slot: str,
+        player: PlayerSnapshot,
+        index: int,
+        candidates: list[PlayerSnapshot],
+        snap_key: str,
+    ) -> float:
+        slot = slot.upper()
+        score = team.score_for_slot(player, slot)
+        overall = float(player.metadata.get("overall") or player.general_score())
+        potential = float(player.metadata.get("potential") or overall)
+        age = int(player.metadata.get("age") or 26)
+        years_exp = int(player.metadata.get("years_exp") or 0)
+        is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
+        current_snaps = float(self.player_stats[player.player_id].get(snap_key, 0))
+        slot_snaps = sum(float(self.player_stats[candidate.player_id].get(snap_key, 0)) for candidate in candidates)
+        best_depth_rank = team.depth_rank_for_player(player)
+        protected_core_player = (
+            not is_rookie
+            and (
+                (best_depth_rank == 1 and (overall >= 75 or age >= 27))
+                or (overall >= 80 and age >= 27)
+            )
+        )
+
+        base = self.preseason_depth_base_weight(slot, index)
+        talent_factor = clamp((score - 54.0) / 24.0, 0.30, 1.45)
+        if overall < 58:
+            talent_factor *= 0.58
+        elif overall < 64:
+            talent_factor *= 0.78
+        elif overall >= 82 and index > 0:
+            talent_factor *= 1.08
+
+        development_factor = 1.0
+        if is_rookie:
+            development_factor += 0.24
+        elif age <= 23 and years_exp <= 2:
+            development_factor += 0.18
+        elif years_exp <= 3:
+            development_factor += 0.08
+        development_factor += clamp((potential - overall) / 20.0, 0.0, 0.18)
+
+        if protected_core_player:
+            cap = self.preseason_starter_snap_cap(player, slot)
+            if current_snaps >= cap:
+                base *= 0.0005
+            elif current_snaps >= cap * 0.70:
+                base *= 0.08
+            elif index > 0:
+                base *= 0.52 if self.preseason_week_index() <= 2 else 0.70
+
+        if index == 0:
+            if protected_core_player:
+                base *= 0.38 if self.preseason_week_index() <= 2 else 0.58
+            elif overall >= 74:
+                base *= 0.68
+            cap = self.preseason_starter_snap_cap(player, slot)
+            if not protected_core_player and current_snaps >= cap:
+                base *= 0.025
+            elif not protected_core_player and current_snaps >= cap * 0.70:
+                base *= 0.24
+        else:
+            if current_snaps >= 38 and slot not in OFFENSIVE_LINE_SLOTS:
+                base *= 0.40
+            elif current_snaps >= 48:
+                base *= 0.45
+
+        expected_share = self.preseason_depth_base_weight(slot, index)
+        expected_snaps = max(4.0, slot_snaps * expected_share + 5.0)
+        freshness = clamp((expected_snaps + 7.0 - current_snaps) / 8.0, 0.16, 1.85)
+        return max(0.005, base * talent_factor * development_factor * freshness)
+
+    def choose_preseason_slot_player(
+        self,
+        team: TeamSnapshot,
+        slot: str,
+        *,
+        used: set[int],
+        snap_key: str,
+        preferred: PlayerSnapshot | None = None,
+    ) -> PlayerSnapshot | None:
+        slot = slot.upper()
+        if preferred and preferred.player_id not in used and preferred.player_id not in self.injured_player_ids and preferred in team.roster:
+            return preferred
+        candidates = self.eligible_slot_candidates(team, slot, used)
+        if not candidates:
+            return None
+        if slot not in SCRIMMAGE_SLOT_SET or len(candidates) == 1:
+            return candidates[0]
+        max_pool = 4 if slot == "QB" else 6
+        pool = candidates[:max_pool]
+        weights = [
+            (
+                player,
+                self.preseason_player_selection_weight(team, slot, player, index, pool, snap_key),
+            )
+            for index, player in enumerate(pool)
+        ]
+        return weighted_choice(self.rng, weights)
+
     def active_starter(self, team: TeamSnapshot, slot: str) -> PlayerSnapshot:
         candidates = self.eligible_slot_candidates(team, slot)
         if candidates:
+            if self.is_preseason and slot.upper() in SCRIMMAGE_SLOT_SET:
+                player = self.choose_preseason_slot_player(
+                    team,
+                    slot,
+                    used=set(),
+                    snap_key="offensive_snaps" if slot.upper() in {"QB", "RB", "FB", "LT", "LG", "C", "RG", "RT", "TE", "LWR", "RWR", "SWR"} else "defensive_snaps",
+                )
+                if player:
+                    return player
             if slot.upper() == "QB":
                 return self.resolve_qb_starter(team, candidates)
             return candidates[0]
@@ -2094,6 +2391,14 @@ class MatchEngine:
         base_rate = starter_rate
         if base_rate is None:
             base_rate = OFFENSIVE_SLOT_STARTER_RATE.get(slot, DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.84))
+        if self.is_preseason and slot.upper() in SCRIMMAGE_SLOT_SET:
+            return self.choose_preseason_slot_player(
+                team,
+                slot,
+                used=used,
+                snap_key=snap_key,
+                preferred=preferred,
+            )
         starter = candidates[0]
         if slot == "QB":
             return self.resolve_qb_starter(team, candidates)
@@ -2315,9 +2620,14 @@ class MatchEngine:
         packages = [pkg for pkg in offense.offense_packages() if self.offense_package_available(offense, pkg)]
         if not packages:
             packages = ["11"]
+        shares = offense.offense_package_shares or depth_packages.default_offense_package_shares(
+            packages,
+            offense.offense_scheme_key,
+            offense.offense_personnel,
+        )
         weights: list[tuple[str, float]] = []
         for package in packages:
-            weight = 1.0
+            weight = max(0.05, float(shares.get(package, 1.0 / len(packages)) or 0.0))
             if package in {"12", "13", "21"} and concept in {"inside_zone", "power"}:
                 weight *= 2.2
             if package in {"10", "11"} and concept in {"quick", "short", "deep", "screen"}:
@@ -2341,12 +2651,13 @@ class MatchEngine:
         concept: str,
         play_type: str = "",
         *,
+        quarterback: PlayerSnapshot | None = None,
         ball_carrier: PlayerSnapshot | None = None,
         target: PlayerSnapshot | None = None,
     ) -> list[PlayerSnapshot]:
         players: list[PlayerSnapshot] = []
         used: set[int] = set()
-        self.append_rotated_slot(players, offense, "QB", used, snap_key="offensive_snaps")
+        self.append_rotated_slot(players, offense, "QB", used, snap_key="offensive_snaps", preferred=quarterback)
         for slot in ["LT", "LG", "C", "RG", "RT"]:
             self.append_rotated_slot(players, offense, slot, used, snap_key="offensive_snaps")
 
@@ -2384,34 +2695,35 @@ class MatchEngine:
                     preferred = force_skill
             self.append_rotated_slot(players, offense, slot, used, snap_key="offensive_snaps", preferred=preferred)
 
-        feature_receivers = sorted(
-            [
-                player
-                for player in offense.roster
-                if player.position == "WR" and player.player_id not in self.injured_player_ids
-            ],
-            key=lambda player: max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")),
-            reverse=True,
-        )[:2]
-        for receiver in feature_receivers:
-            if receiver.player_id in used:
-                continue
-            receiver_score = max(offense.score_for_slot(receiver, slot) for slot in ("LWR", "RWR", "SWR"))
-            if receiver_score < 84:
-                continue
-            wr_indexes = [
-                (idx, player, max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")))
-                for idx, player in enumerate(players)
-                if player.position == "WR"
-            ]
-            if not wr_indexes:
-                continue
-            replace_idx, replaced, replaced_score = min(wr_indexes, key=lambda item: item[2])
-            if receiver_score - replaced_score < 6:
-                continue
-            players[replace_idx] = receiver
-            used.discard(replaced.player_id)
-            used.add(receiver.player_id)
+        if not self.is_preseason:
+            feature_receivers = sorted(
+                [
+                    player
+                    for player in offense.roster
+                    if player.position == "WR" and player.player_id not in self.injured_player_ids
+                ],
+                key=lambda player: max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")),
+                reverse=True,
+            )[:2]
+            for receiver in feature_receivers:
+                if receiver.player_id in used:
+                    continue
+                receiver_score = max(offense.score_for_slot(receiver, slot) for slot in ("LWR", "RWR", "SWR"))
+                if receiver_score < 84:
+                    continue
+                wr_indexes = [
+                    (idx, player, max(offense.score_for_slot(player, slot) for slot in ("LWR", "RWR", "SWR")))
+                    for idx, player in enumerate(players)
+                    if player.position == "WR"
+                ]
+                if not wr_indexes:
+                    continue
+                replace_idx, replaced, replaced_score = min(wr_indexes, key=lambda item: item[2])
+                if receiver_score - replaced_score < 6:
+                    continue
+                players[replace_idx] = receiver
+                used.discard(replaced.player_id)
+                used.add(receiver.player_id)
 
         if target and target.player_id not in used and target.player_id not in self.injured_player_ids:
             players.append(target)
@@ -2452,15 +2764,25 @@ class MatchEngine:
         packages = defense.defense_packages()
         if not packages:
             packages = ["nickel"]
-        if play_type == "pass" and "nickel" in packages:
-            return "nickel"
-        if concept in {"inside_zone", "power"}:
-            for preferred in ("base43", "base34"):
-                if preferred in packages:
-                    return preferred
-        if "nickel" in packages:
-            return "nickel"
-        return packages[0]
+        shares = defense.defense_package_shares or depth_packages.default_defense_package_shares(
+            packages,
+            defense.defense_scheme_key,
+            defense.defense_personnel,
+        )
+        weights: list[tuple[str, float]] = []
+        for package in packages:
+            weight = max(0.05, float(shares.get(package, 1.0 / len(packages)) or 0.0))
+            if play_type == "pass":
+                weight *= 1.25 if package == "nickel" else 0.70
+            elif concept in {"inside_zone", "power"}:
+                if package in {"base34", "base43"}:
+                    weight *= 1.75
+                elif package == "nickel":
+                    weight *= 0.85
+            elif package == "nickel":
+                weight *= 1.05
+            weights.append((package, weight))
+        return str(weighted_choice(self.rng, weights))
 
     def defensive_snap_players(self, defense: TeamSnapshot, play_type: str, concept: str) -> list[PlayerSnapshot]:
         package = self.defense_package_for_snap(defense, play_type, concept)
@@ -2475,6 +2797,9 @@ class MatchEngine:
     def set_snap_override(self, team: TeamSnapshot, snap_key: str, players: list[PlayerSnapshot]) -> None:
         self._snap_overrides[(team.team_id, snap_key)] = players
 
+    def set_special_teams_snap_override(self, team: TeamSnapshot, play_type: str, players: list[PlayerSnapshot]) -> None:
+        self._special_teams_snap_overrides[(team.team_id, play_type)] = players
+
     def special_teams_role_score(self, team: TeamSnapshot, player: PlayerSnapshot, play_type: str) -> float:
         if play_type in {"field_goal", "extra_point"}:
             base = special_teams_block_weight(player)
@@ -2488,13 +2813,21 @@ class MatchEngine:
 
         depth_rank = team.depth_rank_for_player(player)
         if depth_rank == 1:
-            depth_factor = 0.58 if player.general_score() >= 76 else 0.74
+            general = player.general_score()
+            if general >= 84:
+                depth_factor = 0.12
+            elif general >= 78:
+                depth_factor = 0.24
+            elif general >= 74:
+                depth_factor = 0.42
+            else:
+                depth_factor = 0.70
         elif depth_rank == 2:
-            depth_factor = 1.20
+            depth_factor = 1.24
         elif depth_rank == 3:
-            depth_factor = 1.15
+            depth_factor = 1.22
         elif depth_rank in {4, 5}:
-            depth_factor = 1.04
+            depth_factor = 1.12
         elif depth_rank is None:
             depth_factor = 0.92
         else:
@@ -2503,11 +2836,13 @@ class MatchEngine:
         roster_value_factor = 1.0
         general = player.general_score()
         if general >= 86:
-            roster_value_factor *= 0.28
-        elif general >= 80:
-            roster_value_factor *= 0.45
-        elif general >= 76:
-            roster_value_factor *= 0.65
+            roster_value_factor *= 0.10
+        elif general >= 82:
+            roster_value_factor *= 0.22
+        elif general >= 78:
+            roster_value_factor *= 0.38
+        elif general >= 74:
+            roster_value_factor *= 0.62
         elif general < 60:
             roster_value_factor *= 0.88
 
@@ -2524,6 +2859,21 @@ class MatchEngine:
             development_factor += 0.08 + clamp((potential - overall) / 20.0, 0.0, 0.12)
         return max(0.05, base * prior * depth_factor * roster_value_factor * load_factor * profile_factor * development_factor)
 
+    def is_protected_from_core_special_teams(self, team: TeamSnapshot, player: PlayerSnapshot, play_type: str) -> bool:
+        if player.position in SPECIAL_TEAMS_CORE_EXCLUDED_POSITIONS:
+            return True
+        general = player.general_score()
+        depth_rank = team.depth_rank_for_player(player)
+        if play_type in COVERAGE_HEAVY_SPECIAL_TEAMS_PLAYS and player.position in {"OT", "OG", "C", "OL", "IDL", "DT", "NT"}:
+            return True
+        if depth_rank == 1 and general >= 82:
+            return True
+        if depth_rank == 1 and general >= 76 and play_type in COVERAGE_HEAVY_SPECIAL_TEAMS_PLAYS:
+            return True
+        if player.position in {"RB", "WR", "TE", "CB", "NB", "FS", "SS", "S", "ILB", "LB", "OLB", "FB"}:
+            return False
+        return depth_rank == 1 and general >= 74
+
     def core_special_teamers(
         self,
         team: TeamSnapshot,
@@ -2533,25 +2883,23 @@ class MatchEngine:
         exclude_player_ids: set[int] | None = None,
     ) -> list[PlayerSnapshot]:
         exclude_player_ids = set(exclude_player_ids or set())
-        pool = []
+        weighted_pool: list[tuple[PlayerSnapshot, float]] = []
+        fallback_pool: list[tuple[PlayerSnapshot, float]] = []
         for player in team.roster:
-            if player.player_id in exclude_player_ids or player.position in {"K", "P", "QB", "OT", "OG", "C", "OL"}:
+            if player.player_id in exclude_player_ids or player.player_id in self.injured_player_ids:
                 continue
-            if player.player_id in self.injured_player_ids:
+            if player.position in SPECIAL_TEAMS_CORE_EXCLUDED_POSITIONS:
                 continue
-            source = str(player.metadata.get("specialist_behavior_source") or "")
-            has_stored_st_profile = source.startswith("specialist_behavior_") or source == "draft_selection"
-            if not has_stored_st_profile and player.general_score() > 76:
+            score = self.special_teams_role_score(team, player, play_type)
+            if self.is_protected_from_core_special_teams(team, player, play_type):
+                fallback_pool.append((player, score * 0.18))
                 continue
-            pool.append(player)
-        weighted_pool = sorted(
-            ((player, self.special_teams_role_score(team, player, play_type)) for player in pool),
-            key=lambda item: item[1],
-            reverse=True,
-        )
+            weighted_pool.append((player, score))
+        if len(weighted_pool) < count:
+            weighted_pool.extend(fallback_pool)
         return [
             player
-            for player, _weight in weighted_pool[:count]
+            for player in weighted_sample_without_replacement(self.rng, weighted_pool, count)
         ]
 
     def special_teams_snap_players(self, team: TeamSnapshot, play_type: str) -> list[PlayerSnapshot]:
@@ -2612,15 +2960,92 @@ class MatchEngine:
         self.add_snaps(offense_players or self.offensive_snap_players(offense, concept), "offensive_snaps")
         self.add_snaps(defense_players or self.defensive_snap_players(defense, play_type, concept), "defensive_snaps")
 
-    def count_special_teams_snap(self, team: TeamSnapshot, play_type: str) -> None:
-        self.add_snaps(self.special_teams_snap_players(team, play_type), "special_teams_snaps")
+    def count_special_teams_snap(self, team: TeamSnapshot, play_type: str) -> list[PlayerSnapshot]:
+        players = self._special_teams_snap_overrides.pop((team.team_id, play_type), None)
+        if players is None:
+            players = self.special_teams_snap_players(team, play_type)
+        self.add_snaps(players, "special_teams_snaps")
+        return players
 
-    def count_special_teams_play(self, kicking_team: TeamSnapshot, receiving_team: TeamSnapshot, play_type: str) -> None:
-        self.count_special_teams_snap(kicking_team, play_type)
+    def count_special_teams_play(
+        self,
+        kicking_team: TeamSnapshot,
+        receiving_team: TeamSnapshot,
+        play_type: str,
+    ) -> tuple[list[PlayerSnapshot], list[PlayerSnapshot]]:
+        kicking_players = self.count_special_teams_snap(kicking_team, play_type)
+        receiving_players: list[PlayerSnapshot] = []
         if play_type in {"kickoff", "safety_kick"}:
-            self.count_special_teams_snap(receiving_team, "kick_return")
+            receiving_players = self.count_special_teams_snap(receiving_team, "kick_return")
         elif play_type == "punt":
-            self.count_special_teams_snap(receiving_team, "punt_return")
+            receiving_players = self.count_special_teams_snap(receiving_team, "punt_return")
+        return kicking_players, receiving_players
+
+    def select_special_teams_tackler(
+        self,
+        coverage_team: TeamSnapshot,
+        play_type: str,
+        return_yards: int,
+        coverage_players: list[PlayerSnapshot] | None = None,
+    ) -> PlayerSnapshot | None:
+        pool = [
+            player
+            for player in (coverage_players or self.special_teams_snap_players(coverage_team, play_type))
+            if player.player_id not in self.injured_player_ids
+            and player.position not in {"K", "PK", "P", "PT", "KO", "LS", "QB"}
+        ]
+        if not pool:
+            return None
+        weights = []
+        for player in pool:
+            profile = specialist_behavior_profile(player)
+            weight = special_teams_coverage_weight(player)
+            weight *= SPECIAL_TEAMS_TACKLE_POSITION_PRIOR.get(player.position, 0.70)
+            weight *= 1.0 + (profile.coverage_tackle - 50) * 0.006
+            weight *= 1.0 + (profile.lane_release - 50) * 0.002
+            depth_rank = coverage_team.depth_rank_for_player(player)
+            general = player.general_score()
+            if depth_rank == 1 and general >= 78:
+                weight *= 0.32
+            elif depth_rank == 1 and general >= 74:
+                weight *= 0.55
+            elif depth_rank in {2, 3}:
+                weight *= 1.18
+            if play_type == "punt" and player.position in {"CB", "NB", "FS", "SS", "S", "WR"}:
+                weight *= 1.22
+            if play_type in {"kickoff", "safety_kick"} and player.position in {"ILB", "LB", "OLB", "FS", "SS", "S", "CB", "NB"}:
+                weight *= 1.12
+            if return_yards <= 16 and player.position in {"ILB", "LB", "OLB", "TE", "FB"}:
+                weight *= 1.10
+            elif return_yards >= 28 and player.position in {"CB", "NB", "FS", "SS", "S", "WR"}:
+                weight *= 1.16
+            current_st_tackles = float(self.player_stats[player.player_id].get("special_teams_tackles", 0))
+            if current_st_tackles >= 3:
+                weight *= 0.42
+            elif current_st_tackles >= 2:
+                weight *= 0.62
+            elif current_st_tackles >= 1:
+                weight *= 0.82
+            weights.append((player, weight))
+        return weighted_choice(self.rng, weights) if weights else None
+
+    def credit_special_teams_tackle(
+        self,
+        coverage_team: TeamSnapshot,
+        tackler: PlayerSnapshot | None,
+        *,
+        play_type: str,
+        return_yards: int,
+    ) -> None:
+        if not tackler:
+            return
+        assisted = self.rng.random() < clamp(0.14 + max(0, 24 - return_yards) * 0.003, 0.10, 0.22)
+        self.team_stats[coverage_team.team_id]["special_teams_tackles"] += 1
+        self.player_stats[tackler.player_id]["special_teams_tackles"] += 1
+        key = "special_teams_assisted_tackles" if assisted else "special_teams_solo_tackles"
+        self.player_stats[tackler.player_id][key] += 1
+        if return_yards <= (18 if play_type in {"kickoff", "safety_kick"} else 6):
+            self.player_stats[tackler.player_id]["special_teams_stops"] += 1
 
     def kicking_operation_score(self, team: TeamSnapshot, play_type: str) -> float:
         if play_type in {"field_goal", "extra_point"}:
@@ -3000,6 +3425,21 @@ class MatchEngine:
             weight *= 1.0 + (profile.short_yardage_trust - 50) * 0.014
         if down >= 3 and distance >= 6:
             weight *= 1.0 + (profile.pass_game_usage - 50) * 0.006
+        if self.is_preseason:
+            preseason_depth_factor = [0.24, 1.34, 1.20, 0.88, 0.55]
+            if idx < len(preseason_depth_factor):
+                weight *= preseason_depth_factor[idx]
+            else:
+                weight *= 0.34
+            current_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
+            if idx == 0:
+                cap = max(3, self.preseason_starter_snap_cap(player, "RB") // 3)
+                if current_carries >= cap:
+                    weight *= 0.04
+                elif current_carries >= max(1, cap - 1):
+                    weight *= 0.25
+            elif current_carries >= 10:
+                weight *= 0.48
         return max(0.05, weight)
 
     def team_for_player(self, player: PlayerSnapshot) -> TeamSnapshot | None:
@@ -3302,10 +3742,10 @@ class MatchEngine:
         field_pos: int,
     ) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
         qb = self.active_starter(offense, "QB")
-        rb_candidates = self.eligible_slot_candidates(offense, "RB")[:3]
+        rb_candidates = self.eligible_slot_candidates(offense, "RB")[: (5 if self.is_preseason else 3)]
         if not rb_candidates:
             rb_candidates = [self.active_starter(offense, "RB")]
-        if len(rb_candidates) > 2:
+        if len(rb_candidates) > 2 and not self.is_preseason:
             starter_score = offense.score_for_slot(rb_candidates[0], "RB")
             kept = rb_candidates[:2]
             for extra in rb_candidates[2:]:
@@ -3357,7 +3797,7 @@ class MatchEngine:
         self.set_snap_override(
             offense,
             "offensive_snaps",
-            self.offensive_snap_players(offense, concept, "run", ball_carrier=runner),
+            self.offensive_snap_players(offense, concept, "run", quarterback=qb, ball_carrier=runner),
         )
         defense_snap_players = self.defensive_snap_players(defense, "run", concept)
         self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
@@ -3563,7 +4003,7 @@ class MatchEngine:
             "deep": (21, 7),
             "screen": (0, 2),
         }[concept]
-        offense_snap_players = self.offensive_snap_players(offense, concept, "pass")
+        offense_snap_players = self.offensive_snap_players(offense, concept, "pass", quarterback=qb)
         self.set_snap_override(offense, "offensive_snaps", offense_snap_players)
         defense_snap_players = self.defensive_snap_players(defense, "pass", concept)
         self.set_snap_override(defense, "defensive_snaps", defense_snap_players)
@@ -4414,6 +4854,14 @@ class MatchEngine:
         return weighted_choice(self.rng, weights)
 
     def select_returner(self, team: TeamSnapshot, play_type: str) -> PlayerSnapshot:
+        slot = "PR" if play_type == "punt" else "KR"
+        depth_returners = [
+            player
+            for player in team.depth.get(slot, [])
+            if player.player_id not in self.injured_player_ids
+        ]
+        if depth_returners:
+            return depth_returners[0]
         positions = {"RB", "WR", "CB", "NB", "FS", "SS", "S"}
         if play_type == "punt":
             positions |= {"SWR"}
@@ -4462,6 +4910,7 @@ class MatchEngine:
             offense,
             snap_concept,
             snap_play_type,
+            quarterback=qb,
             ball_carrier=None if pass_try else runner,
         )
         defense_snap_players = self.defensive_snap_players(defense, snap_play_type, snap_concept)
@@ -4567,9 +5016,13 @@ class MatchEngine:
         new_field = 25 if distance >= 56 else int(clamp(100 - field_pos, 20, 99))
         return "missed_field_goal", defense, new_field, f"{kicker.name} misses a {distance} yard field goal."
 
-    def punt(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[str, TeamSnapshot, int, str, PlayerSnapshot | None]:
+    def punt(self, offense: TeamSnapshot, defense: TeamSnapshot, field_pos: int) -> tuple[str, TeamSnapshot, int, str, PlayerSnapshot | None, PlayerSnapshot | None]:
         punter = offense.starter("PT")
         returner = self.select_returner(defense, "punt")
+        punt_unit = self.special_teams_snap_players(offense, "punt")
+        punt_return_unit = self.special_teams_snap_players(defense, "punt_return")
+        self.set_special_teams_snap_override(offense, "punt", punt_unit)
+        self.set_special_teams_snap_override(defense, "punt_return", punt_return_unit)
         punt_score = weighted_average(punter, PUNT_WEIGHTS)
         operation_score = self.kicking_operation_score(offense, "punt")
         block_score = self.special_teams_block_score(defense, "punt_return")
@@ -4597,8 +5050,8 @@ class MatchEngine:
                 self.player_stats[blocker.player_id]["special_teams_tds"] += 1
                 self.player_stats[blocker.player_id]["punt_return_tds"] += 1
                 try_result = self.try_after_touchdown(defense, offense)
-                return "punt_return_touchdown", offense, 25, f"{blocker.name} blocks the punt and returns it for a touchdown. {try_result}", blocker
-            return "blocked_punt", defense, int(clamp(return_field, 1, 99)), f"{blocker.name} blocks the punt.", blocker
+                return "punt_return_touchdown", offense, 25, f"{blocker.name} blocks the punt and returns it for a touchdown. {try_result}", blocker, None
+            return "blocked_punt", defense, int(clamp(return_field, 1, 99)), f"{blocker.name} blocks the punt.", blocker, None
 
         gross = int(clamp(round(self.rng.gauss(43 + (punt_score - 60) * 0.10 + (punter_profile.punt_hang_time - 60) * 0.045, 7)), 22, 70))
         absolute_landing = field_pos + gross
@@ -4607,7 +5060,7 @@ class MatchEngine:
         self.player_stats[punter.player_id]["punts"] += 1
         self.player_stats[punter.player_id]["punt_yards"] += gross
         if absolute_landing >= 100:
-            return "punt", defense, 20, f"{punter.name} punts {gross} yards for a touchback.", None
+            return "punt", defense, 20, f"{punter.name} punts {gross} yards for a touchback.", None, None
         coverage_score = self.special_teams_coverage_score(offense, "punt")
         fair_catch_chance = clamp(
             0.12
@@ -4622,7 +5075,7 @@ class MatchEngine:
             opponent_field = int(clamp(100 - absolute_landing, 1, 99))
             self.team_stats[defense.team_id]["fair_catches"] += 1
             self.player_stats[returner.player_id]["fair_catches"] += 1
-            return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} fair catches it.", returner
+            return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} fair catches it.", returner, None
 
         return_score = special_teams_return_weight(returner)
         return_yards = max(
@@ -4652,8 +5105,11 @@ class MatchEngine:
             self.player_stats[returner.player_id]["special_teams_tds"] += 1
             self.player_stats[returner.player_id]["punt_return_tds"] += 1
             try_result = self.try_after_touchdown(defense, offense)
-            return "punt_return_touchdown", offense, 25, f"{returner.name} returns {punter.name}'s punt for a touchdown. {try_result}", returner
-        return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} returns it {return_yards}.", returner
+            return "punt_return_touchdown", offense, 25, f"{returner.name} returns {punter.name}'s punt for a touchdown. {try_result}", returner, None
+        tackler = self.select_special_teams_tackler(offense, "punt", return_yards, punt_unit)
+        self.credit_special_teams_tackle(offense, tackler, play_type="punt", return_yards=return_yards)
+        tackle_note = f", tackled by {tackler.name}" if tackler else ""
+        return "punt", defense, opponent_field, f"{punter.name} punts {gross} yards. {returner.name} returns it {return_yards}{tackle_note}.", returner, tackler
 
     def record_free_kick(
         self,
@@ -4666,10 +5122,16 @@ class MatchEngine:
         live_tenths: int,
         description: str,
         returner: PlayerSnapshot | None = None,
+        coverage_player: PlayerSnapshot | None = None,
         touchdown: bool = False,
         turnover: bool = False,
     ) -> None:
-        self.count_special_teams_play(kicking_team, receiving_team, "safety_kick" if concept == "safety_kick" else "kickoff")
+        play_type = "safety_kick" if concept == "safety_kick" else "kickoff"
+        coverage_unit, _return_unit = self.count_special_teams_play(kicking_team, receiving_team, play_type)
+        if returner and live_tenths > 0 and not touchdown and concept != "onside_kick":
+            if coverage_player is None:
+                coverage_player = self.select_special_teams_tackler(kicking_team, play_type, yards, coverage_unit)
+            self.credit_special_teams_tackle(kicking_team, coverage_player, play_type=play_type, return_yards=yards)
         if live_tenths > 0:
             consumed, runoff = self.consume_clock(live_tenths, 0)
         else:
@@ -4691,7 +5153,7 @@ class MatchEngine:
                 yards_gained=yards,
                 offense_player_id=kicking_team.starter("KO").player_id if kicking_team.starter("KO") else None,
                 target_player_id=returner.player_id if returner else None,
-                defense_player_id=returner.player_id if returner else None,
+                defense_player_id=coverage_player.player_id if coverage_player else None,
                 is_touchdown=1 if touchdown else 0,
                 is_turnover=1 if turnover else 0,
                 clock_elapsed_tenths=consumed,
@@ -4700,7 +5162,7 @@ class MatchEngine:
             )
         )
         if returner and live_tenths > 0:
-            coverage_player = self.select_special_teams_coverage_player(kicking_team, "kickoff")
+            coverage_player = coverage_player or self.select_special_teams_coverage_player(kicking_team, play_type)
             self.consider_injury(
                 returner,
                 receiving_team,
@@ -4737,6 +5199,14 @@ class MatchEngine:
         kickoff_control = average([kicker_profile.kickoff_control, kick_score])
         start_yardline = 20 if safety_kick else 35
         concept = "safety_kick" if safety_kick else "onside_kick" if onside else reason
+        kick_play_type = "safety_kick" if safety_kick else "kickoff"
+        kick_coverage_unit = self.special_teams_snap_players(kicking_team, kick_play_type)
+        kick_return_unit = self.special_teams_snap_players(receiving_team, "kick_return")
+
+        def set_free_kick_units() -> None:
+            self.set_special_teams_snap_override(kicking_team, kick_play_type, kick_coverage_unit)
+            self.set_special_teams_snap_override(receiving_team, "kick_return", kick_return_unit)
+
         self.team_stats[kicking_team.team_id]["kickoffs"] += 1
         self.player_stats[kicker.player_id]["kickoffs"] += 1
 
@@ -4753,8 +5223,10 @@ class MatchEngine:
             self.team_stats[kicking_team.team_id]["onside_kicks"] += 1
             if recovered:
                 self.team_stats[kicking_team.team_id]["onside_recoveries"] += 1
+                set_free_kick_units()
                 self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=11, live_tenths=18, description=f"{kicking_team.abbreviation} recovers the onside kick.", turnover=True)
                 return "recovered", kicking_team, 46
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=10, live_tenths=14, description=f"{receiving_team.abbreviation} covers the onside kick.", returner=returner)
             return "normal", receiving_team, 54
 
@@ -4767,18 +5239,22 @@ class MatchEngine:
         roll = self.rng.random()
         if roll < out_of_bounds_threshold:
             self.team_stats[kicking_team.team_id]["kickoffs_out_of_bounds"] += 1
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=25, live_tenths=0, description=f"{kicker.name}'s kickoff is out of bounds. {receiving_team.abbreviation} starts at the 40.")
             return "normal", receiving_team, 40
         if roll < short_threshold:
             self.team_stats[kicking_team.team_id]["kickoffs_short"] += 1
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=18, live_tenths=0, description=f"{kicker.name}'s kickoff lands short of the landing zone. {receiving_team.abbreviation} starts at the 40.")
             return "normal", receiving_team, 40
         if roll < end_zone_threshold:
             self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=65, live_tenths=0, description=f"{kicker.name}'s kickoff reaches the end zone for a touchback. {receiving_team.abbreviation} starts at the 35.")
             return "normal", receiving_team, 35
         if roll < landing_down_threshold:
             self.team_stats[kicking_team.team_id]["kickoff_touchbacks"] += 1
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=60, live_tenths=0, description=f"{kicker.name}'s kickoff lands in the landing zone and is downed. {receiving_team.abbreviation} starts at the 20.")
             return "normal", receiving_team, 20
 
@@ -4800,12 +5276,26 @@ class MatchEngine:
             self.player_stats[returner.player_id]["kickoff_return_tds"] += 1
             try_result = self.try_after_touchdown(receiving_team, kicking_team)
             desc = f"{returner.name} returns {kicker.name}'s kickoff for a touchdown. {try_result}"
+            set_free_kick_units()
             self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=100, live_tenths=85, description=desc, returner=returner, touchdown=True)
             return "touchdown", kicking_team, 25
 
         field_pos = int(clamp(return_field, 1, 99))
-        desc = f"{returner.name} returns {kicker.name}'s kickoff {return_yards} yards to {format_yardline(field_pos)}."
-        self.record_free_kick(kicking_team, receiving_team, concept=concept, start_yardline=start_yardline, yards=return_yards, live_tenths=int(clamp(round(self.rng.gauss(58, 11)), 35, 95)), description=desc, returner=returner)
+        coverage_tackler = self.select_special_teams_tackler(kicking_team, kick_play_type, return_yards, kick_coverage_unit)
+        tackle_note = f", tackled by {coverage_tackler.name}" if coverage_tackler else ""
+        desc = f"{returner.name} returns {kicker.name}'s kickoff {return_yards} yards to {format_yardline(field_pos)}{tackle_note}."
+        set_free_kick_units()
+        self.record_free_kick(
+            kicking_team,
+            receiving_team,
+            concept=concept,
+            start_yardline=start_yardline,
+            yards=return_yards,
+            live_tenths=int(clamp(round(self.rng.gauss(58, 11)), 35, 95)),
+            description=desc,
+            returner=returner,
+            coverage_player=coverage_tackler,
+        )
         return "normal", receiving_team, field_pos
 
     def record_play(
@@ -4972,10 +5462,27 @@ class MatchEngine:
                     offense, field_pos = next_offense, next_field
                     break
                 if decision == "punt":
-                    outcome, next_offense, next_field, desc, returner = self.punt(offense, defense, field_pos)
+                    outcome, next_offense, next_field, desc, returner, coverage_tackler = self.punt(offense, defense, field_pos)
                     live = max(30, int(round(self.rng.gauss(47, 7))))
                     consumed, runoff = self.consume_clock(live, 0)
-                    self.record_play(self.drive_number, offense, defense, down, distance, field_pos, "punt", outcome, 0, consumed, runoff, desc, offense_player=offense.starter("PT"), defense_player=returner, touchdown=outcome == "punt_return_touchdown")
+                    self.record_play(
+                        self.drive_number,
+                        offense,
+                        defense,
+                        down,
+                        distance,
+                        field_pos,
+                        "punt",
+                        outcome,
+                        0,
+                        consumed,
+                        runoff,
+                        desc,
+                        offense_player=offense.starter("PT"),
+                        target_player=returner,
+                        defense_player=coverage_tackler,
+                        touchdown=outcome == "punt_return_touchdown",
+                    )
                     drive.result = outcome
                     offense, field_pos = next_offense, next_field
                     break
@@ -5338,12 +5845,14 @@ def simulate_game(
     injury_model.resolve_available_injuries(con, game_date)
     away = load_team(con, away_team_id, season, as_of_date=game_date)
     home = load_team(con, home_team_id, season, as_of_date=game_date)
+    game_type = schedule_game_type(con, schedule_game_id)
     return MatchEngine(
         away=away,
         home=home,
         season=season,
         week=week,
         schedule_game_id=schedule_game_id,
+        game_type=game_type,
         seed=seed,
     ).simulate()
 
