@@ -37,6 +37,11 @@ import sim_control
 import trade_engine
 import view_box_score
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MASTER_DB = ROOT / "database" / "nfl_gm.db"
@@ -89,9 +94,12 @@ PLAYER_EXPORT_ACTIONS = {
     "depth_chart_move",
     "depth_chart_swap",
     "roster_release_player",
+    "roster_send_ir",
+    "roster_activate_ir",
     "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
+    "practice_squad_promote",
     "practice_squad_release",
     "auto_cutdown",
     "auto_cutdown_continue",
@@ -120,9 +128,12 @@ LIGHTWEIGHT_PRESTATE_ACTIONS = {
     "depth_chart_move",
     "depth_chart_swap",
     "roster_release_player",
+    "roster_send_ir",
+    "roster_activate_ir",
     "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
+    "practice_squad_promote",
     "practice_squad_release",
     "free_agency_start",
     "free_agency_cpu_seed",
@@ -142,9 +153,12 @@ SKIP_PLAYER_REEXPORT_ACTIONS = {
     "contract_release",
     "contract_restructure",
     "roster_release_player",
+    "roster_send_ir",
+    "roster_activate_ir",
     "roster_cutdown_apply",
     "roster_change_number",
     "practice_squad_assign",
+    "practice_squad_promote",
     "practice_squad_release",
 }
 DRAFT_RUN_ACTIONS = {
@@ -630,7 +644,7 @@ def write_lightweight_action_exports(action: str) -> tuple[dict[str, Any], dict[
     if action in DRAFT_RUN_ACTIONS:
         patch = draft_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
-    if action in {"depth_chart_set", "depth_chart_move", "depth_chart_swap", "roster_release_player", "roster_cutdown_apply", "roster_change_number", "practice_squad_assign", "practice_squad_release"}:
+    if action in {"depth_chart_set", "depth_chart_move", "depth_chart_swap", "roster_release_player", "roster_send_ir", "roster_activate_ir", "roster_cutdown_apply", "roster_change_number", "practice_squad_assign", "practice_squad_promote", "practice_squad_release"}:
         patch = depth_chart_state_patch(db_path)
         return patch, app_shell_payload_for_active_db()
     if action in FREE_AGENCY_RUN_ACTIONS:
@@ -1495,7 +1509,7 @@ def practice_squad_payload_for_active_db(season: int | None = None, team: str | 
                         description
                     FROM transaction_log_view
                     WHERE season = ?
-                      AND transaction_type IN ('Practice Squad Poaching', 'Practice Squad Signing', 'Practice Squad Release')
+                      AND transaction_type IN ('Practice Squad Poaching', 'Practice Squad Signing', 'Practice Squad Release', 'Practice Squad Elevation')
                       AND (
                             team_id = ?
                          OR from_team_id = ?
@@ -1656,6 +1670,77 @@ def assign_practice_squad_player(player_id: int, team: str, season: int) -> str:
     return f"Assigned {roster_rules.player_name(player)} to {team} practice squad (transaction {transaction_id})."
 
 
+def assign_practice_squad_player_on_connection(
+    conn: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_row: sqlite3.Row,
+    rule_set: sqlite3.Row,
+    season: int,
+) -> str:
+    player = conn.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        LEFT JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+        """,
+        (player_id,),
+    ).fetchone()
+    if not player:
+        raise ValueError(f"Player not found: {player_id}")
+    own_team = player["team_id"] is not None and int(player["team_id"]) == int(team_row["team_id"])
+    if player["status"] not in {"Active", roster_rules.PRACTICE_SQUAD_STATUS, "Free Agent", roster_rules.WAIVED_STATUS}:
+        raise ValueError(f"{roster_rules.player_name(player)} has status {player['status']} and cannot be assigned.")
+    if player["status"] == roster_rules.PRACTICE_SQUAD_STATUS and own_team:
+        raise ValueError(f"{roster_rules.player_name(player)} is already on the practice squad.")
+    if player["status"] == "Active" and not own_team:
+        raise ValueError("Only your own active players can be moved directly to the practice squad.")
+    eligibility = roster_rules.practice_squad_eligibility(conn, player, team_row, rule_set, season=season)
+    if not eligibility["eligible"]:
+        raise ValueError(
+            f"{roster_rules.player_name(player)} is not practice-squad eligible: "
+            + " ".join(str(item) for item in eligibility["blockers"])
+        )
+    old_status = player["status"]
+    if old_status == roster_rules.WAIVED_STATUS:
+        conn.execute(
+            "UPDATE waiver_wire SET status = 'Cancelled', resolved_at = datetime('now') WHERE player_id = ? AND status = 'Open'",
+            (player_id,),
+        )
+    roster_rules.set_player_status(
+        conn,
+        player=player,
+        team_id=int(team_row["team_id"]),
+        new_status=roster_rules.PRACTICE_SQUAD_STATUS,
+        season=season,
+        reason="Assigned through roster cutdown registration.",
+    )
+    roster_rules.clear_depth_chart(conn, player_id)
+    roster_rules.record_practice_squad_move(
+        conn,
+        player_id=player_id,
+        team_id=int(team_row["team_id"]),
+        season=season,
+        move_type="Sign",
+        from_status=old_status,
+        to_status=roster_rules.PRACTICE_SQUAD_STATUS,
+        notes="Assigned through UI squad registration.",
+    )
+    transaction_id = roster_rules.log_transaction(
+        conn,
+        transaction_type="Practice Squad Signing",
+        season=season,
+        team_id=int(team_row["team_id"]),
+        player_id=player_id,
+        to_team_id=int(team_row["team_id"]),
+        old_status=old_status,
+        new_status=roster_rules.PRACTICE_SQUAD_STATUS,
+        description=f"Assigned {roster_rules.player_name(player)} to {team_row['abbreviation']} practice squad.",
+    )
+    return f"Assigned {roster_rules.player_name(player)} to {team_row['abbreviation']} practice squad (transaction {transaction_id})."
+
+
 def release_practice_squad_player(player_id: int, team: str, season: int) -> str:
     db_path = active_db_path()
     with sqlite3.connect(db_path) as conn:
@@ -1711,6 +1796,144 @@ def release_practice_squad_player(player_id: int, team: str, season: int) -> str
     return f"Released {roster_rules.player_name(player)} from {team} practice squad (transaction {transaction_id})."
 
 
+def release_practice_squad_player_on_connection(
+    conn: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_row: sqlite3.Row,
+    season: int,
+) -> str:
+    player = conn.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        LEFT JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+          AND p.team_id = ?
+          AND p.status = ?
+        """,
+        (player_id, int(team_row["team_id"]), roster_rules.PRACTICE_SQUAD_STATUS),
+    ).fetchone()
+    if not player:
+        raise ValueError("Player is not on this practice squad.")
+    old_status = player["status"]
+    roster_rules.set_player_status(
+        conn,
+        player=player,
+        team_id=None,
+        new_status="Free Agent",
+        season=season,
+        reason="Released from practice squad.",
+    )
+    roster_rules.record_practice_squad_move(
+        conn,
+        player_id=player_id,
+        team_id=int(team_row["team_id"]),
+        season=season,
+        move_type="Release",
+        from_status=old_status,
+        to_status="Free Agent",
+        notes="Released through UI squad registration.",
+    )
+    transaction_id = roster_rules.log_transaction(
+        conn,
+        transaction_type="Practice Squad Release",
+        season=season,
+        team_id=int(team_row["team_id"]),
+        player_id=player_id,
+        from_team_id=int(team_row["team_id"]),
+        old_status=old_status,
+        new_status="Free Agent",
+        description=f"Released {roster_rules.player_name(player)} from {team_row['abbreviation']} practice squad.",
+    )
+    return f"Released {roster_rules.player_name(player)} from {team_row['abbreviation']} practice squad (transaction {transaction_id})."
+
+
+def promote_practice_squad_player_on_connection(
+    conn: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_row: sqlite3.Row,
+    rule_set: sqlite3.Row,
+    season: int,
+    source_label: str = "roster hub",
+    skip_active_limit: bool = False,
+) -> str:
+    player = conn.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        LEFT JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+          AND p.team_id = ?
+          AND p.status = ?
+        """,
+        (player_id, int(team_row["team_id"]), roster_rules.PRACTICE_SQUAD_STATUS),
+    ).fetchone()
+    if not player:
+        raise ValueError("Player is not on this practice squad.")
+    active_count = roster_rules.active_roster_count(conn, int(team_row["team_id"]))
+    active_limit = int(rule_set["active_roster_limit"] or 53)
+    if active_count >= active_limit and not skip_active_limit:
+        raise ValueError(
+            f"{team_row['abbreviation']} active roster is already at {active_count}/{active_limit}. "
+            "Release or waive a player before promoting from the practice squad."
+        )
+    old_status = player["status"]
+    roster_rules.set_player_status(
+        conn,
+        player=player,
+        team_id=int(team_row["team_id"]),
+        new_status="Active",
+        season=season,
+        reason=f"Promoted from practice squad through {source_label}.",
+    )
+    roster_rules.record_practice_squad_move(
+        conn,
+        player_id=player_id,
+        team_id=int(team_row["team_id"]),
+        season=season,
+        move_type="Promote",
+        from_status=old_status,
+        to_status="Active",
+        notes=f"Promoted through {source_label}.",
+    )
+    transaction_id = roster_rules.log_transaction(
+        conn,
+        transaction_type="Practice Squad Elevation",
+        season=season,
+        team_id=int(team_row["team_id"]),
+        player_id=player_id,
+        from_team_id=int(team_row["team_id"]),
+        to_team_id=int(team_row["team_id"]),
+        old_status=old_status,
+        new_status="Active",
+        description=f"Promoted {roster_rules.player_name(player)} from {team_row['abbreviation']} practice squad to the active roster.",
+    )
+    return f"Promoted {roster_rules.player_name(player)} to {team_row['abbreviation']} active roster (transaction {transaction_id})."
+
+
+def promote_practice_squad_player(player_id: int, team: str, season: int) -> str:
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        team_row = roster_rules.get_team(conn, team)
+        rule_set = roster_rules.practice_squad_rule_set(conn, season, None)
+        message = promote_practice_squad_player_on_connection(
+            conn,
+            player_id=player_id,
+            team_row=team_row,
+            rule_set=rule_set,
+            season=season,
+            source_label="roster hub",
+        )
+        conn.commit()
+    return message
+
+
 def release_rostered_player_for_cutdown(player_id: int, team: str, season: int, post_june1: bool = False) -> str:
     db_path = active_db_path()
     with sqlite3.connect(db_path) as conn:
@@ -1744,6 +1967,124 @@ def release_rostered_player_for_cutdown(player_id: int, team: str, season: int, 
     return message or f"Released {player['player_name']} from {team}."
 
 
+def release_rostered_player_for_cutdown_on_connection(
+    conn: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_row: sqlite3.Row,
+    season: int,
+    post_june1: bool = False,
+) -> tuple[str, bool]:
+    player = conn.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+          AND p.team_id = ?
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+        """,
+        (player_id, int(team_row["team_id"])),
+    ).fetchone()
+    if not player:
+        raise ValueError(f"Player {player_id} is not on the active {team_row['abbreviation']} roster.")
+
+    if roster_rules.waiver_required_for_player(conn, player, season=season, waiver_date=roster_rules.today(conn)):
+        waiver_id = roster_rules.place_player_on_waivers(
+            conn,
+            player=player,
+            season=season,
+            waiver_date=roster_rules.today(conn),
+            reason="Released and subject to waivers.",
+            source=roster_actions.SOURCE,
+        )
+        return f"Waived {roster_rules.player_name(player)} (entry {waiver_id}).", True
+
+    contract = roster_actions.active_contract(conn, player_id)
+    dead_cap = 0
+    contract_id = None
+    if contract:
+        contract_id = int(contract["contract_id"])
+        cy = roster_actions.current_contract_year(conn, contract_id, season)
+        if cy:
+            dead_cap = int(
+                cy["dead_cap_if_cut_post_june1_current"]
+                if post_june1
+                else cy["dead_cap_if_cut_pre_june1"]
+            )
+        conn.execute("UPDATE contracts SET is_active = 0 WHERE contract_id = ?", (contract_id,))
+        try:
+            conn.execute("UPDATE contract_years SET is_active = 0 WHERE contract_id = ?", (contract_id,))
+        except sqlite3.OperationalError:
+            pass
+    if dead_cap:
+        conn.execute(
+            """
+            INSERT INTO team_cap_charges (
+                team_id, season, charge_type, description, amount, player_id, source
+            )
+            VALUES (?, ?, 'Dead Cap', ?, ?, ?, ?)
+            """,
+            (
+                int(team_row["team_id"]),
+                season,
+                f"Dead cap from releasing {roster_rules.player_name(player)}.",
+                dead_cap,
+                player_id,
+                roster_actions.SOURCE,
+            ),
+        )
+
+    conn.execute("UPDATE players SET team_id = NULL, status = 'Free Agent' WHERE player_id = ?", (player_id,))
+    roster_rules.clear_depth_chart(conn, player_id)
+    roster_actions.ensure_player_normalized_ratings(
+        conn,
+        player_id,
+        source="released_player_market",
+        schema_ready=True,
+    )
+    roster_actions.upsert_basic_free_agent_profile(conn, player_id, ensure_ratings=False)
+    transaction_id, _ = roster_actions.insert_transaction(
+        conn,
+        transaction_date=roster_actions.today(conn),
+        season=season,
+        phase=roster_actions.PHASE,
+        transaction_type="Release",
+        team_id=int(team_row["team_id"]),
+        player_id=player_id,
+        contract_id=contract_id,
+        from_team_id=int(team_row["team_id"]),
+        old_status=player["status"],
+        new_status="Free Agent",
+        cap_delta_current=0,
+        description=f"Released {roster_rules.player_name(player)}. Dead cap: {roster_actions.format_money(dead_cap)}.",
+        source=roster_actions.SOURCE,
+        external_ref=f"release:{player_id}:{contract_id or 'no_contract'}:{roster_actions.today(conn)}",
+    )
+    conn.execute(
+        """
+        INSERT INTO transaction_assets (
+            transaction_id, asset_type, player_id, contract_id, from_team_id,
+            amount, season, asset_description
+        )
+        VALUES (?, 'ReleasedPlayer', ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            transaction_id,
+            player_id,
+            contract_id,
+            int(team_row["team_id"]),
+            dead_cap,
+            season,
+            "Player released to free agency.",
+        ),
+    )
+    return (
+        f"Released {roster_rules.player_name(player)}. Dead cap: {roster_actions.format_money(dead_cap)}.",
+        bool(contract_id or dead_cap),
+    )
+
+
 def apply_roster_cutdown_moves(moves: list[dict[str, Any]], team: str, season: int) -> str:
     if not moves:
         raise ValueError("No roster cutdown moves were selected.")
@@ -1753,28 +2094,108 @@ def apply_roster_cutdown_moves(moves: list[dict[str, Any]], team: str, season: i
             continue
         player_id = int(raw.get("player_id") or 0)
         move = str(raw.get("move") or raw.get("action") or "").strip().lower()
-        if player_id and move in {"practice_squad", "release", "release_ps"}:
+        if player_id and move in {"practice_squad", "promote_ps", "release", "release_ps"}:
             normalized[player_id] = {"player_id": player_id, "move": move}
     if not normalized:
         raise ValueError("No valid roster cutdown moves were selected.")
 
-    priority = {"release_ps": 0, "release": 1, "practice_squad": 2}
+    priority = {"release_ps": 0, "release": 1, "promote_ps": 2, "practice_squad": 3}
     ordered = sorted(normalized.values(), key=lambda item: (priority[item["move"]], item["player_id"]))
+    has_active_to_practice_squad_move = any(item["move"] == "practice_squad" for item in ordered)
     messages: list[str] = []
     failures: list[str] = []
-    for move in ordered:
+
+    db_path = active_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout = 30000")
+        roster_actions.ensure_all_schema(conn)
+        roster_rules.ensure_schema(conn)
+        roster_rules.seed_rules(conn)
+        team_row = roster_rules.get_team(conn, team)
+        rule_set = roster_rules.practice_squad_rule_set(conn, season, "Regular Season")
+        financial_dirty = False
         try:
-            if move["move"] == "practice_squad":
-                messages.append(assign_practice_squad_player(int(move["player_id"]), team, season))
-            elif move["move"] == "release_ps":
-                messages.append(release_practice_squad_player(int(move["player_id"]), team, season))
+            conn.commit()
+            conn.execute("BEGIN")
+            for move in ordered:
+                try:
+                    player_id = int(move["player_id"])
+                    if move["move"] == "practice_squad":
+                        messages.append(
+                            assign_practice_squad_player_on_connection(
+                                conn,
+                                player_id=player_id,
+                                team_row=team_row,
+                                rule_set=rule_set,
+                                season=season,
+                            )
+                        )
+                    elif move["move"] == "release_ps":
+                        messages.append(
+                            release_practice_squad_player_on_connection(
+                                conn,
+                                player_id=player_id,
+                                team_row=team_row,
+                                season=season,
+                            )
+                        )
+                    elif move["move"] == "promote_ps":
+                        messages.append(
+                            promote_practice_squad_player_on_connection(
+                                conn,
+                                player_id=player_id,
+                                team_row=team_row,
+                                rule_set=rule_set,
+                                season=season,
+                                source_label="roster cutdown batch",
+                                skip_active_limit=has_active_to_practice_squad_move,
+                            )
+                        )
+                    else:
+                        message, dirty = release_rostered_player_for_cutdown_on_connection(
+                            conn,
+                            player_id=player_id,
+                            team_row=team_row,
+                            season=season,
+                        )
+                        messages.append(message)
+                        financial_dirty = financial_dirty or dirty
+                except Exception as exc:
+                    failures.append(f"{move['player_id']}: {exc}")
+            if not failures:
+                final_active = roster_rules.active_roster_count(conn, int(team_row["team_id"]))
+                active_limit = int(rule_set["active_roster_limit"] or 53)
+                if final_active > active_limit:
+                    failures.append(f"active roster would finish at {final_active}/{active_limit}")
+                final_ps = roster_rules.practice_squad_usage(conn, int(team_row["team_id"]), rule_set)
+                ps_base_limit = int(rule_set["practice_squad_limit"] or 16)
+                ps_ipp_limit = int(rule_set["practice_squad_international_exemption_limit"] or 0)
+                ps_total_limit = ps_base_limit + ps_ipp_limit
+                if int(final_ps["base_count"] or 0) > ps_base_limit or int(final_ps["total"] or 0) > ps_total_limit:
+                    failures.append(
+                        f"practice squad would finish at {int(final_ps['total'] or 0)}/{ps_total_limit}"
+                    )
+                veteran_limit = int(rule_set["practice_squad_veteran_exception_limit"] or 6)
+                if int(final_ps["veteran_exception_count"] or 0) > veteran_limit:
+                    failures.append(
+                        f"veteran practice-squad exceptions would finish at {int(final_ps['veteran_exception_count'] or 0)}/{veteran_limit}"
+                    )
+            if failures:
+                conn.rollback()
             else:
-                messages.append(release_rostered_player_for_cutdown(int(move["player_id"]), team, season))
-        except Exception as exc:
-            failures.append(f"{move['player_id']}: {exc}")
+                if financial_dirty:
+                    roster_actions.sync_cap_only(conn)
+                    roster_actions.make_snapshot(conn, "after_roster_cutdown_batch")
+                conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
     if failures:
         detail = "; ".join(failures[:6])
-        raise ValueError(f"Applied {len(messages)} roster cutdown move(s), but {len(failures)} failed: {detail}")
+        raise ValueError(f"No roster cutdown moves were applied; {len(failures)} failed validation: {detail}")
     return f"Applied {len(messages)} roster cutdown move(s). " + " ".join(messages[:4])
 
 
@@ -1878,6 +2299,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = play("advance-to-next-event")
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
         return command
     if action == "advance_to_date":
         target_date = str(params.get("date") or "").strip()
@@ -1886,6 +2309,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = play("advance-to-date", "--date", target_date)
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
         if params.get("auto_sim_preseason"):
             command.append("--auto-sim-preseason")
         return command
@@ -1909,6 +2334,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if game_type not in {"REG", "PRE"}:
             game_type = "REG"
         command = play("sim-season", "--season", str(season), "--game-type", game_type, "--apply", "--seed", f"{season}00")
+        command.append("--stop-on-injury-alert")
         if params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
             command.append("--skip-roster-gate")
         return command
@@ -2042,6 +2468,40 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if params.get("post_june1"):
             command.append("--post-june1")
         return play(*command)
+    if action == "roster_send_ir":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("roster_send_ir requires player_id.")
+        if not user_team:
+            raise ValueError("Sending a player to IR requires a team-controlled save.")
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            message = roster_rules.place_player_on_ir(
+                con,
+                player_id=int(player_id),
+                team_abbr=str(user_team),
+                season=season,
+                force=bool(params.get("force")),
+            )
+            con.commit()
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
+    if action == "roster_activate_ir":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("roster_activate_ir requires player_id.")
+        if not user_team:
+            raise ValueError("Activating from IR requires a team-controlled save.")
+        with sqlite3.connect(active_db_path()) as con:
+            con.row_factory = sqlite3.Row
+            message = roster_rules.activate_player_from_ir(
+                con,
+                player_id=int(player_id),
+                team_abbr=str(user_team),
+                season=season,
+                force=bool(params.get("force")),
+            )
+            con.commit()
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
     if action == "roster_change_number":
         player_id = params.get("player_id")
         number = params.get("number")
@@ -2058,17 +2518,19 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
                 raise ValueError(f"Team not found: {user_team}")
             team_id = int(team_row["team_id"])
             player = con.execute(
-                "SELECT player_id FROM players WHERE player_id = ? AND team_id = ?",
+                "SELECT player_id, position FROM players WHERE player_id = ? AND team_id = ?",
                 (player_id, team_id),
             ).fetchone()
             if not player:
                 raise ValueError("Player is not on the active user-team roster.")
+            if not jersey_numbers.is_legal_number(player["position"], number):
+                raise ValueError(f"#{number} is not valid for {player['position']}.")
             conflict = con.execute(
                 """
                 SELECT first_name || ' ' || last_name AS player_name
                 FROM players
                 WHERE team_id = ? AND jersey_number = ? AND player_id != ?
-                  AND COALESCE(status, 'Active') != 'Retired'
+                  AND COALESCE(status, 'Active') NOT IN ('Free Agent', 'Retired', 'Waived')
                 LIMIT 1
                 """,
                 (team_id, number, player_id),
@@ -2076,6 +2538,13 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             if conflict:
                 raise ValueError(f"#{number} is already assigned to {conflict['player_name']}.")
             con.execute("UPDATE players SET jersey_number = ? WHERE player_id = ?", (number, player_id))
+            jersey_numbers.record_number(
+                con,
+                player_id=player_id,
+                team_id=team_id,
+                number=number,
+                source="user_change_number",
+            )
             con.commit()
         return [sys.executable, "-c", f"print('Jersey number updated to #{number}.')"]
     if action == "practice_squad_assign":
@@ -2083,6 +2552,14 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if not player_id:
             raise ValueError("practice_squad_assign requires player_id.")
         message = assign_practice_squad_player(int(player_id), str(user_team), season)
+        return [sys.executable, "-c", f"print({json.dumps(message)})"]
+    if action == "practice_squad_promote":
+        player_id = params.get("player_id")
+        if not player_id:
+            raise ValueError("practice_squad_promote requires player_id.")
+        if not user_team:
+            raise ValueError("Practice squad promotions require a team-controlled save.")
+        message = promote_practice_squad_player(int(player_id), str(user_team), season)
         return [sys.executable, "-c", f"print({json.dumps(message)})"]
     if action == "practice_squad_release":
         player_id = params.get("player_id")
@@ -2303,11 +2780,15 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             command.extend(["--user-team", str(user_team)])
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
         return command
     if action == "advance_next_league_year":
         command = play("advance-to-next-league-year")
         if params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
+        if params.get("skip_roster_gate"):
+            command.append("--skip-roster-gate")
         return command
     if action == "draft_start":
         command = ["draft-room", "start", "--draft-year", str(draft_year), "--paused", "--apply"]
@@ -2938,6 +3419,20 @@ def action_response_summary(
     elif action == "roster_cutdown_apply":
         summary["affectedPanels"] = ["roster", "depth", "contracts", "transactions", "waivers"]
         summary["title"] = "Roster Cutdown Moves Applied"
+    elif action == "roster_send_ir":
+        summary["affectedPanels"] = ["roster", "depth", "injuries", "transactions", "contracts"]
+        summary["title"] = "Player Sent To IR"
+    elif action == "roster_activate_ir":
+        summary["affectedPanels"] = ["roster", "depth", "injuries", "transactions", "contracts"]
+        summary["title"] = "Player Activated From IR"
+    elif action == "practice_squad_promote":
+        summary["affectedPanels"] = ["roster", "depth", "transactions"]
+        summary["title"] = "Player Promoted"
+    if action == "sim_season" and "Simulation paused for injury review" in (stdout or ""):
+        summary["title"] = "Simulation Paused"
+        summary["message"] = "Injury report needs a decision before continuing the sim."
+        summary["status"] = "warning"
+        summary["affectedPanels"] = ["calendar", "season", "injuries", "inbox", "depth", "roster"]
     if params.get("apply"):
         summary["mode"] = "applied"
     elif "dry" in action or "dry run" in (stdout or "").lower():
@@ -3087,6 +3582,8 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         return run_box_score_action(params)
     if action == "auto_cutdown_continue":
         return run_auto_cutdown_continue_action(params)
+    if action == "roster_cutdown_apply":
+        return run_roster_cutdown_apply_action(params)
     if action in TRADE_RUN_ACTIONS:
         return run_trade_action(action, params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
@@ -3158,6 +3655,42 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             response["injuryAlertsError"] = str(exc)
     return response
+
+
+def run_roster_cutdown_apply_action(params: dict[str, Any]) -> dict[str, Any]:
+    before = lightweight_action_state()
+    active_save = before.get("activeSave") or {}
+    control_mode = str(active_save.get("control_mode") or before.get("settings", {}).get("control_mode") or "team").lower()
+    user_team = active_save.get("user_team") or (None if control_mode == "observe" else "MIN")
+    if not user_team:
+        raise ValueError("Roster cutdown moves require a team-controlled save.")
+    season = int(before.get("currentSeason") or 2026)
+    moves = params.get("moves") if isinstance(params.get("moves"), list) else []
+    started = perf_counter()
+    message = apply_roster_cutdown_moves(moves, str(user_team), season)
+    duration_seconds = perf_counter() - started
+    state_patch, app_shell_after = write_lightweight_action_exports("roster_cutdown_apply")
+    stdout = message
+    stderr = ""
+    return {
+        "action": "roster_cutdown_apply",
+        "command": "roster_cutdown_apply via UI batch",
+        "returncode": 0,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout,
+        "stderr": stderr,
+        "summary": action_response_summary(
+            "roster_cutdown_apply",
+            params,
+            0,
+            stdout,
+            stderr,
+            duration_seconds,
+        ),
+        "rosterGate": None,
+        "statePatch": state_patch,
+        "app_shell_state": app_shell_after,
+    }
 
 
 def _trade_asset_from_ui(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -3318,10 +3851,12 @@ def run_box_score_action(params: dict[str, Any]) -> dict[str, Any]:
     stdout = ""
     stderr = ""
     returncode = 0
+    box_score: dict[str, Any] | None = None
     try:
         buffer = io.StringIO()
         with sqlite3.connect(active_db_path()) as con:
             con.row_factory = sqlite3.Row
+            box_score = view_box_score.build_box_score_payload(con, int(schedule_game_id), show_plays)
             with contextlib.redirect_stdout(buffer):
                 view_box_score.print_box_score(con, int(schedule_game_id), show_plays)
         stdout = buffer.getvalue()
@@ -3337,6 +3872,8 @@ def run_box_score_action(params: dict[str, Any]) -> dict[str, Any]:
         "stdout": stdout[-20000:],
         "stderr": stderr[-20000:],
     }
+    if box_score is not None:
+        response["boxScore"] = box_score
     response["summary"] = action_response_summary(
         "box_score",
         params,
@@ -3353,10 +3890,12 @@ def box_score_payload_for_active_db(schedule_game_id: int, show_plays: int = 16)
     stdout = ""
     stderr = ""
     returncode = 0
+    box_score: dict[str, Any] | None = None
     try:
         buffer = io.StringIO()
         with sqlite3.connect(active_db_path()) as con:
             con.row_factory = sqlite3.Row
+            box_score = view_box_score.build_box_score_payload(con, int(schedule_game_id), int(show_plays))
             with contextlib.redirect_stdout(buffer):
                 view_box_score.print_box_score(con, int(schedule_game_id), int(show_plays))
         stdout = buffer.getvalue()
@@ -3372,6 +3911,7 @@ def box_score_payload_for_active_db(schedule_game_id: int, show_plays: int = 16)
         "duration_seconds": round(duration_seconds, 2),
         "stdout": stdout[-20000:],
         "stderr": stderr[-20000:],
+        "boxScore": box_score,
     }
 
 

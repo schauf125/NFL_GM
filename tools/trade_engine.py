@@ -34,6 +34,11 @@ from setup_transactions_cap_ledger import (
     insert_transaction,
 )
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
@@ -2141,6 +2146,12 @@ def _transfer_asset(
         con.execute(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (to_team, player_id),
+        )
+        jersey_numbers.assign_player_number(
+            con,
+            player_id,
+            team_id=to_team,
+            source="trade_execution",
         )
         # Move contract
         con.execute(

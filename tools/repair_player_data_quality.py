@@ -24,6 +24,16 @@ NAME_FIXES = {
     2090: ("Le'Veon", "Moss"),
 }
 
+EXPERIENCE_OVERRIDES = {
+    ("D'Ernest", "Johnson", "RB"): 7,
+    ("Justin", "Osborne", "C"): 0,
+    ("Leander", "Wiegand", "OG"): 0,
+    ("Michael", "Danna", "EDGE"): 6,
+    ("Savion", "Washington", "OT"): 0,
+    ("Taybor", "Pepper", "LS"): 8,
+    ("Tomon", "Fox", "EDGE"): 3,
+}
+
 
 def safety_position(row: sqlite3.Row) -> str:
     tackle = int(row["tackle"] or 0)
@@ -91,6 +101,7 @@ def repair(db_path: Path) -> dict[str, int]:
     stats = {
         "name_fixes": 0,
         "position_fixes": 0,
+        "experience_fixes": 0,
         "potential_fixes": 0,
         "duplicate_players_merged": 0,
     }
@@ -112,6 +123,36 @@ def repair(db_path: Path) -> dict[str, int]:
                 if row and row["position"] != position:
                     update_position(conn, player_id, position)
                     stats["position_fixes"] += 1
+
+            for first, last, position in EXPERIENCE_OVERRIDES:
+                row = conn.execute(
+                    """
+                    select years_exp
+                    from players
+                    where first_name=? and last_name=? and position=?
+                    """,
+                    (first, last, position),
+                ).fetchone()
+                if row and int(row["years_exp"] or 0) != EXPERIENCE_OVERRIDES[(first, last, position)]:
+                    conn.execute(
+                        """
+                        update players
+                        set years_exp=?
+                        where first_name=? and last_name=? and position=?
+                        """,
+                        (EXPERIENCE_OVERRIDES[(first, last, position)], first, last, position),
+                    )
+                    stats["experience_fixes"] += 1
+
+            result = conn.execute(
+                """
+                update players
+                set years_exp=0
+                where coalesce(is_rookie, 0)=1
+                  and coalesce(years_exp, 0)<>0
+                """
+            )
+            stats["experience_fixes"] += int(result.rowcount or 0)
 
             for row in conn.execute(
                 "select player_id, tackle, coverage, weight_lbs from players where position='S'"

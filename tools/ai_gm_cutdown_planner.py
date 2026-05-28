@@ -22,6 +22,11 @@ import ai_gm_team_evaluator as team_eval
 import roster_cutdown
 import roster_rules
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
@@ -1027,6 +1032,12 @@ def sign_free_agent_to_active(
     con.execute(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team_id, player_id),
+    )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player_id),
+        team_id=int(team_id),
+        source="ai_gm_cutdown_signing",
     )
     roster_cutdown.status_history(
         con,

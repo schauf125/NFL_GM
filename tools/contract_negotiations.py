@@ -26,6 +26,7 @@ from tools import setup_transactions_cap_ledger  # noqa: E402
 from tools import roster_actions  # noqa: E402
 from tools import cpu_depth_chart  # noqa: E402
 from tools import roster_rules  # noqa: E402
+from tools import jersey_numbers  # noqa: E402
 
 
 SOURCE = "contract_negotiations"
@@ -1858,6 +1859,12 @@ def resolve_offer_sheet(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (offering_team_id, player_id),
         )
+        jersey_numbers.assign_player_number(
+            con,
+            player_id,
+            team_id=offering_team_id,
+            source="offer_sheet_declined",
+        )
         cpu_depth_chart.mark_depth_chart_stale(
             con,
             team_id=original_team_id,
@@ -1879,6 +1886,12 @@ def resolve_offer_sheet(
         con.execute(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (original_team_id, player_id),
+        )
+        jersey_numbers.assign_player_number(
+            con,
+            player_id,
+            team_id=original_team_id,
+            source="offer_sheet_matched",
         )
         cpu_depth_chart.mark_depth_chart_stale(
             con,

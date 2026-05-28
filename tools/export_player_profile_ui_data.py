@@ -829,8 +829,16 @@ def transactions_by_player(conn: sqlite3.Connection, player_ids: list[int], limi
     return grouped
 
 
+def empty_medical_entry() -> dict[str, list[Any]]:
+    return {"active": [], "history": [], "bodyRisk": [], "recentEvents": []}
+
+
+def medical_entry(medical: dict[int, dict[str, Any]], player_id: int) -> dict[str, Any]:
+    return medical.setdefault(player_id, empty_medical_entry())
+
+
 def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_history: int = 18) -> dict[int, dict[str, Any]]:
-    medical = {player_id: {"active": [], "history": [], "bodyRisk": []} for player_id in player_ids}
+    medical = {player_id: empty_medical_entry() for player_id in player_ids}
     if not player_ids:
         return medical
     placeholders = ",".join("?" for _ in player_ids)
@@ -846,7 +854,7 @@ def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_his
             player_ids,
         ).fetchall()
         for row in rows:
-            medical.setdefault(int(row["player_id"]), {"active": [], "history": [], "bodyRisk": []})["active"].append({
+            medical_entry(medical, int(row["player_id"]))["active"].append({
                 "injury": row["injury_label"],
                 "bodyRegion": row["body_region"],
                 "bodyPart": row["body_part"],
@@ -874,7 +882,7 @@ def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_his
             if counts.get(player_id, 0) >= limit_history:
                 continue
             counts[player_id] = counts.get(player_id, 0) + 1
-            medical.setdefault(player_id, {"active": [], "history": [], "bodyRisk": []})["history"].append({
+            medical_entry(medical, player_id)["history"].append({
                 "injury": row["injury_label"],
                 "bodyRegion": row["body_region"],
                 "bodyPart": row["body_part"],
@@ -886,6 +894,42 @@ def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_his
                 "recurrenceRisk": round(float(row["recurrence_risk"] or 0.0) * 100, 1),
                 "source": row["source"] or "",
                 "notes": row["notes"] or "",
+            })
+    if table_exists(conn, "game_injury_events"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM game_injury_events
+            WHERE player_id IN ({placeholders})
+            ORDER BY player_id, date(game_date) DESC, event_id DESC
+            """,
+            player_ids,
+        ).fetchall()
+        counts: dict[int, int] = {}
+        for row in rows:
+            player_id = int(row["player_id"])
+            if counts.get(player_id, 0) >= 10:
+                continue
+            counts[player_id] = counts.get(player_id, 0) + 1
+            source = str(row["source"] or "")
+            if source == "match_engine":
+                source_label = "Game"
+            elif source == "weekly_practice":
+                source_label = "Practice"
+            else:
+                source_label = source.replace("_", " ").title() or "Medical"
+            medical_entry(medical, player_id)["recentEvents"].append({
+                "date": row["game_date"],
+                "week": int(row["week"]) if row["week"] is not None else "",
+                "quarter": int(row["quarter"] or 0),
+                "injury": row["injury_label"],
+                "bodyPart": row["body_part"],
+                "severity": row["severity"],
+                "status": row["status"],
+                "expectedDays": int(row["expected_days"] or 0),
+                "expectedGames": int(row["expected_games"] or 0),
+                "source": source_label,
+                "description": row["description"] or "",
             })
     if table_exists(conn, "player_injury_risk_view"):
         rows = conn.execute(
@@ -899,7 +943,7 @@ def medical_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_his
         ).fetchall()
         for row in rows:
             player_id = int(row["player_id"])
-            medical.setdefault(player_id, {"active": [], "history": [], "bodyRisk": []})["bodyRisk"].append({
+            medical_entry(medical, player_id)["bodyRisk"].append({
                 "bodyRegion": row["body_region"],
                 "bodyPart": row["body_part"],
                 "injuryCount": int(row["injury_count"] or 0),
@@ -1005,7 +1049,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
             "contract": contracts.get(player_id),
             "freeAgency": free_agents.get(player_id),
             "transactions": transactions.get(player_id, []),
-            "medical": medical.get(player_id, {"active": [], "history": [], "bodyRisk": []}),
+            "medical": medical.get(player_id, empty_medical_entry()),
             "summary": build_summary(row, primary_role, player_ratings, career_row),
         })
 

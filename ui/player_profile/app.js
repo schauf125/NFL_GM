@@ -709,7 +709,7 @@
 
   function renderMedical(player) {
     const root = document.createDocumentFragment();
-    const medical = player.medical || { active: [], history: [], bodyRisk: [] };
+    const medical = player.medical || { active: [], history: [], bodyRisk: [], recentEvents: [] };
 
     const activePanel = panel("Current Availability", `${(medical.active || []).length} active`);
     if (!medical.active || !medical.active.length) {
@@ -726,6 +726,23 @@
       ]));
     }
     root.append(activePanel);
+
+    const recentPanel = panel("Recent Injury Notes", `${(medical.recentEvents || []).length} notes`);
+    if (!medical.recentEvents || !medical.recentEvents.length) {
+      recentPanel.append(node("div", "empty-state", "No recent game or practice injury notes."));
+    } else {
+      recentPanel.append(statTable(medical.recentEvents, [
+        ["date", "Date"],
+        ["week", "Wk"],
+        ["source", "Source"],
+        ["injury", "Injury"],
+        ["bodyPart", "Area"],
+        ["status", "Status"],
+        ["expectedGames", "G"],
+        ["description", "Note"],
+      ]));
+    }
+    root.append(recentPanel);
 
     const riskPanel = panel("Body Area Risk", `${(medical.bodyRisk || []).length} areas`);
     if (!medical.bodyRisk || !medical.bodyRisk.length) {

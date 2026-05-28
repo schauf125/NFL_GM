@@ -30,6 +30,11 @@ import pro_player_fog
 from setup_contract_years import rebuild_contract_year, sync_team_cap_space
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
@@ -487,6 +492,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             p.position,
             p.age,
             p.years_exp,
+            p.is_rookie,
             p.overall,
             p.potential,
             p.college,
@@ -4681,6 +4687,12 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (offer["team_id"], offer["player_id"]),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(offer["player_id"]),
+        team_id=int(offer["team_id"]),
+        source="free_agency_signing",
+    )
     cpu_depth_chart.mark_depth_chart_stale(
         con,
         str(team["abbreviation"]),
@@ -5044,6 +5056,12 @@ def cpu_retain_own_free_agents(
         con.execute(
             "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
             (int(player["previous_team_id"]), int(player["player_id"])),
+        )
+        jersey_numbers.assign_player_number(
+            con,
+            int(player["player_id"]),
+            team_id=int(player["previous_team_id"]),
+            source="free_agency_retention",
         )
         roster_actions.ensure_player_normalized_ratings(
             con,
@@ -7431,15 +7449,21 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
 
     user_team = cpu_excluded_user_team(con, args)
     market_user_team = general_market_excluded_user_team(con, args)
-    cpu_restructures = cpu_restructure_core_contracts_for_fa(con, period, user_team=user_team, max_total=8)
-    cpu_cap_releases = cpu_release_bad_contracts_for_fa(con, period, user_team=user_team, max_total=16)
-    cpu_strategic_releases = cpu_release_strategic_cap_casualties_for_fa(
-        con,
-        period,
-        user_team=user_team,
-        max_total=4,
-        max_per_team=1,
-    )
+    skip_cap_cleanup = bool(getattr(args, "skip_cap_cleanup", False))
+    if skip_cap_cleanup:
+        cpu_restructures = 0
+        cpu_cap_releases = 0
+        cpu_strategic_releases = 0
+    else:
+        cpu_restructures = cpu_restructure_core_contracts_for_fa(con, period, user_team=user_team, max_total=8)
+        cpu_cap_releases = cpu_release_bad_contracts_for_fa(con, period, user_team=user_team, max_total=16)
+        cpu_strategic_releases = cpu_release_strategic_cap_casualties_for_fa(
+            con,
+            period,
+            user_team=user_team,
+            max_total=4,
+            max_per_team=1,
+        )
     user_plan = apply_cpu_controlled_user_free_agent_plan(
         con,
         period,
@@ -7473,17 +7497,19 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
                 user_team=user_team,
             )
     cleanup = reconcile_market_state(con, args.league_year)
-    cap_cleanup = cpu_cap_compliance_sweep(
-        con,
-        int(args.league_year),
-        user_team=user_team,
-        min_space=8_000_000,
-        max_moves_per_team=5,
-        max_teams=32,
-        time_budget_seconds=45.0,
-        write_snapshot=not getattr(args, "no_cap_snapshot", False),
-    )
-    if int(cap_cleanup.get("still_over") or 0) > 0:
+    cap_cleanup = {"teams": 0, "restructures": 0, "releases": 0, "still_over": 0}
+    if not skip_cap_cleanup:
+        cap_cleanup = cpu_cap_compliance_sweep(
+            con,
+            int(args.league_year),
+            user_team=user_team,
+            min_space=8_000_000,
+            max_moves_per_team=5,
+            max_teams=32,
+            time_budget_seconds=45.0,
+            write_snapshot=not getattr(args, "no_cap_snapshot", False),
+        )
+    if not skip_cap_cleanup and int(cap_cleanup.get("still_over") or 0) > 0:
         followup_cleanup = cpu_cap_compliance_sweep(
             con,
             int(args.league_year),

@@ -13,6 +13,12 @@ from typing import Any
 OFFENSE_PACKAGE_ORDER = ["11", "12", "21", "10", "13"]
 DEFENSE_PACKAGE_ORDER = ["nickel", "base34", "base43"]
 
+DEFENSE_PACKAGE_PREFIXES = {
+    "nickel": "NICKEL",
+    "base34": "BASE34",
+    "base43": "BASE43",
+}
+
 OFFENSE_PACKAGE_SNAP_SLOTS = {
     "10": ["LWR", "RWR", "SWR", "SWR"],
     "11": ["TE", "LWR", "RWR", "SWR"],
@@ -21,11 +27,41 @@ OFFENSE_PACKAGE_SNAP_SLOTS = {
     "21": ["TE", "FB", "LWR", "RWR"],
 }
 
-DEFENSE_PACKAGE_SNAP_SLOTS = {
+DEFENSE_PACKAGE_BASE_SNAP_SLOTS = {
     "nickel": ["LEDGE", "LDL", "RDL", "REDGE", "MLB", "WLB", "LCB", "RCB", "NB", "FS", "SS"],
     "base34": ["LEDGE", "LDL", "NT", "RDL", "REDGE", "MLB", "WLB", "LCB", "RCB", "FS", "SS"],
     "base43": ["LEDGE", "LDL", "RDL", "REDGE", "WLB", "MLB", "SLB", "LCB", "RCB", "FS", "SS"],
 }
+
+
+def canonical_slot(slot: str | None) -> str:
+    key = str(slot or "").upper()
+    for prefix in DEFENSE_PACKAGE_PREFIXES.values():
+        marker = f"{prefix}_"
+        if key.startswith(marker):
+            return key[len(marker):]
+    return key
+
+
+def package_depth_slot(package: str | None, slot: str | None) -> str:
+    key = canonical_slot(slot)
+    prefix = DEFENSE_PACKAGE_PREFIXES.get(str(package or "").lower())
+    return f"{prefix}_{key}" if prefix else key
+
+
+DEFENSE_PACKAGE_SNAP_SLOTS = {
+    package: [package_depth_slot(package, slot) for slot in slots]
+    for package, slots in DEFENSE_PACKAGE_BASE_SNAP_SLOTS.items()
+}
+
+
+def legacy_fallback_slots(slots: list[str] | set[str] | tuple[str, ...]) -> list[str]:
+    fallbacks: list[str] = []
+    for slot in slots:
+        canonical = canonical_slot(slot)
+        if canonical != slot and canonical not in fallbacks:
+            fallbacks.append(canonical)
+    return fallbacks
 
 SPECIAL_TEAMS_SLOTS = ["PK", "KO", "PT", "P", "LS", "KR", "PR", "H"]
 
@@ -33,6 +69,13 @@ TEAM_PACKAGE_OVERRIDES = {
     # Rough nickel-heavy Vikings defensive profile: keep base 3-4 available,
     # but let nickel drive most snaps until a richer playbook layer exists.
     "MIN": {
+        # Kevin O'Connell's offense should keep the slot WR meaningfully involved
+        # even when the user keeps the same two wideouts atop the boundary slots.
+        "offense": {
+            "11": 0.74,
+            "12": 0.22,
+            "21": 0.04,
+        },
         "defense": {
             "nickel": 0.82,
             "base34": 0.18,

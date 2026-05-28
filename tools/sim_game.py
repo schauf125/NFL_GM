@@ -19,8 +19,14 @@ from engine import injury_model  # noqa: E402
 import injury_notifications  # noqa: E402
 import cpu_depth_chart  # noqa: E402
 import preseason_processor  # noqa: E402
+import roster_rules  # noqa: E402
 import sim_control  # noqa: E402
 import weekly_processor  # noqa: E402
+
+try:
+    import jersey_numbers  # noqa: E402
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers  # noqa: E402
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -264,6 +270,12 @@ def action_game(args: argparse.Namespace) -> None:
         row = schedule_game(con, args.schedule_game_id)
         if int(row["played"] or 0) and not args.force:
             raise ValueError(f"Schedule game {args.schedule_game_id} is already played. Use --force to resim.")
+        if args.apply:
+            jersey_numbers.assign_missing_numbers(
+                con,
+                team_ids=[int(row["away_team_id"]), int(row["home_team_id"])],
+                source=f"game_apply_{int(row['season'])}_{str(row['game_type'] or 'REG').lower()}",
+            )
         result = match_engine.simulate_game(
             con,
             away_team_id=int(row["away_team_id"]),
@@ -356,6 +368,12 @@ def simulate_scheduled_rows(
                 cancel_db_path,
                 f"before {int(row['season'])} Week {int(row['week'])} game {int(row['game_id'])}.",
             )
+        if apply:
+            jersey_numbers.assign_missing_numbers(
+                con,
+                team_ids=[int(row["away_team_id"]), int(row["home_team_id"])],
+                source=f"scheduled_game_{int(row['season'])}_{str(row['game_type'] or 'REG').lower()}",
+            )
         game_seed = seed + idx if seed is not None else None
         result = match_engine.simulate_game(
             con,
@@ -384,6 +402,10 @@ def simulate_scheduled_rows(
         match_engine.rebuild_season_history(con, int(rows[0]["season"]))
         con.commit()
     if apply and rows:
+        ir_created = roster_rules.sync_auto_ir_designations(con, season=int(rows[0]["season"]))
+        if ir_created:
+            print(f"Injured reserve designations created: {ir_created}.")
+            con.commit()
         if cancel_db_path is not None:
             sim_control.raise_if_cancelled(cancel_db_path, "before injury notifications.")
         injury_summary = injury_notifications.create_injury_notifications(con, min_event_id=injury_marker)
@@ -507,6 +529,9 @@ def process_weekly_hooks_for_rows(
                     f"Weekly practice injuries for {season} Week {week}: "
                     f"{len(practice_events)} event(s), {expected_games} expected games missed."
                 )
+                ir_created = roster_rules.sync_auto_ir_designations(con, season=season)
+                if ir_created:
+                    print(f"Practice injury IR designations created: {ir_created}.")
         try:
             result = weekly_processor.process_week(
                 con,
@@ -567,9 +592,12 @@ def action_week(args: argparse.Namespace) -> None:
                     ai_gm_enabled=not args.no_ai_gm,
                     cancel_db_path=args.db,
                 )
-            refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
-            if int(refresh.get("teams", 0) or 0):
-                print(f"Depth charts refreshed after Week {args.week} hooks: {refresh['teams']} CPU team(s).")
+            if str(args.game_type or "REG").upper() != "PRE":
+                refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+                if int(refresh.get("teams", 0) or 0):
+                    print(f"Depth charts refreshed after Week {args.week} hooks: {refresh['teams']} CPU team(s).")
+            elif args.weekly_hooks:
+                print(f"Preseason Week {args.week} depth refresh deferred until the next sim checkpoint.")
             con.commit()
             print(f"Saved {saved} game result(s).")
         else:
@@ -594,10 +622,11 @@ def action_week(args: argparse.Namespace) -> None:
 def action_season(args: argparse.Namespace) -> None:
     con = connect(args.db)
     try:
+        game_type = str(args.game_type or "REG").upper()
         rows = scheduled_game_rows(
             con,
             season=args.season,
-            game_type=args.game_type,
+            game_type=game_type,
             start_week=args.start_week,
             end_week=args.end_week,
             force=args.force,
@@ -614,6 +643,7 @@ def action_season(args: argparse.Namespace) -> None:
             rows_by_week.setdefault(int(row["week"]), []).append(row)
         for week in sorted(rows_by_week):
             week_rows = rows_by_week[week]
+            week_injury_marker = injury_notifications.max_event_id(con) if args.apply else 0
             if args.apply:
                 sim_control.raise_if_cancelled(args.db, f"before simulating {args.season} Week {week}.")
                 refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
@@ -635,16 +665,30 @@ def action_season(args: argparse.Namespace) -> None:
                     process_weekly_hooks_for_rows(
                         con,
                         week_rows,
-                        game_type=args.game_type,
+                        game_type=game_type,
                         force=args.force,
                         ai_gm_enabled=not args.no_ai_gm,
                         cancel_db_path=args.db,
                     )
-                refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
-                if int(refresh.get("teams", 0) or 0):
-                    print(f"Depth charts refreshed after Week {week} hooks: {refresh['teams']} CPU team(s).")
+                if game_type != "PRE":
+                    refresh = cpu_depth_chart.rebuild_dirty_depth_charts(con, season=args.season, apply=True)
+                    if int(refresh.get("teams", 0) or 0):
+                        print(f"Depth charts refreshed after Week {week} hooks: {refresh['teams']} CPU team(s).")
+                elif args.weekly_hooks:
+                    print(f"Preseason Week {week} depth refresh deferred until the next sim checkpoint.")
                 con.commit()
                 print(f"Week {week} checkpoint saved ({week_saved} game result(s)).")
+                if args.stop_on_injury_alert:
+                    user_alerts = injury_notifications.alert_payloads_since(
+                        con,
+                        min_event_id=week_injury_marker,
+                    )
+                    if user_alerts:
+                        print(
+                            "Simulation paused for injury review: "
+                            f"{len(user_alerts)} user-team player(s) expected to miss time."
+                        )
+                        break
         if args.apply:
             print(f"Saved {saved} game result(s) for {args.season}.")
         else:
@@ -729,6 +773,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run weekly event/roster hooks after each completed week.",
     )
     season_parser.add_argument("--no-ai-gm", action="store_true", help="Skip heavy AI GM scans during weekly hooks.")
+    season_parser.add_argument(
+        "--stop-on-injury-alert",
+        action="store_true",
+        help="Pause after a completed week when the user team has a multi-game injury alert.",
+    )
     season_parser.set_defaults(func=action_season)
 
     return parser

@@ -65,6 +65,7 @@
     calendarLiveFocus: false,
     boxScoreModal: null,
     injuryModal: null,
+    injuryModalContext: null,
     rosterCutdownPrompt: null,
     rosterCutdownPromptDismissedKey: null,
     fifthYearOptionPromptDismissedKey: null,
@@ -100,6 +101,8 @@
     freeAgencyLoading: false,
     freeAgencyPositionFilter: "all",
     freeAgencyTierFilter: "all",
+    freeAgencySort: { key: "heat", direction: "desc" },
+    selectedFreeAgentPlayerId: null,
     waiversLiveKey: null,
     waiversLoading: false,
     tradeLiveKey: null,
@@ -273,6 +276,7 @@
     "roster_release_player",
     "roster_cutdown_apply",
     "practice_squad_assign",
+    "practice_squad_promote",
     "practice_squad_release",
     "waiver_claim",
     "waiver_cpu_seed",
@@ -431,6 +435,7 @@
     "waiver_process",
     "roster_cutdown_apply",
     "practice_squad_assign",
+    "practice_squad_promote",
     "practice_squad_release",
     "ai_gm_cutdown_plan",
     "ai_gm_cutdown_plan_persist",
@@ -607,6 +612,14 @@
   function whole(value) {
     const amount = Number(value || 0);
     return Number.isFinite(amount) ? String(Math.round(amount)) : "-";
+  }
+
+  function experienceLabel(player) {
+    const rookie = Boolean(Number(player?.is_rookie ?? player?.isRookie ?? 0));
+    const years = Number(player?.years_exp ?? player?.yearsExp ?? 0);
+    if (rookie || !Number.isFinite(years) || years <= 0) return "Rookie";
+    if (years === 1) return "1 yr exp";
+    return `${Math.round(years)} yrs exp`;
   }
 
   function asList(value) {
@@ -830,43 +843,43 @@
     { slot: "RB", label: "HB", row: 6, col: "7" },
   ];
   const DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LEO", row: 1, col: "4" },
-    { slot: "LDL", label: "DT", row: 1, col: "6" },
-    { slot: "RDL", label: "DT", row: 1, col: "7" },
-    { slot: "REDGE", label: "REO", row: 1, col: "9" },
-    { slot: "WLB", label: "WLB", row: 2, col: "5" },
-    { slot: "MLB", label: "MLB", row: 2, col: "7" },
-    { slot: "NB", label: "Nickel", row: 4, col: "4" },
-    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
-    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
+    { slot: "NICKEL_LEDGE", sourceSlot: "LEDGE", label: "LEO", row: 1, col: "4" },
+    { slot: "NICKEL_LDL", sourceSlot: "LDL", label: "DT", row: 1, col: "6" },
+    { slot: "NICKEL_RDL", sourceSlot: "RDL", label: "DT", row: 1, col: "7" },
+    { slot: "NICKEL_REDGE", sourceSlot: "REDGE", label: "REO", row: 1, col: "9" },
+    { slot: "NICKEL_WLB", sourceSlot: "WLB", label: "WLB", row: 2, col: "5" },
+    { slot: "NICKEL_MLB", sourceSlot: "MLB", label: "MLB", row: 2, col: "7" },
+    { slot: "NICKEL_NB", sourceSlot: "NB", label: "Nickel", row: 4, col: "4" },
+    { slot: "NICKEL_LCB", sourceSlot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "NICKEL_RCB", sourceSlot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "NICKEL_FS", sourceSlot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "NICKEL_SS", sourceSlot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const BASE_DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LEO", row: 1, col: "3" },
-    { slot: "LDL", label: "DT", row: 1, col: "5" },
-    { slot: "NT", label: "NT", row: 1, col: "6 / span 2" },
-    { slot: "RDL", label: "DT", row: 1, col: "8" },
-    { slot: "REDGE", label: "REO", row: 1, col: "10" },
-    { slot: "WLB", label: "WILB", row: 2, col: "6" },
-    { slot: "MLB", label: "MILB", row: 2, col: "8" },
-    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
-    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
+    { slot: "BASE34_LEDGE", sourceSlot: "LEDGE", label: "LEO", row: 1, col: "3" },
+    { slot: "BASE34_LDL", sourceSlot: "LDL", label: "DT", row: 1, col: "5" },
+    { slot: "BASE34_NT", sourceSlot: "NT", label: "NT", row: 1, col: "6 / span 2" },
+    { slot: "BASE34_RDL", sourceSlot: "RDL", label: "DT", row: 1, col: "8" },
+    { slot: "BASE34_REDGE", sourceSlot: "REDGE", label: "REO", row: 1, col: "10" },
+    { slot: "BASE34_WLB", sourceSlot: "WLB", label: "WILB", row: 2, col: "6" },
+    { slot: "BASE34_MLB", sourceSlot: "MLB", label: "MILB", row: 2, col: "8" },
+    { slot: "BASE34_LCB", sourceSlot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "BASE34_RCB", sourceSlot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "BASE34_FS", sourceSlot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "BASE34_SS", sourceSlot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const BASE_43_DEFENSE_FORMATION_SLOTS = [
-    { slot: "LEDGE", label: "LE", row: 1, col: "4" },
-    { slot: "LDL", label: "DT", row: 1, col: "6" },
-    { slot: "RDL", label: "DT", row: 1, col: "7" },
-    { slot: "REDGE", label: "RE", row: 1, col: "9" },
-    { slot: "WLB", label: "WLB", row: 2, col: "4" },
-    { slot: "MLB", label: "MLB", row: 2, col: "7" },
-    { slot: "SLB", label: "SLB", row: 2, col: "10" },
-    { slot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
-    { slot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
-    { slot: "FS", label: "FS", row: 7, col: "3 / span 2" },
-    { slot: "SS", label: "SS", row: 7, col: "9 / span 2" },
+    { slot: "BASE43_LEDGE", sourceSlot: "LEDGE", label: "LE", row: 1, col: "4" },
+    { slot: "BASE43_LDL", sourceSlot: "LDL", label: "DT", row: 1, col: "6" },
+    { slot: "BASE43_RDL", sourceSlot: "RDL", label: "DT", row: 1, col: "7" },
+    { slot: "BASE43_REDGE", sourceSlot: "REDGE", label: "RE", row: 1, col: "9" },
+    { slot: "BASE43_WLB", sourceSlot: "WLB", label: "WLB", row: 2, col: "4" },
+    { slot: "BASE43_MLB", sourceSlot: "MLB", label: "MLB", row: 2, col: "7" },
+    { slot: "BASE43_SLB", sourceSlot: "SLB", label: "SLB", row: 2, col: "10" },
+    { slot: "BASE43_LCB", sourceSlot: "LCB", label: "LCB", row: 5, col: "1 / span 2" },
+    { slot: "BASE43_RCB", sourceSlot: "RCB", label: "RCB", row: 5, col: "11 / span 2" },
+    { slot: "BASE43_FS", sourceSlot: "FS", label: "FS", row: 7, col: "3 / span 2" },
+    { slot: "BASE43_SS", sourceSlot: "SS", label: "SS", row: 7, col: "9 / span 2" },
   ];
   const SPECIAL_TEAMS_FORMATION_SLOTS = [
     { slot: "PK", label: "Kicker" },
@@ -1106,6 +1119,235 @@
 
   function tag(text, tone) {
     return node("span", `tag ${tone || ""}`.trim(), text);
+  }
+
+  function numberText(value, fallback = "0") {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Number.isInteger(num) ? String(num) : num.toFixed(1);
+  }
+
+  function boxScorePayload(result) {
+    return result?.boxScore || result?.box_score || null;
+  }
+
+  function boxScoreMeta(boxScore) {
+    const parts = [];
+    if (boxScore?.gameType) parts.push(String(boxScore.gameType));
+    if (boxScore?.week !== undefined && boxScore?.week !== null && String(boxScore.week) !== "") parts.push(`Week ${boxScore.week}`);
+    if (boxScore?.gameDate) parts.push(shortDate(boxScore.gameDate));
+    return parts.join(" | ");
+  }
+
+  function boxScoreTeamCard(team) {
+    const card = node("div", `box-score-team-card ${team?.result === "Win" ? "winner" : ""}`.trim());
+    const identity = node("div", "box-score-team-identity");
+    append(identity, [
+      teamLogo(team?.logo, team?.abbr, "box-score-team-logo"),
+      append(node("div"), [
+        node("strong", null, team?.abbr || "-"),
+        node("small", null, team?.name || ""),
+      ]),
+    ]);
+    append(card, [
+      identity,
+      append(node("div", "box-score-team-score"), [
+        node("span", null, numberText(team?.score)),
+        node("small", null, team?.result || ""),
+      ]),
+    ]);
+    return card;
+  }
+
+  function boxScoreComparisonRow(row) {
+    const away = Number(row?.away || 0);
+    const home = Number(row?.home || 0);
+    const max = Math.max(Math.abs(away), Math.abs(home), 1);
+    const item = node("div", "box-score-stat-compare-row");
+    const awayBar = node("span", "box-score-stat-bar away");
+    awayBar.style.width = `${Math.max(6, Math.round((Math.abs(away) / max) * 100))}%`;
+    const homeBar = node("span", "box-score-stat-bar home");
+    homeBar.style.width = `${Math.max(6, Math.round((Math.abs(home) / max) * 100))}%`;
+    append(item, [
+      append(node("div", "box-score-stat-value away"), [node("strong", null, numberText(away)), awayBar]),
+      node("span", "box-score-stat-label", row?.label || "-"),
+      append(node("div", "box-score-stat-value home"), [node("strong", null, numberText(home)), homeBar]),
+    ]);
+    return item;
+  }
+
+  function boxScorePlayerName(row, team) {
+    return playerLink(row?.playerId, row?.name || "-", "player-link strong-link", {
+      team,
+      position: row?.position,
+    });
+  }
+
+  function boxScoreTable(title, rows, columns, team, limit) {
+    const visible = (rows || []).slice(0, limit || 3);
+    if (!visible.length) return null;
+    const section = node("section", "box-score-player-section");
+    const table = node("table", "box-score-player-table");
+    const thead = node("thead");
+    append(thead, [append(node("tr"), columns.map((column) => node("th", column.align === "right" ? "right" : "", column.label)))]);
+    const tbody = node("tbody");
+    visible.forEach((row) => {
+      const tr = node("tr");
+      columns.forEach((column) => {
+        const td = node("td", column.align === "right" ? "right" : "");
+        const value = column.render(row, team);
+        append(td, value instanceof Node ? value : String(value ?? "-"));
+        tr.append(td);
+      });
+      tbody.append(tr);
+    });
+    append(table, [thead, tbody]);
+    append(section, [node("h4", null, title), table]);
+    return section;
+  }
+
+  function boxScoreTeamLeaders(boxScore, team, compact) {
+    const sections = boxScore?.players?.[team?.abbr] || {};
+    const limit = compact ? 2 : 4;
+    const card = node("div", "box-score-leader-card");
+    append(card, [
+      append(node("div", "box-score-leader-team"), [
+        teamLogo(team?.logo, team?.abbr, "box-score-leader-logo"),
+        append(node("div"), [
+          node("strong", null, team?.abbr || "-"),
+          node("small", null, "Player leaders"),
+        ]),
+      ]),
+      boxScoreTable("Passing", sections.passing, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "C/A", align: "right", render: (row) => `${numberText(row.completions)}/${numberText(row.attempts)}` },
+        { label: "Yds", align: "right", render: (row) => numberText(row.yards) },
+        { label: "TD", align: "right", render: (row) => numberText(row.td) },
+        { label: "INT", align: "right", render: (row) => numberText(row.int) },
+      ], team?.abbr, limit),
+      boxScoreTable("Rushing", sections.rushing, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "Car", align: "right", render: (row) => numberText(row.attempts) },
+        { label: "Yds", align: "right", render: (row) => numberText(row.yards) },
+        { label: "Avg", align: "right", render: (row) => numberText(row.avg) },
+        { label: "TD", align: "right", render: (row) => numberText(row.td) },
+      ], team?.abbr, limit),
+      boxScoreTable("Receiving", sections.receiving, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "Rec", align: "right", render: (row) => `${numberText(row.receptions)}/${numberText(row.targets)}` },
+        { label: "Yds", align: "right", render: (row) => numberText(row.yards) },
+        { label: "Avg", align: "right", render: (row) => numberText(row.avg) },
+        { label: "TD", align: "right", render: (row) => numberText(row.td) },
+      ], team?.abbr, limit),
+      boxScoreTable("Defense", sections.defense, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "Tkl", align: "right", render: (row) => numberText(row.tackles) },
+        { label: "Sk", align: "right", render: (row) => numberText(row.sacks) },
+        { label: "INT", align: "right", render: (row) => numberText(row.int) },
+        { label: "PD", align: "right", render: (row) => numberText(row.pd) },
+      ], team?.abbr, limit),
+      boxScoreTable("Kicking", sections.kicking, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "FG", align: "right", render: (row) => `${numberText(row.fgMade)}/${numberText(row.fgAttempts)}` },
+        { label: "XP", align: "right", render: (row) => `${numberText(row.xpMade)}/${numberText(row.xpAttempts)}` },
+        { label: "Long", align: "right", render: (row) => numberText(row.long) },
+      ], team?.abbr, compact ? 1 : 2),
+      boxScoreTable("Punting", sections.punting, [
+        { label: "Player", render: (row) => boxScorePlayerName(row, team?.abbr) },
+        { label: "Punts", align: "right", render: (row) => numberText(row.punts) },
+        { label: "Yds", align: "right", render: (row) => numberText(row.yards) },
+        { label: "Avg", align: "right", render: (row) => numberText(row.avg) },
+      ], team?.abbr, compact ? 1 : 2),
+    ]);
+    return card;
+  }
+
+  function boxScoreDrives(boxScore, compact) {
+    const drives = boxScore?.drives || [];
+    if (!drives.length) return null;
+    const section = node("section", "box-score-flow-card");
+    const list = node("div", "box-score-drive-list");
+    drives.slice(0, compact ? 10 : drives.length).forEach((drive) => {
+      append(list, [
+        append(node("div", `box-score-drive ${Number(drive.points || 0) > 0 ? "scoring" : ""}`.trim()), [
+          node("span", "box-score-drive-num", String(drive.driveNumber || "")),
+          append(node("div"), [
+            node("strong", null, `${drive.offense || "-"}: ${drive.result || "Drive"}`),
+            node("small", null, `Q${drive.quarter || "-"} ${drive.clock || "--:--"} | ${numberText(drive.plays)} plays, ${numberText(drive.yards)} yards`),
+          ]),
+          Number(drive.points || 0) ? node("span", "box-score-drive-points", `+${drive.points}`) : null,
+        ]),
+      ]);
+    });
+    append(section, [
+      node("h3", null, "Drive Summary"),
+      list,
+    ]);
+    return section;
+  }
+
+  function boxScoreRecentPlays(boxScore, compact) {
+    const plays = compact ? [] : (boxScore?.plays || []);
+    if (!plays.length) return null;
+    const section = node("section", "box-score-flow-card");
+    const list = node("div", "box-score-play-list");
+    plays.forEach((play) => {
+      append(list, [
+        append(node("div", `box-score-play ${play.touchdown ? "touchdown" : ""} ${play.turnover ? "turnover" : ""}`.trim()), [
+          node("span", "box-score-play-clock", `Q${play.quarter || "-"} ${play.clock || "--:--"}`),
+          node("strong", null, `${play.offense || "-"} ${play.down || "-"}&${play.distance || "-"}`),
+          node("span", null, play.description || ""),
+        ]),
+      ]);
+    });
+    append(section, [
+      node("h3", null, "Recent Plays"),
+      list,
+    ]);
+    return section;
+  }
+
+  function renderBoxScore(result, options = {}) {
+    const boxScore = boxScorePayload(result);
+    if (!boxScore) {
+      const text = String(result?.stdout || "").trim();
+      return text ? node("pre", "box-score-output", text) : node("div", "empty-state", "No stored box score text was returned for this game.");
+    }
+    if (!boxScore.run) {
+      return append(node("div", "box-score-view compact"), [
+        append(node("div", "box-score-scoreboard"), [
+          boxScoreTeamCard(boxScore.teams?.[0] || {}),
+          append(node("div", "box-score-game-meta"), [
+            node("span", "tag", boxScore.status === "scheduled" ? "Scheduled" : "No Box Score"),
+            node("strong", null, boxScore.matchup || "Game"),
+            node("small", null, boxScoreMeta(boxScore)),
+          ]),
+          boxScoreTeamCard(boxScore.teams?.[1] || {}),
+        ]),
+        node("div", "empty-state", "This game does not have a stored play-by-play box score yet."),
+      ]);
+    }
+    const compact = Boolean(options.compact);
+    const wrap = node("div", `box-score-view ${compact ? "compact" : ""}`.trim());
+    append(wrap, [
+      append(node("div", "box-score-scoreboard"), [
+        boxScoreTeamCard(boxScore.teams?.[0] || {}),
+        append(node("div", "box-score-game-meta"), [
+          node("span", "tag good", "Final"),
+          node("strong", null, boxScore.matchup || "Game"),
+          node("small", null, boxScoreMeta(boxScore)),
+        ]),
+        boxScoreTeamCard(boxScore.teams?.[1] || {}),
+      ]),
+      append(node("section", "box-score-compare-card"), [
+        node("h3", null, "Team Stats"),
+        append(node("div", "box-score-stat-compare"), (boxScore.comparison || []).map(boxScoreComparisonRow)),
+      ]),
+      append(node("section", "box-score-leaders-grid"), (boxScore.teams || []).map((team) => boxScoreTeamLeaders(boxScore, team, compact))),
+      boxScoreDrives(boxScore, compact),
+      boxScoreRecentPlays(boxScore, compact),
+    ]);
+    return wrap;
   }
 
   function playerProfileHref({ playerId, name, team, position }) {
@@ -2193,6 +2435,37 @@
     };
   }
 
+  function injuryModalContextForAction(action, params = {}, payload = {}) {
+    const paused = /Simulation paused for injury review/i.test(String(payload.stdout || payload.summary?.message || ""));
+    const gameType = String(params.game_type || data.season?.nextGameType || "REG").toUpperCase();
+    if (action === "sim_week") {
+      return {
+        action,
+        continueAction: "sim_week",
+        continueParams: {
+          game_type: gameType,
+          advance_preflight_confirmed: true,
+          roster_short_warning_confirmed: true,
+        },
+        paused,
+      };
+    }
+    if (action === "sim_season") {
+      return {
+        action,
+        continueAction: "sim_season",
+        continueParams: {
+          ...params,
+          game_type: gameType,
+          advance_preflight_confirmed: true,
+          roster_short_warning_confirmed: true,
+        },
+        paused,
+      };
+    }
+    return { action, continueAction: null, continueParams: {}, paused };
+  }
+
   async function runAction(action, params) {
     if (!runnerMode() || state.runnerBusy) return;
     params = { ...(params || {}) };
@@ -2238,6 +2511,7 @@
       }
       if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
+        state.injuryModalContext = injuryModalContextForAction(action, params, payload);
       }
       if (payload.rosterGate && rosterGateStillRelevant() && !suppressRosterGatePrompt(action)) {
         payload.returncode = 1;
@@ -2438,6 +2712,47 @@
     return false;
   }
 
+  function actionReachesRegularSeason(action, params = {}) {
+    if (isObserveMode() || !data.activeSave?.user_team) return false;
+    const kickoffDate = calendarEventDateByCode("REGULAR_SEASON_KICKOFF");
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "").slice(0, 10);
+    const gameType = String(params.game_type || data.season?.nextGameType || "REG").toUpperCase();
+    if ((action === "sim_week" || action === "sim_season") && gameType === "REG") return true;
+    if (action === "advance_to_draft" || action === "advance_next_league_year") return true;
+    if (!kickoffDate || !currentDate) return false;
+    if (currentDate >= kickoffDate) return false;
+    if (action === "advance_to_date") {
+      const targetDate = String(params.date || "").slice(0, 10);
+      return Boolean(targetDate && targetDate >= kickoffDate);
+    }
+    if (action === "advance_next_event") {
+      const targetDate = firstUpcomingEventDate();
+      return Boolean(targetDate && targetDate >= kickoffDate);
+    }
+    return false;
+  }
+
+  function rosterShortfallWarningsForAdvance(action, params = {}) {
+    if (params.roster_short_warning_confirmed || params.auto_roster_cutdown) return [];
+    if (!actionReachesRegularSeason(action, params)) return [];
+    const currentDate = String(data.currentDate || data.activeSave?.current_date || "").slice(0, 10);
+    const cutdownDate = calendarEventDateByCode("FINAL_ROSTER_CUTDOWN_53");
+    const kickoffDate = calendarEventDateByCode("REGULAR_SEASON_KICKOFF");
+    if (!currentDate || !cutdownDate || !kickoffDate || currentDate < cutdownDate || currentDate > kickoffDate) return [];
+    const counts = rosterGateCountsFromState();
+    if (!counts) return [];
+    const warnings = [];
+    const activeLimit = 53;
+    const practiceSquadLimit = 16;
+    if (counts.activeCount < activeLimit) {
+      warnings.push(`Active roster is short: ${counts.activeCount}/${activeLimit}. You can continue, but injuries or specialist depth may force emergency signings later.`);
+    }
+    if (counts.practiceSquadCount < practiceSquadLimit) {
+      warnings.push(`Practice squad is not full: ${counts.practiceSquadCount}/${practiceSquadLimit}. You can continue and fill it later.`);
+    }
+    return warnings;
+  }
+
   function queueRosterCutdownModePrompt(action, params = {}) {
     if (!actionCrossesRosterCutdown(action, params)) return false;
     state.pendingRosterCutdownAction = {
@@ -2463,6 +2778,7 @@
     let detail = "";
     let primaryLabel = "Continue";
     let tone = "warn";
+    const rosterShortfallWarnings = rosterShortfallWarningsForAdvance(action, params);
 
     if (draftNeedsAdvanceWarning(action)) {
       title = "Draft Still In Progress";
@@ -2483,7 +2799,27 @@
       checkpoints.push("Resolve offseason free agency movement up to draft day.");
       checkpoints.push("Run pre-draft scouting sweep and open the draft room paused.");
       if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before the sim starts.");
+      warnings.push(...rosterShortfallWarnings);
       return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+    }
+
+    if (action === "sim_week" && gameType === "REG" && rosterShortfallWarnings.length) {
+      title = "Roster Is Short";
+      detail = "Your roster is under the normal regular-season target. You can continue anyway, but you may want to fill active or practice squad spots first.";
+      primaryLabel = "Continue Anyway";
+      warnings.push(...rosterShortfallWarnings);
+      checkpoints.push("Sim the next regular-season week.");
+      checkpoints.push("Emergency specialist checks can still run before games.");
+      return {
+        action,
+        params: { ...params, roster_short_warning_confirmed: true },
+        title,
+        detail,
+        primaryLabel,
+        warnings,
+        checkpoints,
+        tone,
+      };
     }
 
     if (action === "sim_season") {
@@ -2493,7 +2829,13 @@
         : "This will play the remaining regular-season schedule and run weekly hooks, stats, scouting, injuries, and CPU front-office activity.";
       primaryLabel = gameType === "PRE" ? "Sim Preseason" : "Sim Season";
       if (gameType === "REG" && actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before games begin.");
-      if (gameType === "REG") checkpoints.push("Stop at roster cutdown unless you choose automatic cutdown.");
+      if (gameType === "REG") warnings.push(...rosterShortfallWarnings);
+      if (gameType === "REG" && actionCrossesRosterCutdown(action, params)) {
+        checkpoints.push("Stop at roster cutdown unless you choose automatic cutdown.");
+      }
+      if (gameType === "REG" && rosterShortfallWarnings.length) {
+        checkpoints.push("Continue with the roster below the normal 53/16 targets.");
+      }
       checkpoints.push("Update calendar, standings, stats, injuries, inbox, and league news as games finish.");
       return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
     }
@@ -2503,6 +2845,7 @@
       detail = "This rolls the save to the next June 1 league year and can process post-draft/offseason calendar hooks.";
       primaryLabel = "Advance League Year";
       if (draftRemaining > 0) warnings.push(`The draft still has ${draftRemaining} remaining pick(s); advancing may auto-finish them.`);
+      warnings.push(...rosterShortfallWarnings);
       checkpoints.push("Sync calendar phase, league year, rosters, contracts, and generated offseason setup.");
       return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
     }
@@ -2531,11 +2874,12 @@
     if (action === "advance_to_date" || action === "advance_next_event") {
       const targetDate = action === "advance_to_date" ? String(params.date || "").slice(0, 10) : firstUpcomingEventDate();
       const targetLabel = action === "advance_next_event" ? (data.calendar?.nextEvent?.event_name || "next calendar event") : shortDate(targetDate);
-      if (!actionCrossesRosterCutdown(action, params) && !draftNeedsAdvanceWarning(action)) return null;
+      if (!actionCrossesRosterCutdown(action, params) && !draftNeedsAdvanceWarning(action) && !rosterShortfallWarnings.length) return null;
       title = action === "advance_next_event" ? "Advance To Next Event" : "Advance Calendar";
       detail = `This will advance from ${shortDate(currentDate)} to ${targetLabel}.`;
-      primaryLabel = "Advance";
+      primaryLabel = rosterShortfallWarnings.length ? "Continue Anyway" : "Advance";
       if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before advancing.");
+      warnings.push(...rosterShortfallWarnings);
       return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
     }
 
@@ -2560,6 +2904,15 @@
     if (action === "roster_release_player") {
       return window.confirm("Release this player from your active roster?\n\nContinue?");
     }
+    if (action === "roster_send_ir") {
+      return window.confirm("Place this injured player on IR?\n\nThey will no longer count against the active roster. Return eligibility depends on NFL IR rules and timing.");
+    }
+    if (action === "roster_activate_ir") {
+      return window.confirm("Activate this player from IR?\n\nYou need an open active roster spot.");
+    }
+    if (action === "practice_squad_promote") {
+      return window.confirm("Promote this player from the practice squad to the active roster?\n\nContinue?");
+    }
     if (action === "roster_cutdown_apply") {
       const count = Array.isArray(params.moves) ? params.moves.length : 0;
       return window.confirm(`Apply ${count} selected roster cutdown move${count === 1 ? "" : "s"}?\n\nPlayers marked for waive/release will enter the normal release and waiver flow.`);
@@ -2579,9 +2932,12 @@
       contract_release: "Release Player",
       contract_restructure: "Restructure Contract",
       roster_release_player: "Release Player",
+      roster_send_ir: "Send To IR",
+      roster_activate_ir: "Activate From IR",
       roster_cutdown_apply: "Apply Roster Cutdown",
       roster_change_number: "Change Number",
       practice_squad_assign: "Assign Practice Squad",
+      practice_squad_promote: "Promote To Active Roster",
       practice_squad_release: "Release Practice Squad Player",
       auto_cutdown: "Auto Cutdown",
       auto_cutdown_continue: "Auto Cutdown And Continue",
@@ -3410,7 +3766,7 @@
     const nextGameType = String(data.season?.nextGameType || "REG").toUpperCase();
     const nextWeekLabel = nextWeek ? (nextGameType === "PRE" ? `Preseason Week ${nextWeek}` : `Week ${nextWeek}`) : "";
     const eventDate = nextEvent?.event_start_date ? shortDate(nextEvent.event_start_date) : "No date";
-    const p = panel("Calendar Control", nextEvent ? eventDate : "No Advance Target");
+    const p = panel("Calendar Control", nextEvent ? "Next Step" : "No Advance Target");
     const body = panelBody(p);
     const hero = node("div", "control-hero calendar-control-hero");
     append(hero, [
@@ -3626,8 +3982,7 @@
     if (result.action === "box_score" && ok) {
       const p = panel("Box Score", result.summary?.message || "Stored game result");
       const body = panelBody(p);
-      const text = String(result.stdout || "").trim();
-      body.append(text ? node("pre", "box-score-output", text) : node("div", "empty-state", "No stored box score text was returned for this game."));
+      body.append(renderBoxScore(result, { compact: true }));
       return p;
     }
     const p = panel("Action Status", result.summary?.title || actionLabel(result.action) || "Latest");
@@ -3696,9 +4051,10 @@
     const modal = node("section", "box-score-modal");
     const top = node("div", "box-score-modal-top");
     const title = node("div", "box-score-modal-title");
+    const boxScore = boxScorePayload(result);
     append(title, [
       node("strong", null, result.returncode === 0 ? "Box Score" : "Box Score Unavailable"),
-      node("small", null, result.params?.game_id ? `Game ${result.params.game_id}` : "Stored game result"),
+      node("small", null, boxScore ? `${boxScore.matchup || "Stored game result"}${boxScoreMeta(boxScore) ? ` | ${boxScoreMeta(boxScore)}` : ""}` : (result.params?.game_id ? `Game ${result.params.game_id}` : "Stored game result")),
     ]);
     const close = node("button", "icon-button close-button", "Close");
     close.type = "button";
@@ -3709,8 +4065,7 @@
     append(top, [title, close]);
     const body = node("div", "box-score-modal-body");
     if (result.returncode === 0 && !result.error) {
-      const text = String(result.stdout || "").trim();
-      body.append(text ? node("pre", "box-score-output box-score-modal-output", text) : node("div", "empty-state", "No stored box score text was returned for this game."));
+      body.append(renderBoxScore(result));
     } else {
       body.append(node("div", "friendly-error", result.summary?.message || result.stderr || result.error || "Box score could not be loaded."));
     }
@@ -3728,6 +4083,7 @@
   function injuryAlertModal() {
     const alerts = Array.isArray(state.injuryModal) ? state.injuryModal : [];
     if (!alerts.length) return null;
+    const context = state.injuryModalContext || {};
     const overlay = node("div", "box-score-modal-overlay injury-alert-overlay");
     const modal = node("section", "box-score-modal injury-alert-modal");
     const top = node("div", "box-score-modal-top");
@@ -3736,10 +4092,11 @@
       node("strong", null, "Injury Report"),
       node("small", null, `${alerts.length} player${alerts.length === 1 ? "" : "s"} expected to miss time`),
     ]);
-    const close = node("button", "icon-button close-button", "Close");
+    const close = node("button", "icon-button close-button", "Stop");
     close.type = "button";
     close.addEventListener("click", () => {
       state.injuryModal = null;
+      state.injuryModalContext = null;
       render();
     });
     append(top, [title, close]);
@@ -3769,15 +4126,49 @@
       ]);
       list.append(card);
     });
+    const actions = node("div", "injury-alert-actions");
+    const review = node("button", "control-button secondary", "Review Injuries");
+    review.type = "button";
+    review.addEventListener("click", () => {
+      state.injuryModal = null;
+      state.injuryModalContext = null;
+      switchView("injuries", { refresh: true });
+    });
+    const depth = node("button", "control-button secondary", "Adjust Depth Chart");
+    depth.type = "button";
+    depth.addEventListener("click", () => {
+      state.injuryModal = null;
+      state.injuryModalContext = null;
+      switchView("depth", { refresh: true });
+    });
+    const continueSim = node("button", "control-button good", "Continue Sim");
+    continueSim.type = "button";
+    continueSim.disabled = state.runnerBusy || !runnerMode() || !context.continueAction;
+    continueSim.title = context.continueAction
+      ? "Resume the sim from the next safe checkpoint."
+      : "No sim action is available to continue.";
+    continueSim.addEventListener("click", () => {
+      if (!context.continueAction) return;
+      const nextAction = context.continueAction;
+      const nextParams = { ...(context.continueParams || {}) };
+      state.injuryModal = null;
+      state.injuryModalContext = null;
+      runAction(nextAction, nextParams);
+    });
+    append(actions, [review, depth, continueSim]);
     append(body, [
-      node("div", "injury-alert-summary", "These updates were added to your inbox. Major league injuries were also sent to league news."),
+      node("div", "injury-alert-summary", context.paused
+        ? "The sim paused at a safe weekly checkpoint. Continue the sim, or stop here to adjust the roster and depth chart."
+        : "These updates were added to your inbox. Continue to the next week, or stop here to make roster and depth chart changes."),
       list,
+      actions,
     ]);
     append(modal, [top, body]);
     overlay.append(modal);
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) {
         state.injuryModal = null;
+        state.injuryModalContext = null;
         render();
       }
     });
@@ -3811,6 +4202,10 @@
 
     const body = node("div", "box-score-modal-body injury-alert-body");
     const actions = node("div", "control-bar roster-cutdown-actions");
+    const counts = rosterGateCountsFromState();
+    const canContinueShort = counts
+      && Number(counts.activeCount || 0) <= 53
+      && Number(counts.practiceSquadCount || 0) <= 17;
     const manage = node("button", "control-button good", "Open Roster Cutdown");
     manage.type = "button";
     manage.addEventListener("click", () => {
@@ -3830,10 +4225,31 @@
         continue_params: stoppedParams,
       });
     });
+    const continueAnyway = node("button", "control-button secondary", "Continue Anyway");
+    continueAnyway.type = "button";
+    continueAnyway.disabled = state.runnerBusy || !runnerMode() || !canContinueShort;
+    continueAnyway.title = canContinueShort
+      ? "Continue with the roster below the normal active/practice squad targets."
+      : "Roster is over a hard limit and must be fixed first.";
+    continueAnyway.addEventListener("click", () => {
+      const stoppedAction = prompt.stoppedAction || state.lastResult?.action || "sim_season";
+      const stoppedParams = prompt.stoppedParams || state.lastResult?.params || {};
+      state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
+      state.rosterCutdownPrompt = null;
+      runAction(stoppedAction, {
+        ...stoppedParams,
+        skip_roster_gate: true,
+        roster_short_warning_confirmed: true,
+        advance_preflight_confirmed: true,
+      });
+    });
     append(actions, [manage, auto]);
+    if (canContinueShort) actions.append(continueAnyway);
     append(body, [
       node("p", null, prompt.message || "Your active roster and practice squad need to be settled before the regular season can continue."),
-      node("p", "muted", "Handle it yourself in Roster Hub, or let the CPU apply a cutdown/practice-squad plan and continue the sim."),
+      node("p", "muted", canContinueShort
+        ? "You are under the normal roster targets, not over the hard limits. You can fill the roster now, let the CPU handle it, or continue anyway."
+        : "Handle it yourself in Roster Hub, or let the CPU apply a cutdown/practice-squad plan and continue the sim."),
       actions,
     ]);
     append(modal, [top, body]);
@@ -4193,7 +4609,7 @@
   function suppressRosterGatePrompt(action = "") {
     const name = String(action || "");
     if (state.view === "practiceSquad") return true;
-    return name === "practice_squad_assign" || name === "practice_squad_release" || name === "roster_cutdown_apply";
+    return name === "practice_squad_assign" || name === "practice_squad_promote" || name === "practice_squad_release" || name === "roster_cutdown_apply";
   }
 
   function maybeShowRosterGatePromptFromState() {
@@ -4205,18 +4621,18 @@
     const counts = rosterGateCountsFromState();
     if (!counts) return;
     const activeLimit = 53;
-    const practiceSquadLimit = 16;
+    const practiceSquadLimit = 17;
     const issues = [];
     if (counts.activeCount > activeLimit) issues.push(`cut active roster from ${counts.activeCount} to ${activeLimit}`);
-    if (counts.practiceSquadCount < practiceSquadLimit) issues.push(`fill practice squad (${counts.practiceSquadCount}/${practiceSquadLimit})`);
+    if (counts.practiceSquadCount > practiceSquadLimit) issues.push(`trim practice squad from ${counts.practiceSquadCount} to ${practiceSquadLimit}`);
     if (!issues.length) return;
     const key = currentRosterGateKey();
     if (key && state.rosterCutdownPromptDismissedKey === key) return;
     const team = data.activeSave?.user_team || data.depthChart?.team || "your team";
     state.rosterCutdownPrompt = {
       key,
-      title: "Roster Cutdown Needed",
-      message: `Roster cutdown/practice squad setup required for ${team}: ${issues.join("; ")}.`,
+      title: "Roster Limit Cleanup Needed",
+      message: `Roster limit cleanup required for ${team}: ${issues.join("; ")}.`,
       stoppedAction: "sim_season",
       stoppedParams: {},
     };
@@ -4883,7 +5299,7 @@
     const boardRows = activeTier === "all"
       ? positionRows
       : positionRows.filter((player) => freeAgencyTierValue(player.market_tier) === activeTier);
-    const boardPanel = panel("Market Board", marketPanelKicker(activePosition, activeTier, boardRows.length, availableRows.length));
+    const boardPanel = panel("Available Free Agents", marketPanelKicker(activePosition, activeTier, boardRows.length, Number(fa.counts.available || availableRows.length)));
     boardPanel.classList.add("fa-board-panel");
     const filterRow = node("div", "fa-board-toolbar");
     const filterLabel = node("label", "fa-position-filter");
@@ -4899,6 +5315,7 @@
     select.value = activePosition;
     select.addEventListener("change", () => {
       state.freeAgencyPositionFilter = select.value;
+      state.selectedFreeAgentPlayerId = null;
       render();
     });
     filterLabel.append(select);
@@ -4908,13 +5325,21 @@
       tab.type = "button";
       tab.addEventListener("click", () => {
         state.freeAgencyTierFilter = tier.value;
+        state.selectedFreeAgentPlayerId = null;
         render();
       });
       tierTabs.append(tab);
     });
     filterRow.append(filterLabel, tierTabs);
     panelBody(boardPanel).append(filterRow);
-    panelBody(boardPanel).append(freeAgencyMarketGrid(boardRows.slice(0, 48), capSpace));
+    const sortedRows = sortedFreeAgencyRows(boardRows);
+    const selectedFreeAgent = selectedFreeAgencyPlayer(sortedRows);
+    const marketLayout = node("div", "fa-market-layout");
+    append(marketLayout, [
+      freeAgencyMarketTable(sortedRows, selectedFreeAgent, capSpace),
+      freeAgencyPlayerPanel(selectedFreeAgent, capSpace),
+    ]);
+    panelBody(boardPanel).append(marketLayout);
     root.append(boardPanel);
     const output = runnerOutputPanel();
     if (output) root.append(output);
@@ -4999,6 +5424,177 @@
     if (position !== "all") bits.push(position);
     bits.push(`${shown}/${total} shown`);
     return bits.join(" | ");
+  }
+
+  function freeAgencySortValue(player, key) {
+    if (key === "name") return String(player.player_name || "");
+    if (key === "pos") return FOOTBALL_POSITION_ORDER.indexOf(player.position) >= 0 ? FOOTBALL_POSITION_ORDER.indexOf(player.position) : 99;
+    if (key === "age") return Number(player.age || 0);
+    if (key === "overall") return Number(player.overall || player.market_score || 0);
+    if (key === "potential") return Number(player.potential || player.overall || 0);
+    if (key === "tier") return ["premium", "starter", "rotation", "depth", "other"].indexOf(freeAgencyTierValue(player.market_tier));
+    if (key === "ask") return Number(player.offer_floor_aav || player.asking_aav || player.minimum_aav || 0);
+    if (key === "offers") return Number(player.pending_offers || 0);
+    if (key === "leader") return Number(player.best_aav || 0);
+    return Number(player.market_heat || player.market_score || player.overall || 0);
+  }
+
+  function sortedFreeAgencyRows(rows) {
+    const { key, direction } = state.freeAgencySort || { key: "heat", direction: "desc" };
+    const dir = direction === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = freeAgencySortValue(a, key);
+      const bv = freeAgencySortValue(b, key);
+      if (typeof av === "string" || typeof bv === "string") return String(av).localeCompare(String(bv)) * dir;
+      if (av !== bv) return (av - bv) * dir;
+      return footballPositionSort(a.position, b.position) || String(a.player_name || "").localeCompare(String(b.player_name || ""));
+    });
+  }
+
+  function freeAgencySortButton(label, key) {
+    const active = state.freeAgencySort?.key === key;
+    const direction = active ? state.freeAgencySort.direction : "desc";
+    const button = node("button", `table-sort-button ${active ? "active" : ""}`.trim(), `${label}${active ? (direction === "asc" ? " ↑" : " ↓") : ""}`);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      state.freeAgencySort = {
+        key,
+        direction: active && direction === "desc" ? "asc" : "desc",
+      };
+      render();
+    });
+    return button;
+  }
+
+  function freeAgencyTableHeader(label, key, className = "") {
+    const th = node("th", className);
+    if (!key) {
+      th.textContent = label || "";
+      return th;
+    }
+    th.append(freeAgencySortButton(label, key));
+    return th;
+  }
+
+  function selectedFreeAgencyPlayer(rows) {
+    const selected = rows.find((player) => String(player.player_id) === String(state.selectedFreeAgentPlayerId));
+    if (selected) return selected;
+    const first = rows[0] || null;
+    state.selectedFreeAgentPlayerId = first?.player_id ? String(first.player_id) : null;
+    return first;
+  }
+
+  function freeAgencyMarketTable(players, selected, capSpace) {
+    if (!players.length) return node("div", "empty-state", "No free agents match these filters.");
+    const wrap = node("div", "table-wrap roster-table-wrap fa-market-table-wrap");
+    const tableEl = node("table", "data-table roster-table fa-market-table");
+    const colGroup = node("colgroup");
+    [
+      "roster-col-photo",
+      "fa-col-player",
+      "roster-col-position",
+      "roster-col-rating",
+      "roster-col-rating",
+      "roster-col-age",
+      "fa-col-tier",
+      "fa-col-money",
+      "fa-col-offers",
+      "fa-col-leader",
+    ].forEach((className) => colGroup.append(node("col", className)));
+    const head = node("thead");
+    const headRow = node("tr");
+    [
+      freeAgencyTableHeader("", null, "roster-photo-head"),
+      freeAgencyTableHeader("Player", "name"),
+      freeAgencyTableHeader("Pos", "pos", "center"),
+      freeAgencyTableHeader("OVR", "overall", "center"),
+      freeAgencyTableHeader("POT", "potential", "center"),
+      freeAgencyTableHeader("Age", "age", "center"),
+      freeAgencyTableHeader("Tier", "tier"),
+      freeAgencyTableHeader("Ask", "ask"),
+      freeAgencyTableHeader("Offers", "offers", "center"),
+      freeAgencyTableHeader("Leader", "leader"),
+    ].forEach((cell) => headRow.append(cell));
+    head.append(headRow);
+    const body = node("tbody");
+    players.forEach((player) => {
+      const ask = Number(player.offer_floor_aav || player.asking_aav || player.minimum_aav || 0);
+      const capAfter = Number(capSpace || 0) - ask;
+      const tr = node("tr", String(player.player_id) === String(selected?.player_id) ? "selected" : "");
+      tr.tabIndex = 0;
+      tr.addEventListener("click", () => {
+        state.selectedFreeAgentPlayerId = String(player.player_id);
+        render();
+      });
+      tr.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          state.selectedFreeAgentPlayerId = String(player.player_id);
+          render();
+        }
+      });
+      const playerCell = node("td");
+      playerCell.append(smallPlayerCell(player.player_id, player.player_name, `${player.previous_team || player.team || "FA"} | ${experienceLabel(player)}`, {
+        team: player.previous_team || player.team,
+        position: player.position,
+      }));
+      append(tr, [
+        append(node("td", "roster-photo-cell"), [rosterHeadshot(player)]),
+        playerCell,
+        node("td", "center", player.position || "-"),
+        node("td", "center rating-cell", player.overall ?? player.market_score ?? "-"),
+        node("td", "center rating-cell", player.potential ?? "-"),
+        node("td", "center", player.age ?? "-"),
+        append(node("td", null), [tag(player.market_tier || "Market")]),
+        node("td", "numeric", money(ask)),
+        node("td", "center", String(player.pending_offers || 0)),
+        append(node("td", null), [player.best_aav ? leadingBidCell(player) : node("span", "muted", capAfter < 0 ? "No bid | over cap" : "No bid")]),
+      ]);
+      body.append(tr);
+    });
+    tableEl.append(colGroup, head, body);
+    wrap.append(tableEl);
+    return wrap;
+  }
+
+  function freeAgencyPlayerPanel(player, capSpace) {
+    const p = panel("Free-Agent Detail", player ? `${player.position || "FA"} | ${player.market_tier || "Market"}` : "Select a player");
+    p.classList.add("fa-player-panel");
+    const body = panelBody(p);
+    if (!player) {
+      body.append(node("div", "empty-state", "Choose a free agent from the market table."));
+      return p;
+    }
+    const ask = Number(player.offer_floor_aav || player.asking_aav || player.minimum_aav || 0);
+    const minimum = Number(player.minimum_aav || 0);
+    const capAfter = Number(capSpace || 0) - ask;
+    const top = node("div", "roster-player-panel-head fa-player-panel-head");
+    append(top, [
+      rosterHeadshot(player),
+      append(node("div", "fa-panel-title"), [
+        playerLink(player.player_id, player.player_name, "player-link strong-link", {
+          team: player.previous_team || player.team,
+          position: player.position,
+        }),
+        node("span", null, `${player.previous_team || player.team || "FA"} | Age ${player.age ?? "-"} | ${experienceLabel(player)}`),
+      ]),
+    ]);
+    const facts = node("section", "metric-grid roster-card-facts roster-action-facts fa-player-facts");
+    append(facts, [
+      metric("Ask", money(ask), minimum ? `Floor ${money(minimum)}` : "Current demand"),
+      metric("Cap After", money(capAfter), "If signed at ask", capAfter < 0 ? "bad" : ""),
+      metric("Rating", `${player.overall ?? player.market_score ?? "-"}/${player.potential ?? "-"}`, "OVR/POT"),
+      metric("Market", `${player.market_heat ?? "-"}`, `${player.pending_offers || 0} offer(s)`),
+      metric("Preference", String(player.preference_archetype || "balanced").replaceAll("_", " "), `${player.contract_year_preference || player.preferred_years || 1} yr pref`),
+      metric("Role", `${player.role_priority || 10}/20`, "Priority"),
+    ]);
+    const notes = player.signing_notes || player.motivation || player.holdout_reason;
+    append(body, [top, facts]);
+    if (notes) {
+      body.append(sectionBlock("Player Read", node("p", "fa-detail-note", notes)));
+    }
+    body.append(sectionBlock("Offer", freeAgencyOfferButton(player)));
+    return p;
   }
 
   function freeAgencyMarketGrid(players, capSpace) {
@@ -5217,7 +5813,7 @@
       }),
       row.position || "-",
       row.age ?? "-",
-      row.years_exp ?? "-",
+      experienceLabel(row),
       `${row.overall ?? "-"} / ${row.potential ?? "-"}`,
       append(node("span", "team-inline"), [
         teamLogo(row.originalTeamLogo, row.original_team, "mini-team-logo"),
@@ -5578,8 +6174,12 @@
     return wrap;
   }
 
+  function canonicalDepthSlot(slot) {
+    return String(slot || "").toUpperCase().replace(/^(NICKEL|BASE34|BASE43)_/, "");
+  }
+
   function slotBasePositions(slot) {
-    const key = String(slot || "").toUpperCase();
+    const key = canonicalDepthSlot(slot);
     if (["LWR", "RWR", "SWR"].includes(key)) return ["WR", "RB", "CB"];
     if (["KR", "PR"].includes(key)) return ["WR", "RB", "CB", "NB", "FS", "SS", "S"];
     if (["LT", "RT"].includes(key)) return ["OT"];
@@ -5597,19 +6197,25 @@
   function playerFitsSlot(player, slot) {
     const bases = slotBasePositions(slot);
     if (bases.includes(player.position)) return true;
-    return (player.flex || []).some((item) => bases.includes(item.position) || String(item.position).toUpperCase() === String(slot).toUpperCase());
+    const canonical = canonicalDepthSlot(slot);
+    return (player.flex || []).some((item) => bases.includes(item.position) || String(item.position).toUpperCase() === canonical);
   }
 
   function selectedDepthSlot(depth) {
     const slots = orderedDepthSlots(depth);
-    if (!slots.length) return null;
-    const activeSlots = new Set(activeFormationMetas().map((meta) => meta.slot));
-    const selected = slots.find((slot) => slot.slot === state.selectedDepthSlot);
+    const map = depthSlotMap(depth);
+    const activeMetas = activeFormationMetas();
+    if (!slots.length && !activeMetas.length) return null;
+    const activeSlots = new Set(activeMetas.map((meta) => String(meta.slot || "").toUpperCase()));
+    const selectedKey = String(state.selectedDepthSlot || "").toUpperCase();
+    const selected = map.get(selectedKey);
     if (selected) return selected;
-    if (state.selectedDepthSlot && activeSlots.has(String(state.selectedDepthSlot).toUpperCase())) {
-      return { slot: state.selectedDepthSlot, players: [] };
+    const selectedMeta = activeMetas.find((meta) => String(meta.slot || "").toUpperCase() === selectedKey);
+    if (selectedMeta) {
+      return formationSlotForMeta(map, selectedMeta) || { slot: selectedMeta.slot, players: [] };
     }
-    const active = slots.find((slot) => activeSlots.has(String(slot.slot || "").toUpperCase()));
+    const active = activeMetas.map((meta) => formationSlotForMeta(map, meta)).find(Boolean)
+      || slots.find((slot) => activeSlots.has(String(slot.slot || "").toUpperCase()));
     const fallback = active || slots[0];
     state.selectedDepthSlot = fallback.slot;
     return fallback;
@@ -5690,7 +6296,7 @@
     const map = depthSlotMap(depth);
     return activeFormationMetas()
       .map((meta) => {
-        const slot = map.get(meta.slot);
+        const slot = formationSlotForMeta(map, meta);
         const player = (slot?.players || [])[formationRank(meta) - 1];
         return {
           slot: meta.slot,
@@ -5716,7 +6322,7 @@
     const id = String(playerId || "");
     const targetSlot = String(slot || "").toUpperCase();
     const targetRank = Number(rank || 1);
-    if (!id || !activeFormationMetas().some((meta) => meta.slot === targetSlot && formationRank(meta) === targetRank)) return null;
+    if (!id || !activeFormationMetas().some((meta) => String(meta.slot || "").toUpperCase() === targetSlot && formationRank(meta) === targetRank)) return null;
     return activeFormationEntries(depth).find((entry) => (
       entry.playerId === id
       && !(String(entry.slot || "").toUpperCase() === targetSlot && Number(entry.rank || 1) === targetRank)
@@ -5810,7 +6416,7 @@
   }
 
   function depthSetRankButton(depth, slot, rank, player, label) {
-    const currentRank = Number(player.depth_rank || 0);
+    const currentRank = player.isPackageFallback ? 0 : Number(player.depth_rank || 0);
     const conflict = formationConflictEntry(depth, player.player_id, slot, rank);
     const button = node("button", "depth-rank-button", label || `#${rank}`);
     button.type = "button";
@@ -5877,7 +6483,7 @@
     ]);
     const controls = node("div", "depth-player-card-controls");
     append(controls, [
-      depthMoveButtons(selected.slot, player),
+      depthMoveButtons(selected.slot, player, Boolean(selected.isPackageFallback || player.isPackageFallback)),
       depthReplacementControl(depth, selected.slot, player.depth_rank, depth.roster || [], player.player_id),
     ]);
     append(card, [header, detail, controls]);
@@ -5920,6 +6526,36 @@
     return map;
   }
 
+  function formationSlotForMeta(map, meta) {
+    const key = String(meta?.slot || "").toUpperCase();
+    const exact = map.get(key);
+    const sourceKey = meta?.sourceSlot ? canonicalDepthSlot(meta.sourceSlot) : "";
+    const fallback = sourceKey ? map.get(sourceKey) : null;
+    if (exact) {
+      if (!fallback) return exact;
+      const players = [...(exact.players || [])];
+      const seen = new Set(players.map((player) => String(player.player_id)));
+      (fallback.players || []).forEach((player) => {
+        if (seen.has(String(player.player_id))) return;
+        players.push({
+          ...player,
+          depth_rank: players.length + 1,
+          sourceDepthRank: player.depth_rank,
+          isPackageFallback: true,
+        });
+        seen.add(String(player.player_id));
+      });
+      return { ...exact, players };
+    }
+    if (!fallback) return null;
+    return {
+      ...fallback,
+      slot: key,
+      sourceSlot: sourceKey,
+      isPackageFallback: true,
+    };
+  }
+
   function depthFormationLabel(depth, unitName) {
     const map = depthSlotMap(depth);
     if (unitName === "Offense") {
@@ -5948,6 +6584,13 @@
     if (state.depthDefensePackage === "base43") return BASE_43_DEFENSE_FORMATION_SLOTS;
     if (state.depthDefensePackage === "base" || state.depthDefensePackage === "base34") return BASE_DEFENSE_FORMATION_SLOTS;
     return DEFENSE_FORMATION_SLOTS;
+  }
+
+  function defensePackageSlotName(packageKey, baseSlot) {
+    const canonical = canonicalDepthSlot(baseSlot);
+    if (packageKey === "base43") return `BASE43_${canonical}`;
+    if (packageKey === "base" || packageKey === "base34") return `BASE34_${canonical}`;
+    return `NICKEL_${canonical}`;
   }
 
   function offensePersonnelSlots() {
@@ -6033,10 +6676,13 @@
         node("span", null, option.detail),
       ]);
       button.addEventListener("click", () => {
+        const currentBaseSlot = canonicalDepthSlot(state.selectedDepthSlot);
         state.depthDefensePackage = option.value;
-        if (option.value === "nickel" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "NB";
-        if (option.value !== "nickel" && state.selectedDepthSlot === "NB") state.selectedDepthSlot = option.value === "base43" ? "SLB" : "MLB";
-        if (option.value === "base34" && state.selectedDepthSlot === "SLB") state.selectedDepthSlot = "MLB";
+        let nextBaseSlot = currentBaseSlot;
+        if (option.value === "nickel" && currentBaseSlot === "SLB") nextBaseSlot = "NB";
+        if (option.value !== "nickel" && currentBaseSlot === "NB") nextBaseSlot = option.value === "base43" ? "SLB" : "MLB";
+        if ((option.value === "base" || option.value === "base34") && currentBaseSlot === "SLB") nextBaseSlot = "MLB";
+        state.selectedDepthSlot = defensePackageSlotName(option.value, nextBaseSlot);
         render();
       });
       wrap.append(button);
@@ -6058,7 +6704,7 @@
     const canSwap = Boolean(starter?.player_id) && runnerMode() && !state.runnerBusy;
     const button = node(
       "button",
-      `formation-slot ${slot.slot === selected?.slot ? "active" : ""} ${isDuplicate ? "duplicate" : ""} ${state.depthLayoutUnlocked ? "layout-unlocked" : ""}`.trim(),
+      `formation-slot ${String(slot.slot || "").toUpperCase() === String(selected?.slot || "").toUpperCase() ? "active" : ""} ${isDuplicate ? "duplicate" : ""} ${state.depthLayoutUnlocked ? "layout-unlocked" : ""}`.trim(),
     );
     button.type = "button";
     button.draggable = state.depthLayoutUnlocked || canSwap;
@@ -6159,7 +6805,7 @@
       });
       unit.slots.forEach((meta) => {
         const displayMeta = formationMetaWithLayout(meta, unit.unit);
-        const slot = map.get(meta.slot);
+        const slot = formationSlotForMeta(map, meta);
         if (!slot && meta.optional) return;
         field.append(formationSlotTile(depth, selected, slot || { slot: meta.slot, players: [] }, displayMeta, unit.unit));
       });
@@ -6497,6 +7143,43 @@
     return button;
   }
 
+  function rosterIrAction(player) {
+    const status = String(player?.status || "Active");
+    const injury = player?.activeInjury;
+    const ir = player?.ir || {};
+    const isReserveStatus = ["IR", "PUP", "NFI"].includes(status);
+    if (status === "IR") {
+      const button = rosterActionButton("Activate From IR", "roster_activate_ir", {
+        player_id: player.player_id,
+      }, ir.eligible ? "good" : "secondary");
+      button.disabled = button.disabled || !ir.eligible;
+      button.title = ir.reason || "Player is not eligible to activate yet.";
+      return button;
+    }
+    if (!injury || isReserveStatus || isPracticeSquadPlayer(player)) return null;
+    const expected = Number(injury.expectedGames || 0);
+    if (expected < 1 && !["Out", "Doubtful"].includes(status)) return null;
+    const button = rosterActionButton("Send To IR", "roster_send_ir", {
+      player_id: player.player_id,
+    }, "warn");
+    button.title = expected >= 4
+      ? `${injury.injury || "Injury"}; projected ${expected} games.`
+      : "Shorter injuries can go to IR, but that is usually only worth it for roster flexibility.";
+    return button;
+  }
+
+  function rosterStatusNote(player) {
+    const status = String(player?.status || "Active");
+    if (["Active", "Questionable", "Doubtful", "Out"].includes(status)) return "Counts toward active roster";
+    if (status === "IR") {
+      const ir = player?.ir || {};
+      return ir.designatedToReturn ? (ir.reason || "Reserve; can return later") : "Reserve; season-ending";
+    }
+    if (status === "Practice Squad") return "Practice squad slot";
+    if (["PUP", "NFI", "Suspended"].includes(status)) return "Reserve; off active roster";
+    return "Roster status";
+  }
+
   function rosterJerseyControl(player) {
     const wrap = node("form", "jersey-control");
     const input = node("input");
@@ -6543,6 +7226,7 @@
       metric("Staff Read", player.overall ?? "-", `Potential ${player.potential ?? "-"} | ${player.evaluation_confidence || player.evaluation?.confidenceLabel || "Cloudy"}`),
       metric("Depth", assignment ? `${assignment.slot} #${assignment.rank}` : "Unassigned", assignment?.unit || "No room"),
       metric("Role Fit", player.roleScore ? oneDecimal(player.roleScore) : "-", player.role?.key ? roleLabel(player.role.key) : "No role read"),
+      metric("Status", player.status || "Active", rosterStatusNote(player)),
       metric(
         "Contract",
         contract.end_year ? `Through ${contract.end_year}` : (contract.type || "Rostered"),
@@ -6557,6 +7241,8 @@
     const userTeam = String(data.activeSave?.user_team || "").toUpperCase();
     const viewedTeam = String(depth.team || "").toUpperCase();
     const isUserRoster = !userTeam || !viewedTeam || viewedTeam === userTeam;
+    const practiceSquadPlayer = isPracticeSquadPlayer(player);
+    const irAction = rosterIrAction(player);
     append(actions, [profile, cardLink]);
     if (isUserRoster) {
       const depthButton = node("button", "run-button compact", "Depth Chart");
@@ -6565,8 +7251,14 @@
         state.selectedDepthSlot = assignment?.slot || null;
         switchView("depth");
       });
+      actions.append(depthButton);
+      if (practiceSquadPlayer) {
+        actions.append(rosterActionButton("Promote to Active", "practice_squad_promote", {
+          player_id: player.player_id,
+        }, "good"));
+      }
+      if (irAction) actions.append(irAction);
       append(actions, [
-        depthButton,
         rosterActionButton("Extend", "contract_extend", {
           player_id: player.player_id,
           years: contract.suggested_years || player.suggested_years || 1,
@@ -6656,6 +7348,7 @@
     if (!move) return "";
     return {
       practice_squad: "Pending PS",
+      promote_ps: "Pending promote",
       release: "Pending cut",
       release_ps: "Pending PS release",
     }[move.move] || "Pending";
@@ -6720,6 +7413,11 @@
       if (move.move === "practice_squad") {
         if (isActive) activeCount -= 1;
         if (!isPracticeSquad) usage = adjustPracticeSquadUsage(usage, row.bucket, 1);
+      } else if (move.move === "promote_ps") {
+        if (isPracticeSquad) {
+          activeCount += 1;
+          usage = adjustPracticeSquadUsage(usage, row.bucket, -1);
+        }
       } else if (move.move === "release") {
         if (isActive) activeCount -= 1;
       } else if (move.move === "release_ps" && isPracticeSquad) {
@@ -6760,6 +7458,7 @@
   function practiceSquadActionCell(candidate) {
     const wrap = node("div", "row-actions");
     if (candidate.current_status === "Practice Squad") {
+      wrap.append(cutdownMoveButton(candidate, "promote_ps", "Promote Active", "Selected Promote", "good"));
       wrap.append(cutdownMoveButton(candidate, "release_ps", "Release PS", "Selected Release", "warn"));
       return wrap;
     }
@@ -7263,14 +7962,15 @@
     finishRender(root);
   }
 
-  function depthMoveButtons(slot, player) {
+  function depthMoveButtons(slot, player, readOnlyFallback) {
     const wrap = node("span", "action-cell");
     ["up", "down"].forEach((direction) => {
       const button = node("button", "run-button compact", direction === "up" ? "Up" : "Down");
       button.type = "button";
-      button.disabled = state.runnerBusy || (direction === "up" && Number(player.depth_rank) <= 1);
+      button.disabled = state.runnerBusy || readOnlyFallback || (direction === "up" && Number(player.depth_rank) <= 1);
       button.addEventListener("click", (event) => {
         event.stopPropagation();
+        if (readOnlyFallback) return;
         runAction("depth_chart_move", {
           position: slot,
           player_id: player.player_id,
@@ -10875,7 +11575,7 @@
     button.type = "button";
     button.disabled = state.runnerBusy || !runnerMode();
     button.title = runnerMode()
-      ? (isPreseason ? "Sim earlier preseason games and advance to this week" : actionLabel("advance_to_date"))
+      ? (isPreseason ? "Sim through this preseason week and move the calendar there" : actionLabel("advance_to_date"))
       : "Live actions are unavailable";
     if (matchup && isPreseason) {
       append(button, [
@@ -10962,8 +11662,7 @@
     const resultGameId = result.params?.game_id || result.params?.schedule_game_id;
     if (String(resultGameId) !== String(gameId)) return null;
     if (result.returncode !== 0 || result.error) return node("div", "friendly-error", result.summary?.message || result.stderr || result.error || "Box score could not be loaded.");
-    const text = String(result.stdout || "").trim();
-    return text ? node("pre", "box-score-output calendar-box-score-output", text) : node("div", "empty-state", "No stored box score text was returned for this game.");
+    return renderBoxScore(result, { compact: true });
   }
 
   function calendarDetail() {

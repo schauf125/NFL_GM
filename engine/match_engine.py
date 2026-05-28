@@ -160,6 +160,12 @@ PRESEASON_QB1_SNAP_CAP = {
     3: 18,
 }
 
+PRESEASON_RB_DEPTH_CARRY_CAPS = {
+    1: [4, 8, 8, 7, 6],
+    2: [5, 9, 9, 8, 6],
+    3: [7, 10, 10, 8, 7],
+}
+
 DEVELOPMENTAL_ROTATION_SLOTS = {
     "RB",
     "FB",
@@ -631,6 +637,15 @@ SLOT_POSITION_FALLBACKS = {
 }
 
 
+def slot_eligible_positions(slot: str) -> set[str]:
+    canonical = depth_packages.canonical_slot(slot)
+    return {str(position).upper() for position in SLOT_POSITION_FALLBACKS.get(canonical, [canonical])}
+
+
+def player_is_slot_eligible(player: "PlayerSnapshot", slot: str) -> bool:
+    return str(player.position or "").upper() in slot_eligible_positions(slot)
+
+
 @dataclass
 class PlayerSnapshot:
     player_id: int
@@ -695,12 +710,37 @@ class TeamSnapshot:
         return f"{self.city} {self.nickname}"
 
     def candidates(self, slot: str) -> list[PlayerSnapshot]:
-        slot = slot.upper()
-        if self.depth.get(slot):
-            return self.depth[slot]
-        fallback_positions = SLOT_POSITION_FALLBACKS.get(slot, [slot])
+        slot_key = str(slot or "").upper()
+        canonical = depth_packages.canonical_slot(slot_key)
+        if self.depth.get(slot_key):
+            exact = [player for player in self.depth[slot_key] if player_is_slot_eligible(player, canonical)]
+            if canonical != slot_key and self.depth.get(canonical):
+                seen = {player.player_id for player in exact}
+                exact.extend(
+                    player
+                    for player in self.depth[canonical]
+                    if player.player_id not in seen and player_is_slot_eligible(player, canonical)
+                )
+            if exact:
+                return exact
+        if canonical != slot_key and self.depth.get(canonical):
+            canonical_depth = [player for player in self.depth[canonical] if player_is_slot_eligible(player, canonical)]
+            if canonical_depth:
+                return canonical_depth
+        if canonical == slot_key:
+            packaged: list[PlayerSnapshot] = []
+            seen: set[int] = set()
+            for prefix in depth_packages.DEFENSE_PACKAGE_PREFIXES.values():
+                for player in self.depth.get(f"{prefix}_{canonical}", []):
+                    if player.player_id in seen or not player_is_slot_eligible(player, canonical):
+                        continue
+                    packaged.append(player)
+                    seen.add(player.player_id)
+            if packaged:
+                return packaged
+        fallback_positions = SLOT_POSITION_FALLBACKS.get(canonical, [canonical])
         players = [p for p in self.roster if p.position in fallback_positions]
-        return sorted(players, key=lambda p: self.score_for_slot(p, slot), reverse=True)
+        return sorted(players, key=lambda p: self.score_for_slot(p, canonical), reverse=True)
 
     def starter(self, slot: str) -> PlayerSnapshot:
         candidates = self.candidates(slot)
@@ -766,7 +806,7 @@ class TeamSnapshot:
         return best_rank
 
     def score_for_slot(self, player: PlayerSnapshot, slot: str) -> float:
-        slot = slot.upper()
+        slot = depth_packages.canonical_slot(slot)
         if slot == "QB":
             return max(player.role("pocket_qb"), player.role("scrambling_qb"), weighted_average(player, QB_PASS_WEIGHTS))
         if slot == "RB":
@@ -1847,7 +1887,7 @@ class MatchEngine:
         candidates: list[tuple[PlayerSnapshot, float]] = []
         seen: set[int] = set()
         for slot in slots:
-            for rank, player in enumerate(team.depth.get(slot, [])[:2]):
+            for rank, player in enumerate(team.candidates(slot)[:2]):
                 if player.player_id in seen or player.player_id in self.injured_player_ids:
                     continue
                 seen.add(player.player_id)
@@ -2024,7 +2064,8 @@ class MatchEngine:
 
     def eligible_slot_candidates(self, team: TeamSnapshot, slot: str, used: set[int] | None = None) -> list[PlayerSnapshot]:
         used = used or set()
-        raw_candidates = list(team.candidates(slot))
+        canonical_slot = depth_packages.canonical_slot(slot)
+        raw_candidates = [player for player in team.candidates(slot) if player_is_slot_eligible(player, canonical_slot)]
         active_count = len(
             [
                 player
@@ -2033,10 +2074,16 @@ class MatchEngine:
             ]
         )
         if active_count < 4:
-            fallback_positions = SLOT_POSITION_FALLBACKS.get(slot.upper(), [slot.upper()])
+            fallback_positions = SLOT_POSITION_FALLBACKS.get(canonical_slot, [canonical_slot])
             seen = {player.player_id for player in raw_candidates}
             supplemental = sorted(
-                [player for player in team.roster if player.position in fallback_positions and player.player_id not in seen],
+                [
+                    player
+                    for player in team.roster
+                    if player.position in fallback_positions
+                    and player.player_id not in seen
+                    and player_is_slot_eligible(player, canonical_slot)
+                ],
                 key=lambda player: team.score_for_slot(player, slot),
                 reverse=True,
             )
@@ -2051,7 +2098,7 @@ class MatchEngine:
         return int(clamp(int(self.week or 2), 1, 3))
 
     def preseason_slot_group(self, slot: str) -> str:
-        slot = slot.upper()
+        slot = depth_packages.canonical_slot(slot)
         if slot == "QB":
             return "QB"
         if slot in OFFENSIVE_LINE_SLOTS:
@@ -2062,7 +2109,7 @@ class MatchEngine:
 
     def preseason_starter_snap_cap(self, player: PlayerSnapshot, slot: str) -> int:
         week = self.preseason_week_index()
-        if slot.upper() == "QB":
+        if depth_packages.canonical_slot(slot) == "QB":
             base = PRESEASON_QB1_SNAP_CAP.get(week, PRESEASON_QB1_SNAP_CAP[2])
         else:
             base = PRESEASON_STARTER_SNAP_CAP.get(week, PRESEASON_STARTER_SNAP_CAP[2])
@@ -2106,8 +2153,9 @@ class MatchEngine:
         candidates: list[PlayerSnapshot],
         snap_key: str,
     ) -> float:
-        slot = slot.upper()
-        score = team.score_for_slot(player, slot)
+        slot = str(slot or "").upper()
+        canonical_slot = depth_packages.canonical_slot(slot)
+        score = team.score_for_slot(player, canonical_slot)
         overall = float(player.metadata.get("overall") or player.general_score())
         potential = float(player.metadata.get("potential") or overall)
         age = int(player.metadata.get("age") or 26)
@@ -2124,7 +2172,7 @@ class MatchEngine:
             )
         )
 
-        base = self.preseason_depth_base_weight(slot, index)
+        base = self.preseason_depth_base_weight(canonical_slot, index)
         talent_factor = clamp((score - 54.0) / 24.0, 0.30, 1.45)
         if overall < 58:
             talent_factor *= 0.58
@@ -2143,7 +2191,7 @@ class MatchEngine:
         development_factor += clamp((potential - overall) / 20.0, 0.0, 0.18)
 
         if protected_core_player:
-            cap = self.preseason_starter_snap_cap(player, slot)
+            cap = self.preseason_starter_snap_cap(player, canonical_slot)
             if current_snaps >= cap:
                 base *= 0.0005
             elif current_snaps >= cap * 0.70:
@@ -2156,18 +2204,18 @@ class MatchEngine:
                 base *= 0.38 if self.preseason_week_index() <= 2 else 0.58
             elif overall >= 74:
                 base *= 0.68
-            cap = self.preseason_starter_snap_cap(player, slot)
+            cap = self.preseason_starter_snap_cap(player, canonical_slot)
             if not protected_core_player and current_snaps >= cap:
                 base *= 0.025
             elif not protected_core_player and current_snaps >= cap * 0.70:
                 base *= 0.24
         else:
-            if current_snaps >= 38 and slot not in OFFENSIVE_LINE_SLOTS:
+            if current_snaps >= 38 and canonical_slot not in OFFENSIVE_LINE_SLOTS:
                 base *= 0.40
             elif current_snaps >= 48:
                 base *= 0.45
 
-        expected_share = self.preseason_depth_base_weight(slot, index)
+        expected_share = self.preseason_depth_base_weight(canonical_slot, index)
         expected_snaps = max(4.0, slot_snaps * expected_share + 5.0)
         freshness = clamp((expected_snaps + 7.0 - current_snaps) / 8.0, 0.16, 1.85)
         return max(0.005, base * talent_factor * development_factor * freshness)
@@ -2181,15 +2229,22 @@ class MatchEngine:
         snap_key: str,
         preferred: PlayerSnapshot | None = None,
     ) -> PlayerSnapshot | None:
-        slot = slot.upper()
-        if preferred and preferred.player_id not in used and preferred.player_id not in self.injured_player_ids and preferred in team.roster:
+        slot = str(slot or "").upper()
+        canonical_slot = depth_packages.canonical_slot(slot)
+        if (
+            preferred
+            and preferred.player_id not in used
+            and preferred.player_id not in self.injured_player_ids
+            and preferred in team.roster
+            and player_is_slot_eligible(preferred, canonical_slot)
+        ):
             return preferred
         candidates = self.eligible_slot_candidates(team, slot, used)
         if not candidates:
             return None
-        if slot not in SCRIMMAGE_SLOT_SET or len(candidates) == 1:
+        if canonical_slot not in SCRIMMAGE_SLOT_SET or len(candidates) == 1:
             return candidates[0]
-        max_pool = 4 if slot == "QB" else 6
+        max_pool = 4 if canonical_slot == "QB" else 6
         pool = candidates[:max_pool]
         weights = [
             (
@@ -2202,23 +2257,25 @@ class MatchEngine:
 
     def active_starter(self, team: TeamSnapshot, slot: str) -> PlayerSnapshot:
         candidates = self.eligible_slot_candidates(team, slot)
+        canonical_slot = depth_packages.canonical_slot(slot)
         if candidates:
-            if self.is_preseason and slot.upper() in SCRIMMAGE_SLOT_SET:
+            if self.is_preseason and canonical_slot in SCRIMMAGE_SLOT_SET:
                 player = self.choose_preseason_slot_player(
                     team,
                     slot,
                     used=set(),
-                    snap_key="offensive_snaps" if slot.upper() in {"QB", "RB", "FB", "LT", "LG", "C", "RG", "RT", "TE", "LWR", "RWR", "SWR"} else "defensive_snaps",
+                    snap_key="offensive_snaps" if canonical_slot in {"QB", "RB", "FB", "LT", "LG", "C", "RG", "RT", "TE", "LWR", "RWR", "SWR"} else "defensive_snaps",
                 )
                 if player:
                     return player
-            if slot.upper() == "QB":
+            if canonical_slot == "QB":
                 return self.resolve_qb_starter(team, candidates)
             return candidates[0]
         return team.starter(slot)
 
     def rotation_fatigue_pressure(self, player: PlayerSnapshot, slot: str, snap_key: str) -> float:
-        threshold = ROTATION_FATIGUE_THRESHOLDS.get(slot, 44)
+        canonical_slot = depth_packages.canonical_slot(slot)
+        threshold = ROTATION_FATIGUE_THRESHOLDS.get(canonical_slot, 44)
         stamina_buffer = (player.rating("stamina") - 65.0) * 0.30
         effective_threshold = threshold + stamina_buffer
         snaps = float(self.player_stats[player.player_id].get(snap_key, 0))
@@ -2375,11 +2432,14 @@ class MatchEngine:
         starter_rate: float | None = None,
         preferred: PlayerSnapshot | None = None,
     ) -> PlayerSnapshot | None:
+        slot_key = str(slot or "").upper()
+        canonical_slot = depth_packages.canonical_slot(slot_key)
         if (
             preferred
             and preferred.player_id not in used
             and preferred.player_id not in self.injured_player_ids
             and preferred in team.roster
+            and player_is_slot_eligible(preferred, canonical_slot)
         ):
             return preferred
         candidates = self.eligible_slot_candidates(team, slot, used)
@@ -2390,8 +2450,8 @@ class MatchEngine:
 
         base_rate = starter_rate
         if base_rate is None:
-            base_rate = OFFENSIVE_SLOT_STARTER_RATE.get(slot, DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.84))
-        if self.is_preseason and slot.upper() in SCRIMMAGE_SLOT_SET:
+            base_rate = OFFENSIVE_SLOT_STARTER_RATE.get(canonical_slot, DEFENSIVE_SLOT_STARTER_RATE.get(canonical_slot, 0.84))
+        if self.is_preseason and canonical_slot in SCRIMMAGE_SLOT_SET:
             return self.choose_preseason_slot_player(
                 team,
                 slot,
@@ -2400,22 +2460,22 @@ class MatchEngine:
                 preferred=preferred,
             )
         starter = candidates[0]
-        if slot == "QB":
+        if canonical_slot == "QB":
             return self.resolve_qb_starter(team, candidates)
-        if slot in {"QB", "LT", "LG", "C", "RG", "RT"}:
+        if canonical_slot in {"QB", "LT", "LG", "C", "RG", "RT"}:
             return starter
         starter_score = team.score_for_slot(starter, slot)
         evaluation_mode = self.youth_evaluation_mode_score(team)
-        if slot in {"LWR", "RWR", "SWR"}:
+        if canonical_slot in {"LWR", "RWR", "SWR"}:
             if starter_score >= 90:
                 base_rate = max(base_rate, 0.95)
             elif starter_score >= 88:
                 base_rate = max(base_rate, 0.92)
             elif starter_score >= 82:
-                base_rate = max(base_rate, 0.88 if slot != "SWR" else 0.83)
-        elif slot == "TE" and starter_score >= 82:
+                base_rate = max(base_rate, 0.88 if canonical_slot != "SWR" else 0.83)
+        elif canonical_slot == "TE" and starter_score >= 82:
             base_rate = max(base_rate, 0.84)
-        elif slot == "RB":
+        elif canonical_slot == "RB":
             if starter_score >= 86:
                 base_rate = max(base_rate, 0.78)
             elif starter_score >= 82:
@@ -2426,7 +2486,7 @@ class MatchEngine:
                 base_rate = max(base_rate, 0.62)
         backup_score = team.score_for_slot(candidates[1], slot)
         quality_gap = starter_score - backup_score
-        if slot == "RB":
+        if canonical_slot == "RB":
             backup_overall = float(candidates[1].metadata.get("overall") or candidates[1].general_score())
             if quality_gap >= 9.0:
                 base_rate = max(base_rate, 0.76)
@@ -2450,7 +2510,7 @@ class MatchEngine:
         quality_bonus = clamp(quality_gap * 0.006, -0.055, 0.095)
         fatigue_penalty = self.rotation_fatigue_pressure(starter, slot, snap_key)
         evaluation_floor = 0.18 + evaluation_mode * 0.11 if evaluation_mode > 0 else 0.24
-        if slot == "RB":
+        if canonical_slot == "RB":
             evaluation_floor = 0.38 if evaluation_mode > 0 else 0.44
         effective_rate = clamp(
             base_rate + quality_bonus + stamina_bonus - fatigue_penalty - developmental_pressure,
@@ -2504,7 +2564,8 @@ class MatchEngine:
         candidates: list[PlayerSnapshot],
         evaluation_mode: float = 0.0,
     ) -> float:
-        if slot not in DEVELOPMENTAL_ROTATION_SLOTS:
+        canonical_slot = depth_packages.canonical_slot(slot)
+        if canonical_slot not in DEVELOPMENTAL_ROTATION_SLOTS:
             return 0.0
         best = 0.0
         for player in candidates:
@@ -2523,13 +2584,13 @@ class MatchEngine:
         if best <= 0:
             return 0.0
         pressure = best * (0.045 + evaluation_mode * 0.120)
-        if slot == "RB":
+        if canonical_slot == "RB":
             pressure *= 0.42
         if starter_score >= 88 and evaluation_mode < 0.85:
             pressure *= 0.35
         elif starter_score >= 84 and evaluation_mode < 0.55:
             pressure *= 0.62
-        return clamp(pressure, 0.0, 0.12 if slot == "RB" else 0.32)
+        return clamp(pressure, 0.0, 0.12 if canonical_slot == "RB" else 0.32)
 
     def developmental_rotation_weight(
         self,
@@ -2540,7 +2601,8 @@ class MatchEngine:
         player: PlayerSnapshot,
         evaluation_mode: float = 0.0,
     ) -> float:
-        if slot not in DEVELOPMENTAL_ROTATION_SLOTS:
+        canonical_slot = depth_packages.canonical_slot(slot)
+        if canonical_slot not in DEVELOPMENTAL_ROTATION_SLOTS:
             return 1.0
         age = int(player.metadata.get("age") or 26)
         is_rookie = bool(int(player.metadata.get("is_rookie") or 0))
@@ -2549,13 +2611,13 @@ class MatchEngine:
             return 1.0
         quality_gap = starter_score - player_score
         max_gap = 13.0 + evaluation_mode * 5.0
-        if slot == "RB":
+        if canonical_slot == "RB":
             max_gap = 8.0 + evaluation_mode * 2.5
         if quality_gap > max_gap:
             return 1.0
         overall = float(player.metadata.get("overall") or player.general_score())
         potential = float(player.metadata.get("potential") or overall)
-        if slot == "RB" and overall < 68 and potential < 76:
+        if canonical_slot == "RB" and overall < 68 and potential < 76:
             return 1.0
         potential_gap = max(0.0, potential - overall)
         dev_trait = str(player.metadata.get("dev_trait") or "Normal")
@@ -2566,18 +2628,18 @@ class MatchEngine:
             trait_bonus = 0.10
         elif dev_trait in {"Superstar", "Elite", "X-Factor"}:
             trait_bonus = 0.18
-        slot_bonus = 0.08 if slot in {"TE", "SWR", "NB", "LEDGE", "REDGE", "LDL", "RDL", "NT"} else 0.03
-        if slot == "RB":
+        slot_bonus = 0.08 if canonical_slot in {"TE", "SWR", "NB", "LEDGE", "REDGE", "LDL", "RDL", "NT"} else 0.03
+        if canonical_slot == "RB":
             slot_bonus = 0.02
         rookie_bonus = 0.12 if is_rookie else 0.04
         evaluation_bonus = evaluation_mode * (0.18 + closeness * 0.18 + upside * 0.14)
-        if slot == "RB":
+        if canonical_slot == "RB":
             rookie_bonus *= 0.60
             evaluation_bonus *= 0.55
         return clamp(
             1.0 + rookie_bonus + slot_bonus + upside * 0.34 + closeness * 0.28 + trait_bonus + evaluation_bonus,
             1.0,
-            1.55 if slot == "RB" else 2.20,
+            1.55 if canonical_slot == "RB" else 2.20,
         )
 
     def append_rotated_slot(
@@ -2743,6 +2805,7 @@ class MatchEngine:
         selected = []
         used = set()
         for slot in slots:
+            canonical_slot = depth_packages.canonical_slot(slot)
             candidates = self.eligible_slot_candidates(team, slot, used)
             primary = candidates[0] if candidates else None
             player = self.choose_rotated_slot_player(
@@ -2750,7 +2813,7 @@ class MatchEngine:
                 slot,
                 used=used,
                 snap_key="defensive_snaps",
-                starter_rate=DEFENSIVE_SLOT_STARTER_RATE.get(slot, 0.90),
+                starter_rate=DEFENSIVE_SLOT_STARTER_RATE.get(canonical_slot, 0.90),
             )
             if not player:
                 continue
@@ -3400,8 +3463,8 @@ class MatchEngine:
         if idx >= 2:
             weight *= 0.84
         game_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
-        if idx == 0 and game_carries > 12:
-            weight *= clamp(1.0 - (game_carries - 12.0) * 0.050, 0.26, 1.0)
+        if idx == 0 and game_carries > 16:
+            weight *= clamp(1.0 - (game_carries - 16.0) * 0.038, 0.36, 1.0)
         elif idx >= 1 and game_carries > 10:
             weight *= clamp(1.0 - (game_carries - 10.0) * 0.030, 0.62, 1.0)
         if idx == 0:
@@ -3411,6 +3474,7 @@ class MatchEngine:
             starter = self.active_starter(starter_team, "RB") if starter_team else None
             if starter and starter.player_id != player.player_id:
                 starter_score = weighted_average(starter, RB_RUN_WEIGHTS)
+                starter_overall = float(starter.metadata.get("overall") or starter.general_score())
                 quality_gap = starter_score - talent
                 if quality_gap <= 4.0:
                     weight *= 1.46
@@ -3418,7 +3482,19 @@ class MatchEngine:
                     weight *= 1.26
                 elif quality_gap <= 10.0:
                     weight *= 1.10
-                if self.rb_workload_availability(starter) < 0.88:
+                starter_availability = self.rb_workload_availability(starter)
+                overall_gap = starter_overall - overall
+                starter_carries = float(self.player_stats[starter.player_id].get("rush_attempts", 0))
+                if starter_availability >= 0.92:
+                    if overall_gap >= 10.0:
+                        weight *= 0.64
+                    elif overall_gap >= 7.0:
+                        weight *= 0.74
+                    elif overall_gap >= 5.0:
+                        weight *= 0.84
+                    if overall_gap >= 5.0 and game_carries >= starter_carries and starter_carries < 18:
+                        weight *= 0.72
+                if starter_availability < 0.88:
                     weight *= 1.26
         weight *= 1.0 + (profile.early_down_gravity - 50) * 0.010
         if distance <= 3 or field_pos >= 85:
@@ -3426,21 +3502,77 @@ class MatchEngine:
         if down >= 3 and distance >= 6:
             weight *= 1.0 + (profile.pass_game_usage - 50) * 0.006
         if self.is_preseason:
-            preseason_depth_factor = [0.24, 1.34, 1.20, 0.88, 0.55]
+            preseason_depth_factor = [0.18, 1.04, 1.00, 0.92, 0.78]
             if idx < len(preseason_depth_factor):
                 weight *= preseason_depth_factor[idx]
             else:
-                weight *= 0.34
+                weight *= 0.58
             current_carries = float(self.player_stats[player.player_id].get("rush_attempts", 0))
             if idx == 0:
-                cap = max(3, self.preseason_starter_snap_cap(player, "RB") // 3)
+                cap = self.preseason_rb_carry_cap(player, idx)
                 if current_carries >= cap:
-                    weight *= 0.04
+                    weight *= 0.025
                 elif current_carries >= max(1, cap - 1):
-                    weight *= 0.25
-            elif current_carries >= 10:
-                weight *= 0.48
-        return max(0.05, weight)
+                    weight *= 0.20
+            else:
+                cap = self.preseason_rb_carry_cap(player, idx)
+                if current_carries >= cap + 3:
+                    weight *= 0.001
+                elif current_carries >= cap + 1:
+                    weight *= 0.008
+                elif current_carries >= cap:
+                    weight *= 0.025
+                elif current_carries >= max(1, cap - 1):
+                    weight *= 0.18
+        return max(0.001 if self.is_preseason else 0.05, weight)
+
+    def preseason_rb_carry_cap(self, player: PlayerSnapshot, idx: int) -> int:
+        carry_caps = PRESEASON_RB_DEPTH_CARRY_CAPS.get(
+            self.preseason_week_index(),
+            PRESEASON_RB_DEPTH_CARRY_CAPS[2],
+        )
+        if idx == 0:
+            return min(
+                carry_caps[0],
+                max(3, self.preseason_starter_snap_cap(player, "RB") // 3),
+            )
+        if idx < len(carry_caps):
+            return carry_caps[idx]
+        return max(4, carry_caps[-1] - 1)
+
+    def preseason_available_rb_candidates(
+        self,
+        candidates: list[PlayerSnapshot],
+    ) -> list[tuple[int, PlayerSnapshot]]:
+        indexed = list(enumerate(candidates))
+        if not self.is_preseason:
+            return indexed
+        under_cap = [
+            (idx, player)
+            for idx, player in indexed
+            if float(self.player_stats[player.player_id].get("rush_attempts", 0))
+            < self.preseason_rb_carry_cap(player, idx)
+        ]
+        if under_cap:
+            return under_cap
+        modest_over_cap = [
+            (idx, player)
+            for idx, player in indexed
+            if float(self.player_stats[player.player_id].get("rush_attempts", 0))
+            < self.preseason_rb_carry_cap(player, idx) + 2
+        ]
+        if modest_over_cap:
+            return modest_over_cap
+        carry_counts = {
+            player.player_id: float(self.player_stats[player.player_id].get("rush_attempts", 0))
+            for _idx, player in indexed
+        }
+        lightest_workload = min(carry_counts.values()) if carry_counts else 0.0
+        return [
+            (idx, player)
+            for idx, player in indexed
+            if carry_counts.get(player.player_id, 0.0) <= lightest_workload + 1.0
+        ] or indexed
 
     def team_for_player(self, player: PlayerSnapshot) -> TeamSnapshot | None:
         player_id = int(player.player_id)
@@ -3743,8 +3875,12 @@ class MatchEngine:
     ) -> tuple[str, int, int, int, str, TeamSnapshot, int, int, int, PlayerSnapshot | None, PlayerSnapshot | None]:
         qb = self.active_starter(offense, "QB")
         rb_candidates = self.eligible_slot_candidates(offense, "RB")[: (5 if self.is_preseason else 3)]
+        rb_candidates = [player for player in rb_candidates if player.position == "RB"]
         if not rb_candidates:
-            rb_candidates = [self.active_starter(offense, "RB")]
+            fallback_rb = self.active_starter(offense, "RB")
+            rb_candidates = [fallback_rb] if fallback_rb.position == "RB" else []
+        if not rb_candidates:
+            return self.pass_play(offense, defense, down, distance, field_pos)
         if len(rb_candidates) > 2 and not self.is_preseason:
             starter_score = offense.score_for_slot(rb_candidates[0], "RB")
             kept = rb_candidates[:2]
@@ -3776,6 +3912,7 @@ class MatchEngine:
         if down >= 3 and distance >= 7:
             qb_run_chance *= 0.55
         designed_qb_run = qb_scramble_score >= 68 and self.rng.random() < clamp(qb_run_chance, 0.0, 0.13)
+        rb_carry_pool = self.preseason_available_rb_candidates(rb_candidates)
         runner = qb if designed_qb_run else weighted_choice(
             self.rng,
             [
@@ -3789,7 +3926,7 @@ class MatchEngine:
                         field_pos=field_pos,
                     ),
                 )
-                for idx, player in enumerate(rb_candidates)
+                for idx, player in rb_carry_pool
             ],
         )
         concept = self.choose_run_concept(offense, defense, down, distance, field_pos, runner)
@@ -4371,11 +4508,22 @@ class MatchEngine:
         if not pool:
             pool = offense.receiving_options()
 
+        try:
+            slot_starter = offense.starter("SWR")
+        except Exception:
+            slot_starter = None
+
         options = []
         for idx, player in enumerate(pool):
             weight = weighted_average(player, RECEIVER_WEIGHTS)
             if player.position == "WR":
                 weight *= 1.15
+                if (
+                    slot_starter
+                    and slot_starter.player_id == player.player_id
+                    and concept in {"quick", "short", "intermediate"}
+                ):
+                    weight *= 1.08
             if player.position == "TE" and concept in {"short", "intermediate"}:
                 weight *= 1.10
             if player.position == "FB":

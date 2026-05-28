@@ -1225,6 +1225,7 @@ def ensure_free_agent_schema(con: sqlite3.Connection) -> None:
             f.position_group,
             p.age,
             p.years_exp,
+            p.is_rookie,
             p.overall,
             p.potential,
             p.dev_trait,

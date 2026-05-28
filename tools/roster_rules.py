@@ -20,6 +20,11 @@ from setup_contract_years import rebuild_contract_years, sync_team_cap_space
 from setup_transactions_cap_ledger import ensure_schema as ensure_transaction_schema
 from setup_transactions_cap_ledger import insert_transaction
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
@@ -45,6 +50,12 @@ PRACTICE_SQUAD_DEVELOPMENTAL_LIMIT = 10
 PRACTICE_SQUAD_VETERAN_EXCEPTION_LIMIT = 6
 PRACTICE_SQUAD_ELEVATION_LIMIT = 3
 PRACTICE_SQUAD_WEEKLY_ELEVATION_LIMIT = 2
+IR_STATUS = "IR"
+IR_MIN_RETURN_GAMES = 4
+IR_REGULAR_SEASON_RETURN_LIMIT = 8
+IR_POSTSEASON_EXTRA_RETURN_LIMIT = 2
+IR_PRE_CUTDOWN_RETURN_LIMIT = 2
+IR_PLAYER_RETURN_LIMIT = 2
 
 POSITION_GROUPS: dict[str, tuple[str, ...]] = {
     "QB": ("QB",),
@@ -63,6 +74,19 @@ POSITION_TO_GROUP = {
     position: group
     for group, positions in POSITION_GROUPS.items()
     for position in positions
+}
+WAIVER_CLAIM_GROUP_TARGETS = {
+    "QB": 2,
+    "RB": 3,
+    "WR": 5,
+    "TE": 3,
+    "OL": 8,
+    "EDGE": 4,
+    "IDL": 4,
+    "LB": 5,
+    "CB": 5,
+    "S": 4,
+    "ST": 3,
 }
 
 
@@ -260,6 +284,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             counts_against_practice_squad_limit, description
         )
         VALUES
+            ('IR', 'Injured Reserve', 0, 1, 0, 0, 'Reserve/Injured. Counts against the cap but not the active roster limit.'),
+            ('PUP', 'Physically Unable To Perform', 0, 1, 0, 0, 'Reserve/PUP. Counts against the cap but not the active roster limit.'),
+            ('NFI', 'Non-Football Injury', 0, 1, 0, 0, 'Reserve/NFI. Counts against the cap but not the active roster limit.'),
             ('Questionable', 'Questionable / Active Roster', 1, 1, 1, 0, 'Player is on the active roster but has questionable game availability.'),
             ('Doubtful', 'Doubtful / Active Roster', 1, 1, 1, 0, 'Player is on the active roster but is unlikely to play this week.'),
             ('Out', 'Out / Active Roster', 1, 1, 1, 0, 'Player is unavailable for the week but still occupies an active roster spot.'),
@@ -279,7 +306,9 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             ('Practice Squad Signing', 'Roster', 'Player signed to a practice squad.'),
             ('Practice Squad Release', 'Roster', 'Practice squad player released.'),
             ('Practice Squad Elevation', 'Roster', 'Practice squad player elevated to the active roster.'),
-            ('Practice Squad Return', 'Roster', 'Elevated player returned to the practice squad.')
+            ('Practice Squad Return', 'Roster', 'Elevated player returned to the practice squad.'),
+            ('Injured Reserve', 'Roster', 'Player placed on Reserve/Injured.'),
+            ('Activated From IR', 'Roster', 'Player activated from Reserve/Injured.')
         ON CONFLICT(transaction_type) DO UPDATE SET
             category = excluded.category,
             description = excluded.description;
@@ -425,6 +454,34 @@ def ensure_schema(con: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_practice_squad_moves_player
             ON practice_squad_moves(player_id, season, move_type);
+
+        CREATE TABLE IF NOT EXISTS injured_reserve_designations (
+            designation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL REFERENCES players(player_id) ON DELETE CASCADE,
+            team_id INTEGER NOT NULL REFERENCES teams(team_id) ON DELETE CASCADE,
+            season INTEGER NOT NULL,
+            placed_date TEXT NOT NULL,
+            placed_phase TEXT,
+            active_injury_id INTEGER,
+            injury_history_id INTEGER,
+            designated_to_return INTEGER NOT NULL DEFAULT 1,
+            pre_cutdown_return_slot INTEGER NOT NULL DEFAULT 0,
+            return_games_required INTEGER NOT NULL DEFAULT 4,
+            eligible_return_date TEXT,
+            return_window_start TEXT,
+            return_window_end TEXT,
+            activation_date TEXT,
+            status TEXT NOT NULL DEFAULT 'On IR',
+            notes TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ir_designations_player_status
+            ON injured_reserve_designations(player_id, season, status);
+
+        CREATE INDEX IF NOT EXISTS idx_ir_designations_team_status
+            ON injured_reserve_designations(team_id, season, status);
 
         CREATE INDEX IF NOT EXISTS idx_roster_validation_runs_team
             ON roster_validation_runs(team_id, season, phase, created_at);
@@ -873,6 +930,13 @@ def set_player_status(
         "UPDATE players SET team_id = ?, status = ? WHERE player_id = ?",
         (team_id, new_status, player["player_id"]),
     )
+    if team_id is not None and new_status not in {"Free Agent", "Retired", WAIVED_STATUS}:
+        jersey_numbers.assign_player_number(
+            con,
+            int(player["player_id"]),
+            team_id=int(team_id),
+            source="roster_status_change",
+        )
     con.execute(
         """
         INSERT INTO player_roster_status_history (
@@ -1116,6 +1180,595 @@ def league_trade_deadline(con: sqlite3.Connection, season: int) -> str | None:
         (season,),
     ).fetchone()
     return str(row["event_start_date"]) if row and row["event_start_date"] else None
+
+
+def calendar_event_date(con: sqlite3.Connection, season: int, event_code: str) -> str | None:
+    if not table_exists(con, "league_calendar_events"):
+        return None
+    row = con.execute(
+        """
+        SELECT event_start_date
+        FROM league_calendar_events
+        WHERE league_year = ?
+          AND event_code = ?
+        ORDER BY event_start_date
+        LIMIT 1
+        """,
+        (season, event_code),
+    ).fetchone()
+    return str(row["event_start_date"]) if row and row["event_start_date"] else None
+
+
+def final_roster_cutdown_date(con: sqlite3.Connection, season: int) -> str | None:
+    return calendar_event_date(con, season, "FINAL_ROSTER_CUTDOWN_53")
+
+
+def postseason_start_date(con: sqlite3.Connection, season: int) -> str | None:
+    if not table_exists(con, "season_games"):
+        return None
+    row = con.execute(
+        """
+        SELECT MIN(game_date) AS postseason_start
+        FROM season_games
+        WHERE season = ?
+          AND game_type = 'POST'
+          AND game_date IS NOT NULL
+        """,
+        (season,),
+    ).fetchone()
+    return str(row["postseason_start"]) if row and row["postseason_start"] else None
+
+
+def team_game_dates_after(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    season: int,
+    placed_date: str,
+    game_types: tuple[str, ...] = ("REG", "POST"),
+) -> list[str]:
+    if not table_exists(con, "season_games"):
+        return []
+    placeholders = ",".join("?" for _ in game_types)
+    rows = con.execute(
+        f"""
+        SELECT game_date
+        FROM season_games
+        WHERE season = ?
+          AND game_type IN ({placeholders})
+          AND game_date IS NOT NULL
+          AND date(game_date) > date(?)
+          AND (home_team_id = ? OR away_team_id = ?)
+        ORDER BY date(game_date), week, game_id
+        """,
+        (season, *game_types, placed_date, team_id, team_id),
+    ).fetchall()
+    return [str(row["game_date"]) for row in rows if row["game_date"]]
+
+
+def ir_eligible_return_date(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    season: int,
+    placed_date: str,
+    required_games: int = IR_MIN_RETURN_GAMES,
+) -> str:
+    game_dates = team_game_dates_after(
+        con,
+        team_id=team_id,
+        season=season,
+        placed_date=placed_date,
+    )
+    if len(game_dates) >= required_games:
+        return game_dates[required_games - 1]
+    return (datetime.fromisoformat(placed_date) + timedelta(days=required_games * 7)).date().isoformat()
+
+
+def ir_return_limit(con: sqlite3.Connection, season: int, as_of_date: str | None = None) -> int:
+    target_date = as_of_date or today(con)
+    postseason_start = postseason_start_date(con, season)
+    if postseason_start and target_date >= postseason_start:
+        return IR_REGULAR_SEASON_RETURN_LIMIT + IR_POSTSEASON_EXTRA_RETURN_LIMIT
+    return IR_REGULAR_SEASON_RETURN_LIMIT
+
+
+def ir_returns_used(con: sqlite3.Connection, team_id: int, season: int) -> int:
+    if not table_exists(con, "injured_reserve_designations"):
+        return 0
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS used
+        FROM injured_reserve_designations
+        WHERE team_id = ?
+          AND season = ?
+          AND status = 'Activated'
+          AND designated_to_return = 1
+        """,
+        (team_id, season),
+    ).fetchone()
+    return int(row["used"] or 0) if row else 0
+
+
+def player_ir_returns_used(con: sqlite3.Connection, player_id: int, season: int) -> int:
+    if not table_exists(con, "injured_reserve_designations"):
+        return 0
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS used
+        FROM injured_reserve_designations
+        WHERE player_id = ?
+          AND season = ?
+          AND status = 'Activated'
+          AND designated_to_return = 1
+        """,
+        (player_id, season),
+    ).fetchone()
+    return int(row["used"] or 0) if row else 0
+
+
+def pre_cutdown_ir_return_slots_used(con: sqlite3.Connection, team_id: int, season: int) -> int:
+    if not table_exists(con, "injured_reserve_designations"):
+        return 0
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS used
+        FROM injured_reserve_designations
+        WHERE team_id = ?
+          AND season = ?
+          AND pre_cutdown_return_slot = 1
+        """,
+        (team_id, season),
+    ).fetchone()
+    return int(row["used"] or 0) if row else 0
+
+
+def active_ir_designation(con: sqlite3.Connection, player_id: int, season: int) -> sqlite3.Row | None:
+    if not table_exists(con, "injured_reserve_designations"):
+        return None
+    return con.execute(
+        """
+        SELECT *
+        FROM injured_reserve_designations
+        WHERE player_id = ?
+          AND season = ?
+          AND status = 'On IR'
+        ORDER BY designation_id DESC
+        LIMIT 1
+        """,
+        (player_id, season),
+    ).fetchone()
+
+
+def latest_active_injury(con: sqlite3.Connection, player_id: int) -> sqlite3.Row | None:
+    if not table_exists(con, "active_player_injuries"):
+        return None
+    return con.execute(
+        """
+        SELECT *
+        FROM active_player_injuries
+        WHERE player_id = ?
+          AND resolved_at IS NULL
+        ORDER BY expected_games DESC, return_earliest_date DESC, active_injury_id DESC
+        LIMIT 1
+        """,
+        (player_id,),
+    ).fetchone()
+
+
+def ir_summary_for_player(con: sqlite3.Connection, player: sqlite3.Row | dict[str, object], season: int) -> dict[str, object]:
+    player_id = row_int(player, "player_id")
+    team_id = row_int(player, "team_id")
+    designation = active_ir_designation(con, player_id, season)
+    returns_used = ir_returns_used(con, team_id, season) if team_id else 0
+    return_limit = ir_return_limit(con, season)
+    player_returns = player_ir_returns_used(con, player_id, season)
+    if not designation:
+        return {
+            "onIr": str(player["status"] if isinstance(player, sqlite3.Row) else player.get("status") or "") == IR_STATUS,
+            "designatedToReturn": False,
+            "eligible": False,
+            "reason": "No active IR designation.",
+            "returnsUsed": returns_used,
+            "returnsLimit": return_limit,
+            "playerReturnsUsed": player_returns,
+            "playerReturnLimit": IR_PLAYER_RETURN_LIMIT,
+        }
+    current = today(con)
+    designated = bool(int(designation["designated_to_return"] or 0))
+    eligible_date = str(designation["eligible_return_date"] or "")
+    eligible = bool(designated and eligible_date and current >= eligible_date)
+    reason = ""
+    if not designated:
+        reason = "Season-ending IR; not designated to return."
+    elif player_returns >= IR_PLAYER_RETURN_LIMIT:
+        eligible = False
+        reason = "Player has already used the season return limit."
+    elif returns_used >= return_limit:
+        eligible = False
+        reason = "Team has used all IR return designations."
+    elif eligible_date and current < eligible_date:
+        reason = f"Eligible after {IR_MIN_RETURN_GAMES} team games ({eligible_date})."
+    else:
+        reason = "Eligible to activate."
+    return {
+        "designationId": int(designation["designation_id"]),
+        "onIr": True,
+        "designatedToReturn": designated,
+        "preCutdownReturnSlot": bool(int(designation["pre_cutdown_return_slot"] or 0)),
+        "placedDate": designation["placed_date"],
+        "eligibleReturnDate": eligible_date,
+        "eligible": eligible,
+        "seasonEnding": not designated,
+        "reason": reason,
+        "returnsUsed": returns_used,
+        "returnsLimit": return_limit,
+        "playerReturnsUsed": player_returns,
+        "playerReturnLimit": IR_PLAYER_RETURN_LIMIT,
+    }
+
+
+def ir_statuses_for_players(
+    con: sqlite3.Connection,
+    player_ids: list[int],
+    *,
+    season: int,
+) -> dict[int, dict[str, object]]:
+    if not player_ids:
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    rows = con.execute(
+        f"""
+        SELECT player_id, team_id, status
+        FROM players
+        WHERE player_id IN ({placeholders})
+        """,
+        player_ids,
+    ).fetchall()
+    return {
+        int(row["player_id"]): ir_summary_for_player(con, row, season)
+        for row in rows
+    }
+
+
+def place_player_on_ir(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_abbr: str,
+    season: int,
+    force: bool = False,
+) -> str:
+    ensure_schema(con)
+    seed_rules(con)
+    team = get_team(con, team_abbr)
+    player = con.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+          AND p.team_id = ?
+        """,
+        (player_id, int(team["team_id"])),
+    ).fetchone()
+    if not player:
+        raise ValueError(f"Player {player_id} is not on the {team_abbr.upper()} roster.")
+    if player["status"] == IR_STATUS:
+        return f"{player_name(player)} is already on injured reserve."
+    if player["status"] not in {"Active", "Questionable", "Doubtful", "Out"} and not force:
+        raise ValueError(f"{player_name(player)} has status {player['status']} and cannot be moved to IR.")
+    injury = latest_active_injury(con, player_id)
+    if not injury and not force:
+        raise ValueError(f"{player_name(player)} does not have an active injury. Use force only for data repair.")
+
+    placed_date = today(con)
+    cutdown = final_roster_cutdown_date(con, season)
+    before_cutdown = bool(cutdown and placed_date < cutdown)
+    cutdown_day = bool(cutdown and placed_date == cutdown)
+    pre_slots_used = pre_cutdown_ir_return_slots_used(con, int(team["team_id"]), season)
+    designated_to_return = (not cutdown or placed_date > cutdown) or (
+        cutdown_day and pre_slots_used < IR_PRE_CUTDOWN_RETURN_LIMIT
+    )
+    pre_slot = cutdown_day and designated_to_return
+    eligible_date = (
+        ir_eligible_return_date(
+            con,
+            team_id=int(team["team_id"]),
+            season=season,
+            placed_date=placed_date,
+            required_games=IR_MIN_RETURN_GAMES,
+        )
+        if designated_to_return
+        else None
+    )
+    note_parts = []
+    if before_cutdown:
+        note_parts.append("Placed before final cutdown; season-ending IR under preseason rules.")
+    elif cutdown_day:
+        if designated_to_return:
+            note_parts.append(
+                f"Preseason/cutdown IR return slot {pre_slots_used + 1}/{IR_PRE_CUTDOWN_RETURN_LIMIT} used."
+            )
+        else:
+            note_parts.append("Placed on cutdown day without a return slot; season-ending IR.")
+    if injury:
+        note_parts.append(
+            f"{injury['injury_label']} projected {int(injury['expected_games'] or 0)} game(s)."
+        )
+    notes = " ".join(note_parts)
+    cur = con.execute(
+        """
+        INSERT INTO injured_reserve_designations (
+            player_id, team_id, season, placed_date, placed_phase,
+            active_injury_id, injury_history_id, designated_to_return,
+            pre_cutdown_return_slot, return_games_required, eligible_return_date,
+            status, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'On IR', ?)
+        """,
+        (
+            player_id,
+            int(team["team_id"]),
+            season,
+            placed_date,
+            phase_for_transactions(con),
+            int(injury["active_injury_id"]) if injury else None,
+            int(injury["injury_history_id"]) if injury and injury["injury_history_id"] is not None else None,
+            1 if designated_to_return else 0,
+            1 if pre_slot else 0,
+            IR_MIN_RETURN_GAMES,
+            eligible_date,
+            notes,
+        ),
+    )
+    if injury:
+        con.execute(
+            """
+            UPDATE active_player_injuries
+            SET status = 'IR'
+            WHERE player_id = ?
+              AND resolved_at IS NULL
+            """,
+            (player_id,),
+        )
+    set_player_status(
+        con,
+        player=player,
+        team_id=int(team["team_id"]),
+        new_status=IR_STATUS,
+        season=season,
+        reason=notes or "Placed on Reserve/Injured.",
+    )
+    clear_depth_chart(con, player_id)
+    transaction_id = log_transaction(
+        con,
+        transaction_type="Injured Reserve",
+        season=season,
+        team_id=int(team["team_id"]),
+        player_id=player_id,
+        from_team_id=int(team["team_id"]),
+        to_team_id=int(team["team_id"]),
+        old_status=player["status"],
+        new_status=IR_STATUS,
+        contract_id=transfer_active_contract(con, player_id, int(team["team_id"])),
+        description=f"Placed {player_name(player)} on injured reserve. {notes}".strip(),
+    )
+    suffix = f" Eligible to return after {eligible_date}." if eligible_date else " This is season-ending IR."
+    return f"Placed {player_name(player)} on IR (transaction {transaction_id}).{suffix}"
+
+
+def activate_player_from_ir(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    team_abbr: str,
+    season: int,
+    force: bool = False,
+) -> str:
+    ensure_schema(con)
+    seed_rules(con)
+    team = get_team(con, team_abbr)
+    player = con.execute(
+        """
+        SELECT p.*, t.abbreviation AS team
+        FROM players p
+        JOIN teams t ON t.team_id = p.team_id
+        WHERE p.player_id = ?
+          AND p.team_id = ?
+        """,
+        (player_id, int(team["team_id"])),
+    ).fetchone()
+    if not player:
+        raise ValueError(f"Player {player_id} is not on the {team_abbr.upper()} roster.")
+    designation = active_ir_designation(con, player_id, season)
+    if not designation:
+        raise ValueError(f"{player_name(player)} does not have an active IR designation.")
+    summary = ir_summary_for_player(con, player, season)
+    if not force and not summary.get("eligible"):
+        raise ValueError(str(summary.get("reason") or "Player is not eligible to return from IR yet."))
+    rule_set = practice_squad_rule_set(con, season, phase_for_transactions(con))
+    active_limit = int(rule_set["active_roster_limit"] or 53)
+    active_count = active_roster_count(con, int(team["team_id"]))
+    if active_count >= active_limit and not force:
+        raise ValueError(
+            f"{team['abbreviation']} active roster is full ({active_count}/{active_limit}). "
+            "Create a roster spot before activating from IR."
+        )
+    activation_date = today(con)
+    con.execute(
+        """
+        UPDATE active_player_injuries
+        SET resolved_at = ?, status = 'Cleared'
+        WHERE player_id = ?
+          AND resolved_at IS NULL
+        """,
+        (activation_date, player_id),
+    )
+    con.execute(
+        """
+        UPDATE player_injury_history
+        SET resolved_date = ?
+        WHERE player_id = ?
+          AND resolved_date IS NULL
+        """,
+        (activation_date, player_id),
+    )
+    con.execute(
+        """
+        UPDATE injured_reserve_designations
+        SET activation_date = ?,
+            status = 'Activated',
+            updated_at = datetime('now')
+        WHERE designation_id = ?
+        """,
+        (activation_date, int(designation["designation_id"])),
+    )
+    set_player_status(
+        con,
+        player=player,
+        team_id=int(team["team_id"]),
+        new_status="Active",
+        season=season,
+        reason="Activated from Reserve/Injured.",
+    )
+    transaction_id = log_transaction(
+        con,
+        transaction_type="Activated From IR",
+        season=season,
+        team_id=int(team["team_id"]),
+        player_id=player_id,
+        from_team_id=int(team["team_id"]),
+        to_team_id=int(team["team_id"]),
+        old_status=IR_STATUS,
+        new_status="Active",
+        contract_id=transfer_active_contract(con, player_id, int(team["team_id"])),
+        description=f"Activated {player_name(player)} from injured reserve.",
+    )
+    return f"Activated {player_name(player)} from IR (transaction {transaction_id})."
+
+
+def sync_auto_ir_designations(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    player_ids: list[int] | None = None,
+) -> int:
+    """Create reserve-list records for injury events that auto-set player status to IR."""
+    ensure_schema(con)
+    seed_rules(con)
+    if not table_exists(con, "active_player_injuries"):
+        return 0
+    filters = [
+        "p.status = 'IR'",
+        "api.resolved_at IS NULL",
+        "api.status = 'IR'",
+        "existing.designation_id IS NULL",
+    ]
+    params: list[object] = [season]
+    if player_ids:
+        placeholders = ",".join("?" for _ in player_ids)
+        filters.append(f"p.player_id IN ({placeholders})")
+        params.extend(int(player_id) for player_id in player_ids)
+    rows = con.execute(
+        f"""
+        SELECT
+            p.*,
+            api.active_injury_id,
+            api.injury_history_id,
+            api.injury_label,
+            api.start_date,
+            api.expected_games
+        FROM players p
+        JOIN active_player_injuries api
+          ON api.player_id = p.player_id
+        LEFT JOIN injured_reserve_designations existing
+          ON existing.player_id = p.player_id
+         AND existing.season = ?
+         AND existing.status = 'On IR'
+        WHERE {' AND '.join(filters)}
+        ORDER BY p.team_id, p.player_id, api.active_injury_id
+        """,
+        params,
+    ).fetchall()
+    created = 0
+    seen_players: set[int] = set()
+    for row in rows:
+        player_id = int(row["player_id"])
+        if player_id in seen_players or row["team_id"] is None:
+            continue
+        seen_players.add(player_id)
+        team_id = int(row["team_id"])
+        placed_date = str(row["start_date"] or today(con))
+        cutdown = final_roster_cutdown_date(con, season)
+        before_cutdown = bool(cutdown and placed_date < cutdown)
+        cutdown_day = bool(cutdown and placed_date == cutdown)
+        pre_slots_used = pre_cutdown_ir_return_slots_used(con, team_id, season)
+        designated_to_return = (not cutdown or placed_date > cutdown) or (
+            cutdown_day and pre_slots_used < IR_PRE_CUTDOWN_RETURN_LIMIT
+        )
+        eligible_date = (
+            ir_eligible_return_date(
+                con,
+                team_id=team_id,
+                season=season,
+                placed_date=placed_date,
+                required_games=IR_MIN_RETURN_GAMES,
+            )
+            if designated_to_return
+            else None
+        )
+        notes = f"Automatic IR record from {row['injury_label'] or 'injury'}."
+        if before_cutdown:
+            notes += " Placed before final cutdown; season-ending IR under preseason rules."
+        elif cutdown_day:
+            notes += (
+                f" Preseason/cutdown return slot {pre_slots_used + 1}/{IR_PRE_CUTDOWN_RETURN_LIMIT} used."
+                if designated_to_return
+                else " Cutdown-day IR without a return slot; season-ending."
+            )
+        con.execute(
+            """
+            INSERT INTO injured_reserve_designations (
+                player_id, team_id, season, placed_date, placed_phase,
+                active_injury_id, injury_history_id, designated_to_return,
+                pre_cutdown_return_slot, return_games_required, eligible_return_date,
+                status, notes
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'On IR', ?)
+            """,
+            (
+                player_id,
+                team_id,
+                season,
+                placed_date,
+                "Preseason" if before_cutdown or cutdown_day else phase_for_transactions(con),
+                int(row["active_injury_id"]) if row["active_injury_id"] is not None else None,
+                int(row["injury_history_id"]) if row["injury_history_id"] is not None else None,
+                1 if designated_to_return else 0,
+                1 if cutdown_day and designated_to_return else 0,
+                IR_MIN_RETURN_GAMES,
+                eligible_date,
+                notes,
+            ),
+        )
+        clear_depth_chart(con, player_id)
+        contract = active_contract(con, player_id)
+        log_transaction(
+            con,
+            transaction_type="Injured Reserve",
+            season=season,
+            team_id=team_id,
+            player_id=player_id,
+            from_team_id=team_id,
+            to_team_id=team_id,
+            old_status="Out",
+            new_status=IR_STATUS,
+            contract_id=int(contract["contract_id"]) if contract else None,
+            description=f"Placed {player_name(row)} on injured reserve. {notes}",
+        )
+        created += 1
+    return created
 
 
 def week_four_start(con: sqlite3.Connection, season: int) -> str | None:
@@ -1932,6 +2585,7 @@ def submit_waiver_claim(
     team_id: int,
     season: int,
     notes: str | None,
+    claim_date: str | None = None,
 ) -> int:
     if waiver["status"] != "Open":
         raise ValueError(f"Waiver entry {waiver['waiver_id']} is {waiver['status']}, not Open.")
@@ -1954,7 +2608,7 @@ def submit_waiver_claim(
             waiver["waiver_id"],
             team_id,
             claim_order,
-            today(con),
+            claim_date or today(con),
             notes,
         ),
     )
@@ -1973,37 +2627,53 @@ def active_roster_limit_for_claim(con: sqlite3.Connection, season: int) -> int:
     return int(rule_set["active_roster_limit"] or 53)
 
 
+def waiver_claim_cut_candidate_filter_sql(*, allow_specialists: bool = False) -> str:
+    specialist_clause = "" if allow_specialists else "AND position NOT IN ('K', 'P', 'LS')"
+    return f"""
+          AND COALESCE(overall, 50) < 75
+          AND COALESCE(potential, COALESCE(overall, 50)) < 82
+          {specialist_clause}
+    """
+
+
 def team_has_claim_roster_path(con: sqlite3.Connection, team_id: int, group: str, season: int) -> bool:
     active_limit = active_roster_limit_for_claim(con, season)
-    if active_roster_count(con, team_id) < active_limit:
+    active_count = active_roster_count(con, team_id)
+    if active_count < active_limit:
         return True
+    if active_count > active_limit + 1:
+        return False
     positions = POSITION_GROUPS.get(group, (group,))
     placeholders = ",".join("?" for _ in positions)
-    replacement = con.execute(
-        f"""
-        SELECT player_id
-        FROM players
-        WHERE team_id = ?
-          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
-          AND position IN ({placeholders})
-          AND COALESCE(overall, 50) < 67
-          AND COALESCE(potential, overall, 50) < 74
-        ORDER BY COALESCE(overall, 50), COALESCE(potential, overall, 50), age DESC
-        LIMIT 1
-        """,
-        (team_id, *positions),
-    ).fetchone()
-    if replacement:
-        return True
+    target = WAIVER_CLAIM_GROUP_TARGETS.get(group, 4)
+    if active_group_count(con, team_id, group) > target:
+        replacement = con.execute(
+            f"""
+            SELECT player_id
+            FROM players
+            WHERE team_id = ?
+              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+              AND position IN ({placeholders})
+              AND COALESCE(overall, 50) < 67
+              AND COALESCE(potential, overall, 50) < 74
+              {waiver_claim_cut_candidate_filter_sql()}
+            ORDER BY COALESCE(overall, 50), COALESCE(potential, overall, 50), age DESC
+            LIMIT 1
+            """,
+            (team_id, *positions),
+        ).fetchone()
+        if replacement:
+            return True
     if group not in {"QB", "ST"}:
         replacement = con.execute(
-            """
+            f"""
             SELECT player_id
             FROM players
             WHERE team_id = ?
               AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
               AND COALESCE(overall, 50) < 64
               AND COALESCE(potential, overall, 50) < 72
+              {waiver_claim_cut_candidate_filter_sql()}
             ORDER BY COALESCE(overall, 50), COALESCE(potential, overall, 50), age DESC
             LIMIT 1
             """,
@@ -2029,26 +2699,17 @@ def waiver_claim_fit_score(
     age = row_int(player, "age", 26)
     years_exp = row_int(player, "years_exp", 0)
     group_count = active_group_count(con, team_id, group)
+    active_count = active_roster_count(con, team_id)
+    active_limit = active_roster_limit_for_claim(con, season)
     quality = active_group_quality(con, team_id, group)
-    group_targets = {
-        "QB": 2,
-        "RB": 3,
-        "WR": 5,
-        "TE": 3,
-        "OL": 8,
-        "EDGE": 4,
-        "IDL": 4,
-        "LB": 5,
-        "CB": 5,
-        "S": 4,
-        "ST": 3,
-    }
-    target = group_targets.get(group, 4)
+    target = WAIVER_CLAIM_GROUP_TARGETS.get(group, 4)
     deficit = max(0, target - group_count)
     cap_hit = active_contract_cap_hit(con, int(player["player_id"]), season)
     cap_space = team_cap_space(con, team_id)
     if cap_hit > max(1_500_000, cap_space + 1_000_000):
         return -100.0, f"cap space cannot absorb {format_money(cap_hit)} claim"
+    if active_count > active_limit + 1:
+        return -90.0, f"active roster still over limit ({active_count}/{active_limit})"
     if not team_has_claim_roster_path(con, team_id, group, season):
         return -80.0, "no clear roster spot or expendable same-group player"
 
@@ -2088,6 +2749,9 @@ def seed_cpu_waiver_claims(
     max_claims_per_team: int = 3,
     max_claims_total: int = 48,
     post_cutdown: bool = False,
+    claim_date: str | None = None,
+    ready_on_or_before: str | None = None,
+    include_corresponding_moves: bool = True,
 ) -> dict[str, int]:
     ensure_schema(con)
     seed_rules(con)
@@ -2097,15 +2761,26 @@ def seed_cpu_waiver_claims(
         row = con.execute("SELECT user_team_id, control_mode FROM game_saves WHERE game_id = ?", (game_id,)).fetchone()
         if row and str(row["control_mode"] or "team").lower() != "observe" and row["user_team_id"] is not None:
             user_team_id = int(row["user_team_id"])
+    ready_clause = ""
+    params: list[object] = []
+    if ready_on_or_before:
+        ready_clause = "AND date(ww.claim_deadline) <= date(?)"
+        params.append(ready_on_or_before)
+    source_clause = ""
+    if not include_corresponding_moves:
+        source_clause = "AND COALESCE(ww.source, '') != 'waiver_claim_corresponding_move'"
     waivers = con.execute(
-        """
+        f"""
         SELECT ww.*, p.first_name, p.last_name, p.position, p.age, p.years_exp,
                p.is_rookie, p.overall, p.potential
         FROM waiver_wire ww
         JOIN players p ON p.player_id = ww.player_id
         WHERE ww.status = 'Open'
+          {ready_clause}
+          {source_clause}
         ORDER BY ww.claim_deadline, p.potential DESC, p.overall DESC, ww.waiver_id
-        """
+        """,
+        params,
     ).fetchall()
     teams = con.execute("SELECT * FROM teams ORDER BY abbreviation").fetchall()
     claims_by_team: dict[int, int] = {}
@@ -2144,7 +2819,14 @@ def seed_cpu_waiver_claims(
             if claims_by_team.get(team_id, 0) >= max_claims_per_team:
                 continue
             note = f"CPU waiver claim score {score:.1f}: {reason}."
-            submit_waiver_claim(con, waiver=waiver, team_id=team_id, season=season, notes=note)
+            submit_waiver_claim(
+                con,
+                waiver=waiver,
+                team_id=team_id,
+                season=season,
+                notes=note,
+                claim_date=claim_date,
+            )
             claims_by_team[team_id] = claims_by_team.get(team_id, 0) + 1
             submitted += 1
     return {"open_waivers": len(waivers), "evaluated": evaluated, "claims": submitted, "teams": len(claims_by_team)}
@@ -2366,39 +3048,46 @@ def make_room_for_waiver_claim(
     team_id: int,
     claimed_player_id: int,
     season: int,
+    max_moves: int | None = None,
+    waiver_date: str | None = None,
 ) -> int:
     limit = active_roster_limit_for_claim(con, season)
     moved = 0
-    while active_roster_count(con, team_id) > limit:
+    while active_roster_count(con, team_id) > limit and (max_moves is None or moved < max_moves):
         claimed = con.execute("SELECT position FROM players WHERE player_id = ?", (claimed_player_id,)).fetchone()
         group = player_group(claimed["position"] if claimed else None)
         positions = POSITION_GROUPS.get(group, (group,))
         placeholders = ",".join("?" for _ in positions)
-        candidate = con.execute(
-            f"""
-            SELECT *
-            FROM players
-            WHERE team_id = ?
-              AND player_id != ?
-              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
-              AND position IN ({placeholders})
-            ORDER BY
-              CASE WHEN COALESCE(overall, 50) >= 70 OR COALESCE(potential, overall, 50) >= 76 THEN 1 ELSE 0 END,
-              COALESCE(overall, 50),
-              COALESCE(potential, overall, 50),
-              age DESC
-            LIMIT 1
-            """,
-            (team_id, claimed_player_id, *positions),
-        ).fetchone()
-        if not candidate:
+        target = WAIVER_CLAIM_GROUP_TARGETS.get(group, 4)
+        candidate = None
+        if active_group_count(con, team_id, group) > target:
             candidate = con.execute(
-                """
+                f"""
                 SELECT *
                 FROM players
                 WHERE team_id = ?
                   AND player_id != ?
                   AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  AND position IN ({placeholders})
+                  {waiver_claim_cut_candidate_filter_sql(allow_specialists=(group == "ST"))}
+                ORDER BY
+                  CASE WHEN COALESCE(overall, 50) >= 68 OR COALESCE(potential, overall, 50) >= 75 THEN 1 ELSE 0 END,
+                  COALESCE(overall, 50),
+                  COALESCE(potential, overall, 50),
+                  age DESC
+                LIMIT 1
+                """,
+                (team_id, claimed_player_id, *positions),
+            ).fetchone()
+        if not candidate:
+            candidate = con.execute(
+                f"""
+                SELECT *
+                FROM players
+                WHERE team_id = ?
+                  AND player_id != ?
+                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  {waiver_claim_cut_candidate_filter_sql()}
                 ORDER BY
                   CASE WHEN position IN ('QB','K','P','LS') THEN 1 ELSE 0 END,
                   CASE WHEN COALESCE(overall, 50) >= 70 OR COALESCE(potential, overall, 50) >= 76 THEN 1 ELSE 0 END,
@@ -2417,6 +3106,7 @@ def make_room_for_waiver_claim(
                 con,
                 player=candidate,
                 season=season,
+                waiver_date=waiver_date,
                 reason=reason,
                 source="waiver_claim_corresponding_move",
             )
@@ -2426,7 +3116,7 @@ def make_room_for_waiver_claim(
     return moved
 
 
-def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) -> None:
+def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) -> dict[str, int]:
     ensure_schema(con)
     seed_rules(con)
     process_date = args.date or today(con)
@@ -2442,9 +3132,11 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
     ).fetchall()
     if not rows:
         print("No waiver entries ready to process.")
-        return
+        return {"processed": 0, "claimed": 0, "cleared": 0}
 
     processed = 0
+    claimed_count = 0
+    cleared_count = 0
     for waiver in rows:
         player = con.execute(
             "SELECT p.*, t.abbreviation AS team FROM players p LEFT JOIN teams t ON t.team_id = p.team_id WHERE p.player_id = ?",
@@ -2463,11 +3155,13 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
 
         if claims:
             winner = claims[0]
+            claiming_team_id = int(winner["claiming_team_id"])
+            pre_claim_active_count = active_roster_count(con, claiming_team_id)
             contract_id = transfer_active_contract(con, waiver["player_id"], int(winner["claiming_team_id"]))
             set_player_status(
                 con,
                 player=player,
-                team_id=int(winner["claiming_team_id"]),
+                team_id=claiming_team_id,
                 new_status="Active",
                 season=int(waiver["season"]),
                 reason=f"Claimed off waivers by {winner['claiming_team']}.",
@@ -2488,22 +3182,27 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 """,
                 (winner["claim_id"], waiver["waiver_id"]),
             )
+            post_claim_active_count = active_roster_count(con, claiming_team_id)
+            active_limit = active_roster_limit_for_claim(con, int(waiver["season"]))
+            max_corresponding_moves = max(0, post_claim_active_count - max(active_limit, pre_claim_active_count))
             corresponding_moves = make_room_for_waiver_claim(
                 con,
-                team_id=int(winner["claiming_team_id"]),
+                team_id=claiming_team_id,
                 claimed_player_id=int(waiver["player_id"]),
                 season=int(waiver["season"]),
+                max_moves=max_corresponding_moves,
+                waiver_date=process_date,
             )
             transaction_id = log_transaction(
                 con,
                 transaction_type="Waiver Claim",
                 season=int(waiver["season"]),
-                team_id=int(winner["claiming_team_id"]),
+                team_id=claiming_team_id,
                 secondary_team_id=waiver["original_team_id"],
                 player_id=waiver["player_id"],
                 contract_id=contract_id,
                 from_team_id=waiver["original_team_id"],
-                to_team_id=int(winner["claiming_team_id"]),
+                to_team_id=claiming_team_id,
                 old_status=player["status"],
                 new_status="Active",
                 description=f"{winner['claiming_team']} awarded waiver claim for {player_name(player)}.",
@@ -2513,6 +3212,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 f"(waiver {waiver['waiver_id']}, transaction {transaction_id}, "
                 f"{corresponding_moves} corresponding move(s))."
             )
+            claimed_count += 1
         else:
             contract_id = deactivate_active_contract(con, waiver["player_id"])
             apply_dead_cap_on_waiver_clear(
@@ -2556,10 +3256,83 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 f"{player_name(player)} cleared waivers "
                 f"(waiver {waiver['waiver_id']}, transaction {transaction_id})."
             )
+            cleared_count += 1
         processed += 1
     rebuild_contract_years(con)
     sync_team_cap_space(con)
     print(f"Processed {processed} waiver entr{'y' if processed == 1 else 'ies'}.")
+    return {"processed": processed, "claimed": claimed_count, "cleared": cleared_count}
+
+
+def settle_expired_waivers(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    target_date: str,
+    game_id: str | None = None,
+    include_user_team: bool = False,
+    max_claims_per_team: int = 3,
+    max_claims_total: int = 64,
+    post_cutdown: bool = False,
+    max_rounds: int = 14,
+    include_corresponding_moves: bool = False,
+) -> dict[str, int]:
+    """Seed and process waiver entries whose deadlines are due by target_date.
+
+    This intentionally walks deadline-by-deadline because awarded claims can
+    create corresponding waiver moves with their own 24-hour clock.
+    """
+    ensure_schema(con)
+    seed_rules(con)
+    rounds = 0
+    total_claims = 0
+    total_processed = 0
+    total_claimed = 0
+    total_cleared = 0
+    target = str(target_date)
+    while rounds < max_rounds:
+        row = con.execute(
+            """
+            SELECT MIN(claim_deadline) AS claim_deadline, COUNT(*) AS ready
+            FROM waiver_wire
+            WHERE status = 'Open'
+              AND date(claim_deadline) <= date(?)
+            """,
+            (target,),
+        ).fetchone()
+        if not row or int(row["ready"] or 0) <= 0 or not row["claim_deadline"]:
+            break
+        process_date = str(row["claim_deadline"])
+        claim_result = seed_cpu_waiver_claims(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=include_user_team,
+            max_claims_per_team=max_claims_per_team,
+            max_claims_total=max_claims_total,
+            post_cutdown=post_cutdown,
+            claim_date=process_date,
+            ready_on_or_before=process_date,
+            include_corresponding_moves=include_corresponding_moves,
+        )
+        process_result = action_process_waivers(
+            con,
+            argparse.Namespace(date=process_date, all_open=False),
+        )
+        total_claims += int(claim_result.get("claims", 0))
+        total_processed += int((process_result or {}).get("processed", 0))
+        total_claimed += int((process_result or {}).get("claimed", 0))
+        total_cleared += int((process_result or {}).get("cleared", 0))
+        rounds += 1
+        if int((process_result or {}).get("processed", 0)) <= 0:
+            break
+    return {
+        "rounds": rounds,
+        "claims": total_claims,
+        "processed": total_processed,
+        "claimed": total_claimed,
+        "cleared": total_cleared,
+    }
 
 
 def practice_squad_rule_set(con: sqlite3.Connection, season: int, phase: str | None) -> sqlite3.Row:

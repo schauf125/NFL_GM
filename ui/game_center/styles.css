@@ -986,6 +986,95 @@ body[data-view="season"] .row .tag {
   gap: 8px;
 }
 
+.fa-market-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.36fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.fa-market-table-wrap {
+  max-height: 72vh;
+}
+
+.fa-market-table {
+  min-width: 1040px;
+  table-layout: fixed;
+}
+
+.fa-col-player {
+  width: 240px;
+}
+
+.fa-col-tier {
+  width: 104px;
+}
+
+.fa-col-money {
+  width: 112px;
+}
+
+.fa-col-offers {
+  width: 68px;
+}
+
+.fa-col-leader {
+  width: 150px;
+}
+
+.fa-market-table .tag {
+  max-width: 96px;
+  justify-content: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fa-market-table .bid-leader {
+  max-width: 136px;
+}
+
+.fa-player-panel {
+  position: sticky;
+  top: 10px;
+}
+
+.fa-player-panel .panel-body {
+  display: grid;
+  gap: 10px;
+}
+
+.fa-player-panel-head .roster-headshot {
+  width: 44px;
+  height: 44px;
+  font-size: 0.72rem;
+}
+
+.fa-panel-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fa-panel-title > span {
+  color: var(--quiet);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.fa-player-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fa-detail-note {
+  margin: 0;
+  color: var(--quiet);
+  font-size: 0.78rem;
+  font-weight: 780;
+  line-height: 1.35;
+}
+
 .fa-market-card {
   display: grid;
   gap: 8px;
@@ -2021,6 +2110,407 @@ body[data-view="season"] .row .tag {
   max-height: calc(100vh - 132px);
 }
 
+.box-score-view {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  max-height: calc(100vh - 132px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.box-score-view.compact {
+  max-height: min(58vh, 620px);
+}
+
+.box-score-scoreboard {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.72fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+}
+
+.box-score-team-card,
+.box-score-game-meta,
+.box-score-compare-card,
+.box-score-leader-card,
+.box-score-flow-card {
+  border: 1px solid rgba(222, 233, 246, 0.13);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent),
+    rgba(8, 14, 20, 0.82);
+}
+
+.box-score-team-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px;
+}
+
+.box-score-team-card.winner {
+  border-color: color-mix(in srgb, var(--good) 42%, var(--line));
+  background:
+    linear-gradient(180deg, rgba(31, 154, 99, 0.14), transparent),
+    rgba(8, 14, 20, 0.88);
+}
+
+.box-score-team-identity {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.box-score-team-logo,
+.box-score-leader-logo {
+  width: 34px;
+  height: 34px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.box-score-team-logo.logo-fallback,
+.box-score-leader-logo.logo-fallback {
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  border: 1px solid rgba(222, 233, 246, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 950;
+}
+
+.box-score-team-identity strong,
+.box-score-leader-team strong {
+  display: block;
+  color: var(--text);
+  font-size: 1.02rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.box-score-team-identity small,
+.box-score-leader-team small {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.box-score-team-score {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.box-score-team-score span {
+  color: var(--text);
+  font-size: 2.1rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.box-score-team-score small {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.box-score-game-meta {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 9px;
+  text-align: center;
+}
+
+.box-score-game-meta strong {
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.box-score-game-meta small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.box-score-compare-card,
+.box-score-flow-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.box-score-compare-card h3,
+.box-score-flow-card h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 950;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.box-score-stat-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+}
+
+.box-score-stat-compare-row {
+  display: grid;
+  grid-template-columns: minmax(54px, 0.7fr) minmax(100px, 1fr) minmax(54px, 0.7fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.box-score-stat-value {
+  display: grid;
+  gap: 3px;
+}
+
+.box-score-stat-value.away {
+  justify-items: end;
+}
+
+.box-score-stat-value.home {
+  justify-items: start;
+}
+
+.box-score-stat-value strong {
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.box-score-stat-label {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.box-score-stat-bar {
+  display: block;
+  height: 3px;
+  max-width: 72px;
+  border-radius: 99px;
+}
+
+.box-score-stat-bar.away {
+  background: color-mix(in srgb, var(--accent) 72%, #ffffff);
+}
+
+.box-score-stat-bar.home {
+  background: #55a8ff;
+}
+
+.box-score-leaders-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.box-score-leader-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.box-score-leader-team {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.box-score-player-section {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.box-score-player-section h4 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.box-score-player-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.box-score-player-table th,
+.box-score-player-table td {
+  overflow: hidden;
+  padding: 4px 4px;
+  border-bottom: 1px solid rgba(222, 233, 246, 0.08);
+  color: var(--text);
+  font-size: 0.74rem;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.box-score-player-table th {
+  color: var(--quiet);
+  font-size: 0.61rem;
+  font-weight: 950;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.box-score-player-table .right {
+  text-align: right;
+}
+
+.box-score-player-table th:first-child,
+.box-score-player-table td:first-child {
+  width: 46%;
+}
+
+.box-score-drive-list,
+.box-score-play-list {
+  display: grid;
+  gap: 5px;
+}
+
+.box-score-drive {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid rgba(222, 233, 246, 0.09);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.box-score-drive.scoring {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+  background: rgba(212, 175, 55, 0.07);
+}
+
+.box-score-drive-num,
+.box-score-drive-points {
+  display: grid;
+  place-items: center;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  font-size: 0.7rem;
+  font-weight: 950;
+}
+
+.box-score-drive strong {
+  display: block;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 950;
+}
+
+.box-score-drive small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.box-score-play {
+  display: grid;
+  grid-template-columns: 72px 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 8px;
+  border: 1px solid rgba(222, 233, 246, 0.09);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.box-score-play.touchdown {
+  border-color: color-mix(in srgb, var(--good) 36%, var(--line));
+}
+
+.box-score-play.turnover {
+  border-color: color-mix(in srgb, var(--bad) 42%, var(--line));
+}
+
+.box-score-play-clock {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.box-score-play strong {
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.box-score-play span:last-child {
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.25;
+}
+
+@media (max-width: 980px) {
+  .box-score-scoreboard,
+  .box-score-leaders-grid,
+  .box-score-stat-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .box-score-game-meta {
+    order: -1;
+  }
+}
+
+@media (max-width: 680px) {
+  .box-score-play {
+    grid-template-columns: 62px minmax(0, 1fr);
+  }
+
+  .box-score-play span:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
 .fifth-option-overlay {
   z-index: 68;
 }
@@ -2544,6 +3034,15 @@ body[data-view="season"] .row .tag {
   gap: 8px;
 }
 
+.injury-alert-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
 .injury-alert-card {
   display: grid;
   gap: 5px;
@@ -2797,9 +3296,9 @@ body[data-view="season"] .row .tag {
 
 .formation-field.defense {
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-template-rows: 40px 40px 24px 40px 48px 36px 48px;
+  grid-template-rows: 40px 40px 40px 40px 48px 40px 48px;
   gap: 5px 6px;
-  min-height: 318px;
+  min-height: 338px;
   background:
     linear-gradient(90deg, rgba(222, 233, 246, 0.055) 1px, transparent 1px) 0 0 / 8.333% 100%,
     linear-gradient(180deg, rgba(222, 233, 246, 0.05) 1px, transparent 1px) 0 0 / 100% 14.285%,
@@ -2813,16 +3312,18 @@ body[data-view="season"] .row .tag {
 
 .formation-field.defense .formation-slot {
   width: min(100%, 88px);
-  min-height: 34px;
+  min-height: 38px;
   padding: 3px 4px;
 }
 
 .formation-field.defense .formation-slot strong {
   font-size: 0.63rem;
+  line-height: 1.05;
 }
 
 .formation-field.defense .formation-slot small {
   font-size: 0.54rem;
+  line-height: 1.05;
 }
 
 .formation-slot {
@@ -6424,6 +6925,7 @@ textarea {
   .war-room-hero,
   .grid,
   .fa-dashboard,
+  .fa-market-layout,
   .workflow-strip,
   .depth-editor-layout,
   .roster-manager-layout,
@@ -6463,6 +6965,10 @@ textarea {
 
   .fa-market-grid {
     grid-template-columns: 1fr;
+  }
+
+  .fa-player-panel {
+    position: static;
   }
 
   .season-control-hero {

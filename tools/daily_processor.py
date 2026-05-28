@@ -26,7 +26,13 @@ import contract_negotiations
 import cpu_depth_chart
 import draft_class_bootstrap
 import preseason_processor
+import roster_cutdown
 import roster_rules
+
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -226,6 +232,71 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def table_columns(con: sqlite3.Connection, name: str) -> set[str]:
+    if not table_exists(con, name):
+        return set()
+    return {str(row["name"]) for row in con.execute(f"PRAGMA table_info({name})").fetchall()}
+
+
+def create_optional_index(
+    con: sqlite3.Connection,
+    *,
+    table: str,
+    columns: set[str],
+    sql: str,
+) -> None:
+    if columns.issubset(table_columns(con, table)):
+        con.execute(sql)
+
+
+def create_performance_indexes(con: sqlite3.Connection) -> None:
+    create_optional_index(
+        con,
+        table="players",
+        columns={"team_id", "status", "position", "overall", "potential"},
+        sql=(
+            "CREATE INDEX IF NOT EXISTS idx_players_team_status_position "
+            "ON players(team_id, status, position, overall, potential)"
+        ),
+    )
+    create_optional_index(
+        con,
+        table="players",
+        columns={"status", "position", "overall", "potential"},
+        sql=(
+            "CREATE INDEX IF NOT EXISTS idx_players_status_position_quality "
+            "ON players(status, position, overall, potential)"
+        ),
+    )
+    create_optional_index(
+        con,
+        table="season_games",
+        columns={"season", "game_type", "week", "played", "game_date"},
+        sql=(
+            "CREATE INDEX IF NOT EXISTS idx_season_games_preseason_pending "
+            "ON season_games(season, game_type, week, played, game_date)"
+        ),
+    )
+    create_optional_index(
+        con,
+        table="transaction_log",
+        columns={"transaction_date", "transaction_type", "team_id", "player_id"},
+        sql=(
+            "CREATE INDEX IF NOT EXISTS idx_transaction_log_date_type "
+            "ON transaction_log(transaction_date, transaction_type, team_id, player_id)"
+        ),
+    )
+    create_optional_index(
+        con,
+        table="active_player_injuries",
+        columns={"resolved_at", "status", "return_earliest_date", "player_id"},
+        sql=(
+            "CREATE INDEX IF NOT EXISTS idx_active_injuries_unresolved_status "
+            "ON active_player_injuries(resolved_at, status, return_earliest_date, player_id)"
+        ),
+    )
+
+
 def parse_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
@@ -306,6 +377,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         con.execute("ALTER TABLE game_daily_processing_runs ADD COLUMN injuries_resolved INTEGER NOT NULL DEFAULT 0")
     if "ai_gm_hook_status" not in cols:
         con.execute("ALTER TABLE game_daily_processing_runs ADD COLUMN ai_gm_hook_status TEXT NOT NULL DEFAULT 'not_configured'")
+    create_performance_indexes(con)
 
 
 def upsert_setting(con: sqlite3.Connection, key: str, value: str) -> None:
@@ -339,6 +411,23 @@ def current_game_date(con: sqlite3.Connection) -> str:
     if not row:
         raise ValueError("current_game_date is not set.")
     return row["setting_value"]
+
+
+def setting_value(con: sqlite3.Connection, key: str) -> str | None:
+    row = con.execute(
+        "SELECT setting_value FROM game_settings WHERE setting_key = ?",
+        (key,),
+    ).fetchone()
+    if row and row["setting_value"] is not None:
+        return str(row["setting_value"])
+    return None
+
+
+def restore_setting(con: sqlite3.Connection, key: str, value: str | None) -> None:
+    if value is None:
+        con.execute("DELETE FROM game_settings WHERE setting_key = ?", (key,))
+    else:
+        upsert_setting(con, key, value)
 
 
 def phase_for_date(con: sqlite3.Connection, target_date: str) -> sqlite3.Row:
@@ -538,6 +627,8 @@ def normalize_practice_squads_for_offseason(con: sqlite3.Connection, event: sqli
 
 def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sqlite3.Row) -> str | None:
     event_code = str(event["event_code"])
+    if event_code in {"WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN", "PRACTICE_SQUADS_ESTABLISHED"}:
+        return None
     phase = AI_GM_EVENT_PHASES.get(event_code)
     if not phase:
         return None
@@ -572,6 +663,130 @@ def run_ai_gm_event_reviews(con: sqlite3.Connection, *, game_id: str, event: sql
         f"{int(counts.get('planned', 0))} planned, "
         f"{int(counts.get('enqueued', 0))} queued, "
         f"{int(counts.get('skipped', 0))} skipped."
+    )
+
+
+def enforce_cpu_cutdown_for_event(con: sqlite3.Connection, *, game_id: str, event: sqlite3.Row) -> str | None:
+    event_code = str(event["event_code"])
+    if event_code not in {"FINAL_ROSTER_CUTDOWN_53", "PRACTICE_SQUADS_ESTABLISHED"}:
+        return None
+
+    roster_rules.ensure_schema(con)
+    roster_rules.seed_rules(con)
+    roster_cutdown.ensure_cutdown_schema(con)
+    season = int(event["league_year"])
+    rule_set = roster_rules.get_rule_set(con, season, roster_cutdown.PHASE)
+    active_limit = int(rule_set["active_roster_limit"] or 53)
+    practice_squad_limit = int(rule_set["practice_squad_limit"] or 16)
+    user_team_id = roster_cutdown.active_user_team_id(con, game_id)
+
+    results = []
+    for team in roster_cutdown.team_rows(con, None):
+        team_id = int(team["team_id"])
+        if user_team_id is not None and team_id == user_team_id:
+            continue
+        active_count = roster_rules.active_roster_count(con, team_id)
+        practice_squad_count = roster_rules.practice_squad_count(con, team_id)
+        needs_cutdown = active_count > active_limit
+        needs_practice_squad = (
+            event_code == "PRACTICE_SQUADS_ESTABLISHED"
+            and practice_squad_count < practice_squad_limit
+        )
+        if not needs_cutdown and not needs_practice_squad:
+            continue
+        results.append(
+            roster_cutdown.cutdown_team(
+                con,
+                team=team,
+                season=season,
+                rule_set=rule_set,
+                active_limit=active_limit,
+                practice_squad_limit=practice_squad_limit,
+                save_validation=False,
+                game_id=game_id,
+            )
+        )
+
+    if not results:
+        return None
+
+    roster_cutdown.rebuild_contract_years(con)
+    roster_cutdown.sync_team_cap_space(con)
+    roster_cutdown.snapshot_cap_ledger(
+        con,
+        label=f"after_cpu_{event_code.lower()}",
+        phase=roster_cutdown.PHASE,
+        source="daily_processor",
+        replace=True,
+    )
+    moved_to_ps = sum(int(result.moved_to_ps) for result in results)
+    signed_to_ps = sum(int(result.signed_to_ps) for result in results)
+    released = sum(int(result.released) for result in results)
+    return (
+        f"CPU roster compliance finalized for {len(results)} team(s): "
+        f"{moved_to_ps} moved to PS, {signed_to_ps} PS signing(s), {released} release/waiver move(s)."
+    )
+
+
+def run_post_waiver_market_pass(con: sqlite3.Connection, *, game_id: str, event: sqlite3.Row) -> str | None:
+    season = int(event["league_year"])
+    event_date = str(event["event_start_date"])
+    try:
+        position_depth = roster_cutdown.process_cpu_position_depth_replacements(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=False,
+        )
+        injury_depth = roster_cutdown.process_cpu_injury_replacements(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=False,
+            max_moves_per_team=4,
+        )
+        poaches = roster_cutdown.process_cpu_practice_squad_poaching(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=False,
+            max_teams=6,
+            max_poaches_per_team=1,
+        )
+        same_position_depth = roster_cutdown.optimize_cpu_same_position_depth(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=False,
+            overall_gap=7,
+            max_swaps_per_team=2,
+        )
+        roster_cutdown.sync_team_cap_space(con)
+    except Exception as exc:
+        return f"Post-waiver roster/market pass skipped: {exc}"
+
+    promotions = int(position_depth.get("promoted", 0)) + int(injury_depth.get("promoted", 0))
+    replacement_signings = int(position_depth.get("signed", 0)) + int(injury_depth.get("signed", 0))
+    poached = int(poaches.get("poached", 0))
+    ps_swaps = int(same_position_depth.get("swaps", 0))
+    total = promotions + replacement_signings + poached + ps_swaps
+    if total <= 0:
+        return None
+    activity_blocks = sum(
+        1
+        for count in (
+            int(position_depth.get("teams", 0)),
+            int(injury_depth.get("teams", 0)),
+            int(poaches.get("teams", 0)),
+            int(same_position_depth.get("teams", 0)),
+        )
+        if count
+    )
+    return (
+        "Post-waiver roster pass: "
+        f"{activity_blocks} activity block(s), "
+        f"{promotions} PS promotion(s), {replacement_signings} replacement signing(s), "
+        f"{poached} PS poach(es), {ps_swaps} internal depth swap(s)."
     )
 
 
@@ -663,6 +878,10 @@ def process_calendar_events(
     for event in events:
         if event_already_processed(con, game_id, int(event["event_id"]), "calendar_event"):
             continue
+        event_date = str(event["event_start_date"])
+        previous_game_date = setting_value(con, "current_game_date")
+        if previous_game_date != event_date:
+            upsert_setting(con, "current_game_date", event_date)
         applied = apply_event_settings(con, event)
         details = event["notes"] or ""
         offseason_ps_reset = normalize_practice_squads_for_offseason(con, event)
@@ -710,6 +929,8 @@ def process_calendar_events(
                 max_claims_per_team=3,
                 max_claims_total=64,
                 post_cutdown=True,
+                claim_date=target_date,
+                ready_on_or_before=target_date,
             )
             roster_rules.action_process_waivers(
                 con,
@@ -719,6 +940,16 @@ def process_calendar_events(
                 f"{details} Waiver claims processed: "
                 f"{claim_result.get('claims', 0)} CPU claim(s) filed."
             ).strip()
+        if event["event_code"] == "PRESEASON_WEEK_1":
+            number_result = jersey_numbers.assign_missing_numbers(
+                con,
+                source="preseason_week_1",
+            )
+            if number_result["changed"]:
+                details = (
+                    f"{details} Jersey numbers assigned: "
+                    f"{number_result['changed']} player(s)."
+                ).strip()
         preseason_result = preseason_processor.run_for_event(
             con,
             game_id=game_id,
@@ -740,6 +971,13 @@ def process_calendar_events(
             ai_gm_note = run_ai_gm_event_reviews(con, game_id=game_id, event=event)
             if ai_gm_note:
                 details = f"{details} {ai_gm_note}".strip()
+        cutdown_note = enforce_cpu_cutdown_for_event(con, game_id=game_id, event=event)
+        if cutdown_note:
+            details = f"{details} {cutdown_note}".strip()
+        if event["event_code"] == "PRACTICE_SQUADS_ESTABLISHED":
+            post_waiver_note = run_post_waiver_market_pass(con, game_id=game_id, event=event)
+            if post_waiver_note:
+                details = f"{details} {post_waiver_note}".strip()
         if applied:
             details = f"{details} Settings updated: {', '.join(applied)}".strip()
         action = "settings_updated" if applied else "logged"
@@ -766,6 +1004,8 @@ def process_calendar_events(
                     due_date=event["event_start_date"],
                 ):
                     alerts += 1
+        if previous_game_date != event_date:
+            restore_setting(con, "current_game_date", previous_game_date)
     return processed, alerts
 
 

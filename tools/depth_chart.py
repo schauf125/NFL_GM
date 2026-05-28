@@ -11,6 +11,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from engine import depth_packages, match_engine  # noqa: E402
 
 OFFENSE_SLOTS = {"QB", "RB", "FB", "LWR", "RWR", "SWR", "TE", "LT", "LG", "C", "RG", "RT"}
 DEFENSE_SLOTS = {"LEDGE", "REDGE", "LDL", "RDL", "NT", "WLB", "MLB", "SLB", "LCB", "RCB", "NB", "FS", "SS"}
@@ -33,7 +37,7 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
 
 
 def infer_unit(position: str) -> str:
-    key = position.upper()
+    key = depth_packages.canonical_slot(position)
     if key in OFFENSE_SLOTS:
         return "Offense"
     if key in DEFENSE_SLOTS:
@@ -70,6 +74,17 @@ def get_player(con: sqlite3.Connection, player_id: int, team_id: int) -> sqlite3
     if row["status"] == "Retired":
         raise ValueError("Retired players cannot be placed on the depth chart.")
     return row
+
+
+def validate_player_slot(player: sqlite3.Row, slot: str) -> None:
+    canonical = depth_packages.canonical_slot(slot)
+    player_position = str(player["position"] or "").upper()
+    legal_positions = match_engine.slot_eligible_positions(canonical)
+    if player_position in legal_positions:
+        return
+    name = f"{player['first_name']} {player['last_name']}".strip()
+    allowed = ", ".join(sorted(legal_positions))
+    raise ValueError(f"{name} ({player_position}) cannot be placed at {canonical}. Allowed positions: {allowed}.")
 
 
 def depth_row(
@@ -115,6 +130,7 @@ def set_slot(
     team_id = int(team_row["team_id"])
     player = get_player(con, player_id, team_id)
     slot = position.upper()
+    validate_player_slot(player, slot)
     unit_value = unit or infer_unit(slot)
     target = depth_row(con, team_id=team_id, position=slot, rank=rank)
     existing = depth_row(con, team_id=team_id, position=slot, player_id=player_id)
@@ -231,6 +247,8 @@ def swap_slots(
         return
     first_player = get_player(con, int(first["player_id"]), team_id)
     second_player = get_player(con, int(second["player_id"]), team_id)
+    validate_player_slot(first_player, second_slot)
+    validate_player_slot(second_player, first_slot)
     first_name = f"{first_player['first_name']} {first_player['last_name']}".strip()
     second_name = f"{second_player['first_name']} {second_player['last_name']}".strip()
     if not apply:

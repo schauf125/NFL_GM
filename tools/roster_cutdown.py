@@ -34,6 +34,11 @@ from engine import depth_packages  # noqa: E402
 from setup_contract_years import rebuild_contract_years, sync_team_cap_space  # noqa: E402
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger  # noqa: E402
 
+try:
+    import jersey_numbers  # noqa: E402
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers  # noqa: E402
+
 
 SOURCE = "roster_cutdown"
 INJURY_REPLACEMENT_SOURCE = "cpu_injury_replacement"
@@ -273,13 +278,15 @@ def active_depth_slots_for_team(con: sqlite3.Connection, team_id: int, season: i
         row,
         team_abbr=str(row["team"] or ""),
     )
-    return set(
+    active_slots = set(
         depth_packages.active_depth_slots(
             list(info.get("offensePackages") or ["11", "12"]),
             list(info.get("defensePackages") or ["nickel"]),
             include_special=True,
         )
     )
+    active_slots.update(depth_packages.legacy_fallback_slots(active_slots))
+    return active_slots
 
 
 def depth_rank(con: sqlite3.Connection, team_id: int, player_id: int, season: int | None = None) -> int | None:
@@ -768,6 +775,12 @@ def sign_free_agent_to_practice_squad(
         "UPDATE players SET team_id = ?, status = ? WHERE player_id = ?",
         (team_id, PRACTICE_SQUAD_STATUS, player_id),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player_id),
+        team_id=int(team_id),
+        source="practice_squad_signing",
+    )
     delete_depth_rows(con, player_id)
     cpu_depth_chart.mark_depth_chart_stale(
         con,
@@ -988,6 +1001,12 @@ def sign_missing_specialist(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        source="missing_specialist_signing",
+    )
     cpu_depth_chart.mark_depth_chart_stale(
         con,
         team_id=int(team["team_id"]),
@@ -1041,6 +1060,12 @@ def normalize_unknown_roster_statuses(
         con.execute(
             "UPDATE players SET status = 'Active' WHERE player_id = ?",
             (player["player_id"],),
+        )
+        jersey_numbers.assign_player_number(
+            con,
+            int(player["player_id"]),
+            team_id=int(team["team_id"]),
+            source="status_normalized_active",
         )
         status_history(
             con,
@@ -1346,6 +1371,12 @@ def sign_practice_squad_poach(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        source="practice_squad_poach",
+    )
     delete_depth_rows(con, int(player["player_id"]))
     cpu_depth_chart.mark_depth_chart_stale(
         con,
@@ -1551,6 +1582,12 @@ def promote_practice_squad_replacement(
 ) -> None:
     old_status = player["status"] or PRACTICE_SQUAD_STATUS
     con.execute("UPDATE players SET status = 'Active' WHERE player_id = ?", (player["player_id"],))
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        source="practice_squad_promotion",
+    )
     cpu_depth_chart.mark_depth_chart_stale(
         con,
         team_id=int(team["team_id"]),
@@ -1810,6 +1847,7 @@ def trim_cpu_active_roster_overages(
         team_id = int(team["team_id"])
         if not include_user_team and user_team_id is not None and team_id == user_team_id:
             continue
+        protected_poaches = same_day_practice_squad_poach_ids(con, team_id)
         touched = False
         while active_roster_count(con, team_id) > active_limit:
             candidates = []
@@ -1823,6 +1861,8 @@ def trim_cpu_active_roster_overages(
                 """,
                 (team_id,),
             ):
+                if int(row["player_id"]) in protected_poaches:
+                    continue
                 candidate = player_candidate(con, row, season=season, team_id=team_id)
                 if candidate.position in SPECIALIST_POSITIONS:
                     continue
@@ -1863,6 +1903,65 @@ def trim_cpu_active_roster_overages(
         if touched:
             teams_touched += 1
     return {"teams": teams_touched, "moved_to_ps": moved_to_ps, "released": released}
+
+
+def same_day_practice_squad_poach_ids(con: sqlite3.Connection, team_id: int) -> set[int]:
+    if not table_exists(con, "transaction_log"):
+        return set()
+    rows = con.execute(
+        """
+        SELECT DISTINCT player_id
+        FROM transaction_log
+        WHERE transaction_date = ?
+          AND transaction_type = 'Practice Squad Poaching'
+          AND source = ?
+          AND player_id IS NOT NULL
+          AND (team_id = ? OR to_team_id = ?)
+        """,
+        (current_date(con), PRACTICE_SQUAD_POACH_SOURCE, int(team_id), int(team_id)),
+    ).fetchall()
+    return {int(row["player_id"]) for row in rows}
+
+
+def has_plausible_poach_corresponding_move(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    season: int,
+    incoming: PlayerCandidate,
+) -> bool:
+    if active_roster_count(con, team_id) < 53:
+        return True
+    options: list[PlayerCandidate] = []
+    for row in con.execute(
+        """
+        SELECT *
+        FROM players
+        WHERE team_id = ?
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+        """,
+        (team_id,),
+    ):
+        candidate = player_candidate(con, row, season=season, team_id=team_id)
+        if candidate.position in SPECIALIST_POSITIONS:
+            continue
+        position_floor = MIN_ACTIVE_BY_POSITION.get(candidate.position)
+        if position_floor is not None and active_position_count(con, team_id, candidate.position) <= position_floor:
+            continue
+        group_floor = MIN_ACTIVE_BY_GROUP.get(candidate.group)
+        if group_floor is not None and active_group_count(con, team_id, candidate.group) <= group_floor:
+            continue
+        if candidate.depth_rank == 1 or is_cutdown_release_protected(candidate):
+            continue
+        options.append(candidate)
+    if not options:
+        return False
+    outgoing = sorted(options, key=lambda item: (item.keep_score, item.overall, item.potential))[0]
+    return (
+        incoming.overall >= outgoing.overall + 2
+        or incoming.potential >= outgoing.potential + 5
+        or incoming.keep_score >= outgoing.keep_score + 5
+    )
 
 
 def active_position_count(con: sqlite3.Connection, team_id: int, position: str) -> int:
@@ -2039,6 +2138,14 @@ def process_cpu_practice_squad_poaching(
                 if active_group_count(con, team_id, candidate.group) >= MIN_ACTIVE_BY_GROUP.get(candidate.group, 0):
                     skipped_prospect_protection += 1
                     continue
+            if not has_plausible_poach_corresponding_move(
+                con,
+                team_id=team_id,
+                season=season,
+                incoming=candidate,
+            ):
+                skipped_prospect_protection += 1
+                continue
             reason = (
                 f"CPU practice squad poach: {team['abbreviation']} needed {candidate.group} depth "
                 "and signed an outside practice squad player to the active roster."
@@ -2194,6 +2301,12 @@ def sign_free_agent_replacement(
     con.execute(
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
+    )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        source="injury_replacement_signing",
     )
     cpu_depth_chart.mark_depth_chart_stale(
         con,

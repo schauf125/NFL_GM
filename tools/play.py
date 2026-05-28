@@ -157,44 +157,71 @@ def ensure_regular_season_specialists(game_id: str | None, season: int) -> None:
 
 def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
     target_game_id, db_path = save_db(game_id)
-    con = game_flow.connect(db_path)
-    try:
-        over_limit = con.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM (
-                SELECT team_id, COUNT(*) AS active_count
-                FROM players
-                WHERE team_id IS NOT NULL
-                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
-                GROUP BY team_id
-                HAVING active_count > 53
+    touched = 0
+    moved_to_ps = 0
+    released = 0
+    with game_flow.connect(db_path) as con:
+        game = game_flow.active_game(con)
+        roster_rules.ensure_schema(con)
+        roster_rules.seed_rules(con)
+        roster_cutdown.ensure_cutdown_schema(con)
+        rule_set = roster_rules.get_rule_set(con, int(season), roster_cutdown.PHASE)
+        active_limit = int(rule_set["active_roster_limit"] or 53)
+        practice_squad_limit = int(rule_set["practice_squad_limit"] or 16)
+        user_team_id = game.user_team_id if game else None
+        current_date = str(game.current_date) if game else f"{int(season)}-09-01"
+        waiver_deadline = calendar_event_date(con, int(season), "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN")
+        use_full_cutdown = not waiver_deadline or date.fromisoformat(current_date) <= date.fromisoformat(str(waiver_deadline))
+
+        for team in roster_cutdown.team_rows(con, None):
+            team_id = int(team["team_id"])
+            if user_team_id is not None and team_id == int(user_team_id):
+                continue
+            if roster_rules.active_roster_count(con, team_id) <= active_limit:
+                continue
+            if use_full_cutdown:
+                result = roster_cutdown.cutdown_team(
+                    con,
+                    team=team,
+                    season=int(season),
+                    rule_set=rule_set,
+                    active_limit=active_limit,
+                    practice_squad_limit=practice_squad_limit,
+                    save_validation=False,
+                    game_id=target_game_id,
+                )
+                touched += 1
+                moved_to_ps += int(result.moved_to_ps)
+                released += int(result.released)
+            else:
+                result = roster_cutdown.trim_cpu_active_roster_overages(
+                    con,
+                    season=int(season),
+                    game_id=target_game_id,
+                    active_limit=active_limit,
+                    include_user_team=False,
+                    team_id=team_id,
+                )
+                touched += int(result.get("teams", 0) or 0)
+                moved_to_ps += int(result.get("moved_to_ps", 0) or 0)
+                released += int(result.get("released", 0) or 0)
+        if touched:
+            roster_cutdown.rebuild_contract_years(con)
+            roster_cutdown.sync_team_cap_space(con)
+            roster_cutdown.snapshot_cap_ledger(
+                con,
+                label="after_regular_season_roster_preflight",
+                phase=roster_cutdown.PHASE,
+                source="play_sim_preflight",
+                replace=True,
             )
-            """
-        ).fetchone()["count"]
-    finally:
-        con.close()
-    if int(over_limit or 0) <= 0:
-        return
-    command = [
-        sys.executable,
-        str(TOOLS_DIR / "roster_cutdown.py"),
-        "--db",
-        str(db_path),
-        "run",
-        "--game-id",
-        target_game_id,
-        "--season",
-        str(season),
-        "--active-limit",
-        "53",
-        "--practice-squad-limit",
-        "16",
-        "--apply",
-        "--no-backup",
-    ]
-    subprocess.run(command, check=True)
-    sync_save(target_game_id)
+            con.commit()
+    if touched:
+        print(
+            f"Regular-season roster preflight adjusted {touched} CPU team(s): "
+            f"{moved_to_ps} moved to practice squad, {released} released/waived."
+        )
+        sync_save(target_game_id)
 
 
 def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str | None = "MIN") -> None:
@@ -439,6 +466,7 @@ def ensure_regular_season_complete_before_draft(
     season: int,
     *,
     auto_roster_cutdown: bool = False,
+    skip_roster_gate: bool = False,
 ) -> None:
     target_game_id, _db_path, con = open_save_db(game_id)
     try:
@@ -452,7 +480,7 @@ def ensure_regular_season_complete_before_draft(
         ensure_playoff_tree_if_ready(target_game_id, season)
         return
 
-    if not auto_roster_cutdown and stop_for_user_roster_cutdown_if_due(target_game_id, season):
+    if not auto_roster_cutdown and not skip_roster_gate and stop_for_user_roster_cutdown_if_due(target_game_id, season):
         raise RuntimeError(
             "Roster cutdown/practice squad setup is required before simming to the draft. "
             "Choose automatic roster cutdown or handle it manually first."
@@ -709,18 +737,71 @@ def user_roster_gate_message(con, season: int) -> str | None:
     team_id = int(user_team["team_id"])
     active_limit = int(rule_set["active_roster_limit"] or 53)
     ps_limit = int(rule_set["practice_squad_limit"] or 16)
+    ps_total_limit = ps_limit + int(rule_set["practice_squad_international_exemption_limit"] or 0)
     active_count = roster_rules.active_roster_count(con, team_id)
     ps_count = roster_rules.practice_squad_count(con, team_id)
     issues = []
     if active_count > active_limit:
         issues.append(f"cut active roster from {active_count} to {active_limit}")
-    if ps_count < ps_limit:
-        issues.append(f"fill practice squad ({ps_count}/{ps_limit})")
+    if ps_count > ps_total_limit:
+        issues.append(f"trim practice squad from {ps_count} to {ps_total_limit}")
     if not issues:
         return None
     return (
-        f"Roster cutdown/practice squad setup required for {user_team['abbreviation']}: "
+        f"Roster limit cleanup required for {user_team['abbreviation']}: "
         f"{'; '.join(issues)}. Use Roster Hub > Practice Squad before advancing into the regular season."
+    )
+
+
+def next_unplayed_game_stop(
+    con,
+    current_date: str,
+    requested_target: str,
+) -> sqlite3.Row | None:
+    if not table_exists(con, "season_games"):
+        return None
+    return con.execute(
+        """
+        SELECT
+            sg.game_date,
+            sg.season,
+            sg.week,
+            sg.game_type,
+            COUNT(*) AS games
+        FROM season_games sg
+        WHERE COALESCE(sg.played, 0) = 0
+          AND sg.game_date IS NOT NULL
+          AND date(sg.game_date) >= date(?)
+          AND date(sg.game_date) <= date(?)
+          AND sg.game_type IN ('PRE', 'REG', 'POST')
+        GROUP BY sg.game_date, sg.season, sg.week, sg.game_type
+        ORDER BY
+            date(sg.game_date),
+            CASE sg.game_type
+                WHEN 'PRE' THEN 0
+                WHEN 'REG' THEN 1
+                WHEN 'POST' THEN 2
+                ELSE 3
+            END,
+            sg.week
+        LIMIT 1
+        """,
+        (current_date, requested_target),
+    ).fetchone()
+
+
+def game_stop_label(row: sqlite3.Row) -> str:
+    game_type = str(row["game_type"] or "").upper()
+    if game_type == "PRE":
+        phase = "Preseason"
+    elif game_type == "POST":
+        phase = "Postseason"
+    else:
+        phase = "Regular Season"
+    game_count = int(row["games"] or 0)
+    return (
+        f"{phase} Week {int(row['week'])}"
+        f" ({game_count} game{'s' if game_count != 1 else ''} on {row['game_date']})"
     )
 
 
@@ -730,8 +811,17 @@ def gated_calendar_target(
     requested_target: str,
     *,
     auto_roster_cutdown: bool = False,
+    skip_roster_gate: bool = False,
 ) -> tuple[str, str | None]:
     if game.user_team_id is None or str(getattr(game, "control_mode", "") or "").lower() == "observe":
+        game_stop = next_unplayed_game_stop(con, str(game.current_date), requested_target)
+        if game_stop:
+            if date.fromisoformat(str(game_stop["game_date"])) <= date.fromisoformat(str(game.current_date)):
+                raise ValueError(
+                    f"{game_stop_label(game_stop)} is due today. "
+                    "Simulate the scheduled games before advancing the calendar."
+                )
+            return str(game_stop["game_date"]), f"Stopping at {game_stop_label(game_stop)} before advancing further."
         return requested_target, None
     current = date.fromisoformat(str(game.current_date))
     target = date.fromisoformat(str(requested_target))
@@ -740,7 +830,18 @@ def gated_calendar_target(
     practice_squad = calendar_event_date(con, season, "PRACTICE_SQUADS_ESTABLISHED")
     kickoff = calendar_event_date(con, season, "REGULAR_SEASON_KICKOFF")
 
-    if cutdown and not auto_roster_cutdown:
+    game_stop = next_unplayed_game_stop(con, str(game.current_date), requested_target)
+    if game_stop:
+        game_stop_date = date.fromisoformat(str(game_stop["game_date"]))
+        if game_stop_date <= current:
+            raise ValueError(
+                f"{game_stop_label(game_stop)} is due today. "
+                "Simulate the scheduled games before advancing the calendar."
+            )
+        target = min(target, game_stop_date)
+        requested_target = target.isoformat()
+
+    if cutdown and not auto_roster_cutdown and not skip_roster_gate:
         cutdown_date = date.fromisoformat(cutdown)
         if current < cutdown_date <= target:
             return cutdown, (
@@ -748,18 +849,20 @@ def gated_calendar_target(
                 "the user team must handle its own final roster and practice squad setup."
             )
 
-    if practice_squad and not auto_roster_cutdown:
+    if practice_squad and not auto_roster_cutdown and not skip_roster_gate:
         practice_squad_date = date.fromisoformat(practice_squad)
         if current < practice_squad_date <= target:
             return practice_squad, "Stopping when practice squads open so the user can assign the practice squad."
 
-    if practice_squad and kickoff and not auto_roster_cutdown:
+    if practice_squad and kickoff and not auto_roster_cutdown and not skip_roster_gate:
         practice_squad_date = date.fromisoformat(practice_squad)
         kickoff_date = date.fromisoformat(kickoff)
         if current >= practice_squad_date and current <= kickoff_date <= target:
             gate_message = user_roster_gate_message(con, season)
             if gate_message:
                 raise ValueError(gate_message)
+    if game_stop and date.fromisoformat(str(game_stop["game_date"])) == target:
+        return requested_target, f"Stopping at {game_stop_label(game_stop)} before advancing further."
     return requested_target, None
 
 
@@ -826,28 +929,60 @@ def apply_cpu_roster_cutdowns_if_due(
             "WAIVER_CLAIM_DEADLINE_AFTER_CUTDOWN",
         )
         if waiver_deadline and target >= date.fromisoformat(str(waiver_deadline)):
-            claim_result = roster_rules.seed_cpu_waiver_claims(
+            settle_result = roster_rules.settle_expired_waivers(
                 con,
                 season=int(game.current_league_year),
+                target_date=str(target_date),
                 game_id=target_game_id,
                 include_user_team=include_user_team,
                 max_claims_per_team=3,
                 max_claims_total=64,
                 post_cutdown=True,
             )
-            roster_rules.action_process_waivers(
-                con,
-                SimpleNamespace(date=str(target_date), all_open=False),
-            )
             print(
                 "Post-cutdown waivers processed: "
-                f"{claim_result.get('claims', 0)} CPU claim(s) submitted."
+                f"{settle_result.get('claims', 0)} CPU claim(s) submitted, "
+                f"{settle_result.get('processed', 0)} waiver entr"
+                f"{'y' if settle_result.get('processed', 0) == 1 else 'ies'} settled."
             )
         con.commit()
     if include_user_team:
         print(f"Automatic roster cutdowns applied for {len(results)} team(s), including the user team when needed.")
     else:
         print(f"CPU roster cutdowns applied for {len(results)} team(s). User roster was left for manual decisions.")
+    sync_save(target_game_id)
+
+
+def settle_expired_waivers_if_due(
+    game_id: str | None,
+    target_date: str,
+    *,
+    include_user_team: bool = False,
+) -> None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        game = game_flow.active_game(con)
+        if not game:
+            return
+        if not roster_rules.table_exists(con, "waiver_wire"):
+            return
+        result = roster_rules.settle_expired_waivers(
+            con,
+            season=int(game.current_league_year),
+            target_date=str(target_date),
+            game_id=target_game_id,
+            include_user_team=include_user_team,
+            max_claims_per_team=3,
+            max_claims_total=64,
+            post_cutdown=True,
+        )
+        if int(result.get("processed", 0) or 0) <= 0 and int(result.get("claims", 0) or 0) <= 0:
+            return
+        con.commit()
+    print(
+        "Expired waivers settled before calendar advance finished: "
+        f"{result.get('processed', 0)} processed, {result.get('claims', 0)} CPU claim(s)."
+    )
     sync_save(target_game_id)
 
 
@@ -1522,6 +1657,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
             game,
             target_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
+            skip_roster_gate=getattr(args, "skip_roster_gate", False),
         )
     if gate_message:
         print(gate_message)
@@ -1539,6 +1675,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1560,6 +1697,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
             game,
             target_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
+            skip_roster_gate=getattr(args, "skip_roster_gate", False),
         )
     if gate_message:
         print(gate_message)
@@ -1577,6 +1715,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1601,6 +1740,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
             game,
             requested_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
+            skip_roster_gate=getattr(args, "skip_roster_gate", False),
         )
     if getattr(args, "auto_sim_preseason", False):
         simulate_preseason_before_target(game_id, game.current_league_year, target_date)
@@ -1620,6 +1760,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1669,20 +1810,39 @@ def simulate_preseason_before_target(game_id: str | None, season: int, target_da
     with game_flow.connect(db_path) as con:
         if not table_exists(con, "season_games"):
             return
-        rows = con.execute(
+        has_calendar = table_exists(con, "league_calendar_events")
+        event_date_expr = (
             """
+            COALESCE(
+                (
+                    SELECT event_start_date
+                    FROM league_calendar_events e
+                    WHERE e.league_year = sg.season
+                      AND e.event_code = 'PRESEASON_WEEK_' || sg.week
+                    ORDER BY event_start_date
+                    LIMIT 1
+                ),
+                MAX(sg.game_date)
+            )
+            """
+            if has_calendar
+            else "MAX(sg.game_date)"
+        )
+        rows = con.execute(
+            f"""
             SELECT
-                week,
+                sg.week,
                 COUNT(*) AS games,
-                SUM(CASE WHEN COALESCE(played, 0) = 1 THEN 1 ELSE 0 END) AS played,
-                MAX(game_date) AS last_date
-            FROM season_games
-            WHERE season = ?
-              AND game_type = 'PRE'
-            GROUP BY week
-            HAVING date(MAX(game_date)) < date(?)
-               AND SUM(CASE WHEN COALESCE(played, 0) = 1 THEN 1 ELSE 0 END) < COUNT(*)
-            ORDER BY week
+                SUM(CASE WHEN COALESCE(sg.played, 0) = 1 THEN 1 ELSE 0 END) AS played,
+                MAX(sg.game_date) AS last_date,
+                {event_date_expr} AS checkpoint_date
+            FROM season_games sg
+            WHERE sg.season = ?
+              AND sg.game_type = 'PRE'
+            GROUP BY sg.week
+            HAVING date(checkpoint_date) <= date(?)
+               AND SUM(CASE WHEN COALESCE(sg.played, 0) = 1 THEN 1 ELSE 0 END) < COUNT(*)
+            ORDER BY sg.week
             """,
             (int(season), str(target_date)),
         ).fetchall()
@@ -1754,6 +1914,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
             game,
             target_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
+            skip_roster_gate=getattr(args, "skip_roster_gate", False),
         )
 
     if gate_message:
@@ -1773,6 +1934,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
             include_user_team=args.auto_roster_cutdown,
             from_date=current_date,
         )
+        settle_expired_waivers_if_due(target_game_id, gated_target, include_user_team=False)
         refresh_dirty_cpu_depth_charts(target_game_id)
         sync_save(target_game_id)
         return
@@ -1798,6 +1960,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=current_date,
     )
+    settle_expired_waivers_if_due(target_game_id, target_date, include_user_team=False)
     refresh_dirty_cpu_depth_charts(target_game_id)
     sync_save(game_id)
 
@@ -1835,6 +1998,7 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         args.game_id,
         season=draft_year - 1,
         auto_roster_cutdown=args.auto_roster_cutdown,
+        skip_roster_gate=getattr(args, "skip_roster_gate", False),
     )
     ensure_final_draft_order(args.game_id, season=draft_year - 1, draft_year=draft_year)
     ensure_postseason_progression_for_league_year(args.game_id, draft_year)
@@ -1876,6 +2040,7 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
             print(f"Already at or past the {draft_year} draft date ({draft_date}).")
     finally:
         con.close()
+    settle_expired_waivers_if_due(target_game_id, draft_date, include_user_team=False)
     refresh_dirty_cpu_depth_charts(target_game_id, season=draft_year)
     sync_save(game_id)
 
@@ -2281,6 +2446,8 @@ def action_sim_season(args: argparse.Namespace) -> None:
         script_args.extend(["--notes", args.notes])
     if not args.weekly_hooks:
         script_args.append("--no-weekly-hooks")
+    if getattr(args, "stop_on_injury_alert", False):
+        script_args.append("--stop-on-injury-alert")
     run_tool_script(args.game_id, "sim_game.py", script_args)
     if args.apply and args.limit is None and game_type == "PRE":
         advance_calendar_to_preseason_checkpoint(args.game_id, args.season)
@@ -2591,6 +2758,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Automatically handle the user team's roster cutdown if this advance crosses cutdown day.",
     )
+    advance_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     advance_parser.set_defaults(func=action_advance_day)
 
     next_parser = subparsers.add_parser("advance-to-next-event", help="Advance to the next calendar event.")
@@ -2600,6 +2768,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Automatically handle the user team's roster cutdown if this advance crosses cutdown day.",
     )
+    next_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     next_parser.set_defaults(func=action_advance_to_next_event)
 
     date_parser = subparsers.add_parser("advance-to-date", help="Advance to a specific date.")
@@ -2610,6 +2779,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Automatically handle the user team's roster cutdown if this advance crosses cutdown day.",
     )
+    date_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     date_parser.add_argument(
         "--auto-sim-preseason",
         action="store_true",
@@ -2624,6 +2794,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Automatically handle the user team's roster cutdown if this advance crosses cutdown day.",
     )
+    next_year_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     next_year_parser.set_defaults(func=action_advance_to_next_league_year)
 
     draft_date_parser = subparsers.add_parser("advance-to-draft", help="Advance to the next draft event and open the draft room.")
@@ -2636,6 +2807,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Automatically handle the user team's roster cutdown if the regular season must be completed first.",
     )
+    draft_date_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     draft_date_parser.add_argument("--no-resolve-free-agency", action="store_true", help="Skip the free-agency fast-forward tick before the draft.")
     draft_date_parser.add_argument("--no-start-room", action="store_true", help="Only advance the calendar date; do not start the draft room.")
     draft_date_parser.set_defaults(func=action_advance_to_draft)
@@ -2877,6 +3049,11 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Run weekly event/roster hooks after each completed week.",
+    )
+    sim_season_parser.add_argument(
+        "--stop-on-injury-alert",
+        action="store_true",
+        help="Pause after a completed week when the user team has a multi-game injury alert.",
     )
     sim_season_parser.set_defaults(func=action_sim_season)
 

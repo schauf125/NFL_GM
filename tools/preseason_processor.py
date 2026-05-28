@@ -26,6 +26,7 @@ import league_schedule
 import league_news
 import player_personalities
 import pro_player_fog
+import roster_cutdown
 import season_storylines
 import scouting
 
@@ -38,6 +39,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from engine import match_engine  # noqa: E402
+from engine import injury_model  # noqa: E402
 
 
 POS_ORDER = {
@@ -93,6 +95,51 @@ NEGATIVE_TRAITS = {
     "greedy",
 }
 
+OFFSEASON_WORKOUT_INJURY_EVENTS = {
+    "RETURNING_HC_OFFSEASON_PROGRAMS_BEGIN": {
+        "event_type": "offseason_workout",
+        "source": "offseason_workout",
+        "one_injury_chance": 0.10,
+        "two_injury_chance": 0.006,
+        "rookie_only": False,
+    },
+    "ROOKIE_MINICAMP_WINDOW_1": {
+        "event_type": "rookie_minicamp",
+        "source": "rookie_minicamp",
+        "one_injury_chance": 0.045,
+        "two_injury_chance": 0.002,
+        "rookie_only": True,
+    },
+    "ROOKIE_MINICAMP_WINDOW_2": {
+        "event_type": "rookie_minicamp",
+        "source": "rookie_minicamp",
+        "one_injury_chance": 0.04,
+        "two_injury_chance": 0.002,
+        "rookie_only": True,
+    },
+    "ROOKIE_DEVELOPMENT_PROGRAM_BEGIN": {
+        "event_type": "rookie_development_program",
+        "source": "rookie_development_program",
+        "one_injury_chance": 0.055,
+        "two_injury_chance": 0.003,
+        "rookie_only": True,
+    },
+    "ROOKIE_READINESS_PROGRAM": {
+        "event_type": "rookie_readiness_program",
+        "source": "rookie_readiness_program",
+        "one_injury_chance": 0.035,
+        "two_injury_chance": 0.001,
+        "rookie_only": True,
+    },
+    "ROOKIE_TRAINING_CAMP_REPORTING_OPENS": {
+        "event_type": "rookie_training_camp",
+        "source": "rookie_training_camp",
+        "one_injury_chance": 0.065,
+        "two_injury_chance": 0.004,
+        "rookie_only": True,
+    },
+}
+
 TRAIT_DISPLAY = {
     "lunch_pail": "steady worker",
     "film_junkie": "detail-oriented",
@@ -113,6 +160,7 @@ TRAIT_DISPLAY = {
 class PreseasonResult:
     event_type: str
     inserted_events: int = 0
+    injuries: int = 0
     snap_rows: int = 0
     games_scheduled: int = 0
     games_simmed: int = 0
@@ -199,6 +247,20 @@ def active_user_team_id(con: sqlite3.Connection) -> int | None:
         return None
     row = con.execute("SELECT user_team_id FROM active_game_save_view LIMIT 1").fetchone()
     return int(row["user_team_id"]) if row and row["user_team_id"] is not None else None
+
+
+def rookie_player_ids_for_team(con: sqlite3.Connection, team_id: int) -> set[int]:
+    rows = con.execute(
+        """
+        SELECT player_id
+        FROM players
+        WHERE team_id = ?
+          AND COALESCE(status, 'Active') NOT IN ('Retired', 'Released', 'Free Agent')
+          AND (COALESCE(is_rookie, 0) = 1 OR COALESCE(years_exp, 0) = 0)
+        """,
+        (int(team_id),),
+    ).fetchall()
+    return {int(row["player_id"]) for row in rows}
 
 
 def team_rows(con: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -702,6 +764,7 @@ def process_free_agency_movement(
             seed=seed,
             force=True,
             no_cap_snapshot=True,
+            skip_cap_cleanup=True,
             apply=True,
         )
         return free_agency_processor.process_tick(con, args, days=max(1, days))
@@ -715,6 +778,198 @@ def process_free_agency_movement(
             message=f"Preseason free-agency movement skipped: {exc}",
         )
         return {"cpu_offers": 0, "signings": 0, "demand_drops": 0, "retirements": 0}
+
+
+def process_workout_injuries(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    event_date: str,
+    event_type: str,
+    source: str,
+    seed: str | int | None,
+    one_injury_chance: float,
+    two_injury_chance: float,
+    rookie_only: bool = False,
+) -> int:
+    injury_model.ensure_schema(con)
+    existing = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM game_injury_events
+        WHERE season = ?
+          AND game_date = ?
+          AND source = ?
+        """,
+        (int(season), event_date, source),
+    ).fetchone()
+    if existing and int(existing["count"] or 0) > 0:
+        return 0
+
+    injury_model.resolve_available_injuries(con, event_date)
+    marker = injury_notifications.max_event_id(con)
+    rng = random.Random(str(seed or f"{game_id}:{season}:{event_date}:{event_type}:injuries"))
+    context = {
+        "offseason_workout": "during offseason workouts",
+        "rookie_minicamp": "during rookie minicamp",
+        "rookie_development_program": "during rookie development work",
+        "rookie_readiness_program": "during rookie readiness work",
+        "rookie_training_camp": "during rookie training camp",
+        "training_camp": "during training camp",
+    }.get(event_type, "during team workouts")
+    events: list[injury_model.InjuryEvent] = []
+    used: set[int] = set()
+    play_number = 860000
+
+    for team_id in injury_model.active_team_ids(con):
+        candidates = injury_model.load_practice_candidates(
+            con,
+            season=season,
+            team_id=team_id,
+            as_of_date=event_date,
+        )
+        if rookie_only:
+            rookie_ids = rookie_player_ids_for_team(con, team_id)
+            candidates = [player for player in candidates if player.player_id in rookie_ids]
+        if not candidates:
+            continue
+        team_roll = rng.random()
+        injuries_for_team = 0
+        if team_roll < one_injury_chance:
+            injuries_for_team = 1
+        if team_roll < two_injury_chance:
+            injuries_for_team = 2
+        for _ in range(injuries_for_team):
+            player = injury_model.weighted_practice_choice(rng, candidates, used)
+            if player is None:
+                break
+            used.add(player.player_id)
+            high_impact = rng.random() < (0.018 if event_type == "training_camp" else 0.010)
+            item = injury_model.choose_catalog_entry(
+                rng,
+                player,
+                mechanism="practice",
+                high_impact=high_impact,
+            )
+            days = injury_model.expected_days_for_injury(rng, player, item)
+            status = injury_model.status_for_expected_days(days)
+            body_risk = injury_model.existing_body_risk(player, item.body_part)
+            description = f"{player.name} picked up a {item.label.lower()} {context}."
+            if body_risk:
+                description += " Prior body-area history increased the risk."
+            severity = "severe" if item.severity_bucket == "major" and days >= 180 else item.severity_bucket
+            events.append(
+                injury_model.InjuryEvent(
+                    play_number=play_number,
+                    quarter=0,
+                    clock_tenths=0,
+                    player_id=player.player_id,
+                    team_id=player.team_id,
+                    opponent_player_id=None,
+                    opponent_team_id=None,
+                    injury_code=item.injury_code,
+                    injury_label=item.label,
+                    body_region=item.body_region,
+                    body_part=item.body_part,
+                    severity=severity,
+                    mechanism="practice",
+                    expected_days=days,
+                    expected_games=injury_model.expected_games(days),
+                    status=status,
+                    description=description,
+                )
+            )
+            play_number += 1
+
+    persisted = injury_model.persist_injury_events(
+        con,
+        events,
+        season=season,
+        week=0,
+        game_date=event_date,
+        source=source,
+        source_run_id=None,
+        schedule_game_id=None,
+        run_id=None,
+    )
+    if persisted:
+        injury_notifications.create_injury_notifications(con, min_event_id=marker)
+    return persisted
+
+
+def process_post_preseason_week_three_market_pass(
+    con: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    event_date: str,
+    seed: str | int | None,
+) -> dict[str, int]:
+    if not table_exists(con, "active_player_injuries"):
+        return {"signings": 0, "teams": 0, "specialist_signings": 0}
+    roster_cutdown.ensure_cutdown_schema(con)
+    user_team_id = active_user_team_id(con)
+    rng = random.Random(str(seed or f"{game_id}:{season}:{event_date}:post-pre3-depth"))
+    pressure_rows = con.execute(
+        """
+        SELECT
+            t.team_id,
+            t.abbreviation,
+            p.position,
+            COUNT(*) AS injuries
+        FROM active_player_injuries api
+        JOIN players p ON p.player_id = api.player_id
+        JOIN teams t ON t.team_id = p.team_id
+        WHERE api.resolved_at IS NULL
+          AND api.status IN ('IR', 'PUP', 'NFI', 'Out', 'Doubtful')
+          AND COALESCE(p.status, 'Active') NOT IN ('Free Agent', 'Retired', 'Released')
+        GROUP BY t.team_id, t.abbreviation, p.position
+        ORDER BY injuries DESC, t.abbreviation, p.position
+        """,
+    ).fetchall()
+    teams = {int(row["team_id"]): row for row in team_rows(con)}
+    signed_players: set[int] = set()
+    signed_teams: set[int] = set()
+    signings = 0
+    for row in pressure_rows:
+        if signings >= 12:
+            break
+        team_id = int(row["team_id"])
+        if user_team_id is not None and team_id == user_team_id:
+            continue
+        if team_id in signed_teams:
+            continue
+        group = roster_cutdown.POSITION_TO_GROUP.get(str(row["position"] or "").upper(), "OTHER")
+        if group in {"OTHER", "ST"}:
+            continue
+        minimum = int(roster_cutdown.MIN_ACTIVE_BY_GROUP.get(group, 0) or 0)
+        if minimum and roster_cutdown.active_group_count(con, team_id, group) >= minimum + 1:
+            continue
+        player = roster_cutdown.best_free_agent_group_replacement(con, group=group)
+        if not player:
+            continue
+        player_id = int(player["player_id"])
+        if player_id in signed_players:
+            continue
+        if int(player["overall"] or 0) > 73 and rng.random() < 0.82:
+            continue
+        team = teams.get(team_id)
+        if not team:
+            continue
+        roster_cutdown.sign_free_agent_replacement(
+            con,
+            player=player,
+            team=team,
+            season=season,
+            reason="CPU post-preseason injury depth signing after Week 3.",
+        )
+        signed_players.add(player_id)
+        signed_teams.add(team_id)
+        signings += 1
+    if signings:
+        roster_cutdown.sync_team_cap_space(con)
+    return {"signings": signings, "teams": len(signed_teams), "specialist_signings": 0}
 
 
 def process_training_camp(
@@ -840,6 +1095,19 @@ def process_training_camp(
     inbox += int(storyline_result.get("inbox", 0))
     news += int(storyline_result.get("news", 0))
 
+    camp_injuries = process_workout_injuries(
+        con,
+        game_id=game_id,
+        season=season,
+        event_date=event_date,
+        event_type="training_camp",
+        source="training_camp_practice",
+        seed=f"{game_id}:{season}:{event_date}:camp-injuries",
+        one_injury_chance=0.18,
+        two_injury_chance=0.018,
+        rookie_only=False,
+    )
+
     fa = (
         process_free_agency_movement(
             con,
@@ -855,6 +1123,7 @@ def process_training_camp(
     return PreseasonResult(
         event_type="training_camp",
         inserted_events=inserted,
+        injuries=camp_injuries,
         inbox_messages=inbox,
         league_news_items=news,
         fa_offers=int(fa.get("cpu_offers", 0)),
@@ -1023,6 +1292,29 @@ def process_preseason_week(
     snap_rows = 0
     inbox = 0
     news = 0
+    existing_snap_rows = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM preseason_player_snaps
+        WHERE game_id = ?
+          AND season = ?
+          AND preseason_week = ?
+        """,
+        (game_id, season, preseason_week),
+    ).fetchone()
+    if existing_snap_rows and int(existing_snap_rows["count"] or 0) > 0:
+        return PreseasonResult(
+            event_type=f"preseason_week_{preseason_week}",
+            snap_rows=0,
+            games_scheduled=games_scheduled,
+            games_simmed=games_simmed,
+            inbox_messages=0,
+            league_news_items=0,
+            fa_offers=0,
+            fa_signings=0,
+            fa_demand_drops=0,
+            fa_retirements=0,
+        )
     user_team_id = active_user_team_id(con)
 
     for team in team_rows(con):
@@ -1161,6 +1453,17 @@ def process_preseason_week(
         if process_market
         else {"cpu_offers": 0, "signings": 0, "demand_drops": 0, "retirements": 0}
     )
+    post_preseason_fa = (
+        process_post_preseason_week_three_market_pass(
+            con,
+            game_id=game_id,
+            season=season,
+            event_date=event_date,
+            seed=f"{game_id}:{season}:{event_date}:post-pre3-depth",
+        )
+        if process_market and preseason_week == 3
+        else {"signings": 0, "teams": 0, "specialist_signings": 0}
+    )
     return PreseasonResult(
         event_type=f"preseason_week_{preseason_week}",
         snap_rows=snap_rows,
@@ -1169,7 +1472,11 @@ def process_preseason_week(
         inbox_messages=inbox,
         league_news_items=news,
         fa_offers=int(fa.get("cpu_offers", 0)),
-        fa_signings=int(fa.get("signings", 0)),
+        fa_signings=(
+            int(fa.get("signings", 0))
+            + int(post_preseason_fa.get("signings", 0))
+            + int(post_preseason_fa.get("specialist_signings", 0))
+        ),
         fa_demand_drops=int(fa.get("demand_drops", 0)),
         fa_retirements=int(fa.get("retirements", 0)),
     )
@@ -1177,7 +1484,8 @@ def process_preseason_week(
 
 def result_summary(result: PreseasonResult) -> str:
     pieces = [
-        f"{result.event_type}: camp events={result.inserted_events}",
+        f"{result.event_type}: evaluation events={result.inserted_events}",
+        f"injuries={result.injuries}",
         f"snap rows={result.snap_rows}",
         f"games scheduled={result.games_scheduled}",
         f"games simmed={result.games_simmed}",
@@ -1204,6 +1512,21 @@ def run_for_event(
     process_market: bool = True,
     simulate_games: bool = False,
 ) -> PreseasonResult | None:
+    if event_code in OFFSEASON_WORKOUT_INJURY_EVENTS:
+        config = OFFSEASON_WORKOUT_INJURY_EVENTS[event_code]
+        injuries = process_workout_injuries(
+            con,
+            game_id=game_id,
+            season=season,
+            event_date=event_date,
+            event_type=str(config["event_type"]),
+            source=str(config["source"]),
+            seed=seed or f"{game_id}:{season}:{event_code}:{event_date}:workout-injuries",
+            one_injury_chance=float(config["one_injury_chance"]),
+            two_injury_chance=float(config["two_injury_chance"]),
+            rookie_only=bool(config["rookie_only"]),
+        )
+        return PreseasonResult(event_type=str(config["event_type"]), injuries=injuries)
     if event_code == "VETERAN_TRAINING_CAMP_REPORTING":
         return process_training_camp(
             con,

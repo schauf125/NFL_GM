@@ -31,6 +31,7 @@ import draft_portrait_assets
 import saved_draft_class_package
 import pro_player_fog
 from engine import depth_packages
+from engine import injury_model
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
 
 
@@ -2924,7 +2925,7 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                     CASE market_status WHEN 'available' THEN 0 WHEN 'signed' THEN 1 ELSE 2 END,
                     market_heat DESC,
                     asking_aav DESC
-                LIMIT 100
+                LIMIT 500
                 """,
                 (league_year,),
             ).fetchall()
@@ -2938,6 +2939,7 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                     player_name,
                     position,
                     position_group,
+                    NULL AS is_rookie,
                     market_tier,
                     asking_aav,
                     minimum_aav,
@@ -2950,7 +2952,7 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                     signing_notes
                 FROM free_agent_pool_view
                 ORDER BY asking_aav DESC, player_name
-                LIMIT 100
+                LIMIT 500
                 """
             ).fetchall()
         )
@@ -2958,6 +2960,37 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
         asking = int(player.get("asking_aav") or 0)
         minimum = int(player.get("minimum_aav") or 0)
         player["offer_floor_aav"] = max(asking, minimum)
+    if board and any(player.get("is_rookie") is None for player in board):
+        player_ids = [
+            int(player["player_id"])
+            for player in board
+            if player.get("player_id") is not None
+        ]
+        if player_ids:
+            placeholders = ",".join("?" for _ in player_ids)
+            rookie_map = {
+                int(row["player_id"]): int(row["is_rookie"] or 0)
+                for row in conn.execute(
+                    f"""
+                    SELECT player_id, COALESCE(is_rookie, 0) AS is_rookie
+                    FROM players
+                    WHERE player_id IN ({placeholders})
+                    """,
+                    player_ids,
+                ).fetchall()
+            }
+            for player in board:
+                try:
+                    player["is_rookie"] = rookie_map.get(int(player.get("player_id") or 0), 0)
+                except (TypeError, ValueError):
+                    player["is_rookie"] = 0
+    if board:
+        headshots = export_player_profile_ui_data.headshots(conn)
+        for player in board:
+            try:
+                player["headshot"] = headshots.get(int(player.get("player_id") or 0))
+            except (TypeError, ValueError):
+                player["headshot"] = None
     if table_exists(conn, "free_agency_offers_view"):
         offers = rows_as_dicts(
             conn.execute(
@@ -3542,6 +3575,8 @@ def depth_chart_summary(
 ) -> dict[str, Any]:
     if not team or not table_exists(conn, "depth_charts"):
         return {"team": team, "rows": [], "roster": [], "units": []}
+    roster_rules.ensure_schema(conn)
+    injury_model.ensure_schema(conn)
     team_row = conn.execute(
         "SELECT team_id, abbreviation, city || ' ' || nickname AS team_name FROM teams WHERE abbreviation = ?",
         (team.upper(),),
@@ -3573,6 +3608,8 @@ def depth_chart_summary(
             include_special=True,
         )
     )
+    storage_slots = set(active_slots)
+    storage_slots.update(depth_packages.legacy_fallback_slots(active_slots))
     contract_year = int(contract_season or season)
     roster_rows = conn.execute(
         """
@@ -3641,11 +3678,15 @@ def depth_chart_summary(
         conn.commit()
     roles = best_roles(conn, season, player_ids, evaluations)
     flex = flex_positions(conn, player_ids)
+    active_injuries = injury_model.active_injuries_by_player(conn, player_ids)
+    ir_statuses = roster_rules.ir_statuses_for_players(conn, player_ids, season=season)
     headshots = export_player_profile_ui_data.headshots(conn)
     roster = []
     for row in roster_rows:
         player_id = int(row["player_id"])
         evaluation = evaluations.get(player_id)
+        injury_rows = active_injuries.get(player_id, [])
+        primary_injury = injury_rows[0] if injury_rows else None
         roster.append({
             "player_id": player_id,
             "player_name": row["player_name"],
@@ -3676,6 +3717,16 @@ def depth_chart_summary(
             } if row["contract_id"] is not None else None,
             "role": roles.get(player_id, {}),
             "flex": flex.get(player_id, []),
+            "activeInjury": {
+                "activeInjuryId": int(primary_injury["active_injury_id"]),
+                "injury": primary_injury["injury_label"],
+                "severity": primary_injury["severity"],
+                "expectedDays": int(primary_injury["expected_days"] or 0),
+                "expectedGames": int(primary_injury["expected_games"] or 0),
+                "status": primary_injury["status"],
+                "returnEarliestDate": primary_injury["return_earliest_date"],
+            } if primary_injury else None,
+            "ir": ir_statuses.get(player_id, {}),
         })
 
     depth_rows = rows_as_dicts(
@@ -3696,7 +3747,7 @@ def depth_chart_summary(
             FROM depth_charts dc
             JOIN players p ON p.player_id = dc.player_id
             WHERE dc.team_id = ?
-              AND dc.position IN ({",".join("?" for _ in active_slots)})
+              AND dc.position IN ({",".join("?" for _ in storage_slots)})
             ORDER BY
                 CASE dc.unit
                     WHEN 'Offense' THEN 1
@@ -3707,7 +3758,7 @@ def depth_chart_summary(
                 dc.position,
                 dc.depth_rank
             """,
-            (team_id, *sorted(active_slots)),
+            (team_id, *sorted(storage_slots)),
         ).fetchall()
     )
     units: dict[str, dict[str, Any]] = {}
@@ -3725,9 +3776,10 @@ def depth_chart_summary(
         slot["players"].append(row)
     offense_slots = {"QB", "RB", "FB", "LWR", "RWR", "SWR", "TE", "LT", "LG", "C", "RG", "RT"}
     for slot_key in sorted(active_slots):
-        if slot_key in depth_packages.SPECIAL_TEAMS_SLOTS:
+        canonical_slot = depth_packages.canonical_slot(slot_key)
+        if canonical_slot in depth_packages.SPECIAL_TEAMS_SLOTS:
             unit_name = "Special Teams"
-        elif slot_key in offense_slots:
+        elif canonical_slot in offense_slots:
             unit_name = "Offense"
         else:
             unit_name = "Defense"

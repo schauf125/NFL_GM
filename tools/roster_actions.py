@@ -27,6 +27,11 @@ from setup_transactions_cap_ledger import ensure_schema as ensure_transaction_sc
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger
 import roster_rules
 
+try:
+    import jersey_numbers
+except ImportError:  # pragma: no cover - supports package-style imports.
+    from tools import jersey_numbers
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
@@ -444,6 +449,12 @@ def action_sign_fa(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (team["team_id"], player["player_id"]),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(team["team_id"]),
+        source="roster_action_sign_fa",
+    )
     ensure_player_normalized_ratings(
         con,
         player["player_id"],
@@ -761,6 +772,12 @@ def action_trade_player(con: sqlite3.Connection, args: argparse.Namespace) -> No
         "UPDATE players SET team_id = ?, status = 'Active' WHERE player_id = ?",
         (to_team["team_id"], player["player_id"]),
     )
+    jersey_numbers.assign_player_number(
+        con,
+        int(player["player_id"]),
+        team_id=int(to_team["team_id"]),
+        source="roster_action_trade",
+    )
     con.execute("DELETE FROM depth_charts WHERE player_id = ?", (player["player_id"],))
     sync_cap_only(con)
     after_from = cap_row(con, from_team_id)
@@ -974,6 +991,7 @@ def main() -> int:
     con.execute("PRAGMA foreign_keys = ON")
     try:
         ensure_all_schema(con)
+        con.commit()
         if args.command == "cap":
             action_cap(con, args)
         elif args.command == "find-player":

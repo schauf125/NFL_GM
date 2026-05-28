@@ -73,6 +73,52 @@ EXCLUSIVE_STARTER_GROUPS = [
 ]
 
 
+def slot_unit(slot: str) -> str:
+    canonical = depth_packages.canonical_slot(slot)
+    if canonical in SPECIAL_STARTER_SLOTS:
+        return "Special Teams"
+    if canonical in OFFENSE_STARTER_SLOTS:
+        return "Offense"
+    return "Defense"
+
+
+def slot_order_index(slot: str) -> tuple[int, int, str]:
+    key = str(slot or "").upper()
+    canonical = depth_packages.canonical_slot(key)
+    if canonical in OFFENSE_STARTER_SLOTS:
+        return (0, OFFENSE_STARTER_SLOTS.index(canonical), key)
+    package_rank = 50
+    for index, prefix in enumerate(depth_packages.DEFENSE_PACKAGE_PREFIXES.values()):
+        if key.startswith(f"{prefix}_"):
+            package_rank = index
+            break
+    if canonical in DEFENSE_STARTER_SLOTS:
+        return (1, package_rank * 100 + DEFENSE_STARTER_SLOTS.index(canonical), key)
+    if canonical in SPECIAL_STARTER_SLOTS:
+        return (2, SPECIAL_STARTER_SLOTS.index(canonical), key)
+    return (9, 999, key)
+
+
+def active_exclusive_groups(active_slots: set[str]) -> list[list[str]]:
+    groups: list[list[str]] = []
+    for base_group in EXCLUSIVE_STARTER_GROUPS:
+        buckets: dict[str, list[str]] = {}
+        for slot in active_slots:
+            canonical = depth_packages.canonical_slot(slot)
+            if canonical not in base_group:
+                continue
+            key = str(slot or "").upper()
+            package = "base"
+            for prefix in depth_packages.DEFENSE_PACKAGE_PREFIXES.values():
+                if key.startswith(f"{prefix}_"):
+                    package = prefix
+                    break
+            buckets.setdefault(package, []).append(key)
+        for bucket in buckets.values():
+            groups.append(sorted(bucket, key=lambda item: base_group.index(depth_packages.canonical_slot(item))))
+    return groups
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -301,8 +347,9 @@ def rebuild_dirty_depth_charts(
 
 
 def legal_candidates(team: match_engine.TeamSnapshot, slot: str) -> list[match_engine.PlayerSnapshot]:
-    positions = match_engine.SLOT_POSITION_FALLBACKS.get(slot, [slot])
-    if slot.upper() == "FB":
+    canonical = depth_packages.canonical_slot(slot)
+    positions = match_engine.SLOT_POSITION_FALLBACKS.get(canonical, [canonical])
+    if canonical == "FB":
         primary_positions = ["FB", "TE"]
         primary = [player for player in team.roster if player.position in primary_positions]
         if primary:
@@ -319,7 +366,7 @@ def depth_sort_score(
     player: match_engine.PlayerSnapshot,
     slot: str,
 ) -> tuple[float, float, float, float]:
-    slot = slot.upper()
+    slot = depth_packages.canonical_slot(slot)
     role_score = team.score_for_slot(player, slot)
     overall = float(player.metadata.get("overall") or player.general_score())
     potential = float(player.metadata.get("potential") or overall)
@@ -446,7 +493,7 @@ def build_slot_depth(
     candidates = legal_candidates(team, slot)
     if not candidates:
         return []
-    limit = SLOT_DEPTH_LIMITS.get(slot, 3)
+    limit = SLOT_DEPTH_LIMITS.get(depth_packages.canonical_slot(slot), 3)
     ordered: list[match_engine.PlayerSnapshot] = []
     if starter:
         ordered.append(starter)
@@ -508,10 +555,8 @@ def rebuild_team_depth(
         )
     )
     starters: dict[str, match_engine.PlayerSnapshot] = {}
-    for group in EXCLUSIVE_STARTER_GROUPS:
-        active_group = [slot for slot in group if slot in active_slots]
-        if active_group:
-            starters.update(choose_starters(team, active_group))
+    for active_group in active_exclusive_groups(active_slots):
+        starters.update(choose_starters(team, active_group))
     for slot in ["QB", "RB", "PK", "KO", "PT", "P", "LS", "KR", "PR", "H"]:
         if slot in active_slots:
             candidates = legal_candidates(team, slot)
@@ -519,14 +564,10 @@ def rebuild_team_depth(
                 starters[slot] = candidates[0]
 
     rows: list[tuple[int, int, str, int, str]] = []
-    all_slots = [
-        slot
-        for slot in OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS + SPECIAL_STARTER_SLOTS
-        if slot in active_slots
-    ]
+    all_slots = sorted(active_slots, key=slot_order_index)
     for slot in all_slots:
         for rank, player in enumerate(build_slot_depth(team, slot, starters.get(slot)), start=1):
-            rows.append((int(team_row["team_id"]), int(player.player_id), slot, rank, SLOT_UNITS.get(slot, "Offense")))
+            rows.append((int(team_row["team_id"]), int(player.player_id), slot, rank, slot_unit(slot)))
 
     if apply:
         con.execute("DELETE FROM depth_charts WHERE team_id = ?", (int(team_row["team_id"]),))
@@ -557,16 +598,14 @@ def audit_team_depth(con: sqlite3.Connection, *, team_row: sqlite3.Row, season: 
         )
     )
     ideal: dict[str, match_engine.PlayerSnapshot] = {}
-    for group in EXCLUSIVE_STARTER_GROUPS:
-        active_group = [slot for slot in group if slot in active_slots]
-        if active_group:
-            ideal.update(choose_starters(team, active_group))
+    for active_group in active_exclusive_groups(active_slots):
+        ideal.update(choose_starters(team, active_group))
     for slot in ["QB", "RB", "PK", "KO", "PT", "P", "LS", "KR", "PR", "H"]:
         candidates = legal_candidates(team, slot)
         if candidates:
             ideal[slot] = candidates[0]
     issues: list[dict[str, object]] = []
-    for slot in [slot for slot in OFFENSE_STARTER_SLOTS + DEFENSE_STARTER_SLOTS if slot in active_slots]:
+    for slot in [slot for slot in sorted(active_slots, key=slot_order_index) if slot_unit(slot) in {"Offense", "Defense"}]:
         best = ideal.get(slot)
         if not best:
             continue

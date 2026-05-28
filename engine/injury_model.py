@@ -318,11 +318,11 @@ def seed_injury_statuses(con: sqlite3.Connection) -> None:
         return
     rows = [
         ("Questionable", "Questionable", 1, 1, 1, 0, "Injured but expected to be available unless recovery slips."),
-        ("Doubtful", "Doubtful", 1, 1, 0, 0, "Injured and unlikely to be available this week."),
-        ("Out", "Out", 1, 1, 0, 0, "Unavailable because of an active injury."),
-        ("IR", "Injured Reserve", 0, 0, 0, 0, "Long-term injury designation."),
-        ("PUP", "Physically Unable to Perform", 0, 0, 0, 0, "Unavailable due to football injury recovery."),
-        ("NFI", "Non-Football Injury", 0, 0, 0, 0, "Unavailable due to non-football injury or illness."),
+        ("Doubtful", "Doubtful", 1, 1, 1, 0, "Injured and unlikely to be available this week."),
+        ("Out", "Out / Active Roster", 1, 1, 1, 0, "Unavailable because of an active injury, but still on the active roster."),
+        ("IR", "Injured Reserve", 0, 1, 0, 0, "Long-term injury designation; counts against cap but not active roster."),
+        ("PUP", "Physically Unable to Perform", 0, 1, 0, 0, "Unavailable due to football injury recovery."),
+        ("NFI", "Non-Football Injury", 0, 1, 0, 0, "Unavailable due to non-football injury or illness."),
     ]
     con.executemany(
         """

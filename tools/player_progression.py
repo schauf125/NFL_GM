@@ -900,13 +900,15 @@ def load_depth_rank(con: sqlite3.Connection, season: int | None = None) -> dict[
                 row,
                 team_abbr=str(row["team"] or ""),
             )
-            active_slots_by_team[int(row["team_id"])] = set(
+            active_slots = set(
                 depth_packages.active_depth_slots(
                     list(info.get("offensePackages") or ["11", "12"]),
                     list(info.get("defensePackages") or ["nickel"]),
                     include_special=True,
                 )
             )
+            active_slots.update(depth_packages.legacy_fallback_slots(active_slots))
+            active_slots_by_team[int(row["team_id"])] = active_slots
     rows = con.execute(
         """
         SELECT team_id, player_id, position, depth_rank

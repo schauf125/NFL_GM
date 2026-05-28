@@ -22,6 +22,7 @@ from typing import Any
 
 import game_flow
 import repair_duplicate_player_names
+import repair_player_data_quality
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -302,6 +303,7 @@ def create_save(args: argparse.Namespace) -> None:
         raise FileExistsError(f"Save folder already exists: {folder}")
 
     backup_sqlite(args.master_db, db_path)
+    repair_player_data_quality.repair(db_path)
     con = game_flow.connect(db_path)
     try:
         repair_duplicate_player_names.repair(con, apply=True)
