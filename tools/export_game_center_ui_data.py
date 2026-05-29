@@ -30,6 +30,7 @@ import scouting
 import draft_portrait_assets
 import saved_draft_class_package
 import pro_player_fog
+import player_accolades
 from engine import depth_packages
 from engine import injury_model
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
@@ -3134,6 +3135,21 @@ def waiver_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
         wire = rows_as_dicts(
             conn.execute(
                 """
+                WITH active_contract_years AS (
+                    SELECT *
+                    FROM (
+                        SELECT
+                            cy.*,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY cy.player_id, cy.season
+                                ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                            ) AS rn
+                        FROM contract_years cy
+                        WHERE cy.season = ?
+                          AND COALESCE(cy.is_active, 1) = 1
+                    )
+                    WHERE rn = 1
+                )
                 SELECT
                     ww.waiver_id,
                     ww.player_id,
@@ -3160,11 +3176,12 @@ def waiver_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
                 JOIN players p ON p.player_id = ww.player_id
                 LEFT JOIN teams ot ON ot.team_id = ww.original_team_id
                 LEFT JOIN waiver_claims wc ON wc.waiver_id = ww.waiver_id
-                LEFT JOIN contracts c ON c.player_id = p.player_id AND COALESCE(c.is_active, 1) = 1
-                LEFT JOIN contract_years cy
-                  ON cy.contract_id = c.contract_id
+                LEFT JOIN active_contract_years cy
+                  ON cy.player_id = p.player_id
                  AND cy.season = ww.season
-                 AND COALESCE(cy.is_active, 1) = 1
+                LEFT JOIN contracts c
+                  ON c.contract_id = cy.contract_id
+                 AND COALESCE(c.is_active, 1) = 1
                 WHERE ww.season = ?
                   AND (ww.status = 'Open' OR ww.resolved_at IS NOT NULL)
                 GROUP BY ww.waiver_id
@@ -3175,7 +3192,7 @@ def waiver_summary(conn: sqlite3.Connection, season: int, user_team_id: int | No
                     p.overall DESC
                 LIMIT 160
                 """,
-                (user_team_id, season),
+                (season, user_team_id, season),
             ).fetchall()
         )
     for row in wire:
@@ -3501,6 +3518,237 @@ def stat_leaders(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
             stat_keys=["offensive_snaps", "defensive_snaps", "special_teams_snaps", "total_snaps"],
             sort_key="total_snaps",
         ),
+    }
+
+
+def award_candidate_line(candidate: player_accolades.Candidate) -> str:
+    stats = candidate.stats or {}
+    stat = player_accolades.stat
+    pos = candidate.position
+    if pos == "QB":
+        return (
+            f"{int(stat(stats, 'pass_yards'))} pass yds, "
+            f"{int(stat(stats, 'pass_tds'))} TD, "
+            f"{int(stat(stats, 'interceptions_thrown'))} INT"
+        )
+    if pos in {"RB", "FB"}:
+        return (
+            f"{int(stat(stats, 'rush_yards'))} rush yds, "
+            f"{int(stat(stats, 'rush_tds'))} rush TD, "
+            f"{int(stat(stats, 'receiving_yards'))} rec yds"
+        )
+    if pos in {"WR", "TE"}:
+        return (
+            f"{int(stat(stats, 'receptions'))} rec, "
+            f"{int(stat(stats, 'receiving_yards'))} yds, "
+            f"{int(stat(stats, 'receiving_tds'))} TD"
+        )
+    if pos in {"OT", "OG", "C"}:
+        return f"{int(stat(stats, 'offensive_snaps', 'total_snaps'))} snaps, {candidate.overall} OVR"
+    if pos in {"IDL", "EDGE", "LB"}:
+        return (
+            f"{stat(stats, 'sacks'):.1f} sacks, "
+            f"{int(stat(stats, 'tackles'))} tkl, "
+            f"{int(stat(stats, 'forced_fumbles'))} FF"
+        )
+    if pos in {"CB", "S"}:
+        return (
+            f"{int(stat(stats, 'interceptions'))} INT, "
+            f"{int(stat(stats, 'pass_deflections'))} PD, "
+            f"{int(stat(stats, 'tackles'))} tkl"
+        )
+    if pos == "K":
+        return f"{int(stat(stats, 'fg_made'))}/{int(stat(stats, 'fg_attempts'))} FG, long {int(stat(stats, 'long_fg'))}"
+    if pos == "P":
+        punts = max(1.0, stat(stats, "punts"))
+        return f"{int(punts)} punts, {stat(stats, 'punt_yards') / punts:.1f} avg"
+    return f"{int(stat(stats, 'total_snaps'))} snaps, {candidate.overall} OVR"
+
+
+def award_candidate_row(
+    candidate: player_accolades.Candidate,
+    score: float,
+    logos: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "playerId": candidate.player_id,
+        "playerName": candidate.name,
+        "position": candidate.position,
+        "positionLabel": player_accolades.POSITION_LABELS.get(candidate.position, candidate.position),
+        "teamId": candidate.team_id,
+        "team": candidate.team_abbr,
+        "teamLogo": logos.get(candidate.team_abbr),
+        "age": candidate.age,
+        "yearsExp": candidate.years_exp,
+        "score": round(float(score or 0), 1),
+        "line": award_candidate_line(candidate),
+        "record": f"{candidate.team_wins}-{candidate.team_losses}" + (f"-{candidate.team_ties}" if candidate.team_ties else ""),
+        "overall": candidate.overall,
+        "potential": candidate.potential,
+    }
+
+
+def award_history_rows(conn: sqlite3.Connection, season: int, logos: dict[str, str]) -> list[dict[str, Any]]:
+    if not table_exists(conn, "player_accolades"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT
+            pa.season,
+            pa.player_id,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            pa.team_id,
+            COALESCE(t.abbreviation, '') AS team,
+            pa.award_key,
+            pa.award_name,
+            pa.award_group,
+            pa.award_position,
+            pa.badge_label,
+            pa.badge_tier,
+            pa.sort_order,
+            pa.source
+        FROM player_accolades pa
+        JOIN players p ON p.player_id = pa.player_id
+        LEFT JOIN teams t ON t.team_id = pa.team_id
+        WHERE pa.season = ?
+        ORDER BY pa.sort_order, pa.award_position, pa.award_name, player_name
+        """,
+        (season,),
+    ).fetchall()
+    output: list[dict[str, Any]] = []
+    for row in rows:
+        team = str(row["team"] or "")
+        output.append({
+            "season": int(row["season"]),
+            "playerId": int(row["player_id"]),
+            "playerName": row["player_name"],
+            "position": player_accolades.normalize_award_position(row["position"]),
+            "teamId": row["team_id"],
+            "team": team,
+            "teamLogo": logos.get(team),
+            "awardKey": row["award_key"],
+            "awardName": row["award_name"],
+            "awardGroup": row["award_group"],
+            "awardPosition": row["award_position"],
+            "badgeLabel": row["badge_label"],
+            "badgeTier": row["badge_tier"],
+            "sortOrder": int(row["sort_order"] or 100),
+            "source": row["source"],
+        })
+    return output
+
+
+def award_ballots(conn: sqlite3.Connection, season: int, logos: dict[str, str]) -> dict[str, Any]:
+    candidates = player_accolades.load_candidates(conn, season)
+    if not candidates:
+        return {
+            "mvp": [],
+            "rookie": [],
+            "comeback": [],
+            "positionOfYear": [],
+            "allPro": [],
+            "proBowl": [],
+            "candidateCount": 0,
+        }
+
+    def top_rows(pool: list[player_accolades.Candidate], scorer: Any, limit: int) -> list[dict[str, Any]]:
+        scored = [(candidate, scorer(candidate)) for candidate in pool]
+        scored = [(candidate, score) for candidate, score in scored if score and score > 0]
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return [award_candidate_row(candidate, score, logos) for candidate, score in scored[:limit]]
+
+    all_pro: list[dict[str, Any]] = []
+    pro_bowl: list[dict[str, Any]] = []
+    for position in player_accolades.ALL_PRO_SLOTS:
+        pool = player_accolades.candidate_pool_by_position(candidates, position)
+        if not pool:
+            continue
+        label = player_accolades.POSITION_LABELS.get(position, position)
+        slots = int(player_accolades.ALL_PRO_SLOTS[position])
+        pro_slots = int(player_accolades.PRO_BOWL_SLOTS.get(position, slots))
+        all_pro.append({
+            "position": position,
+            "label": label,
+            "slots": slots,
+            "firstTeam": [
+                award_candidate_row(candidate, player_accolades.position_score(candidate), logos)
+                for candidate in pool[:slots]
+            ],
+            "secondTeam": [
+                award_candidate_row(candidate, player_accolades.position_score(candidate), logos)
+                for candidate in pool[slots: slots * 2]
+            ],
+        })
+        pro_bowl.append({
+            "position": position,
+            "label": label,
+            "slots": pro_slots,
+            "players": [
+                award_candidate_row(candidate, player_accolades.position_score(candidate), logos)
+                for candidate in pool[:pro_slots]
+            ],
+        })
+
+    rookies = [candidate for candidate in candidates if candidate.is_rookie and player_accolades.games(candidate) >= 6]
+    comeback = [candidate for candidate in candidates if player_accolades.comeback_score(candidate) > 0]
+    rookie_scorer = getattr(player_accolades, "rookie_score", player_accolades.position_score)
+    return {
+        "mvp": top_rows(candidates, player_accolades.mvp_score, 8),
+        "rookie": top_rows(rookies, rookie_scorer, 8),
+        "comeback": top_rows(comeback, player_accolades.comeback_score, 8),
+        "positionOfYear": [],
+        "allPro": all_pro,
+        "proBowl": pro_bowl,
+        "candidateCount": len(candidates),
+    }
+
+
+def awards_summary(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
+    logos = team_logo_map(conn)
+    player_accolades.ensure_schema(conn)
+    winners = [
+        row for row in award_history_rows(conn, season, logos)
+        if not (row.get("awardKey") == "POSITION_OF_YEAR" and row.get("source") == player_accolades.SOURCE)
+    ]
+    final_rows = [row for row in winners if row.get("awardKey") != "SUPER_BOWL_TITLE"]
+    ballots = award_ballots(conn, season, logos)
+    major_keys = {"MVP", "ROOKIE_OF_YEAR", "COMEBACK_PLAYER_OF_YEAR"}
+    final = {
+        "major": [row for row in winners if row.get("awardKey") in major_keys],
+        "firstTeamAllPro": [row for row in winners if row.get("awardKey") == "FIRST_TEAM_ALL_PRO"],
+        "secondTeamAllPro": [row for row in winners if row.get("awardKey") == "SECOND_TEAM_ALL_PRO"],
+        "proBowl": [row for row in winners if row.get("awardKey") == "PRO_BOWL"],
+        "champions": [row for row in winners if row.get("awardKey") == "SUPER_BOWL_TITLE"],
+    }
+    recent_seasons: list[int] = []
+    if table_exists(conn, "player_accolades"):
+        recent_seasons = [
+            int(row["season"])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT season
+                FROM player_accolades
+                ORDER BY season DESC
+                LIMIT 8
+                """
+            ).fetchall()
+        ]
+    return {
+        "season": season,
+        "finalized": bool(final_rows),
+        "status": "Final" if final_rows else "Projected",
+        "counts": {
+            "candidateCount": ballots.get("candidateCount", 0),
+            "finalRows": len(winners),
+            "major": len(final["major"]),
+            "allPro": len(final["firstTeamAllPro"]) + len(final["secondTeamAllPro"]),
+            "proBowl": len(final["proBowl"]),
+            "champions": len(final["champions"]),
+        },
+        "ballots": ballots,
+        "final": final,
+        "recentSeasons": recent_seasons,
     }
 
 
@@ -4341,7 +4589,7 @@ def command_set(
         "draftSkipOne": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 1 --until-user-pick --no-cap-snapshot --apply",
         "draftSkipToUser": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --until-user-pick --no-cap-snapshot --apply",
         "draftSkip": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --until-user-pick --no-cap-snapshot --apply",
-        "draftFinish": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --include-user-pick --no-cap-snapshot --apply",
+        "draftFinish": f"python tools\\play.py draft-room skip --draft-year {draft_year_value} --count 999 --include-user-pick --no-cap-snapshot --no-pause-on-trade --apply",
         "draftPick": f"python tools\\play.py draft-room pick --draft-year {draft_year_value} --prospect-id <id> --no-cap-snapshot --apply",
         "depthChartShow": f"python tools\\play.py depth-chart show --team {team}",
         "depthChartSet": f"python tools\\play.py depth-chart set --team {team} --position <slot> --rank <rank> --player-id <id> --apply",
@@ -4506,6 +4754,7 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "log": flow_log(conn),
             "season": season_summary(conn, current_season, user_team_id),
             "stats": stat_leaders(conn, current_season),
+            "awards": awards_summary(conn, current_season),
             "transactions": league_transactions_summary(conn, limit=400),
             "injuries": injury_center_summary(conn, current_date=current_date, user_team_id=user_team_id),
             "leagueNews": league_news.build_ui_payload(conn, limit=80),

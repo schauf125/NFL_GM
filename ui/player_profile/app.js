@@ -24,6 +24,7 @@
     playerName: document.getElementById("playerName"),
     positionLine: document.getElementById("positionLine"),
     heroFacts: document.getElementById("heroFacts"),
+    heroAccolades: document.getElementById("heroAccolades"),
     tabs: Array.from(document.querySelectorAll(".profile-tabs button")),
     view: document.getElementById("profileView"),
     cardViewLink: document.getElementById("cardViewLink"),
@@ -344,6 +345,65 @@
     return bestRole(player).grade;
   }
 
+  function accoladeData(player) {
+    return player?.accolades || { badges: [], history: [], count: 0 };
+  }
+
+  function accoladeTierClass(tier) {
+    return `accolade-${String(tier || "default").replace(/_/g, "-")}`;
+  }
+
+  function accoladeBadge(item, compact) {
+    const badge = node("span", `accolade-badge ${accoladeTierClass(item.badgeTier)}${compact ? " compact" : ""}`);
+    const count = Number(item.count || 0);
+    const label = item.badgeLabel || item.awardPosition || item.awardName || "Award";
+    const name = item.awardName || "Accolade";
+    const latest = item.latestSeason ? `${item.latestSeason}` : "";
+    badge.title = count > 1 ? `${name}, ${count} times` : name;
+    badge.append(node("strong", null, count > 1 ? `${label} x${count}` : label));
+    if (!compact) {
+      badge.append(node("span", null, count > 1 && latest ? `${name} | latest ${latest}` : name));
+    }
+    return badge;
+  }
+
+  function accoladeStrip(items, compact = false, limit = 12) {
+    const strip = node("div", compact ? "accolade-strip compact" : "accolade-strip");
+    (items || []).slice(0, limit).forEach((item) => strip.append(accoladeBadge(item, compact)));
+    return strip;
+  }
+
+  function accoladeTimeline(rows) {
+    const stack = node("div", "list-stack accolade-history");
+    (rows || []).forEach((item) => {
+      const row = node("div", "accolade-row");
+      const left = append(node("div"), [
+        accoladeBadge(item, true),
+        node("strong", null, item.awardName || "Accolade"),
+        node("div", "subtle", item.team || "Season honor"),
+      ]);
+      append(row, [left, node("span", "season-badge", item.season || "-")]);
+      stack.append(row);
+    });
+    return stack;
+  }
+
+  function renderAccoladesPanel(player, emptyText = "No major accolades logged yet.") {
+    const accolades = accoladeData(player);
+    const count = Number(accolades.count || 0);
+    const panelNode = panel("Trophy Case", count ? `${count} career honor${count === 1 ? "" : "s"}` : "Accolades");
+    if (!count) {
+      panelNode.append(node("div", "empty-state", emptyText));
+      return panelNode;
+    }
+    panelNode.append(accoladeStrip(accolades.badges || [], false, 16));
+    const recent = (accolades.history || []).slice(0, 5);
+    if (recent.length) {
+      panelNode.append(accoladeTimeline(recent));
+    }
+    return panelNode;
+  }
+
   function renderFilters() {
     refs.seasonLabel.textContent = `${data.season || ""}`;
     const teams = Array.from(new Set(players.map((player) => player.team.abbr))).sort();
@@ -454,6 +514,14 @@
         refs.heroFacts.append(node("span", "chip", value));
       }
     });
+    if (refs.heroAccolades) {
+      const badges = accoladeData(player).badges || [];
+      refs.heroAccolades.replaceChildren();
+      refs.heroAccolades.hidden = !badges.length;
+      if (badges.length) {
+        refs.heroAccolades.append(accoladeStrip(badges, true, 9));
+      }
+    }
     refs.tabs.forEach((tab) => tab.classList.toggle("active", tab.dataset.view === state.view));
   }
 
@@ -948,6 +1016,8 @@
 
   function renderHistory(player) {
     const root = document.createDocumentFragment();
+    root.append(renderAccoladesPanel(player));
+
     const historyPanel = panel("Transaction History", `${(player.transactions || []).length} rows`);
     if (!player.transactions || !player.transactions.length) {
       historyPanel.append(node("div", "empty-state", "No transaction history found."));

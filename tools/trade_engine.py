@@ -851,12 +851,33 @@ def player_trade_value(
     """
     player = con.execute(
         """
-        SELECT p.*, c.end_year, c.aav, c.total_years, c.is_active AS contract_active
+        WITH current_contract AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.player_id,
+                    c.end_year,
+                    c.aav,
+                    c.total_years,
+                    c.is_active AS contract_active,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.season
+                        ORDER BY cy.cap_hit DESC, c.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                JOIN contracts c ON c.contract_id = cy.contract_id
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+                  AND COALESCE(c.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
+        SELECT p.*, c.end_year, c.aav, c.total_years, c.contract_active
         FROM players p
-        LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+        LEFT JOIN current_contract c ON c.player_id = p.player_id
         WHERE p.player_id = ?
         """,
-        (player_id,),
+        (season, player_id),
     ).fetchone()
     if not player:
         return 0.0
@@ -1514,17 +1535,37 @@ def trade_asset_players(
     if not player_ids:
         return []
     placeholders = ",".join("?" for _ in player_ids)
+    effective_season = int(season or current_season(con))
     players = rows_as_dicts(
         con.execute(
             f"""
+            WITH current_contract AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        cy.player_id,
+                        c.aav,
+                        c.end_year,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY cy.player_id, cy.season
+                            ORDER BY cy.cap_hit DESC, c.contract_id DESC
+                        ) AS rn
+                    FROM contract_years cy
+                    JOIN contracts c ON c.contract_id = cy.contract_id
+                    WHERE cy.season = ?
+                      AND COALESCE(cy.is_active, 1) = 1
+                      AND COALESCE(c.is_active, 1) = 1
+                )
+                WHERE rn = 1
+            )
             SELECT p.player_id, p.team_id, p.first_name || ' ' || p.last_name AS name,
                    p.position, p.age, p.overall, p.potential, p.dev_trait,
                    c.aav, c.end_year
             FROM players p
-            LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+            LEFT JOIN current_contract c ON c.player_id = p.player_id
             WHERE p.player_id IN ({placeholders})
             """,
-            player_ids,
+            [effective_season, *player_ids],
         ).fetchall()
     )
     if evaluator_team_id is not None and season is not None:
@@ -1654,11 +1695,30 @@ def ai_gm_generate_trade_proposals(
     # Identify trade-block candidates (surplus, aging, expensive)
     trade_block = con.execute(
         """
+        WITH current_contract AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.player_id,
+                    c.aav,
+                    c.end_year,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.season
+                        ORDER BY cy.cap_hit DESC, c.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                JOIN contracts c ON c.contract_id = cy.contract_id
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+                  AND COALESCE(c.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT p.player_id, p.first_name || ' ' || p.last_name AS name,
                p.position, p.age, p.overall, p.potential,
                c.aav, c.end_year
         FROM players p
-        LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+        LEFT JOIN current_contract c ON c.player_id = p.player_id
         WHERE p.team_id = ?
           AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out')
           AND p.position NOT IN ('K', 'P', 'LS')
@@ -1668,7 +1728,7 @@ def ai_gm_generate_trade_proposals(
         ORDER BY p.age DESC, c.aav DESC
         LIMIT 10
         """,
-        (team_id,),
+        (season, team_id),
     ).fetchall()
 
     if not trade_block:

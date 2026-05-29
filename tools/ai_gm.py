@@ -1786,6 +1786,21 @@ def top_players(
     return rows_as_dicts(
         con.execute(
             f"""
+            WITH active_contract_years AS (
+                SELECT *
+                FROM (
+                    SELECT
+                        cy.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY cy.player_id, cy.team_id, cy.season
+                            ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                        ) AS rn
+                    FROM contract_years cy
+                    WHERE cy.season = ?
+                      AND COALESCE(cy.is_active, 1) = 1
+                )
+                WHERE rn = 1
+            )
             SELECT
                 p.player_id,
                 p.first_name || ' ' || p.last_name AS player_name,
@@ -1800,12 +1815,12 @@ def top_players(
                 cy.dead_cap_if_cut_pre_june1,
                 c.end_year
             FROM players p
+            LEFT JOIN active_contract_years cy
+              ON cy.player_id = p.player_id
+             AND cy.team_id = p.team_id
             LEFT JOIN contracts c
-              ON c.player_id = p.player_id
+              ON c.contract_id = cy.contract_id
              AND c.is_active = 1
-            LEFT JOIN contract_years cy
-              ON cy.contract_id = c.contract_id
-             AND cy.season = ?
             WHERE p.team_id = ?
             ORDER BY p.overall {direction}, p.potential {direction}, player_name
             LIMIT ?
@@ -2193,19 +2208,39 @@ def _build_trade_context(
     # Trade-block candidates: surplus / aging / expensive players
     trade_block = rows_as_dicts(con.execute(
         """
+        WITH active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT p.player_id,
                p.first_name || ' ' || p.last_name AS name,
                p.position, p.age, p.overall, p.potential,
                c.aav, c.end_year
         FROM players p
-        LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+        LEFT JOIN active_contract_years cy
+          ON cy.player_id = p.player_id
+         AND cy.team_id = p.team_id
+        LEFT JOIN contracts c
+          ON c.contract_id = cy.contract_id
+         AND c.is_active = 1
         WHERE p.team_id = ?
           AND p.overall < 82
           AND (p.age >= 28 OR p.overall < 72)
         ORDER BY p.age DESC, c.aav DESC
         LIMIT 12
         """,
-        (team_id,),
+        (season, team_id),
     ).fetchall())
 
     # Current draft picks available for trade

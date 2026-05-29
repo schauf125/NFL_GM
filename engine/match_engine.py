@@ -68,7 +68,7 @@ from engine.specialist_behavior import (
 from engine import depth_packages, injury_model
 
 
-ENGINE_VERSION = "0.1.8"
+ENGINE_VERSION = "0.1.9"
 TENTHS_PER_SECOND = 10
 REGULATION_QUARTER_TENTHS = 15 * 60 * TENTHS_PER_SECOND
 OVERTIME_TENTHS = 10 * 60 * TENTHS_PER_SECOND
@@ -3218,13 +3218,13 @@ class MatchEngine:
         return True, offense, field_pos, down, distance
 
     def play_call_is_pass(self, offense: TeamSnapshot, defense: TeamSnapshot, down: int, distance: int, field_pos: int) -> bool:
-        pass_rate = 0.56
+        pass_rate = 0.54
         if down == 1:
-            pass_rate -= 0.04
+            pass_rate -= 0.05
         elif down == 2 and distance >= 8:
-            pass_rate += 0.09
+            pass_rate += 0.08
         elif down == 3 and distance >= 7:
-            pass_rate += 0.24
+            pass_rate += 0.22
         elif down == 3 and distance <= 3:
             pass_rate -= 0.12
         if field_pos >= 80:
@@ -3950,11 +3950,11 @@ class MatchEngine:
         replacement_penalty = max(0.0, 72.0 - runner_overall)
         low_run_trait_penalty = max(0.0, 70.0 - runner_score)
 
-        stuff_chance = clamp(0.160 - trench_advantage * 0.0020 - runner_advantage * 0.00100, 0.060, 0.290)
-        explosive_chance = clamp(0.024 + (runner.rating("speed") - 70) * 0.00135 + (runner.rating("elusiveness") - tackling) * 0.00105, 0.008, 0.095)
+        stuff_chance = clamp(0.145 - trench_advantage * 0.0021 - runner_advantage * 0.00108, 0.050, 0.275)
+        explosive_chance = clamp(0.030 + (runner.rating("speed") - 70) * 0.00145 + (runner.rating("elusiveness") - tackling) * 0.00110, 0.009, 0.105)
         if is_qb_run:
-            stuff_chance = clamp(stuff_chance - 0.025 - (profile.pressure_escape - 70) * 0.00035, 0.035, 0.235)
-            explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.025, 0.145)
+            stuff_chance = clamp(stuff_chance - 0.027 - (profile.pressure_escape - 70) * 0.00035, 0.032, 0.220)
+            explosive_chance = clamp(explosive_chance + 0.020 + (profile.broken_play_creation - 70) * 0.0008, 0.026, 0.150)
         elif rb_profile:
             stuff_chance += replacement_penalty * 0.0026 + low_run_trait_penalty * 0.0015
             bounce_risk = max(0.0, rb_profile.bounce_tendency - rb_profile.one_cut_decisiveness)
@@ -3968,20 +3968,20 @@ class MatchEngine:
                 stuff_chance += max(0.0, rb_profile.bounce_tendency - 76) * 0.00045
             if concept == "power":
                 stuff_chance -= (rb_profile.contact_appetite - 50) * 0.00048
-            stuff_chance = clamp(stuff_chance, 0.045, 0.305)
-            explosive_cap = 0.115
+            stuff_chance = clamp(stuff_chance, 0.038, 0.285)
+            explosive_cap = 0.125
             if runner_overall < 65:
-                explosive_cap = 0.040
+                explosive_cap = 0.046
             elif runner_overall < 70:
-                explosive_cap = 0.058
+                explosive_cap = 0.066
             elif runner_overall < 75:
-                explosive_cap = 0.078
+                explosive_cap = 0.088
             explosive_chance = clamp(explosive_chance, 0.004, explosive_cap)
 
         if self.rng.random() < stuff_chance:
-            yards = int(round(self.rng.gauss(-1.2, 1.5)))
+            yards = int(round(self.rng.gauss(-0.8, 1.5)))
         else:
-            mean = 3.42 + trench_advantage * 0.036 + runner_advantage * 0.023
+            mean = 3.73 + trench_advantage * 0.039 + runner_advantage * 0.025
             if is_qb_run:
                 mean += 1.05 + (profile.pressure_escape - 70) * 0.025
             elif rb_profile:
@@ -4148,7 +4148,7 @@ class MatchEngine:
         pass_block = offense.pass_block_score()
         pass_rush = defense.pass_rush_score(snap_rushers)
         qb_processing = average([qb.rating("processing_speed"), qb.rating("play_recognition"), qb.rating("throw_release")])
-        pressure_chance = clamp(0.255 + (pass_rush - pass_block) * 0.0055 - (qb_processing - 65) * 0.0013, 0.070, 0.530)
+        pressure_chance = clamp(0.270 + (pass_rush - pass_block) * 0.0058 - (qb_processing - 65) * 0.0012, 0.080, 0.545)
         pressured = self.rng.random() < pressure_chance
         concept_sack_modifier = {
             "screen": -0.095,
@@ -4159,13 +4159,13 @@ class MatchEngine:
         }[concept]
         escape_score = average([qb.rating("speed"), qb.rating("acceleration"), qb.rating("agility"), qb.rating("processing_speed")])
         sack_chance = clamp(
-            0.242
+            0.258
             + concept_sack_modifier
-            + (pass_rush - pass_block) * 0.0041
+            + (pass_rush - pass_block) * 0.0043
             - (qb.rating("throw_release") - 65) * 0.0020
             - (escape_score - 65) * 0.0011,
-            0.044,
-            0.360,
+            0.050,
+            0.375,
         )
         if pressured and self.rng.random() < sack_chance:
             rusher = self.select_pass_rusher(defense, snap_rushers)
@@ -4295,7 +4295,7 @@ class MatchEngine:
                 coverage_score += (defender_profile.tackle_finish - 50) * 0.008
         separation = receiver_score - coverage_score
         depth_penalty = max(0, air_yards - 5) * 0.014
-        completion_chance = 0.585 + (qb_score - 65) * 0.0036 + separation * 0.0042 - depth_penalty
+        completion_chance = 0.575 + (qb_score - 65) * 0.0035 + separation * 0.0040 - depth_penalty
         if receiver_profile:
             completion_chance += (receiver_profile.route_pacing - 50) * 0.00075
             completion_chance += (receiver_profile.catch_security - 50) * 0.00055
@@ -4307,12 +4307,12 @@ class MatchEngine:
                 completion_chance += (receiver_profile.sideline_awareness - 50) * 0.00070
                 completion_chance += (receiver_profile.contested_alpha - 50) * 0.00045
         if concept == "screen":
-            completion_chance += 0.07
+            completion_chance += 0.055
         if pressured:
-            completion_chance -= 0.120
+            completion_chance -= 0.135
             if receiver_profile:
                 completion_chance += (receiver_profile.scramble_drill - 50) * 0.00070
-        completion_chance = clamp(completion_chance, 0.205, 0.865)
+        completion_chance = clamp(completion_chance, 0.195, 0.845)
 
         interception_chance = 0.0108 + max(0, air_yards - 6) * 0.00072
         interception_chance += max(0, coverage_score - qb_score) * 0.00038
@@ -4391,10 +4391,10 @@ class MatchEngine:
         tackle_score = defense.tackling_score()
         yac_mean = {
             "quick": 3.3,
-            "short": 3.0,
-            "intermediate": 2.0,
+            "short": 2.8,
+            "intermediate": 1.8,
             "deep": 1.1,
-            "screen": 5.8,
+            "screen": 5.3,
         }[concept] + (yac_score - tackle_score) * 0.035 + separation * 0.016
         if receiver_profile:
             yac_mean += (receiver_profile.yac_intent - 50) * 0.018
@@ -6351,6 +6351,8 @@ def persist_result(
             """,
             (result.away_score, result.home_score, result.schedule_game_id),
         )
+        if counts_for_standings and not force and not rebuild_history:
+            update_records(con, result)
         if rebuild_history:
             rebuild_season_history(con, result.season)
 

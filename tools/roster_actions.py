@@ -154,16 +154,47 @@ def find_player(
     return rows[0]
 
 
-def active_contract(con: sqlite3.Connection, player_id: int) -> sqlite3.Row | None:
+def active_contract(
+    con: sqlite3.Connection,
+    player_id: int,
+    season: int | None = None,
+) -> sqlite3.Row | None:
+    contract_year = int(season or current_season(con))
+    row = con.execute(
+        """
+        SELECT c.*
+        FROM contract_years cy
+        JOIN contracts c ON c.contract_id = cy.contract_id
+        WHERE cy.player_id = ?
+          AND cy.season = ?
+          AND COALESCE(cy.is_active, 1) = 1
+          AND COALESCE(c.is_active, 1) = 1
+        ORDER BY cy.cap_hit DESC, c.contract_id DESC
+        LIMIT 1
+        """,
+        (player_id, contract_year),
+    ).fetchone()
+    if row:
+        return row
     return con.execute(
         """
         SELECT *
         FROM contracts
-        WHERE player_id = ? AND is_active = 1
-        ORDER BY contract_id DESC
+        WHERE player_id = ?
+          AND is_active = 1
+          AND COALESCE(start_year, ?) <= ?
+          AND COALESCE(end_year, ?) >= ?
+        ORDER BY COALESCE(end_year, ?) DESC, contract_id DESC
         LIMIT 1
         """,
-        (player_id,),
+        (
+            player_id,
+            contract_year,
+            contract_year,
+            contract_year,
+            contract_year,
+            contract_year,
+        ),
     ).fetchone()
 
 
@@ -542,7 +573,7 @@ def action_release(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             f"(entry {waiver_id}). Current space: {format_money(after['cap_space'])}."
         )
         return
-    contract = active_contract(con, player["player_id"])
+    contract = active_contract(con, player["player_id"], season)
     dead_cap = 0
     contract_id = None
     if contract:
@@ -723,7 +754,7 @@ def action_trade_player(con: sqlite3.Connection, args: argparse.Namespace) -> No
     season = current_season(con)
     before_from = cap_row(con, from_team_id)
     before_to = cap_row(con, to_team["team_id"])
-    contract = active_contract(con, player["player_id"])
+    contract = active_contract(con, player["player_id"], season)
     contract_id = int(contract["contract_id"]) if contract else None
     old_team_dead_cap = 0
 

@@ -42,6 +42,7 @@ except ImportError:  # pragma: no cover - supports package-style imports.
 
 SOURCE = "roster_cutdown"
 INJURY_REPLACEMENT_SOURCE = "cpu_injury_replacement"
+VETERAN_DEPTH_SOURCE = "cpu_veteran_depth_signing"
 PRACTICE_SQUAD_SANITY_SOURCE = "cpu_practice_squad_sanity"
 PRACTICE_SQUAD_POACH_SOURCE = "cpu_practice_squad_poach"
 PHASE = "Regular Season"
@@ -100,6 +101,18 @@ MIN_ACTIVE_BY_GROUP: dict[str, int] = {
     "LB": 4,
     "CB": 5,
     "S": 3,
+}
+
+VETERAN_FA_DEPTH_FLOORS: dict[str, int] = {
+    "RB": 64,
+    "WR": 66,
+    "TE": 64,
+    "OL": 66,
+    "EDGE": 66,
+    "IDL": 65,
+    "LB": 64,
+    "CB": 65,
+    "S": 64,
 }
 
 
@@ -2274,6 +2287,7 @@ def sign_free_agent_replacement(
     team: sqlite3.Row,
     season: int,
     reason: str,
+    source: str = INJURY_REPLACEMENT_SOURCE,
 ) -> None:
     old_status = player["status"] or FREE_AGENT_STATUS
     aav = minimum_contract_aav(player)
@@ -2333,10 +2347,14 @@ def sign_free_agent_replacement(
         season=season,
         description=(
             f"{team['abbreviation']} signed {player['first_name']} {player['last_name']} "
-            "from free agency as injury replacement depth."
+            + (
+                "from free agency as veteran depth."
+                if source == VETERAN_DEPTH_SOURCE
+                else "from free agency as injury replacement depth."
+            )
         ),
         contract_id=contract_id,
-        source=INJURY_REPLACEMENT_SOURCE,
+        source=source,
     )
 
 
@@ -2403,6 +2421,94 @@ def process_cpu_injury_replacements(
     if promoted or signed:
         sync_team_cap_space(con)
     return {"teams": teams_touched, "promoted": promoted, "signed": signed, "skipped": skipped}
+
+
+def process_cpu_veteran_free_agent_depth_signings(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    game_id: str | None = None,
+    include_user_team: bool = False,
+    max_teams: int = 4,
+    max_signings: int = 4,
+) -> dict[str, int]:
+    """Occasionally add outside veteran depth when PS/internal moves do not solve a weak room."""
+    ensure_cutdown_schema(con)
+    user_team_id = active_user_team_id(con, game_id)
+    candidates: list[tuple[float, sqlite3.Row, str, sqlite3.Row]] = []
+    for team in con.execute("SELECT * FROM teams ORDER BY abbreviation"):
+        team_id = int(team["team_id"])
+        if not include_user_team and user_team_id is not None and team_id == user_team_id:
+            continue
+        if active_roster_count(con, team_id) > 53:
+            continue
+        for group, floor in VETERAN_FA_DEPTH_FLOORS.items():
+            active_count = active_group_count(con, team_id, group)
+            replacement_level = active_group_replacement_level(con, team_id, group, season)
+            target = DEFAULT_ACTIVE_TARGETS.get(group, 0)
+            if active_count >= target + 1 and replacement_level >= floor:
+                continue
+            player = best_free_agent_group_replacement(con, group=group)
+            if not player:
+                continue
+            free_agent = player_candidate(con, player, season=season, team_id=None)
+            if free_agent.overall < floor and free_agent.potential < floor + 6:
+                continue
+            internal = best_practice_squad_group_promotion(
+                con,
+                team_id=team_id,
+                season=season,
+                group=group,
+            )
+            if internal:
+                internal_candidate = player_candidate(con, internal, season=season, team_id=team_id)
+                if (
+                    internal_candidate.overall >= free_agent.overall - 2
+                    or internal_candidate.potential >= free_agent.potential - 2
+                ):
+                    continue
+            deficit_bonus = max(0, target - active_count) * 10.0
+            quality_gap = max(0.0, float(floor) - replacement_level)
+            upgrade = free_agent.overall - replacement_level
+            if upgrade < 3 and deficit_bonus <= 0:
+                continue
+            score = (upgrade * 7.0) + (quality_gap * 3.0) + deficit_bonus
+            if free_agent.age >= 31:
+                score += 2.0
+            candidates.append((score, team, group, player))
+
+    teams_touched: set[int] = set()
+    signed = 0
+    for _score, team, group, player in sorted(candidates, key=lambda item: item[0], reverse=True):
+        if signed >= max_signings or len(teams_touched) >= max_teams:
+            break
+        team_id = int(team["team_id"])
+        if team_id in teams_touched:
+            continue
+        fresh_player = con.execute("SELECT * FROM players WHERE player_id = ?", (int(player["player_id"]),)).fetchone()
+        if not fresh_player or fresh_player["team_id"] is not None or fresh_player["status"] != FREE_AGENT_STATUS:
+            continue
+        reason = f"CPU veteran depth signing: {group} room still looked thin after internal moves."
+        sign_free_agent_replacement(
+            con,
+            player=fresh_player,
+            team=team,
+            season=season,
+            reason=reason,
+            source=VETERAN_DEPTH_SOURCE,
+        )
+        trim_cpu_active_roster_overages(
+            con,
+            season=season,
+            game_id=game_id,
+            include_user_team=include_user_team,
+            team_id=team_id,
+        )
+        teams_touched.add(team_id)
+        signed += 1
+    if signed:
+        sync_team_cap_space(con)
+    return {"teams": len(teams_touched), "signed": signed}
 
 
 def resolve_roster_alerts(con: sqlite3.Connection, game_id: str | None, team_id: int | None = None) -> None:

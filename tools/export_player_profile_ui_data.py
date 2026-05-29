@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+import player_accolades
 import pro_player_fog
 
 
@@ -1000,6 +1001,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
     free_agents = free_agent_profiles(conn)
     transactions = transactions_by_player(conn, player_ids)
     medical = medical_by_player(conn, player_ids)
+    accolades = player_accolades.accolades_for_players(conn, player_ids)
 
     players: list[dict[str, Any]] = []
     for row in players_rows:
@@ -1050,6 +1052,7 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
             "freeAgency": free_agents.get(player_id),
             "transactions": transactions.get(player_id, []),
             "medical": medical.get(player_id, empty_medical_entry()),
+            "accolades": accolades.get(player_id, {"badges": [], "history": [], "count": 0}),
             "summary": build_summary(row, primary_role, player_ratings, career_row),
         })
 

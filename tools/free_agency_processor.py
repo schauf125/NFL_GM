@@ -27,6 +27,7 @@ import cpu_depth_chart
 import league_calendar
 import player_personalities
 import pro_player_fog
+import roster_rules
 from setup_contract_years import rebuild_contract_year, sync_team_cap_space
 from setup_transactions_cap_ledger import insert_transaction, snapshot_cap_ledger
 
@@ -1229,6 +1230,28 @@ def ensure_missing_specialists_for_fa(
     return signed
 
 
+def settle_due_market_waivers(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    target_date: str,
+    include_user_team: bool = False,
+) -> dict[str, int]:
+    if not roster_rules.table_exists(con, "waiver_wire"):
+        return {"rounds": 0, "claims": 0, "processed": 0, "claimed": 0, "cleared": 0}
+    return roster_rules.settle_expired_waivers(
+        con,
+        season=int(league_year),
+        target_date=str(target_date),
+        game_id=None,
+        include_user_team=include_user_team,
+        max_claims_per_team=3,
+        max_claims_total=64,
+        post_cutdown=True,
+        max_rounds=18,
+    )
+
+
 def cpu_late_market(period: sqlite3.Row | dict[str, Any]) -> bool:
     return str(row_value(period, "current_stage", "") or "") == "daily" and int(row_value(period, "day_count", 1) or 1) >= 8
 
@@ -1260,14 +1283,54 @@ def cpu_elite_free_agent(row: sqlite3.Row | dict[str, Any]) -> bool:
 
 
 def cpu_tag_age_fit(group: str, age: int, score: float, overall: int, potential: int) -> bool:
+    """Return whether the CPU should consider a franchise/transition tag.
+
+    Tags are much more expensive than normal retention. Use true top-end
+    actual/potential checks so a useful but non-elite veteran cannot be tagged
+    only because the blended market score likes his role or position.
+    """
     if group == "QB":
-        return age <= 34 and overall >= 84 and potential >= 86
+        return age <= 33 and overall >= 85 and potential >= 87 and score >= 86
     if group == "RB":
-        return age <= 27 and score >= 88
-    if group in {"WR", "TE", "EDGE", "CB", "S", "LB"}:
-        return age <= 30 and (overall >= 84 or potential >= 88 or score >= 86)
-    if group in {"OT", "IOL", "IDL"}:
-        return age <= 31 and (overall >= 84 or potential >= 88 or score >= 86)
+        return age <= 26 and overall >= 88 and score >= 88
+    if group == "WR":
+        if age <= 28:
+            return (
+                (overall >= 86 and potential >= 88)
+                or (overall >= 84 and potential >= 92)
+                or (overall >= 85 and score >= 91)
+            )
+        return age <= 30 and overall >= 89 and potential >= 90 and score >= 90
+    if group == "TE":
+        return age <= 28 and ((overall >= 86 and potential >= 88) or (overall >= 85 and score >= 90))
+    if group == "EDGE":
+        return age <= 29 and (
+            (overall >= 86 and potential >= 88)
+            or (overall >= 84 and potential >= 92)
+            or (overall >= 85 and score >= 90)
+        )
+    if group == "CB":
+        return age <= 28 and (
+            (overall >= 84 and potential >= 87)
+            or (overall >= 82 and potential >= 92)
+            or (overall >= 84 and score >= 90)
+        )
+    if group in {"S", "LB"}:
+        return age <= 28 and ((overall >= 87 and potential >= 88) or (overall >= 86 and score >= 91))
+    if group == "OT":
+        return age <= 30 and (
+            (overall >= 85 and potential >= 88)
+            or (overall >= 83 and potential >= 92)
+            or (overall >= 85 and score >= 90)
+        )
+    if group == "IOL":
+        return age <= 29 and ((overall >= 87 and potential >= 88) or (overall >= 86 and score >= 91))
+    if group == "IDL":
+        return age <= 30 and (
+            (overall >= 86 and potential >= 88)
+            or (overall >= 84 and potential >= 91)
+            or (overall >= 85 and score >= 90)
+        )
     return False
 
 
@@ -1306,7 +1369,7 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
         "S": [(60, 3_000_000), (64, 4_800_000), (68, 7_500_000), (72, 10_500_000), (74, 12_000_000), (76, 14_500_000), (80, 19_000_000), (99, 24_000_000)],
         "EDGE": [(64, 4_800_000), (68, 7_800_000), (72, 10_800_000), (74, 12_000_000), (76, 15_000_000), (78, 17_500_000), (80, 22_000_000), (99, 34_000_000)],
         "IDL": [(64, 4_200_000), (68, 7_000_000), (72, 10_500_000), (76, 14_000_000), (78, 16_000_000), (80, 20_000_000), (99, 28_000_000)],
-        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 12_000_000), (78, 14_800_000), (80, 25_500_000), (84, 31_000_000), (88, 37_000_000), (99, 43_000_000)],
+        "WR": [(64, 4_000_000), (68, 6_800_000), (72, 10_000_000), (76, 12_000_000), (78, 14_800_000), (80, 20_000_000), (84, 28_000_000), (88, 36_000_000), (99, 43_000_000)],
         "TE": [(64, 3_500_000), (68, 6_000_000), (72, 8_500_000), (76, 10_800_000), (78, 12_500_000), (80, 16_500_000), (86, 22_000_000), (99, 27_000_000)],
         "OT": [(64, 4_500_000), (68, 8_000_000), (72, 11_500_000), (74, 12_000_000), (76, 17_500_000), (80, 25_000_000), (99, 32_000_000)],
         "IOL": [(64, 3_500_000), (68, 6_000_000), (72, 9_000_000), (74, 11_000_000), (76, 13_000_000), (78, 15_500_000), (82, 20_000_000), (99, 25_000_000)],
@@ -1357,6 +1420,15 @@ def cpu_true_quality_aav_cap(row: sqlite3.Row | dict[str, Any]) -> int:
             cap = min(cap, 10_500_000)
         if overall < 72 and potential <= overall + 2:
             cap *= 0.90
+    if group == "WR" and overall < 80:
+        if age <= 25 and potential >= 91:
+            cap = min(cap, 22_000_000)
+        elif age <= 26 and potential >= 86:
+            cap = min(cap, 19_000_000)
+            upside_bonus = min(upside_bonus, 1.06)
+        else:
+            cap = min(cap, 16_000_000)
+            upside_bonus = min(upside_bonus, 1.04)
     return round_to(cap * upside_bonus, 50_000)
 
 
@@ -3467,6 +3539,12 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         ),
     )
     period = active_period(con, args.league_year)
+    opening_waivers = settle_due_market_waivers(
+        con,
+        league_year=int(args.league_year),
+        target_date=str(args.start_date),
+        include_user_team=bool(getattr(args, "cpu_controls_user_team", False)),
+    )
     cpu_restructures = cpu_restructure_core_contracts_for_fa(con, period, user_team=user_team)
     cpu_cap_releases = cpu_release_bad_contracts_for_fa(con, period, user_team=user_team, max_total=24)
     cpu_strategic_releases = cpu_release_strategic_cap_casualties_for_fa(
@@ -3543,6 +3621,7 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
             f"CPU own-player FA re-signings: {cpu_retained}. "
             f"User auto-FA plan offers: {user_plan.get('offers', 0)}. "
             f"Opening CPU offers: {opening_cpu_offers}. "
+            f"Due waivers settled: {opening_waivers.get('processed', 0)}. "
             f"Elapsed contract cleanup: {deactivated_elapsed_after_rights}. "
             f"Cap compliance: {cap_cleanup.get('teams', 0)} team(s), "
             f"{cap_cleanup.get('restructures', 0)} restructure(s), "
@@ -3890,20 +3969,40 @@ def load_team_group_counts(con: sqlite3.Connection) -> dict[tuple[int, str], int
 
 
 def load_team_active_group_spend(con: sqlite3.Connection) -> dict[tuple[int, str], int]:
+    season = default_league_year(con)
     rows = con.execute(
         """
+        WITH active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT
             p.team_id,
             p.position,
             SUM(COALESCE(c.aav, 0)) AS active_aav
         FROM players p
+        LEFT JOIN active_contract_years cy
+          ON cy.player_id = p.player_id
+         AND cy.team_id = p.team_id
         LEFT JOIN contracts c
-          ON c.player_id = p.player_id
+          ON c.contract_id = cy.contract_id
          AND c.is_active = 1
         WHERE p.team_id IS NOT NULL
           AND p.status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
         GROUP BY p.team_id, p.position
-        """
+        """,
+        (season,),
     ).fetchall()
     spend: dict[tuple[int, str], int] = {}
     for row in rows:
@@ -4109,18 +4208,37 @@ def team_group_active_spend(
     *,
     exclude_player_id: int | None = None,
 ) -> dict[str, int]:
+    season = default_league_year(con)
     rows = con.execute(
         """
+        WITH active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT p.player_id, p.position, COALESCE(c.aav, 0) AS aav
         FROM players p
+        LEFT JOIN active_contract_years cy
+          ON cy.player_id = p.player_id
+         AND cy.team_id = p.team_id
         LEFT JOIN contracts c
-          ON c.player_id = p.player_id
+          ON c.contract_id = cy.contract_id
          AND c.is_active = 1
         WHERE p.team_id = ?
           AND p.status IN ('Active', 'IR', 'PUP', 'Reserve/Future')
           AND (? IS NULL OR p.player_id <> ?)
         """,
-        (int(team_id), exclude_player_id, exclude_player_id),
+        (season, int(team_id), exclude_player_id, exclude_player_id),
     ).fetchall()
     total = 0
     premium_count = 0
@@ -4231,7 +4349,7 @@ def cpu_final_signing_guardrails(
         )
 
     quality_cap = cpu_true_quality_aav_cap(market)
-    if own_retention and (score >= 82 or potential >= 88):
+    if own_retention and (score >= 82 or (score >= 80 and potential >= 90)):
         quality_cap = int(quality_cap * 1.10)
     if aav > int(quality_cap * 1.08):
         return False, (
@@ -4954,6 +5072,17 @@ def cpu_retain_own_free_agents(
         low, high = cpu_aav_bounds(player)
         aav = round_to(rng.randint(low, high))
         aav = preference_adjusted_aav(player, aav, rng)
+        retention_cap = cpu_true_quality_aav_cap(player)
+        group = normalized_group(player)
+        overall = true_overall(player)
+        potential = int(row_value(player, "potential", overall) or overall)
+        if group == "WR" and overall < 80 and potential < 91:
+            retention_cap = min(retention_cap, 19_500_000)
+        if aav > retention_cap:
+            aav = round_to(retention_cap)
+        minimum_aav = int(row_value(player, "minimum_aav", 0) or 0)
+        if minimum_aav and aav < minimum_aav:
+            continue
         if cap and int(cap["cap_space"] or 0) - team_spend.get(int(player["previous_team_id"]), 0) < aav:
             continue
         years = preferred_years_for_offer(
@@ -5439,15 +5568,14 @@ def cpu_release_bad_contracts_for_fa(
                 league_year=league_year,
             ):
                 continue
-            if savings < 2_000_000:
-                continue
-            if group == "QB" and overall >= 68:
-                continue
-            if overall >= 76 and savings < 8_000_000:
-                continue
-            if overall >= 72 and savings < 4_500_000:
-                continue
-            if cap_hit < 4_000_000:
+            release_ok, _reason = cap_compliance_release_grade(
+                con,
+                candidate,
+                team_id=int(team["team_id"]),
+                cap_space=cap_space,
+                min_space=reserve,
+            )
+            if not release_ok:
                 continue
             try:
                 contract_negotiations.release_player(
@@ -7526,6 +7654,13 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
             else:
                 cap_cleanup[key] = int(cap_cleanup.get(key) or 0) + int(value or 0)
     fresh_period = active_period(con, args.league_year)
+    sync_active_game_to_date(con, str(fresh_period["current_date"]))
+    waiver_settlement = settle_due_market_waivers(
+        con,
+        league_year=int(args.league_year),
+        target_date=str(fresh_period["current_date"]),
+        include_user_team=bool(getattr(args, "cpu_controls_user_team", False)),
+    )
     log_event(
         con,
         league_year=args.league_year,
@@ -7536,7 +7671,8 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
             f"Free agency advanced. CPU offers: {created}. User auto-plan offers: {user_plan.get('offers', 0)}. "
             f"Signings: {signed}. Specialist signings: {specialist_signings}. "
             f"Demand drops: {demand_drops}. Retirements: {retirements}. "
-            f"Strategic releases: {cpu_strategic_releases}."
+            f"Strategic releases: {cpu_strategic_releases}. "
+            f"Due waivers settled: {waiver_settlement.get('processed', 0)}."
         ),
     )
     if demand_drops:
@@ -7559,6 +7695,10 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         "cap_releases": cpu_cap_releases,
         "strategic_releases": cpu_strategic_releases,
         "post_advance_signings": signed_after_advance,
+        "waiver_claims": waiver_settlement.get("claims", 0),
+        "waivers_processed": waiver_settlement.get("processed", 0),
+        "waivers_claimed": waiver_settlement.get("claimed", 0),
+        "waivers_cleared": waiver_settlement.get("cleared", 0),
         "deactivated_contracts": deactivated_contracts,
         "cap_cleanup_teams": cap_cleanup.get("teams", 0),
         "cap_cleanup_restructures": cap_cleanup.get("restructures", 0),
@@ -7719,7 +7859,8 @@ def action_advance_hour(args: argparse.Namespace) -> None:
         f"Advanced one free-agency hour ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
         f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
-        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
+        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s), "
+        f"{result.get('waivers_processed', 0)} waiver(s) settled."
     )
 
 
@@ -7730,7 +7871,8 @@ def action_advance_day(args: argparse.Namespace) -> None:
         f"Advanced {args.days} free-agency day(s) ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
         f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
-        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s)."
+        f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s), "
+        f"{result.get('waivers_processed', 0)} waiver(s) settled."
     )
 
 

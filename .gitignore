@@ -82,6 +82,9 @@ tmp/
 *.bak
 tempCodeRunnerFile.py
 
+# Source-scrape caches used while rebuilding historical accolades.
+data/real_player_accolades/wiki_cache/
+
 # Player headshots are large generated/downloaded assets. Use Git LFS later
 # if we decide they should travel with the repo.
 graphics/players/**/headshots/

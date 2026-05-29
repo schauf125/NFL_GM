@@ -288,6 +288,24 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         )
           AND cyv.is_active = 1;
 
+        DROP VIEW IF EXISTS current_contracts_view;
+        CREATE VIEW current_contracts_view AS
+        SELECT
+            c.*,
+            cyv.contract_year_id,
+            cyv.season AS contract_season,
+            cyv.contract_year_number,
+            cyv.base_salary,
+            cyv.cap_hit,
+            cyv.cash_due,
+            cyv.dead_cap_if_cut_pre_june1,
+            cyv.dead_cap_if_cut_post_june1_current,
+            cyv.dead_cap_if_cut_post_june1_next
+        FROM contracts c
+        JOIN current_contract_years_view cyv
+          ON cyv.contract_id = c.contract_id
+        WHERE c.is_active = 1;
+
         DROP VIEW IF EXISTS team_top51_cap_detail_view;
         CREATE VIEW team_top51_cap_detail_view AS
         SELECT

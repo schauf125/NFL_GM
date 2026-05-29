@@ -20,6 +20,7 @@ import game_flow  # noqa: E402
 import daily_processor  # noqa: E402
 import league_calendar  # noqa: E402
 import league_schedule  # noqa: E402
+import player_accolades  # noqa: E402
 import player_progression  # noqa: E402
 import player_retirement  # noqa: E402
 import postseason  # noqa: E402
@@ -64,6 +65,7 @@ def team_abbr(con: sqlite3.Connection, team_id: int | None) -> str:
 def ensure_schema(con: sqlite3.Connection) -> None:
     postseason.ensure_schema(con)
     game_flow.ensure_schema(con)
+    player_accolades.ensure_schema(con)
     con.executescript(
         """
         CREATE TABLE IF NOT EXISTS season_completions (
@@ -425,6 +427,8 @@ def action_complete(args: argparse.Namespace) -> None:
             print(f"  Would rebuild {next_season} schedule from actual {args.season} standings.")
             if not args.no_progression:
                 print(f"  Would run offseason progression/regression for {args.season}->{next_season}.")
+            if not args.no_awards:
+                print(f"  Would generate season awards and player accolades for {args.season}.")
             if not args.no_retirements:
                 print("  Would run offseason retirement decisions.")
             if not args.no_advance_date and active_game_advance_needed(con, target_offseason_date):
@@ -472,6 +476,23 @@ def action_complete(args: argparse.Namespace) -> None:
             raise ValueError(f"{next_season} schedule failed validation.")
         for warning in validation.warnings:
             print(f"Schedule warning: {warning}")
+
+        accolade_result = None
+        if args.no_awards:
+            print("Skipped season awards/accolades.")
+        else:
+            print("")
+            print("Generating season awards/accolades...")
+            accolade_result = player_accolades.generate_season_accolades(
+                con,
+                args.season,
+                force=args.force_awards,
+            )
+            print(
+                "Accolades: "
+                f"{accolade_result['inserted']} generated, "
+                f"{accolade_result['skipped_existing']} existing skipped."
+            )
 
         progression_result = None
         if args.no_progression:
@@ -535,6 +556,8 @@ def action_complete(args: argparse.Namespace) -> None:
             print(f"Progression run id: {progression_result['run_id']}")
         if retirement_result:
             print(f"Retirements: {retirement_result['retired']}")
+        if accolade_result:
+            print(f"Accolades generated: {accolade_result['inserted']}")
     finally:
         con.close()
 
@@ -566,6 +589,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace an existing unplayed next-season schedule.",
     )
     complete_parser.add_argument("--no-advance-date", action="store_true", help="Do not advance the active save date.")
+    complete_parser.add_argument("--no-awards", action="store_true", help="Do not generate player awards/accolades.")
+    complete_parser.add_argument("--force-awards", action="store_true", help="Replace existing generated accolades for this season.")
     complete_parser.add_argument("--no-progression", action="store_true", help="Do not run automatic offseason progression/regression.")
     complete_parser.add_argument("--progression-seed", type=int, help="Seed for automatic offseason progression. Defaults to <season><next season>.")
     complete_parser.add_argument("--force-progression", action="store_true", help="Replace an existing progression run for this season transition.")

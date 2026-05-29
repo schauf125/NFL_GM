@@ -791,9 +791,36 @@ def today(con: sqlite3.Connection) -> str:
     row = con.execute(
         "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
     ).fetchone()
-    if row:
+    if row and row["setting_value"]:
         return row["setting_value"]
-    return con.execute("SELECT date('now')").fetchone()[0]
+    try:
+        row = con.execute(
+            """
+            SELECT "current_date"
+            FROM active_game_save_view
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    except sqlite3.OperationalError:
+        pass
+    try:
+        row = con.execute(
+            """
+            SELECT "current_date"
+            FROM game_saves
+            WHERE status = 'active'
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row["current_date"]:
+            return str(row["current_date"])
+    except sqlite3.OperationalError:
+        pass
+    return f"{current_season(con)}-06-01"
 
 
 def current_week(con: sqlite3.Connection) -> int | None:
@@ -808,8 +835,8 @@ def current_week(con: sqlite3.Connection) -> int | None:
         return None
 
 
-def phase_for_transactions(con: sqlite3.Connection) -> str:
-    target_date = today(con)
+def phase_for_transactions(con: sqlite3.Connection, target_date: str | None = None) -> str:
+    target_date = target_date or today(con)
     try:
         row = con.execute(
             """
@@ -924,6 +951,7 @@ def set_player_status(
     new_status: str,
     season: int,
     reason: str,
+    effective_date: str | None = None,
 ) -> None:
     old_status = player["status"]
     con.execute(
@@ -944,7 +972,7 @@ def set_player_status(
         )
         VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (player["player_id"], old_status, new_status, today(con), season, reason),
+        (player["player_id"], old_status, new_status, effective_date or today(con), season, reason),
     )
 
 
@@ -969,12 +997,14 @@ def log_transaction(
     new_status: str | None = None,
     contract_id: int | None = None,
     description: str | None = None,
+    transaction_date: str | None = None,
 ) -> int:
+    tx_date = transaction_date or today(con)
     transaction_id, _inserted = insert_transaction(
         con,
-        transaction_date=today(con),
+        transaction_date=tx_date,
         season=season,
-        phase=phase_for_transactions(con),
+        phase=phase_for_transactions(con, tx_date),
         transaction_type=transaction_type,
         team_id=team_id,
         secondary_team_id=secondary_team_id,
@@ -1180,6 +1210,17 @@ def league_trade_deadline(con: sqlite3.Connection, season: int) -> str | None:
         (season,),
     ).fetchone()
     return str(row["event_start_date"]) if row and row["event_start_date"] else None
+
+
+def waiver_rule_season_for_date(waiver_date: str, fallback_season: int) -> int:
+    """Map a transaction date to the season whose waiver deadline controls vets."""
+    try:
+        parsed = datetime.fromisoformat(str(waiver_date)).date()
+    except ValueError:
+        return fallback_season
+    if parsed.month <= 2:
+        return parsed.year - 1
+    return parsed.year
 
 
 def calendar_event_date(con: sqlite3.Connection, season: int, event_code: str) -> str | None:
@@ -1814,8 +1855,8 @@ def waiver_required_for_player(
     years_exp = row_int(player, "years_exp", 0)
     if years_exp < 4:
         return True
-    deadline = league_trade_deadline(con, season)
     date_value = waiver_date or today(con)
+    deadline = league_trade_deadline(con, waiver_rule_season_for_date(date_value, season))
     if deadline and date_value >= deadline:
         return True
     return False
@@ -1915,6 +1956,11 @@ def place_player_on_waivers(
 ) -> int:
     if player["status"] in {"Free Agent", "Retired", WAIVED_STATUS}:
         raise ValueError(f"{player_name(player)} cannot be waived from status {player['status']}.")
+    waiver_date = waiver_date or today(con)
+    if not waiver_required_for_player(con, player, season=season, waiver_date=waiver_date):
+        raise ValueError(
+            f"{player_name(player)} is a vested veteran before the trade deadline; release them instead of waiving."
+        )
     open_existing = con.execute(
         """
         SELECT waiver_id
@@ -1925,7 +1971,6 @@ def place_player_on_waivers(
     ).fetchone()
     if open_existing:
         return int(open_existing["waiver_id"])
-    waiver_date = waiver_date or today(con)
     claim_deadline = claim_deadline or default_claim_deadline(waiver_date)
     from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
     contract = active_contract(con, player["player_id"])
@@ -1937,6 +1982,7 @@ def place_player_on_waivers(
         new_status=WAIVED_STATUS,
         season=season,
         reason=reason or "Placed on waivers.",
+        effective_date=waiver_date,
     )
     clear_depth_chart(con, int(player["player_id"]))
     cur = con.execute(
@@ -1968,6 +2014,7 @@ def place_player_on_waivers(
         old_status=player["status"],
         new_status=WAIVED_STATUS,
         description=f"Placed {player_name(player)} on waivers. Claim deadline: {claim_deadline}.",
+        transaction_date=waiver_date,
     )
     return int(cur.lastrowid)
 
@@ -2858,6 +2905,7 @@ def release_player_after_waiver_roster_move(
     player: sqlite3.Row,
     season: int,
     reason: str,
+    transaction_date: str | None = None,
 ) -> None:
     contract_id = deactivate_active_contract(con, int(player["player_id"]))
     from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
@@ -2868,6 +2916,7 @@ def release_player_after_waiver_roster_move(
         contract_id=contract_id,
         season=season,
         player_label=player_name(player),
+        process_date=transaction_date,
     )
     set_player_status(
         con,
@@ -2876,6 +2925,7 @@ def release_player_after_waiver_roster_move(
         new_status="Free Agent",
         season=season,
         reason=reason,
+        effective_date=transaction_date,
     )
     clear_depth_chart(con, int(player["player_id"]))
     log_transaction(
@@ -2889,6 +2939,7 @@ def release_player_after_waiver_roster_move(
         old_status=player["status"],
         new_status="Free Agent",
         description=f"Released {player_name(player)} as the corresponding move after a waiver claim.",
+        transaction_date=transaction_date,
     )
 
 
@@ -3101,7 +3152,7 @@ def make_room_for_waiver_claim(
         if not candidate:
             break
         reason = "Corresponding roster move after waiver claim."
-        if waiver_required_for_player(con, candidate, season=season):
+        if waiver_required_for_player(con, candidate, season=season, waiver_date=waiver_date):
             place_player_on_waivers(
                 con,
                 player=candidate,
@@ -3111,7 +3162,13 @@ def make_room_for_waiver_claim(
                 source="waiver_claim_corresponding_move",
             )
         else:
-            release_player_after_waiver_roster_move(con, player=candidate, season=season, reason=reason)
+            release_player_after_waiver_roster_move(
+                con,
+                player=candidate,
+                season=season,
+                reason=reason,
+                transaction_date=waiver_date,
+            )
         moved += 1
     return moved
 
@@ -3120,6 +3177,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
     ensure_schema(con)
     seed_rules(con)
     process_date = args.date or today(con)
+    defer_cap_sync = bool(getattr(args, "defer_cap_sync", False))
     rows = con.execute(
         """
         SELECT *
@@ -3165,6 +3223,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 new_status="Active",
                 season=int(waiver["season"]),
                 reason=f"Claimed off waivers by {winner['claiming_team']}.",
+                effective_date=process_date,
             )
             con.execute(
                 """
@@ -3206,6 +3265,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 old_status=player["status"],
                 new_status="Active",
                 description=f"{winner['claiming_team']} awarded waiver claim for {player_name(player)}.",
+                transaction_date=process_date,
             )
             print(
                 f"Awarded {player_name(player)} to {winner['claiming_team']} "
@@ -3231,6 +3291,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 new_status="Free Agent",
                 season=int(waiver["season"]),
                 reason="Cleared waivers.",
+                effective_date=process_date,
             )
             con.execute(
                 """
@@ -3251,6 +3312,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 old_status=player["status"],
                 new_status="Free Agent",
                 description=f"{player_name(player)} cleared waivers and became a free agent.",
+                transaction_date=process_date,
             )
             print(
                 f"{player_name(player)} cleared waivers "
@@ -3258,8 +3320,9 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
             )
             cleared_count += 1
         processed += 1
-    rebuild_contract_years(con)
-    sync_team_cap_space(con)
+    if not defer_cap_sync:
+        rebuild_contract_years(con)
+        sync_team_cap_space(con)
     print(f"Processed {processed} waiver entr{'y' if processed == 1 else 'ies'}.")
     return {"processed": processed, "claimed": claimed_count, "cleared": cleared_count}
 
@@ -3317,7 +3380,7 @@ def settle_expired_waivers(
         )
         process_result = action_process_waivers(
             con,
-            argparse.Namespace(date=process_date, all_open=False),
+            argparse.Namespace(date=process_date, all_open=False, defer_cap_sync=True),
         )
         total_claims += int(claim_result.get("claims", 0))
         total_processed += int((process_result or {}).get("processed", 0))
@@ -3326,6 +3389,9 @@ def settle_expired_waivers(
         rounds += 1
         if int((process_result or {}).get("processed", 0)) <= 0:
             break
+    if total_processed > 0:
+        rebuild_contract_years(con)
+        sync_team_cap_space(con)
     return {
         "rounds": rounds,
         "claims": total_claims,

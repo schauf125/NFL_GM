@@ -74,6 +74,21 @@ def get_roster(cursor, team_id):
             FROM player_ratings
             WHERE season = ?
             GROUP BY player_id
+        ),
+        active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
         )
         SELECT
             p.player_id, p.first_name, p.last_name, p.position,
@@ -100,8 +115,12 @@ def get_roster(cursor, team_id):
                 END
             ) AS sim_role
         FROM players p
+        LEFT JOIN active_contract_years cy
+            ON cy.player_id = p.player_id
+           AND cy.team_id = p.team_id
         LEFT JOIN contracts c
-            ON c.player_id = p.player_id AND c.is_active = 1
+            ON c.contract_id = cy.contract_id
+           AND c.is_active = 1
         LEFT JOIN best_role br
             ON br.player_id = p.player_id
         LEFT JOIN rating_pivot rp
@@ -133,7 +152,7 @@ def get_roster(cursor, team_id):
             sim_rating DESC,
             p.last_name,
             p.first_name
-    """, (SIM_SEASON, SIM_SEASON, team_id))
+    """, (SIM_SEASON, SIM_SEASON, SIM_SEASON, team_id))
     return cursor.fetchall()
 
 def get_depth_chart(cursor, team_id):

@@ -230,6 +230,14 @@ def accuracy_caps_for_evidence(
     primary = max(0.0, float(primary_play_snaps or 0.0))
 
     if pos == "QB":
+        if years >= 8 and age >= reveal_age:
+            return 0.98, 0.92
+        if years >= 8:
+            return 0.96, 0.88
+        if years >= 6 and age >= reveal_age - 1:
+            return 0.94, 0.86
+        if years >= 5 and primary >= 320:
+            return 0.92, 0.82
         if age >= reveal_age and years >= 5 and primary >= 950:
             return 0.98, 0.92
         if primary >= 950 and years >= 3:
@@ -315,6 +323,14 @@ def baseline_accuracy(
         years_exp=years,
     )
     pos = position.upper()
+    accolade_text = str(row_value(player, "accolades", "") or "").lower()
+    public_qb_track_record = pos == "QB" and (
+        years >= 12
+        or (
+            years >= 8
+            and any(marker in accolade_text for marker in ("mvp", "pro bowl", "all-pro", "sb ", "super bowl"))
+        )
+    )
     if age >= reveal_age:
         if pos == "QB" and years <= 2:
             overall_accuracy, potential_accuracy = 0.66, 0.46
@@ -342,6 +358,9 @@ def baseline_accuracy(
         age_track = clamp((age - 21) / max(1, reveal_age - 21), 0.0, 1.0) * 0.32
         overall_accuracy = base + age_track
         potential_accuracy = overall_accuracy - 0.10
+    if public_qb_track_record:
+        overall_accuracy = max(overall_accuracy, 0.94)
+        potential_accuracy = max(potential_accuracy, 0.86)
     overall_accuracy, potential_accuracy = apply_accuracy_caps(
         position,
         overall_accuracy,

@@ -6,6 +6,7 @@
     "season",
     "playoffTree",
     "stats",
+    "awards",
     "leagueNews",
     "transactions",
     "injuries",
@@ -60,12 +61,15 @@
     depthLayoutUnlocked: false,
     depthLayoutOverrides: loadDepthLayoutOverrides(),
     selectedCalendarItem: null,
+    inboxTab: "main",
     calendarBoxScores: {},
     calendarBoxScoreLoadingId: null,
     calendarLiveFocus: false,
     boxScoreModal: null,
     injuryModal: null,
     injuryModalContext: null,
+    injuryAutoManageChecked: false,
+    injuryAutoManageSaving: false,
     rosterCutdownPrompt: null,
     rosterCutdownPromptDismissedKey: null,
     fifthYearOptionPromptDismissedKey: null,
@@ -75,7 +79,10 @@
     newsFilter: "all",
     statsLiveSeason: null,
     statsLoading: false,
+    awardsLiveSeason: null,
+    awardsLoading: false,
     seasonLiveSeason: null,
+    seasonLiveKey: null,
     seasonLoading: false,
     calendarLiveKey: null,
     calendarLoading: false,
@@ -150,6 +157,15 @@
     "postseason_round",
     "complete_season",
   ]);
+  const USER_CPU_MANAGED_SIM_ACTIONS = new Set([
+    "sim_week",
+    "sim_season",
+    "advance_next_event",
+    "advance_to_date",
+    "advance_to_draft",
+    "advance_next_league_year",
+    "complete_season",
+  ]);
 
   const refs = {
     seasonLabel: document.getElementById("seasonLabel"),
@@ -189,6 +205,18 @@
     "postseason",
     "postseason_round",
     "complete_season",
+    "advance_next_league_year",
+  ]);
+  const AWARDS_REFRESH_ACTIONS = new Set([
+    "new_june1_save",
+    "load_game",
+    "sim_week",
+    "sim_season",
+    "postseason",
+    "postseason_round",
+    "complete_season",
+    "advance_next_event",
+    "advance_to_date",
     "advance_next_league_year",
   ]);
   const CALENDAR_REFRESH_ACTIONS = new Set([
@@ -479,6 +507,7 @@
     const exact = {
       "League Table": "Tbl",
       "Stats": "Sta",
+      "Awards": "Awd",
       "Inbox": "In",
       "League News": "News",
       "Transactions": "Txn",
@@ -990,6 +1019,16 @@
       || (!data.activeSave?.user_team && data.activeSave?.game_id);
   }
 
+  function clearObserveInterruptions() {
+    if (!isObserveMode()) return;
+    state.injuryModal = null;
+    state.injuryModalContext = null;
+    state.rosterCutdownPrompt = null;
+    state.pendingRosterCutdownAction = null;
+    state.pendingSimAdvancePrompt = null;
+    state.draftTradeModal = null;
+  }
+
   function hasUserTeam() {
     return Boolean(data.activeSave?.user_team) && !isObserveMode();
   }
@@ -1057,6 +1096,7 @@
     return [
       ["seasonLoading", "season"],
       ["statsLoading", "stats"],
+      ["awardsLoading", "awards"],
       ["calendarLoading", "calendar"],
       ["inboxLoading", "inbox"],
       ["leagueNewsLoading", "news"],
@@ -1608,6 +1648,15 @@
     state.view = view;
     syncGameCenterUrl();
     render();
+    if (
+      state.runnerBusy
+      && SIM_PROGRESS_POLL_ACTIONS.has(state.busyAction)
+      && (view === "season" || view === "playoffTree")
+    ) {
+      loadLiveSeason({ quiet: true }).then((changed) => {
+        if (changed) scheduleRender();
+      });
+    }
     if (options.scroll !== false) {
       refs.content?.scrollIntoView({ block: "start" });
     }
@@ -1680,6 +1729,34 @@
       calendar?.rangeStart || "",
       calendar?.rangeEnd || "",
       days,
+    ]);
+  }
+
+  function seasonDataKey(season) {
+    const standings = (season?.standings || []).map((team) => [
+      team.team_id || team.abbreviation || "",
+      team.wins || 0,
+      team.losses || 0,
+      team.ties || 0,
+      team.points_for || 0,
+      team.points_against || 0,
+    ].join(":"));
+    const recentResults = (season?.recentResults || []).map((game) => [
+      game.game_id,
+      game.played,
+      game.away_score,
+      game.home_score,
+    ].join(":"));
+    const postseason = season?.postseason || {};
+    return JSON.stringify([
+      season?.season || "",
+      season?.totals?.played || 0,
+      season?.totals?.remaining || 0,
+      season?.nextWeek || "",
+      postseason.played || 0,
+      postseason.remaining || 0,
+      standings,
+      recentResults,
     ]);
   }
 
@@ -1775,12 +1852,31 @@
     return true;
   }
 
-  async function loadLiveSeason() {
+  async function loadLiveAwards() {
+    if (!location.protocol.startsWith("http") || state.awardsLoading) return false;
+    const season = data.currentSeason || data.season?.season || "";
+    const payload = await apiGet("awards", "/api/awards", {
+      params: { season },
+      loadingKey: "awardsLoading",
+    });
+    if (!payload) return false;
+    data = {
+      ...data,
+      awards: payload.awards || data.awards || {},
+      awardsGeneratedAt: payload.generatedAt,
+    };
+    state.awardsLiveSeason = String(payload.season || season || "");
+    return true;
+  }
+
+  async function loadLiveSeason(options = {}) {
     if (!location.protocol.startsWith("http") || state.seasonLoading) return false;
     const season = data.season?.season || data.currentSeason || "";
+    const previousKey = seasonDataKey(data.season || {});
     const payload = await apiGet("season", "/api/season", {
       params: { season },
       loadingKey: "seasonLoading",
+      quiet: Boolean(options.quiet),
     });
     if (!payload) return false;
     data = {
@@ -1789,7 +1885,8 @@
       seasonGeneratedAt: payload.generatedAt,
     };
     state.seasonLiveSeason = String(payload.season || season || "");
-    return true;
+    state.seasonLiveKey = seasonDataKey(data.season || {});
+    return previousKey !== state.seasonLiveKey;
   }
 
   async function loadLiveCalendar(options = {}) {
@@ -2009,7 +2106,7 @@
   async function loadLiveInbox() {
     if (!location.protocol.startsWith("http") || state.inboxLoading) return false;
     const payload = await apiGet("inbox", "/api/inbox", {
-      params: { limit: 40 },
+      params: { limit: 160 },
       loadingKey: "inboxLoading",
     });
     if (!payload) return false;
@@ -2263,7 +2360,9 @@
       return;
     }
     state.seasonLiveSeason = null;
+    state.seasonLiveKey = null;
     state.statsLiveSeason = null;
+    state.awardsLiveSeason = null;
     state.calendarLiveKey = null;
     state.inboxLiveKey = null;
     state.leagueNewsLiveKey = null;
@@ -2284,6 +2383,9 @@
     }
     if (STATS_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveLeaders());
+    }
+    if (AWARDS_REFRESH_ACTIONS.has(action)) {
+      refreshes.push(loadLiveAwards());
     }
     if (CALENDAR_REFRESH_ACTIONS.has(action)) {
       refreshes.push(loadLiveCalendar());
@@ -2353,8 +2455,19 @@
     let stopped = false;
     const tick = async () => {
       if (stopped) return;
-      const changed = await loadLiveCalendar({ liveFocus: true, quiet: true });
-      if (changed && state.view === "calendar") scheduleRender();
+      const refreshes = [loadLiveCalendar({ liveFocus: true, quiet: true })];
+      if (state.view === "season" || state.view === "playoffTree") {
+        refreshes.push(loadLiveSeason({ quiet: true }));
+      }
+      if (state.view === "awards") {
+        refreshes.push(loadLiveAwards());
+      }
+      const results = await Promise.allSettled(refreshes);
+      const calendarChanged = results[0]?.status === "fulfilled" && Boolean(results[0].value);
+      const seasonChanged = results.some((result, index) => index > 0 && result.status === "fulfilled" && Boolean(result.value));
+      if ((calendarChanged && state.view === "calendar") || (seasonChanged && (state.view === "season" || state.view === "playoffTree" || state.view === "awards"))) {
+        scheduleRender();
+      }
     };
     tick();
     const interval = window.setInterval(tick, 1600);
@@ -2367,6 +2480,7 @@
   function activeViewRefreshers() {
     if (state.view === "season" || state.view === "playoffTree") return [loadLiveSeason, loadLiveCalendar];
     if (state.view === "stats") return [loadLiveLeaders];
+    if (state.view === "awards") return [loadLiveAwards];
     if (state.view === "inbox") return [loadLiveInbox];
     if (state.view === "leagueNews") return [loadLiveLeagueNews];
     if (state.view === "transactions") return [loadLiveTransactions];
@@ -2411,6 +2525,32 @@
       activeSave: patch.activeSave || data.activeSave,
       commands: { ...(data.commands || {}), ...(patch.commands || {}) },
     };
+  }
+
+  function userInjuryAutoManageEnabled() {
+    return ["1", "true", "yes", "on"].includes(String(data.settings?.user_injury_auto_depth_chart || "").toLowerCase());
+  }
+
+  async function setUserInjuryAutoManage(enabled) {
+    state.injuryAutoManageSaving = true;
+    render();
+    const payload = await apiPost("runner", "/api/run", {
+      action: "injury_auto_manage",
+      params: { enabled: Boolean(enabled) },
+    });
+    state.injuryAutoManageSaving = false;
+    if (!payload || payload.returncode !== 0) {
+      showToast("Injury staff setting could not be saved");
+      render();
+      return false;
+    }
+    if (payload.state) data = payload.state;
+    if (payload.statePatch) applyStatePatch(payload.statePatch);
+    state.lastResult = payload;
+    state.injuryAutoManageChecked = Boolean(enabled);
+    showToast(payload.summary?.message || "Injury staff setting updated");
+    render();
+    return true;
   }
 
   function handleDraftTradeResult(payload, params = {}) {
@@ -2471,17 +2611,28 @@
     params = { ...(params || {}) };
     const setup = data.draftClassSetup || {};
     if (setup.required && !["draft_class_generate", "draft_class_import", "refresh", "load_game", "delete_save"].includes(action)) {
-      showToast("Choose Generate or Import Draft Class before advancing.");
-      render();
-      return;
+      if (isObserveMode()) {
+        params.observe_auto_generate_draft_class = true;
+      } else {
+        showToast("Choose Generate or Import Draft Class before advancing.");
+        render();
+        return;
+      }
     }
     if (!confirmBeforeAction(action, params)) return;
     if (queueSimAdvancePrompt(action, params)) return;
     if (queueRosterCutdownModePrompt(action, params)) return;
     const calendarProgressAction = SIM_PROGRESS_POLL_ACTIONS.has(action);
-    if (calendarProgressAction) {
+    const playoffProgressAction = action === "postseason_round";
+    const keepLeagueTableLive = state.view === "season" || state.view === "playoffTree";
+    if (playoffProgressAction && state.view !== "playoffTree") {
+      switchView("playoffTree", { refresh: false });
+    }
+    if (calendarProgressAction && !keepLeagueTableLive && !playoffProgressAction) {
       state.calendarLiveFocus = true;
       switchView("calendar", { refresh: false });
+    } else if (calendarProgressAction) {
+      state.calendarLiveFocus = !playoffProgressAction;
     }
     state.runnerBusy = true;
     state.busyAction = action;
@@ -2509,11 +2660,11 @@
       if (action === "draft_user_trade") {
         handleDraftTradeResult(payload, params);
       }
-      if (Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
+      if (!isObserveMode() && Array.isArray(payload.injuryAlerts) && payload.injuryAlerts.length) {
         state.injuryModal = payload.injuryAlerts;
         state.injuryModalContext = injuryModalContextForAction(action, params, payload);
       }
-      if (payload.rosterGate && rosterGateStillRelevant() && !suppressRosterGatePrompt(action)) {
+      if (!isObserveMode() && payload.rosterGate && rosterGateStillRelevant() && !suppressRosterGatePrompt(action)) {
         payload.returncode = 1;
         payload.rosterGate.key = payload.rosterGate.key || currentRosterGateKey();
         state.rosterCutdownPrompt = payload.rosterGate;
@@ -2690,6 +2841,7 @@
   function actionCrossesRosterCutdown(action, params = {}) {
     if (isObserveMode() || !data.activeSave?.user_team) return false;
     if (
+      params.cpu_manage_user_team ||
       params.auto_roster_cutdown ||
       params.skip_roster_gate ||
       params.roster_cutdown_choice ||
@@ -2710,6 +2862,26 @@
       return Boolean(targetDate && targetDate >= cutdownDate);
     }
     return false;
+  }
+
+  function canOfferUserCpuManagement(action, params = {}) {
+    if (isObserveMode() || !data.activeSave?.user_team) return false;
+    if (params.cpu_manage_user_team || params.cpu_management_confirmed) return false;
+    return USER_CPU_MANAGED_SIM_ACTIONS.has(action);
+  }
+
+  function userCpuManagementParams(params = {}) {
+    return {
+      ...params,
+      cpu_manage_user_team: true,
+      cpu_management_confirmed: true,
+      advance_preflight_confirmed: true,
+      roster_short_warning_confirmed: true,
+      auto_roster_cutdown: true,
+      skip_roster_gate: true,
+      injury_auto_manage: true,
+      roster_cutdown_choice: "auto",
+    };
   }
 
   function actionReachesRegularSeason(action, params = {}) {
@@ -2779,13 +2951,14 @@
     let primaryLabel = "Continue";
     let tone = "warn";
     const rosterShortfallWarnings = rosterShortfallWarningsForAdvance(action, params);
+    const offerCpuManagement = canOfferUserCpuManagement(action, params);
 
     if (draftNeedsAdvanceWarning(action)) {
       title = "Draft Still In Progress";
       detail = `The ${draft.year || ""} draft still has ${draftRemaining} pick(s) remaining. Continuing will auto-sim the rest of the draft, including any user-team picks still open.`;
       primaryLabel = "Auto Finish Draft And Continue";
       warnings.push("Remaining draft picks will be selected automatically.");
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone, offerCpuManagement };
     }
 
     if (action === "advance_to_draft") {
@@ -2800,7 +2973,7 @@
       checkpoints.push("Run pre-draft scouting sweep and open the draft room paused.");
       if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before the sim starts.");
       warnings.push(...rosterShortfallWarnings);
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone, offerCpuManagement };
     }
 
     if (action === "sim_week" && gameType === "REG" && rosterShortfallWarnings.length) {
@@ -2819,6 +2992,7 @@
         warnings,
         checkpoints,
         tone,
+        offerCpuManagement,
       };
     }
 
@@ -2837,7 +3011,7 @@
         checkpoints.push("Continue with the roster below the normal 53/16 targets.");
       }
       checkpoints.push("Update calendar, standings, stats, injuries, inbox, and league news as games finish.");
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone, offerCpuManagement };
     }
 
     if (action === "advance_next_league_year") {
@@ -2847,7 +3021,7 @@
       if (draftRemaining > 0) warnings.push(`The draft still has ${draftRemaining} remaining pick(s); advancing may auto-finish them.`);
       warnings.push(...rosterShortfallWarnings);
       checkpoints.push("Sync calendar phase, league year, rosters, contracts, and generated offseason setup.");
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone, offerCpuManagement };
     }
 
     if (action === "postseason") {
@@ -2868,26 +3042,35 @@
       checkpoints.push("Finalize draft order and playoff results.");
       checkpoints.push("Apply progression/regression when eligible.");
       checkpoints.push("Prepare contracts, free agency, calendar state, and next offseason checkpoints.");
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone: "good" };
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone: "good", offerCpuManagement };
     }
 
     if (action === "advance_to_date" || action === "advance_next_event") {
       const targetDate = action === "advance_to_date" ? String(params.date || "").slice(0, 10) : firstUpcomingEventDate();
       const targetLabel = action === "advance_next_event" ? (data.calendar?.nextEvent?.event_name || "next calendar event") : shortDate(targetDate);
-      if (!actionCrossesRosterCutdown(action, params) && !draftNeedsAdvanceWarning(action) && !rosterShortfallWarnings.length) return null;
+      if (!offerCpuManagement && !actionCrossesRosterCutdown(action, params) && !draftNeedsAdvanceWarning(action) && !rosterShortfallWarnings.length) return null;
       title = action === "advance_next_event" ? "Advance To Next Event" : "Advance Calendar";
       detail = `This will advance from ${shortDate(currentDate)} to ${targetLabel}.`;
       primaryLabel = rosterShortfallWarnings.length ? "Continue Anyway" : "Advance";
       if (actionCrossesRosterCutdown(action, params)) warnings.push("This crosses roster cutdown; you will choose auto cutdown or pause before advancing.");
       warnings.push(...rosterShortfallWarnings);
-      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone };
+      if (!checkpoints.length) checkpoints.push("Process calendar hooks and any league events due before the target date.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone, offerCpuManagement };
+    }
+
+    if (offerCpuManagement) {
+      title = actionLabel(action);
+      detail = "This will advance the save and process league activity. You can run it normally or let CPU staff manage your team through user-decision gates during this sim.";
+      primaryLabel = "Run Normally";
+      checkpoints.push("Process the selected sim action and refresh affected screens.");
+      return { action, params: { ...params }, title, detail, primaryLabel, warnings, checkpoints, tone: "good", offerCpuManagement };
     }
 
     return null;
   }
 
   function queueSimAdvancePrompt(action, params = {}) {
-    if (isObserveMode() && action === "advance_to_draft") return false;
+    if (isObserveMode()) return false;
     const prompt = simAdvancePromptDetails(action, params);
     if (!prompt) return false;
     state.pendingSimAdvancePrompt = prompt;
@@ -4127,16 +4310,38 @@
       list.append(card);
     });
     const actions = node("div", "injury-alert-actions");
+    const autoChecked = userInjuryAutoManageEnabled() || Boolean(state.injuryAutoManageChecked);
+    const autoControl = node("label", "injury-auto-control");
+    const autoBox = node("input");
+    autoBox.type = "checkbox";
+    autoBox.checked = autoChecked;
+    autoBox.disabled = state.runnerBusy || !runnerMode();
+    autoBox.addEventListener("change", () => {
+      state.injuryAutoManageChecked = autoBox.checked;
+    });
+    append(autoControl, [
+      autoBox,
+      append(node("span", null), [
+        node("strong", null, "Let staff handle injury adjustments"),
+        node("small", null, "CPU will reorder your depth chart and future injury popups will stay off."),
+      ]),
+    ]);
+    async function persistAutoPreferenceIfNeeded() {
+      if (!autoBox.checked || userInjuryAutoManageEnabled()) return true;
+      return setUserInjuryAutoManage(true);
+    }
     const review = node("button", "control-button secondary", "Review Injuries");
     review.type = "button";
-    review.addEventListener("click", () => {
+    review.addEventListener("click", async () => {
+      if (!(await persistAutoPreferenceIfNeeded())) return;
       state.injuryModal = null;
       state.injuryModalContext = null;
       switchView("injuries", { refresh: true });
     });
     const depth = node("button", "control-button secondary", "Adjust Depth Chart");
     depth.type = "button";
-    depth.addEventListener("click", () => {
+    depth.addEventListener("click", async () => {
+      if (!(await persistAutoPreferenceIfNeeded())) return;
       state.injuryModal = null;
       state.injuryModalContext = null;
       switchView("depth", { refresh: true });
@@ -4147,15 +4352,16 @@
     continueSim.title = context.continueAction
       ? "Resume the sim from the next safe checkpoint."
       : "No sim action is available to continue.";
-    continueSim.addEventListener("click", () => {
+    continueSim.addEventListener("click", async () => {
       if (!context.continueAction) return;
+      if (!(await persistAutoPreferenceIfNeeded())) return;
       const nextAction = context.continueAction;
       const nextParams = { ...(context.continueParams || {}) };
       state.injuryModal = null;
       state.injuryModalContext = null;
       runAction(nextAction, nextParams);
     });
-    append(actions, [review, depth, continueSim]);
+    append(actions, [autoControl, review, depth, continueSim]);
     append(body, [
       node("div", "injury-alert-summary", context.paused
         ? "The sim paused at a safe weekly checkpoint. Continue the sim, or stop here to adjust the roster and depth chart."
@@ -4219,6 +4425,7 @@
     auto.addEventListener("click", () => {
       const stoppedAction = prompt.stoppedAction || state.lastResult?.action || "sim_season";
       const stoppedParams = prompt.stoppedParams || state.lastResult?.params || {};
+      state.rosterCutdownPromptDismissedKey = prompt.key || currentRosterGateKey();
       state.rosterCutdownPrompt = null;
       runAction("auto_cutdown_continue", {
         continue_action: stoppedAction,
@@ -4300,12 +4507,14 @@
     auto.addEventListener("click", () => {
       const nextParams = {
         ...params,
+        advance_preflight_confirmed: true,
         auto_roster_cutdown: true,
         roster_cutdown_choice: "auto",
       };
       if (action === "sim_week" || action === "sim_season") {
         nextParams.skip_roster_gate = true;
       }
+      state.rosterCutdownPromptDismissedKey = currentRosterGateKey();
       state.pendingRosterCutdownAction = null;
       runAction(action, nextParams);
     });
@@ -4387,9 +4596,28 @@
       state.pendingSimAdvancePrompt = null;
       runAction(nextAction, nextParams);
     });
-    append(actions, [cancel, run]);
+    const actionButtons = [cancel, run];
+    if (prompt.offerCpuManagement) {
+      const cpuRun = node("button", "control-button good", "CPU Manage & Sim");
+      cpuRun.type = "button";
+      cpuRun.disabled = state.runnerBusy || !runnerMode();
+      cpuRun.title = "Let CPU staff handle user-team roster cutdown, practice squad, and injury depth-chart gates during this sim.";
+      cpuRun.addEventListener("click", () => {
+        const nextAction = prompt.action;
+        const nextParams = userCpuManagementParams(prompt.params || {});
+        state.pendingSimAdvancePrompt = null;
+        state.pendingRosterCutdownAction = null;
+        runAction(nextAction, nextParams);
+      });
+      actionButtons.push(cpuRun);
+    }
+    append(actions, actionButtons);
+    const cpuManagementNote = prompt.offerCpuManagement
+      ? node("div", "sim-advance-cpu-note", "CPU Manage & Sim turns on user-team CPU management for this run: automatic roster cutdown/practice squad, roster gate skipping, and staff injury depth-chart handling.")
+      : null;
     append(body, [
       node("p", null, prompt.detail || "This action will advance the save and process any required league events on the way."),
+      cpuManagementNote,
       warningList.children.length ? warningList : null,
       checkpointList.children.length ? checkpointList : null,
       actions,
@@ -4407,6 +4635,7 @@
 
   function draftClassSetupModal() {
     const setup = data.draftClassSetup || {};
+    if (isObserveMode()) return null;
     if (!setup.required) return null;
     const packages = (setup.packages || []).filter((item) => item.valid);
     if (!state.selectedDraftClassPackage && packages.length) {
@@ -4609,10 +4838,16 @@
   function suppressRosterGatePrompt(action = "") {
     const name = String(action || "");
     if (state.view === "practiceSquad") return true;
-    return name === "practice_squad_assign" || name === "practice_squad_promote" || name === "practice_squad_release" || name === "roster_cutdown_apply";
+    return name === "practice_squad_assign"
+      || name === "practice_squad_promote"
+      || name === "practice_squad_release"
+      || name === "roster_cutdown_apply"
+      || name === "auto_cutdown"
+      || name === "auto_cutdown_continue";
   }
 
   function maybeShowRosterGatePromptFromState() {
+    if (isObserveMode()) return;
     if (state.rosterCutdownPrompt || state.runnerBusy) return;
     if (suppressRosterGatePrompt()) return;
     const phase = String(data.currentPhase || data.activeSave?.current_phase_code || data.settings?.current_calendar_phase || "").toLowerCase();
@@ -4644,20 +4879,22 @@
     if (banner) root.prepend(banner);
     const boxScore = boxScoreModal();
     if (boxScore) root.append(boxScore);
-    const injuryAlerts = injuryAlertModal();
-    if (injuryAlerts) root.append(injuryAlerts);
-    const cutdownPrompt = rosterCutdownModal();
-    if (cutdownPrompt) root.append(cutdownPrompt);
-    const simPrompt = simAdvancePromptModal();
-    if (simPrompt) root.append(simPrompt);
-    const cutdownMode = rosterCutdownModeModal();
-    if (cutdownMode) root.append(cutdownMode);
-    const draftSetup = draftClassSetupModal();
-    if (draftSetup) root.append(draftSetup);
-    const fifthOption = fifthYearOptionModal();
-    if (fifthOption) root.append(fifthOption);
-    const draftTradeAlert = draftTradeAlertModal();
-    if (draftTradeAlert) root.append(draftTradeAlert);
+    if (!isObserveMode()) {
+      const injuryAlerts = injuryAlertModal();
+      if (injuryAlerts) root.append(injuryAlerts);
+      const cutdownPrompt = rosterCutdownModal();
+      if (cutdownPrompt) root.append(cutdownPrompt);
+      const simPrompt = simAdvancePromptModal();
+      if (simPrompt) root.append(simPrompt);
+      const cutdownMode = rosterCutdownModeModal();
+      if (cutdownMode) root.append(cutdownMode);
+      const draftSetup = draftClassSetupModal();
+      if (draftSetup) root.append(draftSetup);
+      const fifthOption = fifthYearOptionModal();
+      if (fifthOption) root.append(fifthOption);
+      const draftTradeAlert = draftTradeAlertModal();
+      if (draftTradeAlert) root.append(draftTradeAlert);
+    }
     refs.content.replaceChildren(root);
   }
 
@@ -4994,6 +5231,9 @@
       metric("Postseason", season.postseason?.remaining ? `${season.postseason.remaining} left` : "Idle", `${season.postseason?.games || 0} games`),
     ]);
     if (state.seasonLoading) summary.append(node("div", "empty-state", "Refreshing live season table..."));
+    if (state.runnerBusy && SIM_PROGRESS_POLL_ACTIONS.has(state.busyAction)) {
+      summary.append(node("div", "empty-state compact-empty", "Live standings are refreshing as games finish."));
+    }
     root.append(summary);
 
     root.append(standingsBoard(season.standings || []));
@@ -5085,6 +5325,9 @@
     const root = document.createDocumentFragment();
     const season = data.season || { postseason: {}, totals: {} };
     const postseason = season.postseason || {};
+    const matchups = postseason.matchups || [];
+    const unplayedMatchups = matchups.filter((game) => Number(game.played || 0) !== 1 && !game.winner_team).length;
+    const remainingPlayoffGames = Math.max(Number(postseason.remaining || 0), unplayedMatchups);
     const currentSeason = season.season || data.currentSeason || "";
     if (runnerMode() && String(state.seasonLiveSeason || "") !== String(currentSeason || "") && !state.seasonLoading) {
       loadLiveSeason().then(render);
@@ -5093,21 +5336,20 @@
     const summary = node("section", "league-table-summary playoff-summary");
     append(summary, [
       metric("Regular Season", Number(season.totals?.remaining || 0) ? "In Progress" : "Complete", `${season.totals?.played || 0}/${season.totals?.games || 0}`),
-      metric("Playoff Games", `${postseason.played || 0}/${postseason.games || 0}`, `${postseason.remaining || 0} remaining`, Number(postseason.remaining || 0) ? "warn" : Number(postseason.games || 0) ? "good" : ""),
+      metric("Playoff Games", `${postseason.played || 0}/${postseason.games || 0}`, `${remainingPlayoffGames} remaining`, remainingPlayoffGames ? "warn" : Number(postseason.games || 0) ? "good" : ""),
       metric("Rounds", String((postseason.rounds || []).length || "-"), "Bracket stages"),
     ]);
     const controls = node("div", "control-bar playoff-tree-actions");
     const simRound = node("button", "control-button good", "Sim Playoff Round");
     simRound.type = "button";
-    simRound.disabled = !runnerMode() || state.runnerBusy || Number(postseason.remaining || 0) <= 0;
-    simRound.title = Number(postseason.remaining || 0) > 0 ? "Sim the next unplayed playoff round." : "No unplayed playoff games remain.";
+    simRound.disabled = !runnerMode() || state.runnerBusy || remainingPlayoffGames <= 0;
+    simRound.title = remainingPlayoffGames > 0 ? "Sim the next unplayed playoff round." : "No unplayed playoff games remain.";
     simRound.addEventListener("click", () => runAction("postseason_round", {}));
     controls.append(simRound);
     summary.append(controls);
     if (state.seasonLoading) summary.append(node("div", "empty-state", "Refreshing playoff tree..."));
     root.append(summary);
 
-    const matchups = postseason.matchups || [];
     if (!playoffTreeVisible()) {
       root.append(node("div", "empty-state", "The playoff tree appears after the regular season is complete."));
       finishRender(root);
@@ -8443,6 +8685,7 @@
   }
 
   function firstRoundDraftTradeAlertEvent() {
+    if (isObserveMode()) return null;
     if (state.view !== "draft") return null;
     const draft = data.draft || {};
     const event = (draft.events || []).find((item) => {
@@ -9337,15 +9580,14 @@
   }
 
   function renderInbox() {
-    setHeader("Inbox", "Messages from scouting, staff, league events, and future front-office systems.");
+    setHeader("Inbox", "Messages from staff, league events, and scouting.");
     const root = document.createDocumentFragment();
     if (runnerMode() && state.inboxLiveKey !== inboxLiveKey() && !state.inboxLoading) {
       loadLiveInbox().then(render);
     }
     root.append(renderInboxPanel({
-      limit: 40,
+      limit: 80,
       title: "Inbox",
-      kicker: "All Messages",
     }));
     const output = runnerOutputPanel();
     if (output) root.append(output);
@@ -9354,17 +9596,27 @@
 
   function renderInboxPanel(options = {}) {
     const scouting = data.scouting || {};
-    const messages = scouting.inbox || [];
-    const unread = Number(scouting.counts?.unread || 0);
+    const allMessages = scouting.inbox || [];
+    const buckets = inboxMessageBuckets(allMessages);
+    const activeTab = state.inboxTab === "scouting" ? "scouting" : "main";
+    const messages = buckets[activeTab] || [];
+    const unread = messages.filter((message) => !Number(message.is_read || 0)).length;
     const limit = Number(options.limit || 12);
-    const p = panel(options.title || "Inbox", options.kicker || (unread ? `${unread} Unread` : "Caught Up"));
+    const p = panel(
+      options.title || "Inbox",
+      activeTab === "scouting"
+        ? `${buckets.scouting.length} scouting message${buckets.scouting.length === 1 ? "" : "s"}`
+        : `${buckets.main.length} front-office message${buckets.main.length === 1 ? "" : "s"}`,
+    );
     const body = panelBody(p);
+    body.append(inboxTabs(buckets));
     const actions = node("div", "command-actions compact-actions");
-    const markRead = node("button", "copy-button", "Mark All Read");
+    const markRead = node("button", "copy-button", activeTab === "scouting" ? "Mark Scouting Read" : "Mark Front Office Read");
     markRead.type = "button";
     markRead.disabled = state.runnerBusy || !runnerMode() || !messages.length;
-    markRead.addEventListener("click", () => runAction("inbox_mark_read", {}));
+    markRead.addEventListener("click", () => runAction("inbox_mark_read", { scope: activeTab }));
     actions.append(markRead);
+    actions.append(node("span", "inbox-action-note", unread ? `${unread} unread in this tab` : "Caught up"));
     body.append(actions);
     if (state.inboxLoading) {
       body.append(node("div", "empty-state", "Refreshing live inbox..."));
@@ -9372,7 +9624,13 @@
 
     const list = node("div", "inbox-list");
     if (!messages.length) {
-      list.append(node("div", "empty-state", "No messages yet. Scouts, league events, and staff notes will land here."));
+      list.append(node(
+        "div",
+        "empty-state",
+        activeTab === "scouting"
+          ? "No scouting messages yet. Prospect reports will collect here."
+          : "No front-office messages yet. Staff, medical, contract, and league notes will collect here.",
+      ));
     } else {
       messages.slice(0, limit).forEach((message) => {
         const card = node("article", `message-card ${Number(message.is_read || 0) ? "" : "unread"}`.trim());
@@ -9393,6 +9651,46 @@
     }
     body.append(list);
     return p;
+  }
+
+  function isScoutingInboxMessage(message) {
+    const category = String(message.category || "").toLowerCase();
+    const source = String(message.source || "").toLowerCase();
+    const relatedTable = String(message.related_table || "").toLowerCase();
+    return category === "scouting"
+      || relatedTable === "draft_prospects"
+      || relatedTable === "draft_classes"
+      || source.includes("scout");
+  }
+
+  function inboxMessageBuckets(messages) {
+    const buckets = { main: [], scouting: [] };
+    (messages || []).forEach((message) => {
+      buckets[isScoutingInboxMessage(message) ? "scouting" : "main"].push(message);
+    });
+    return buckets;
+  }
+
+  function inboxTabs(buckets) {
+    const tabs = node("div", "inbox-tabs");
+    [
+      ["main", "Front Office", buckets.main],
+      ["scouting", "Scouting", buckets.scouting],
+    ].forEach(([key, label, messages]) => {
+      const unread = messages.filter((message) => !Number(message.is_read || 0)).length;
+      const button = node("button", `inbox-tab ${state.inboxTab === key ? "active" : ""}`.trim());
+      button.type = "button";
+      button.addEventListener("click", () => {
+        state.inboxTab = key;
+        render();
+      });
+      append(button, [
+        node("strong", null, label),
+        node("span", null, `${messages.length}${unread ? ` | ${unread} new` : ""}`),
+      ]);
+      tabs.append(button);
+    });
+    return tabs;
   }
 
   function inboxRelatedLink(message) {
@@ -9758,6 +10056,7 @@
         metric("Major", String(injuries.counts?.majorActive || 0), "Longer absences", injuries.counts?.majorActive ? "warn" : ""),
         metric("Recent", String(injuries.counts?.recent || 0), "Latest injury events"),
       ]),
+      injuryStaffControl(),
       injuryFilterRow(),
     ]);
     root.append(summary);
@@ -9775,6 +10074,39 @@
     const output = runnerOutputPanel();
     if (output) root.append(output);
     finishRender(root);
+  }
+
+  function injuryStaffControl() {
+    const enabled = userInjuryAutoManageEnabled();
+    const effectiveEnabled = state.injuryAutoManageSaving ? Boolean(state.injuryAutoManageChecked) : enabled;
+    const wrap = node("section", `injury-staff-control ${effectiveEnabled ? "enabled" : ""}`.trim());
+    const copy = node("div", "injury-staff-copy");
+    append(copy, [
+      node("strong", null, "Staff Injury Response"),
+      node("span", null, effectiveEnabled
+        ? "Your staff is auto-adjusting the depth chart after user-team injuries."
+        : "Pause for user-team injury popups, or let your staff handle depth-chart changes."),
+    ]);
+    const label = node("label", "injury-staff-toggle");
+    const input = node("input");
+    input.type = "checkbox";
+    input.checked = effectiveEnabled;
+    input.disabled = state.runnerBusy || state.injuryAutoManageSaving || !runnerMode();
+    input.addEventListener("change", async () => {
+      const previous = enabled;
+      const next = input.checked;
+      state.injuryAutoManageChecked = next;
+      if (!(await setUserInjuryAutoManage(next))) {
+        state.injuryAutoManageChecked = previous;
+      }
+    });
+    append(label, [
+      input,
+      node("span", "injury-staff-switch"),
+      node("small", null, state.injuryAutoManageSaving ? "Saving..." : (effectiveEnabled ? "Staff Handles" : "Ask Me")),
+    ]);
+    append(wrap, [copy, label]);
+    return wrap;
   }
 
   function injuryFilterRow() {
@@ -11212,6 +11544,168 @@
     finishRender(root);
   }
 
+  function accoladeTierClass(tier) {
+    return `accolade-${String(tier || "default").replace(/_/g, "-")}`;
+  }
+
+  function awardBadge(item, compact = true) {
+    const badge = node("span", `accolade-badge ${accoladeTierClass(item?.badgeTier)}${compact ? " compact" : ""}`);
+    const label = item?.badgeLabel || item?.awardPosition || item?.awardName || "Award";
+    const name = item?.awardName || "Accolade";
+    badge.title = name;
+    badge.append(node("strong", null, label));
+    if (!compact) badge.append(node("span", null, name));
+    return badge;
+  }
+
+  function awardPlayerCell(item, detail) {
+    const wrap = node("span", "award-player-cell");
+    const playerId = item?.playerId ?? item?.player_id;
+    const playerName = item?.playerName || item?.player_name || "-";
+    const position = item?.position || "";
+    const team = item?.team || "";
+    append(wrap, [
+      playerLink(playerId, playerName, "player-link strong-link", { team, position }),
+      node("small", null, detail || item?.line || [position, item?.record].filter(Boolean).join(" | ")),
+    ]);
+    return wrap;
+  }
+
+  function awardTeamCell(item) {
+    const abbr = String(item?.team || "").trim().toUpperCase();
+    if (!abbr || abbr === "-") return "-";
+    const wrap = node("span", "award-team-cell");
+    append(wrap, [
+      teamLogo(item?.teamLogo, abbr, "award-team-logo"),
+      statTeamLink(abbr),
+    ]);
+    return wrap;
+  }
+
+  function awardPlayerList(items, limit = 4) {
+    const list = node("div", "award-inline-list");
+    (items || []).slice(0, limit).forEach((item) => {
+      list.append(awardPlayerCell(item, `${item.position || ""}${item.score !== undefined ? ` | ${oneDecimal(item.score)} score` : ""}`.trim()));
+    });
+    const remaining = (items || []).length - limit;
+    if (remaining > 0) list.append(node("small", "muted", `+${remaining} more`));
+    return list.children.length ? list : node("span", null, "-");
+  }
+
+  function awardBallotPanel(title, kicker, rows, limit = 8) {
+    const p = panel(title, kicker);
+    panelBody(p).append(table(["#", "Player", "Team", "Pos", "Score", "Line"], (rows || []).slice(0, limit).map((item, idx) => [
+      idx + 1,
+      awardPlayerCell(item),
+      awardTeamCell(item),
+      item.position || "-",
+      oneDecimal(item.score),
+      item.line || "-",
+    ])));
+    return p;
+  }
+
+  function awardAllProPanel(rows) {
+    const p = panel("All-Pro Teams", "Projected 1st and 2nd team");
+    panelBody(p).append(table(["Position", "1st Team", "2nd Team"], (rows || []).map((group) => [
+      group.label || group.position || "-",
+      awardPlayerList(group.firstTeam || [], Math.max(1, Number(group.slots || 1))),
+      awardPlayerList(group.secondTeam || [], Math.max(1, Number(group.slots || 1))),
+    ])));
+    return p;
+  }
+
+  function awardProBowlPanel(rows) {
+    const p = panel("Pro Bowl", "Projected selections");
+    panelBody(p).append(table(["Position", "Players"], (rows || []).map((group) => [
+      group.label || group.position || "-",
+      awardPlayerList(group.players || [], Math.min(6, Math.max(2, Number(group.slots || 4)))),
+    ])));
+    return p;
+  }
+
+  function awardFinalPanel(title, kicker, rows) {
+    const p = panel(title, kicker);
+    panelBody(p).append(table(["Award", "Player", "Team", "Pos", "Season"], (rows || []).map((item) => [
+      awardBadge(item),
+      awardPlayerCell(item, item.awardName || item.awardPosition || item.position || ""),
+      awardTeamCell(item),
+      item.awardPosition || item.position || "-",
+      item.season || "-",
+    ])));
+    return p;
+  }
+
+  function renderAwards() {
+    setHeader("Awards", "Projected award races during the season, final winners after season completion.");
+    const root = document.createDocumentFragment();
+    const awards = data.awards || {};
+    const ballots = awards.ballots || {};
+    const finalAwards = awards.final || {};
+    const counts = awards.counts || {};
+    const season = awards.season || data.currentSeason || data.season?.season || "";
+    if (runnerMode() && String(state.awardsLiveSeason || "") !== String(season || "") && !state.awardsLoading) {
+      loadLiveAwards().then(render);
+    }
+
+    const summary = panel("Awards Desk", `${season || "-"} | ${awards.status || "Projected"}`);
+    const metrics = node("div", "metric-grid compact-metrics awards-metrics");
+    append(metrics, [
+      metric("Status", awards.status || "Projected", awards.finalized ? "Locked after season completion" : "Live ballot snapshot", awards.finalized ? "good" : "warn"),
+      metric("Candidates", whole(counts.candidateCount || ballots.candidateCount || 0), "Stat-qualified players"),
+      metric("Major Awards", whole(counts.major || 0), "MVP, ROTY, CPOTY"),
+      metric("All-Pro", whole(counts.allPro || 0), "1st and 2nd team"),
+      metric("Pro Bowl", whole(counts.proBowl || 0), "Lowest badge tier"),
+    ]);
+    if (state.awardsLoading) metrics.append(node("div", "empty-state compact-empty", "Refreshing live awards..."));
+    panelBody(summary).append(metrics);
+    root.append(summary);
+
+    if (awards.finalized) {
+      root.append(awardFinalPanel("Final Major Awards", "Season honors", finalAwards.major || []));
+      const finalGrid = node("div", "grid awards-grid");
+      append(finalGrid, [
+        awardFinalPanel("1st Team All-Pro", "Final", finalAwards.firstTeamAllPro || []),
+        awardFinalPanel("2nd Team All-Pro", "Final", finalAwards.secondTeamAllPro || []),
+      ]);
+      root.append(finalGrid);
+      root.append(awardFinalPanel("Pro Bowl", "Final selections", finalAwards.proBowl || []));
+      if ((finalAwards.champions || []).length) {
+        root.append(awardFinalPanel("Super Bowl Champions", "Title badges", finalAwards.champions || []));
+      }
+    }
+
+    const hasProjectedRows = (ballots.mvp || []).length
+      || (ballots.rookie || []).length
+      || (ballots.comeback || []).length
+      || (ballots.allPro || []).length
+      || (ballots.proBowl || []).length;
+    if (!hasProjectedRows && !awards.finalized) {
+      const empty = panel("Projected Awards", "No ballot yet");
+      panelBody(empty).append(node("div", "empty-state", "Award races will populate once season stats exist."));
+      root.append(empty);
+    } else {
+      const majorGrid = node("div", "grid awards-grid");
+      append(majorGrid, [
+        awardBallotPanel("MVP", "Projected voting", ballots.mvp || []),
+        awardBallotPanel("Rookie Of The Year", "Projected voting", ballots.rookie || []),
+      ]);
+      root.append(majorGrid);
+      const comeback = awardBallotPanel("Comeback Player Of The Year", "Projected voting", ballots.comeback || [], 8);
+      root.append(comeback);
+      const teamGrid = node("div", "grid awards-grid wide-awards-grid");
+      append(teamGrid, [
+        awardAllProPanel(ballots.allPro || []),
+        awardProBowlPanel(ballots.proBowl || []),
+      ]);
+      root.append(teamGrid);
+    }
+
+    const output = runnerOutputPanel();
+    if (output) root.append(output);
+    finishRender(root);
+  }
+
   function renderStats() {
     setHeader("League Leaders", "Quick realism check for the completed season: passing, rushing, receiving, defense, returns, kicking, and snap leaders.");
     const root = document.createDocumentFragment();
@@ -11875,6 +12369,7 @@
   }
 
   function render() {
+    clearObserveInterruptions();
     if (isObserveMode() && observeHiddenViews().has(state.view)) {
       state.view = "calendar";
     }
@@ -11890,6 +12385,7 @@
     if (state.view === "season") renderSeason();
     else if (state.view === "playoffTree") renderPlayoffTree();
     else if (state.view === "stats") renderStats();
+    else if (state.view === "awards") renderAwards();
     else if (state.view === "inbox") renderInbox();
     else if (state.view === "leagueNews") renderLeagueNews();
     else if (state.view === "transactions") renderTransactions();

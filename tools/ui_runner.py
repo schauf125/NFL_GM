@@ -31,6 +31,7 @@ import export_player_card_ui_data
 import export_player_profile_ui_data
 import free_agency_processor
 import injury_notifications
+import cpu_depth_chart
 import roster_actions
 import roster_rules
 import sim_control
@@ -199,6 +200,7 @@ CALENDAR_RUN_ACTIONS = {
     "auto_cutdown_continue",
 }
 INJURY_ALERT_ACTIONS = {"sim_week", "sim_season"}
+INJURY_AUTO_MANAGE_SETTING = "user_injury_auto_depth_chart"
 SIM_CANCEL_ACTIONS = {"sim_week", "sim_season", "advance_to_draft", "draft_skip", "draft_skip_to_user", "draft_finish"}
 ACTION_TIMEOUT_DEFAULTS = {
     "advance_to_draft": 6 * 60 * 60,
@@ -470,25 +472,167 @@ def table_exists(con: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+def truthy(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def upsert_game_setting(con: sqlite3.Connection, key: str, value: str) -> None:
+    if not table_exists(con, "game_settings"):
+        return
+    con.execute(
+        """
+        INSERT INTO game_settings (setting_key, setting_value, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(setting_key) DO UPDATE SET
+            setting_value = excluded.setting_value,
+            updated_at = datetime('now')
+        """,
+        (key, value),
+    )
+
+
+def injury_auto_manage_enabled_from_state(state: dict[str, Any] | None) -> bool:
+    settings = (state or {}).get("settings") or {}
+    return truthy(settings.get(INJURY_AUTO_MANAGE_SETTING))
+
+
+def observe_mode_state(state: dict[str, Any] | None) -> bool:
+    state = state or {}
+    active_save = state.get("activeSave") or {}
+    settings = state.get("settings") or {}
+    control_mode = str(active_save.get("control_mode") or settings.get("control_mode") or "").lower()
+    return control_mode == "observe" or bool(active_save.get("game_id") and not active_save.get("user_team"))
+
+
+def cpu_manage_user_team_requested(params: dict[str, Any] | None) -> bool:
+    params = params or {}
+    return truthy(params.get("cpu_manage_user_team")) or truthy(params.get("user_cpu_management"))
+
+
+def injury_auto_manage_enabled(db_path: Path) -> bool:
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        if not table_exists(con, "game_settings"):
+            return False
+        row = con.execute(
+            "SELECT setting_value FROM game_settings WHERE setting_key = ?",
+            (INJURY_AUTO_MANAGE_SETTING,),
+        ).fetchone()
+    return truthy(row["setting_value"] if row else None)
+
+
+def active_user_team_abbr(con: sqlite3.Connection) -> str | None:
+    if table_exists(con, "active_game_save_view"):
+        row = con.execute("SELECT user_team FROM active_game_save_view LIMIT 1").fetchone()
+        if row and row["user_team"]:
+            return str(row["user_team"]).upper()
+    if table_exists(con, "game_saves"):
+        row = con.execute(
+            """
+            SELECT t.abbreviation
+            FROM game_saves gs
+            JOIN teams t ON t.team_id = gs.user_team_id
+            WHERE gs.status = 'active'
+            ORDER BY gs.updated_at DESC, gs.created_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row and row["abbreviation"]:
+            return str(row["abbreviation"]).upper()
+    return None
+
+
+def apply_user_injury_auto_management(db_path: Path, *, enabled: bool = True) -> dict[str, Any]:
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        upsert_game_setting(con, INJURY_AUTO_MANAGE_SETTING, "1" if enabled else "0")
+        refresh: dict[str, Any] = {"teams": 0, "rows": 0, "rebuilt": []}
+        if enabled:
+            user_team = active_user_team_abbr(con)
+            if user_team:
+                season_row = con.execute(
+                    """
+                    SELECT setting_value
+                    FROM game_settings
+                    WHERE setting_key IN ('current_contract_year', 'current_league_year', 'current_season')
+                    ORDER BY CASE setting_key
+                        WHEN 'current_contract_year' THEN 0
+                        WHEN 'current_league_year' THEN 1
+                        ELSE 2
+                    END
+                    LIMIT 1
+                    """
+                ).fetchone() if table_exists(con, "game_settings") else None
+                season = int(season_row["setting_value"]) if season_row and season_row["setting_value"] else 2026
+                cpu_depth_chart.mark_depth_chart_stale(
+                    con,
+                    user_team,
+                    reason="User staff handling injury depth chart changes.",
+                )
+                refresh = cpu_depth_chart.rebuild_dirty_depth_charts(
+                    con,
+                    season=season,
+                    user_team=user_team,
+                    include_user=True,
+                    apply=True,
+                )
+        con.commit()
+    return refresh
+
+
 def lightweight_action_state() -> dict[str, Any]:
-    """Small state object for actions that only need season and user team."""
+    """Small state object for actions that only need season and user team.
+
+    Long sims can briefly hold write locks while the browser is polling state.
+    Keep this path tolerant so the UI shell can still render a usable loading
+    state instead of waiting on a full export.
+    """
     db_path = active_db_path()
     registry = read_json(SAVE_REGISTRY, {"active_game_id": None, "saves": {}})
     active_id = registry.get("active_game_id")
     active_record = (registry.get("saves") or {}).get(active_id or "", {})
-    with sqlite3.connect(db_path) as con:
-        con.row_factory = sqlite3.Row
-        settings: dict[str, str] = {}
-        if table_exists(con, "game_settings"):
-            settings = {
-                str(row["setting_key"]): str(row["setting_value"])
-                for row in con.execute("SELECT setting_key, setting_value FROM game_settings")
-            }
-        active: dict[str, Any] = dict(active_record) if isinstance(active_record, dict) else {}
-        if table_exists(con, "active_game_save_view"):
-            row = con.execute("SELECT * FROM active_game_save_view LIMIT 1").fetchone()
-            if row:
-                active.update(dict(row))
+    settings: dict[str, str] = {}
+    active: dict[str, Any] = dict(active_record) if isinstance(active_record, dict) else {}
+    db_warning = ""
+    draft_year = int(active.get("draft_year") or active.get("current_league_year") or 2027)
+    free_agency_year = int(active.get("current_league_year") or active.get("season") or 2026)
+    try:
+        with sqlite3.connect(db_path, timeout=0.25) as con:
+            con.row_factory = sqlite3.Row
+            if table_exists(con, "game_settings"):
+                settings = {
+                    str(row["setting_key"]): str(row["setting_value"])
+                    for row in con.execute("SELECT setting_key, setting_value FROM game_settings")
+                }
+            if table_exists(con, "active_game_save_view"):
+                row = con.execute("SELECT * FROM active_game_save_view LIMIT 1").fetchone()
+                if row:
+                    active.update(dict(row))
+            current_season_for_helpers = int(
+                active.get("current_league_year")
+                or settings.get("current_league_year")
+                or settings.get("current_contract_year")
+                or settings.get("current_season")
+                or 2026
+            )
+            active_date_for_helpers = str(active.get("current_date") or "")
+            setting_date_for_helpers = str(settings.get("current_game_date") or "")
+            current_date_for_helpers = (
+                max([value for value in (active_date_for_helpers, setting_date_for_helpers) if value], default="")
+                or f"{current_season_for_helpers}-06-01"
+            )
+            draft_year = export_game_center_ui_data.draft_year(con, current_season_for_helpers)
+            free_agency_year = export_game_center_ui_data.free_agency_league_year(
+                con,
+                current_season=current_season_for_helpers,
+                current_date=str(current_date_for_helpers),
+                draft_year_value=draft_year,
+                game_settings=settings,
+            )
+    except sqlite3.OperationalError as exc:
+        if "locked" not in str(exc).lower() and "busy" not in str(exc).lower():
+            raise
+        db_warning = str(exc)
 
     current_season = int(
         active.get("current_league_year")
@@ -503,14 +647,6 @@ def lightweight_action_state() -> dict[str, Any]:
         max([value for value in (active_date, setting_date) if value], default="")
         or f"{current_season}-06-01"
     )
-    draft_year = export_game_center_ui_data.draft_year(con, current_season)
-    free_agency_year = export_game_center_ui_data.free_agency_league_year(
-        con,
-        current_season=current_season,
-        current_date=str(current_date),
-        draft_year_value=draft_year,
-        game_settings=settings,
-    )
     control_mode = str(active.get("control_mode") or settings.get("control_mode") or "team")
     user_team = (
         active.get("user_team")
@@ -518,7 +654,7 @@ def lightweight_action_state() -> dict[str, Any]:
         or settings.get("active_user_team")
         or (None if control_mode == "observe" else "MIN")
     )
-    return {
+    payload = {
         "database": str(db_path),
         "currentSeason": current_season,
         "currentDate": str(current_date),
@@ -527,6 +663,9 @@ def lightweight_action_state() -> dict[str, Any]:
         "draft": {"year": draft_year},
         "freeAgency": {"leagueYear": free_agency_year},
     }
+    if db_warning:
+        payload["stateWarning"] = f"Full state is temporarily busy: {db_warning}"
+    return payload
 
 
 def player_export_season(payload: dict[str, Any]) -> int:
@@ -804,12 +943,32 @@ def _team_by_abbr(conn: sqlite3.Connection, abbr: str | None) -> sqlite3.Row | N
 def _trade_player_rows(conn: sqlite3.Connection, team_id: int, season: int, chart: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
+        WITH active_contract_years AS (
+            SELECT *
+            FROM (
+                SELECT
+                    cy.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY cy.player_id, cy.team_id, cy.season
+                        ORDER BY cy.cap_hit DESC, cy.contract_id DESC
+                    ) AS rn
+                FROM contract_years cy
+                WHERE cy.season = ?
+                  AND COALESCE(cy.is_active, 1) = 1
+            )
+            WHERE rn = 1
+        )
         SELECT p.player_id, p.first_name || ' ' || p.last_name AS name,
                p.position, p.age, p.overall, p.potential, p.dev_trait,
                p.status, p.jersey_number,
                c.aav, c.end_year
         FROM players p
-        LEFT JOIN contracts c ON c.player_id = p.player_id AND c.is_active = 1
+        LEFT JOIN active_contract_years cy
+          ON cy.player_id = p.player_id
+         AND cy.team_id = p.team_id
+        LEFT JOIN contracts c
+          ON c.contract_id = cy.contract_id
+         AND c.is_active = 1
         WHERE p.team_id = ?
           AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Practice Squad')
         ORDER BY
@@ -822,7 +981,7 @@ def _trade_player_rows(conn: sqlite3.Connection, team_id: int, season: int, char
           p.overall DESC, p.potential DESC, p.age ASC
         LIMIT 90
         """,
-        (team_id,),
+        (season, team_id),
     ).fetchall()
     players = []
     for row in rows:
@@ -1003,6 +1162,19 @@ def league_leaders_payload_for_active_db(season: int | None = None, category: st
     }
 
 
+def awards_payload_for_active_db(season: int | None = None) -> dict[str, Any]:
+    db_path = active_db_path()
+    target_season = int(season or active_export_season(db_path))
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        awards = export_game_center_ui_data.awards_summary(conn, target_season)
+    return {
+        "season": target_season,
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "awards": awards,
+    }
+
+
 def season_payload_for_active_db(season: int | None = None) -> dict[str, Any]:
     db_path = active_db_path()
     target_season = int(season or active_export_season(db_path))
@@ -1143,7 +1315,7 @@ def calendar_payload_for_active_db(
     }
 
 
-def inbox_payload_for_active_db(limit: int = 40) -> dict[str, Any]:
+def inbox_payload_for_active_db(limit: int = 160) -> dict[str, Any]:
     db_path = active_db_path()
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -2205,11 +2377,13 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
     free_agency_year = int((state.get("freeAgency") or {}).get("leagueYear") or season)
     active_save = state.get("activeSave") or {}
     control_mode = str(active_save.get("control_mode") or state.get("settings", {}).get("control_mode") or "team").lower()
+    observe_mode = observe_mode_state(state)
     user_team = (
         active_save.get("user_team")
         or params.get("user_team")
-        or (None if control_mode == "observe" else "MIN")
+        or (None if observe_mode or control_mode == "observe" else "MIN")
     )
+    cpu_manage_user = cpu_manage_user_team_requested(params) or observe_mode
 
     def play(*args: str) -> list[str]:
         return [sys.executable, str(ROOT / "tools" / "play.py"), *args]
@@ -2297,9 +2471,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         return play(*command)
     if action == "advance_next_event":
         command = play("advance-to-next-event")
-        if params.get("auto_roster_cutdown"):
+        if cpu_manage_user or params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
-        if params.get("skip_roster_gate"):
+        if cpu_manage_user or params.get("skip_roster_gate"):
             command.append("--skip-roster-gate")
         return command
     if action == "advance_to_date":
@@ -2307,9 +2481,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if not target_date:
             raise ValueError("advance_to_date requires date.")
         command = play("advance-to-date", "--date", target_date)
-        if params.get("auto_roster_cutdown"):
+        if cpu_manage_user or params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
-        if params.get("skip_roster_gate"):
+        if cpu_manage_user or params.get("skip_roster_gate"):
             command.append("--skip-roster-gate")
         if params.get("auto_sim_preseason"):
             command.append("--auto-sim-preseason")
@@ -2326,7 +2500,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if game_type not in {"REG", "PRE"}:
             game_type = "REG"
         command = play("sim-week", str(int(week)), "--season", str(season), "--game-type", game_type, "--apply")
-        if params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
+        if cpu_manage_user or params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
             command.append("--skip-roster-gate")
         return command
     if action == "sim_season":
@@ -2334,8 +2508,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         if game_type not in {"REG", "PRE"}:
             game_type = "REG"
         command = play("sim-season", "--season", str(season), "--game-type", game_type, "--apply", "--seed", f"{season}00")
-        command.append("--stop-on-injury-alert")
-        if params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
+        if not cpu_manage_user and not injury_auto_manage_enabled_from_state(state):
+            command.append("--stop-on-injury-alert")
+        if cpu_manage_user or params.get("skip_roster_gate") or params.get("auto_roster_cutdown"):
             command.append("--skip-roster-gate")
         return command
     if action == "postseason":
@@ -2778,16 +2953,18 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = play("advance-to-draft", "--draft-year", str(draft_year))
         if user_team:
             command.extend(["--user-team", str(user_team)])
-        if params.get("auto_roster_cutdown"):
+        if cpu_manage_user or params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
-        if params.get("skip_roster_gate"):
+        if cpu_manage_user:
+            command.append("--cpu-controls-user-team")
+        if cpu_manage_user or params.get("skip_roster_gate"):
             command.append("--skip-roster-gate")
         return command
     if action == "advance_next_league_year":
         command = play("advance-to-next-league-year")
-        if params.get("auto_roster_cutdown"):
+        if cpu_manage_user or params.get("auto_roster_cutdown"):
             command.append("--auto-roster-cutdown")
-        if params.get("skip_roster_gate"):
+        if cpu_manage_user or params.get("skip_roster_gate"):
             command.append("--skip-roster-gate")
         return command
     if action == "draft_start":
@@ -2796,7 +2973,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             command.extend(["--user-team", str(user_team)])
         return play(*command)
     if action == "draft_skip":
-        return play(
+        command = play(
             "draft-room",
             "skip",
             "--draft-year",
@@ -2808,9 +2985,12 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--commit-each",
             "--apply",
         )
+        if observe_mode:
+            command.append("--no-pause-on-trade")
+        return command
     if action == "draft_skip_to_user":
         remaining = remaining_draft_pick_count(draft_year)
-        return play(
+        command = play(
             "draft-room",
             "skip",
             "--draft-year",
@@ -2821,6 +3001,9 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             "--no-cap-snapshot",
             "--apply",
         )
+        if observe_mode:
+            command.append("--no-pause-on-trade")
+        return command
     if action == "draft_finish":
         remaining = remaining_draft_pick_count(draft_year)
         return play(
@@ -2832,6 +3015,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(max(remaining, 1)),
             "--include-user-pick",
             "--no-cap-snapshot",
+            "--no-pause-on-trade",
             "--commit-each",
             "--apply",
         )
@@ -3301,6 +3485,17 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = ["scouting", "mark-read"]
         if params.get("message_id"):
             command.extend(["--message-id", str(int(params["message_id"]))])
+        scope = str(params.get("scope") or "").strip().lower()
+        category = str(params.get("category") or "").strip()
+        exclude_category = str(params.get("exclude_category") or "").strip()
+        if scope == "scouting":
+            category = category or "Scouting"
+        elif scope in {"main", "front_office", "front-office"}:
+            exclude_category = exclude_category or "Scouting"
+        if category:
+            command.extend(["--category", category])
+        if exclude_category:
+            command.extend(["--exclude-category", exclude_category])
         return play(*command)
     if action == "league_news_seed":
         return play("league-news", "seed")
@@ -3454,6 +3649,8 @@ def roster_gate_payload(action: str, params: dict[str, Any], stdout: str, stderr
     if not any(marker in combined for marker in ROSTER_GATE_MARKERS):
         return None
     state = payload_for_active_db()
+    if observe_mode_state(state):
+        return None
     current_date = str(state.get("currentDate") or state.get("activeSave", {}).get("current_date") or "")
     season = int(state.get("currentSeason") or state.get("activeSave", {}).get("current_league_year") or 0)
     if current_date and season and current_date > f"{season}-09-15":
@@ -3580,6 +3777,8 @@ def run_action(action: str, params: dict[str, Any]) -> dict[str, Any]:
 def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
     if action == "box_score":
         return run_box_score_action(params)
+    if action == "injury_auto_manage":
+        return run_injury_auto_manage_action(params)
     if action == "auto_cutdown_continue":
         return run_auto_cutdown_continue_action(params)
     if action == "roster_cutdown_apply":
@@ -3587,6 +3786,48 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
     if action in TRADE_RUN_ACTIONS:
         return run_trade_action(action, params)
     before = lightweight_action_state() if action in LIGHTWEIGHT_PRESTATE_ACTIONS else payload_for_active_db()
+    observe_mode = observe_mode_state(before)
+    setup = before.get("draftClassSetup") or {}
+    if (
+        observe_mode
+        and setup.get("required")
+        and action not in {"draft_class_generate", "draft_class_import", "new_june1_save", "load_game", "delete_save", "refresh"}
+    ):
+        draft_year = int(setup.get("draftYear") or (before.get("draft") or {}).get("year") or int(before.get("currentSeason") or 2026) + 1)
+        auto_command = action_command("draft_class_generate", {"draft_year": draft_year}, before)
+        auto_result = subprocess.run(
+            auto_command,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=action_timeout_seconds("draft_class_generate", params),
+        )
+        if auto_result.returncode != 0:
+            duration_seconds = 0.0
+            state_after, app_shell_after = write_exports(include_players=False)
+            return {
+                "action": action,
+                "command": " ".join(f'"{part}"' if " " in str(part) else str(part) for part in auto_command),
+                "returncode": auto_result.returncode,
+                "duration_seconds": duration_seconds,
+                "stdout": auto_result.stdout[-20000:],
+                "stderr": auto_result.stderr[-20000:],
+                "summary": {
+                    "title": "Observe Setup Failed",
+                    "message": first_output_line(auto_result.stdout, auto_result.stderr) or "Draft class could not be generated for observe mode.",
+                    "status": "error",
+                    "durationSeconds": duration_seconds,
+                    "affectedPanels": ["calendar", "draft"],
+                },
+                "state": state_after,
+                "app_shell_state": app_shell_after,
+                "rosterGate": None,
+            }
+        before = payload_for_active_db()
+        observe_mode = observe_mode_state(before)
+    cpu_management_refresh: dict[str, Any] | None = None
+    if cpu_manage_user_team_requested(params) and not observe_mode:
+        cpu_management_refresh = apply_user_injury_auto_management(active_db_path(), enabled=True)
     command = action_command(action, params, before)
     if action in SIM_CANCEL_ACTIONS:
         sim_control.clear_cancel(active_db_path())
@@ -3626,7 +3867,15 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         result.stderr,
         duration_seconds,
     )
-    response["rosterGate"] = roster_gate_payload(action, params, result.stdout, result.stderr)
+    if cpu_management_refresh is not None:
+        rebuilt = int(cpu_management_refresh.get("teams", 0) or 0)
+        rows = int(cpu_management_refresh.get("rows", 0) or 0)
+        response["cpuManagement"] = {
+            "enabled": True,
+            "depthChartsRebuilt": rebuilt,
+            "rows": rows,
+        }
+    response["rosterGate"] = None if observe_mode else roster_gate_payload(action, params, result.stdout, result.stderr)
     if action in LIGHTWEIGHT_PRESTATE_ACTIONS:
         state_patch, app_shell_after = write_lightweight_action_exports(action)
         response["statePatch"] = state_patch
@@ -3644,7 +3893,7 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         after, app_shell_after = write_exports(include_players=include_players)
         response["state"] = after
         response["app_shell_state"] = app_shell_after
-    if result.returncode == 0 and injury_marker is not None:
+    if result.returncode == 0 and injury_marker is not None and not observe_mode and not injury_auto_manage_enabled(active_db_path()):
         try:
             with sqlite3.connect(active_db_path()) as alert_con:
                 alert_con.row_factory = sqlite3.Row
@@ -3655,6 +3904,45 @@ def run_action_locked(action: str, params: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             response["injuryAlertsError"] = str(exc)
     return response
+
+
+def run_injury_auto_manage_action(params: dict[str, Any]) -> dict[str, Any]:
+    db_path = active_db_path()
+    enabled = bool(params.get("enabled", True))
+    started = perf_counter()
+    refresh = apply_user_injury_auto_management(db_path, enabled=enabled)
+    duration_seconds = perf_counter() - started
+    state_patch = depth_chart_state_patch(db_path)
+    app_shell_after = app_shell_payload_for_active_db()
+    rebuilt = int(refresh.get("teams", 0) or 0)
+    rows = int(refresh.get("rows", 0) or 0)
+    if enabled:
+        stdout = (
+            "User injury auto-management enabled. "
+            f"Staff refreshed {rebuilt} depth chart(s), {rows} row(s)."
+        )
+        message = "Your staff will handle future injury depth-chart changes."
+    else:
+        stdout = "User injury auto-management disabled."
+        message = "Injury popups will appear again for multi-game user-team injuries."
+    return {
+        "action": "injury_auto_manage",
+        "command": "injury_auto_manage via UI setting",
+        "returncode": 0,
+        "duration_seconds": round(duration_seconds, 2),
+        "stdout": stdout,
+        "stderr": "",
+        "summary": {
+            "title": "Injury Staff Setting Updated",
+            "message": message,
+            "status": "ok",
+            "durationSeconds": round(duration_seconds, 2),
+            "affectedPanels": ["depth", "injuries", "roster"],
+        },
+        "statePatch": state_patch,
+        "app_shell_state": app_shell_after,
+        "rosterGate": None,
+    }
 
 
 def run_roster_cutdown_apply_action(params: dict[str, Any]) -> dict[str, Any]:
@@ -3942,7 +4230,15 @@ class UiHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/state":
             try:
-                self.write_json(HTTPStatus.OK, payload_for_active_db())
+                if RUNNING_ACTION:
+                    payload = lightweight_action_state()
+                    payload["runner"] = {
+                        "runningAction": RUNNING_ACTION,
+                        "stateMode": "lightweight",
+                    }
+                    self.write_json(HTTPStatus.OK, payload)
+                else:
+                    self.write_json(HTTPStatus.OK, payload_for_active_db())
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -3984,6 +4280,15 @@ class UiHandler(SimpleHTTPRequestHandler):
                 requested_category = params.get("category")
                 category = requested_category[0] if requested_category and requested_category[0] else None
                 self.write_json(HTTPStatus.OK, league_leaders_payload_for_active_db(season, category))
+            except Exception as exc:
+                self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+            return
+        if parsed.path == "/api/awards":
+            try:
+                params = parse_qs(parsed.query)
+                requested_season = params.get("season")
+                season = int(requested_season[0]) if requested_season and requested_season[0] else None
+                self.write_json(HTTPStatus.OK, awards_payload_for_active_db(season))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return
@@ -4045,7 +4350,8 @@ class UiHandler(SimpleHTTPRequestHandler):
             try:
                 params = parse_qs(parsed.query)
                 requested_limit = params.get("limit")
-                limit = int(requested_limit[0]) if requested_limit and requested_limit[0] else 40
+                limit = int(requested_limit[0]) if requested_limit and requested_limit[0] else 160
+                limit = max(1, min(limit, 400))
                 self.write_json(HTTPStatus.OK, inbox_payload_for_active_db(limit))
             except Exception as exc:
                 self.write_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})

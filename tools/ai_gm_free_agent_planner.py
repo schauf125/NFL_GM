@@ -605,10 +605,57 @@ def has_stronger_unfilled_needs(need_by_group: dict[str, dict[str, Any]], group:
     return False
 
 
+def strict_plan_priority_groups(need_by_group: dict[str, dict[str, Any]], limit: int = 4) -> set[str]:
+    """Groups a skipped/user-auto plan should spend meaningful money on first."""
+    ranked = sorted(
+        need_by_group.items(),
+        key=lambda item: (need_priority_value(item[1]), as_float(item[1].get("need_score"))),
+        reverse=True,
+    )
+    groups: list[str] = []
+    for group, need in ranked:
+        if need_priority_value(need) < 3 and as_float(need.get("need_score")) < 42:
+            continue
+        if group == "OL":
+            groups.extend(["OT", "IOL"])
+        else:
+            groups.append(group)
+        if len(dict.fromkeys(groups)) >= limit:
+            break
+    return set(dict.fromkeys(groups))
+
+
 def strict_group_offer_limit(group: str) -> int:
     if group in {"CB", "WR", "IOL"}:
         return 2
     return 1
+
+
+def strict_plan_allows_low_priority_room_offer(
+    group: str,
+    need: dict[str, Any] | None,
+    room: dict[str, Any],
+) -> bool:
+    """Allow skipped-market auto plans to patch true shortages, not stack low-priority rooms."""
+    priority = str(need.get("priority") if need else "").lower()
+    if priority not in {"low", "monitor", ""}:
+        return True
+    count = as_int(room.get("count"))
+    starter_slots = as_int(room.get("starter_slots"), ROOM_STARTER_SLOTS.get(group, 2))
+    ideal = as_int(room.get("ideal"), ROOM_IDEAL_COUNTS.get(group, starter_slots + 2))
+    starter_floor = as_int(room.get("starter_floor"))
+    best = as_int(room.get("best"))
+    if group == "RB":
+        return as_int(room.get("halfback_count")) < 2 or as_int(room.get("halfback_starter_floor")) < 64
+    if group == "QB":
+        return count < 2 or best < 64
+    if group in {"K", "P", "LS", "ST", "FB"}:
+        return count < max(1, starter_slots)
+    if count < starter_slots:
+        return True
+    if count < max(starter_slots + 1, ideal - 2) and starter_floor < 64:
+        return True
+    return False
 
 
 def recommended_years(player: dict[str, Any], bucket: str) -> int:
@@ -709,6 +756,7 @@ def player_fit_score(
     asking = as_int(player.get("asking_aav"))
     age = as_int(player.get("age"), 28)
     group = str(player.get("position_group") or "")
+    position = str(player.get("position") or "")
     tier = str(player.get("market_tier") or "")
     reasons: list[str] = []
     fit = score
@@ -767,10 +815,13 @@ def player_fit_score(
         if as_int(room.get("count")) >= 2 and overall <= best_qb + 3 and asking >= 8_000_000:
             fit -= 18
             reasons.append("expensive QB without clear starter separation")
-    elif group == "RB":
+    elif group == "RB" and position == "RB":
         if as_int(room.get("halfback_count")) < 2 or as_int(room.get("halfback_starter_floor")) < 68:
             fit += 9
             reasons.append("thin true halfback room")
+    elif group == "RB" and position != "RB":
+        fit -= 12
+        reasons.append("does not solve true halfback depth")
     elif group in {"EDGE", "WR", "IDL", "OT", "IOL", "CB"}:
         if (
             priority_value <= 2
@@ -784,9 +835,23 @@ def player_fit_score(
         if priority_value <= 2 and asking >= 6_000_000:
             fit -= 20
             reasons.append("skipped-user plan avoids low-priority spending")
+        priority_groups = strict_plan_priority_groups(need_by_group)
+        if priority_groups and group not in priority_groups and asking >= 8_000_000:
+            fit -= 16
+            reasons.append("stronger roster holes should control skipped-market spending")
         if has_stronger_unfilled_needs(need_by_group, group):
-            fit -= 10
+            fit -= 16
             reasons.append("stronger roster holes should come first")
+        target_floor = fa.STARTER_FLOOR_BY_GROUP.get(group, 68)
+        if (
+            group in PREMIUM_GROUPS
+            and priority_value <= 2
+            and as_int(room.get("count")) >= as_int(room.get("starter_slots"), ROOM_STARTER_SLOTS.get(group, 2))
+            and as_int(room.get("starter_floor")) >= target_floor - 2
+            and asking >= 8_000_000
+        ):
+            fit -= 18
+            reasons.append("skipped-user plan protects cap from playable-room spending")
     return round(clamp(fit, 0, 120), 1), list(dict.fromkeys(reason for reason in reasons if reason))
 
 
@@ -795,6 +860,7 @@ def classify_player(
     *,
     need: dict[str, Any] | None,
     surplus: dict[str, Any] | None,
+    room: dict[str, Any] | None,
     fit_score: float,
     remaining_budget: int,
     total_budget: int,
@@ -806,23 +872,34 @@ def classify_player(
     minimum = as_int(player.get("minimum_aav"))
     age = as_int(player.get("age"), 28)
     group = str(player.get("position_group") or "")
+    position = str(player.get("position") or "")
     tier = str(player.get("market_tier") or "")
     need_score = as_float(need.get("need_score")) if need else 0.0
     need_priority = str(need.get("priority") if need else "").lower()
     surplus_score = as_float(surplus.get("surplus_score")) if surplus else 0.0
-    strict_relative_need = (
-        strict_need_plan
-        and need is not None
-        and need_score >= 22
-        and group != "QB"
-        and not (group in {"EDGE", "WR", "IDL", "OT", "IOL"} and asking >= 10_000_000 and need_priority in {"low", "monitor", ""})
-    )
-    real_need = need_priority in {"urgent", "high", "medium"} or need_score >= 42 or strict_relative_need
+    room = room or {}
+    low_priority_room_shortage = strict_plan_allows_low_priority_room_offer(group, need, room)
+    if strict_need_plan:
+        real_need = (
+            need_priority in {"urgent", "high", "medium"}
+            or (need_score >= 58 and need_priority not in {"low", "monitor", ""})
+            or (need is not None and low_priority_room_shortage)
+        )
+    else:
+        real_need = need_priority in {"urgent", "high", "medium"} or need_score >= 42
 
     if strict_need_plan and not real_need:
         return "monitor" if score >= 82 or tier == "Premium" else "avoid"
-    if strict_need_plan and not strict_relative_need and need_priority in {"low", "monitor", ""} and asking >= 6_000_000:
+    if strict_need_plan and group == "RB" and position != "RB":
+        return "monitor" if score >= 72 else "avoid"
+    if strict_need_plan and need_priority in {"low", "monitor", ""} and not low_priority_room_shortage:
+        return "monitor" if score >= 78 or tier in {"Premium", "Starter"} else "avoid"
+    if strict_need_plan and need_priority in {"low", "monitor", ""} and asking >= 6_000_000:
         return "monitor" if score >= 78 else "avoid"
+    if strict_need_plan and need_priority in {"low", "monitor", ""}:
+        if low_priority_room_shortage and fit_score >= 70 and minimum <= remaining_budget:
+            return "value_targets"
+        return "monitor" if score >= 70 or tier in {"Premium", "Starter"} else "avoid"
     if cap_band in {"over_cap", "critical"} and asking > max(2_500_000, total_budget):
         return "monitor" if need_score >= 60 or score >= 78 else "avoid"
     if group in LOW_COST_GROUPS and not need:
@@ -957,6 +1034,7 @@ def build_free_agent_plan(
             player,
             need=need,
             surplus=surplus,
+            room=room_context.get(str(player.get("position_group") or ""), {}),
             fit_score=fit_score,
             remaining_budget=remaining,
             total_budget=as_int(budget["practical_free_agent_budget"]),
@@ -1302,6 +1380,7 @@ def validate_saved_plan_for_apply(
     accepted_count = 0
     accepted_by_group: dict[str, int] = {}
     strict_need_plan = bool(saved_plan.get("strict_need_plan"))
+    current_room_context = room_context_for_team(con, team_id, league_year) if strict_need_plan else {}
     for item in target_offer_items(saved_plan):
         player_id = as_int(item.get("player_id"))
         player_group = normalized_group(item.get("position_group"), item.get("position"))
@@ -1313,6 +1392,20 @@ def validate_saved_plan_for_apply(
         if strict_need_plan and accepted_by_group.get(player_group, 0) >= strict_group_offer_limit(player_group):
             skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "skipped-user plan room offer limit reached"})
             continue
+        if strict_need_plan:
+            item_need_priority = str(item.get("need_priority") or "").lower()
+            item_need = {
+                "priority": item_need_priority,
+                "need_score": as_float(item.get("need_score")),
+                "position_group": EVALUATOR_GROUP.get(player_group, player_group),
+            }
+            if item_need_priority in {"low", "monitor", ""} and not strict_plan_allows_low_priority_room_offer(
+                player_group,
+                item_need,
+                current_room_context.get(player_group, {}),
+            ):
+                skipped.append({"player_id": player_id, "player_name": item.get("player_name"), "reason": "skipped-user plan room no longer has an actionable shortage"})
+                continue
         if (
             strict_need_plan
             and accepted_by_group.get(player_group, 0) >= 1

@@ -6351,28 +6351,36 @@ def inbox_rows(con: sqlite3.Connection, *, game_id: str, limit: int = 20) -> lis
     return [dict(row) for row in rows]
 
 
-def mark_inbox_read(con: sqlite3.Connection, *, game_id: str | None = None, message_id: int | None = None) -> int:
+def mark_inbox_read(
+    con: sqlite3.Connection,
+    *,
+    game_id: str | None = None,
+    message_id: int | None = None,
+    category: str | None = None,
+    exclude_category: str | None = None,
+) -> int:
     ensure_schema(con)
     target_game_id = active_game_id(con, game_id)
+    filters = ["game_id = ?"]
+    params: list[object] = [target_game_id]
     if message_id:
-        cur = con.execute(
-            """
-            UPDATE user_inbox_messages
-            SET is_read = 1
-            WHERE game_id = ?
-              AND message_id = ?
-            """,
-            (target_game_id, message_id),
-        )
-    else:
-        cur = con.execute(
-            """
-            UPDATE user_inbox_messages
-            SET is_read = 1
-            WHERE game_id = ?
-            """,
-            (target_game_id,),
-        )
+        filters.append("message_id = ?")
+        params.append(int(message_id))
+    if category:
+        filters.append("category = ?")
+        params.append(str(category))
+    if exclude_category:
+        filters.append("COALESCE(category, '') != ?")
+        params.append(str(exclude_category))
+    where_sql = " AND ".join(filters)
+    cur = con.execute(
+        f"""
+        UPDATE user_inbox_messages
+        SET is_read = 1
+        WHERE {where_sql}
+        """,
+        params,
+    )
     return cur.rowcount
 
 
@@ -6710,7 +6718,13 @@ def action_inbox(args: argparse.Namespace) -> None:
 
 def action_mark_read(args: argparse.Namespace) -> None:
     with connect(args.db) as con:
-        count = mark_inbox_read(con, game_id=args.game_id, message_id=args.message_id)
+        count = mark_inbox_read(
+            con,
+            game_id=args.game_id,
+            message_id=args.message_id,
+            category=args.category,
+            exclude_category=args.exclude_category,
+        )
         con.commit()
     print(f"Marked {count} inbox message(s) read.")
 
@@ -6835,6 +6849,8 @@ def build_parser() -> argparse.ArgumentParser:
     read = subparsers.add_parser("mark-read", help="Mark inbox messages read.")
     read.add_argument("--game-id")
     read.add_argument("--message-id", type=int)
+    read.add_argument("--category")
+    read.add_argument("--exclude-category")
     read.set_defaults(func=action_mark_read)
 
     return parser

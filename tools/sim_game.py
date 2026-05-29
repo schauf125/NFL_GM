@@ -46,6 +46,59 @@ def team_id(con: sqlite3.Connection, abbreviation: str) -> int:
     return int(row["team_id"])
 
 
+def table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def user_injury_auto_depth_chart_enabled(con: sqlite3.Connection) -> bool:
+    if not table_exists(con, "game_settings"):
+        return False
+    row = con.execute(
+        """
+        SELECT setting_value
+        FROM game_settings
+        WHERE setting_key = 'user_injury_auto_depth_chart'
+        LIMIT 1
+        """
+    ).fetchone()
+    return truthy(row["setting_value"] if row else None)
+
+
+def auto_manage_user_injury_depth_chart(
+    con: sqlite3.Connection,
+    *,
+    season: int,
+    min_event_id: int,
+) -> tuple[int, dict[str, object]]:
+    alerts = injury_notifications.alert_payloads_since(con, min_event_id=min_event_id)
+    if not alerts:
+        return 0, {"teams": 0, "rows": 0, "rebuilt": []}
+    user_team = cpu_depth_chart.active_user_team(con, default=None)
+    if not user_team:
+        return len(alerts), {"teams": 0, "rows": 0, "rebuilt": []}
+    cpu_depth_chart.mark_depth_chart_stale(
+        con,
+        user_team,
+        reason="User staff handling injury depth chart changes.",
+    )
+    refresh = cpu_depth_chart.rebuild_dirty_depth_charts(
+        con,
+        season=season,
+        user_team=user_team,
+        include_user=True,
+        apply=True,
+    )
+    return len(alerts), refresh
+
+
 def schedule_game(con: sqlite3.Connection, game_id: int) -> sqlite3.Row:
     row = con.execute(
         """
@@ -676,9 +729,24 @@ def action_season(args: argparse.Namespace) -> None:
                         print(f"Depth charts refreshed after Week {week} hooks: {refresh['teams']} CPU team(s).")
                 elif args.weekly_hooks:
                     print(f"Preseason Week {week} depth refresh deferred until the next sim checkpoint.")
+                user_injury_auto = user_injury_auto_depth_chart_enabled(con)
+                if user_injury_auto:
+                    handled_alerts, user_refresh = auto_manage_user_injury_depth_chart(
+                        con,
+                        season=args.season,
+                        min_event_id=week_injury_marker,
+                    )
+                    if handled_alerts:
+                        rebuilt = int(user_refresh.get("teams", 0) or 0)
+                        rows_refreshed = int(user_refresh.get("rows", 0) or 0)
+                        print(
+                            "User injury staff handled "
+                            f"{handled_alerts} alert(s); refreshed {rebuilt} depth chart(s), "
+                            f"{rows_refreshed} row(s)."
+                        )
                 con.commit()
                 print(f"Week {week} checkpoint saved ({week_saved} game result(s)).")
-                if args.stop_on_injury_alert:
+                if args.stop_on_injury_alert and not user_injury_auto:
                     user_alerts = injury_notifications.alert_payloads_since(
                         con,
                         min_event_id=week_injury_marker,

@@ -11,6 +11,7 @@ import argparse
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -155,7 +156,12 @@ def ensure_regular_season_specialists(game_id: str | None, season: int) -> None:
         print("Warning: no free agent specialist was available for: " + ", ".join(still_missing))
 
 
-def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
+def ensure_regular_season_rosters(
+    game_id: str | None,
+    season: int,
+    *,
+    include_user_team: bool = False,
+) -> None:
     target_game_id, db_path = save_db(game_id)
     touched = 0
     moved_to_ps = 0
@@ -175,7 +181,7 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
 
         for team in roster_cutdown.team_rows(con, None):
             team_id = int(team["team_id"])
-            if user_team_id is not None and team_id == int(user_team_id):
+            if not include_user_team and user_team_id is not None and team_id == int(user_team_id):
                 continue
             if roster_rules.active_roster_count(con, team_id) <= active_limit:
                 continue
@@ -199,7 +205,7 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
                     season=int(season),
                     game_id=target_game_id,
                     active_limit=active_limit,
-                    include_user_team=False,
+                    include_user_team=include_user_team,
                     team_id=team_id,
                 )
                 touched += int(result.get("teams", 0) or 0)
@@ -217,31 +223,26 @@ def ensure_regular_season_rosters(game_id: str | None, season: int) -> None:
             )
             con.commit()
     if touched:
+        scope = "team(s)" if include_user_team else "CPU team(s)"
         print(
-            f"Regular-season roster preflight adjusted {touched} CPU team(s): "
+            f"Regular-season roster preflight adjusted {touched} {scope}: "
             f"{moved_to_ps} moved to practice squad, {released} released/waived."
         )
         sync_save(target_game_id)
 
 
 def ensure_cpu_depth_charts(game_id: str | None, season: int, *, user_team: str | None = "MIN") -> None:
-    target_game_id, db_path = save_db(game_id)
-    command = [
-        sys.executable,
-        str(TOOLS_DIR / "cpu_depth_chart.py"),
-        "--db",
-        str(db_path),
+    script_args = [
         "rebuild",
         "--season",
         str(season),
         "--apply",
     ]
     if user_team:
-        command.extend(["--user-team", user_team])
+        script_args.extend(["--user-team", user_team])
     else:
-        command.append("--include-user")
-    subprocess.run(command, check=True)
-    sync_save(target_game_id)
+        script_args.append("--include-user")
+    run_tool_script(game_id, "cpu_depth_chart.py", script_args)
 
 
 def depth_chart_refresh_season(con) -> int:
@@ -271,22 +272,17 @@ def refresh_dirty_cpu_depth_charts(
                 season = depth_chart_refresh_season(con)
             if user_team is None:
                 user_team = active_user_team(con)
-    command = [
-        sys.executable,
-        str(TOOLS_DIR / "cpu_depth_chart.py"),
-        "--db",
-        str(db_path),
+    script_args = [
         "rebuild-dirty",
         "--season",
         str(season),
         "--apply",
     ]
     if user_team:
-        command.extend(["--user-team", str(user_team)])
+        script_args.extend(["--user-team", str(user_team)])
     else:
-        command.append("--include-user")
-    subprocess.run(command, check=True)
-    sync_save(target_game_id)
+        script_args.append("--include-user")
+    run_tool_script(target_game_id, "cpu_depth_chart.py", script_args)
 
 
 def table_exists(con, name: str) -> bool:
@@ -427,6 +423,24 @@ def regular_season_status(con, season: int) -> tuple[int, int]:
     return int(row["games"] or 0), int(row["played"] or 0)
 
 
+def regular_season_kickoff_target(con, season: int) -> str:
+    event_date = calendar_event_date(con, season, "REGULAR_SEASON_KICKOFF")
+    if event_date:
+        return event_date
+    row = con.execute(
+        """
+        SELECT MIN(game_date) AS first_game_date
+        FROM season_games
+        WHERE season = ?
+          AND game_type = 'REG'
+        """,
+        (int(season),),
+    ).fetchone()
+    if row and row["first_game_date"]:
+        return str(row["first_game_date"])
+    return f"{int(season)}-09-01"
+
+
 def postseason_game_count(con, season: int) -> int:
     table = con.execute(
         """
@@ -466,12 +480,15 @@ def ensure_regular_season_complete_before_draft(
     season: int,
     *,
     auto_roster_cutdown: bool = False,
+    cpu_controls_user_team: bool = False,
     skip_roster_gate: bool = False,
 ) -> None:
-    target_game_id, _db_path, con = open_save_db(game_id)
+    target_game_id, db_path, con = open_save_db(game_id)
     try:
         regular_games, regular_played = regular_season_status(con, season)
         user_team = active_user_team(con)
+        current_date = active_game_current_date(con)
+        regular_start_date = regular_season_kickoff_target(con, season)
     finally:
         con.close()
     if regular_games == 0:
@@ -480,25 +497,46 @@ def ensure_regular_season_complete_before_draft(
         ensure_playoff_tree_if_ready(target_game_id, season)
         return
 
+    manage_user_team = bool(auto_roster_cutdown or cpu_controls_user_team)
     if not auto_roster_cutdown and not skip_roster_gate and stop_for_user_roster_cutdown_if_due(target_game_id, season):
         raise RuntimeError(
             "Roster cutdown/practice squad setup is required before simming to the draft. "
             "Choose automatic roster cutdown or handle it manually first."
         )
-    ensure_regular_season_rosters(target_game_id, season)
+    sim_control.raise_if_cancelled(db_path, "before preseason sim preflight.")
+    simulate_preseason_before_target(target_game_id, season, regular_start_date)
+    sim_control.raise_if_cancelled(db_path, "after preseason sim preflight.")
+    apply_cpu_roster_cutdowns_if_due(
+        target_game_id,
+        regular_start_date,
+        include_user_team=manage_user_team,
+        from_date=current_date,
+    )
+    settle_expired_waivers_if_due(
+        target_game_id,
+        regular_start_date,
+        include_user_team=manage_user_team,
+    )
+    sim_control.raise_if_cancelled(db_path, "before regular-season roster preflight.")
+    ensure_regular_season_rosters(target_game_id, season, include_user_team=manage_user_team)
+    sim_control.raise_if_cancelled(db_path, "after regular-season roster preflight.")
     ensure_regular_season_specialists(target_game_id, season)
-    ensure_cpu_depth_charts(target_game_id, season, user_team=user_team)
+    sim_control.raise_if_cancelled(db_path, "after regular-season specialist preflight.")
+    ensure_cpu_depth_charts(target_game_id, season, user_team=None if manage_user_team else user_team)
+    sim_control.raise_if_cancelled(db_path, "after regular-season depth chart preflight.")
     print(f"Completing {regular_games - regular_played} unplayed regular-season game(s) before advancing to the draft.")
     run_tool_script(
         target_game_id,
         "sim_game.py",
         ["season", "--season", str(season), "--apply", "--no-ai-gm"],
     )
+    sync_save(target_game_id)
+    sim_control.raise_if_cancelled(db_path, "after regular-season sim before draft.")
     ensure_playoff_tree_if_ready(target_game_id, season)
 
 
 def ensure_final_draft_order(game_id: str | None, *, season: int, draft_year: int) -> None:
-    target_game_id, _db_path, con = open_save_db(game_id)
+    target_game_id, db_path, con = open_save_db(game_id)
     try:
         slots, mismatches = draft_order_status(con, draft_year)
         playoff_results = postseason_result_count(con, season)
@@ -507,12 +545,14 @@ def ensure_final_draft_order(game_id: str | None, *, season: int, draft_year: in
 
     if slots == 32 and mismatches == 0:
         return
+    sim_control.raise_if_cancelled(db_path, "before postseason/draft-order finalization.")
     if playoff_results == 0:
         run_tool_script(
             game_id,
             "postseason.py",
             ["run", "--season", str(season), "--apply", "--seed", f"{season}99"],
         )
+        sim_control.raise_if_cancelled(db_path, "after postseason run before draft order.")
         _target_game_id, _db_path, con = open_save_db(game_id)
         try:
             playoff_results = postseason_result_count(con, season)
@@ -521,11 +561,13 @@ def ensure_final_draft_order(game_id: str | None, *, season: int, draft_year: in
     elif 0 < playoff_results < 13:
         print(f"Completing partial {season} postseason before building the {draft_year} draft order.")
         for _ in range(4):
+            sim_control.raise_if_cancelled(db_path, "before postseason round completion.")
             run_tool_script(
                 game_id,
                 "postseason.py",
                 ["round", "--season", str(season), "--apply", "--seed", f"{season}99"],
             )
+            sim_control.raise_if_cancelled(db_path, "after postseason round completion.")
             _target_game_id, _db_path, con = open_save_db(game_id)
             try:
                 playoff_results = postseason_result_count(con, season)
@@ -535,11 +577,13 @@ def ensure_final_draft_order(game_id: str | None, *, season: int, draft_year: in
                 break
 
     if playoff_results >= 13:
+        sim_control.raise_if_cancelled(db_path, "before building draft order.")
         run_tool_script(
             game_id,
             "postseason.py",
             ["draft-order", "--season", str(season), "--apply"],
         )
+        sim_control.raise_if_cancelled(db_path, "after building draft order.")
     else:
         raise ValueError(
             f"{season} postseason is partial ({playoff_results}/13 games). "
@@ -601,23 +645,22 @@ def ensure_progression_for_league_year(game_id: str, target_year: int) -> None:
         f"Current-year ratings/foundations are incomplete for {target_year}; "
         f"running progression {from_season}->{target_year}."
     )
-    command = [
-        sys.executable,
-        str(TOOLS_DIR / "player_progression.py"),
-        "--db",
-        str(db_path),
-        "run",
-        "--game-id",
+    run_tool_script(
         game_id,
-        "--from-season",
-        str(from_season),
-        "--to-season",
-        str(target_year),
-        "--seed",
-        str(seed),
-        "--apply",
-    ]
-    subprocess.run(command, check=True)
+        "player_progression.py",
+        [
+            "run",
+            "--game-id",
+            game_id,
+            "--from-season",
+            str(from_season),
+            "--to-season",
+            str(target_year),
+            "--seed",
+            str(seed),
+            "--apply",
+        ],
+    )
 
 
 def ensure_postseason_progression_for_league_year(game_id: str | None, target_year: int) -> None:
@@ -626,7 +669,9 @@ def ensure_postseason_progression_for_league_year(game_id: str | None, target_ye
     with game_flow.connect(db_path) as con:
         if not postseason_complete_for_progression(con, from_season):
             return
+    sim_control.raise_if_cancelled(db_path, "before postseason progression.")
     ensure_progression_for_league_year(target_game_id, target_year)
+    sim_control.raise_if_cancelled(db_path, "after postseason progression.")
     sync_save(target_game_id)
 
 
@@ -883,12 +928,35 @@ def apply_cpu_roster_cutdowns_if_due(
             return
         target = date.fromisoformat(str(target_date))
         cutdown_date = date.fromisoformat(cutdown)
+        crossed_cutdown = False
         if from_date:
             current = date.fromisoformat(str(from_date))
             if not (current < cutdown_date <= target):
                 return
+            crossed_cutdown = True
         elif target < cutdown_date:
             return
+        current_game_date = date.fromisoformat(str(game.current_date))
+        restore_current_game_date: str | None = None
+        if current_game_date < cutdown_date <= target:
+            game_flow.update_active_game_date(con, game, cutdown)
+            game = game_flow.active_game(con)
+        elif crossed_cutdown:
+            row = con.execute(
+                "SELECT setting_value FROM game_settings WHERE setting_key = 'current_game_date'"
+            ).fetchone()
+            restore_current_game_date = str(row["setting_value"]) if row and row["setting_value"] else None
+            if restore_current_game_date != cutdown:
+                con.execute(
+                    """
+                    INSERT INTO game_settings (setting_key, setting_value, updated_at)
+                    VALUES ('current_game_date', ?, datetime('now'))
+                    ON CONFLICT(setting_key) DO UPDATE SET
+                        setting_value = excluded.setting_value,
+                        updated_at = datetime('now')
+                    """,
+                    (cutdown,),
+                )
         roster_rules.ensure_schema(con)
         roster_rules.seed_rules(con)
         roster_cutdown.ensure_cutdown_schema(con)
@@ -944,6 +1012,17 @@ def apply_cpu_roster_cutdowns_if_due(
                 f"{settle_result.get('claims', 0)} CPU claim(s) submitted, "
                 f"{settle_result.get('processed', 0)} waiver entr"
                 f"{'y' if settle_result.get('processed', 0) == 1 else 'ies'} settled."
+            )
+        if restore_current_game_date:
+            con.execute(
+                """
+                INSERT INTO game_settings (setting_key, setting_value, updated_at)
+                VALUES ('current_game_date', ?, datetime('now'))
+                ON CONFLICT(setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = datetime('now')
+                """,
+                (restore_current_game_date,),
             )
         con.commit()
     if include_user_team:
@@ -1016,11 +1095,7 @@ def stop_for_user_roster_cutdown_if_due(game_id: str | None, season: int) -> boo
     if stop_date:
         auto_top30_before_calendar_advance(target_game_id, stop_date)
         finish_draft_before_calendar_advance(target_game_id, stop_date)
-        game_id, _db_path, con = open_save_db(target_game_id)
-        try:
-            game_flow.action_advance_to_date(con, SimpleNamespace(date=stop_date))
-        finally:
-            con.close()
+        advance_calendar_for_play_action(target_game_id, stop_date)
         sync_save(target_game_id)
     if gate_message:
         print(gate_message)
@@ -1137,7 +1212,7 @@ def finish_draft_before_calendar_advance(game_id: str | None, target_date: str) 
         remaining = draft_remaining_picks(con, draft_year)
         if remaining <= 0:
             return
-        user_team = active_user_team(con) or "MIN"
+        user_team = active_user_team(con)
         already_started = draft_room_started(con, draft_year)
 
     print(
@@ -1145,18 +1220,19 @@ def finish_draft_before_calendar_advance(game_id: str | None, target_date: str) 
         f"{draft_year} draft. Auto-simming {remaining} remaining pick(s) first."
     )
     if not already_started:
+        start_args = [
+            "start",
+            "--draft-year",
+            str(draft_year),
+            "--paused",
+            "--apply",
+        ]
+        if user_team:
+            start_args.extend(["--user-team", user_team])
         run_tool_script(
             target_game_id,
             "draft_room.py",
-            [
-                "start",
-                "--draft-year",
-                str(draft_year),
-                "--user-team",
-                user_team,
-                "--paused",
-                "--apply",
-            ],
+            start_args,
         )
     run_tool_script(
         target_game_id,
@@ -1169,6 +1245,7 @@ def finish_draft_before_calendar_advance(game_id: str | None, target_date: str) 
             str(max(remaining, 1)),
             "--include-user-pick",
             "--no-cap-snapshot",
+            "--no-pause-on-trade",
             "--apply",
         ],
     )
@@ -1352,7 +1429,13 @@ def active_free_agency_period_date(con, league_year: int) -> str | None:
     return str(row["current_date"]) if row and row["current_date"] else None
 
 
-def ensure_offseason_free_agency_started(game_id: str | None, draft_year: int, draft_date: str) -> bool:
+def ensure_offseason_free_agency_started(
+    game_id: str | None,
+    draft_year: int,
+    draft_date: str,
+    *,
+    cpu_controls_user_team: bool = False,
+) -> bool:
     target_game_id, db_path = save_db(game_id)
     with game_flow.connect(db_path) as con:
         current_date = active_game_current_date(con)
@@ -1363,30 +1446,39 @@ def ensure_offseason_free_agency_started(game_id: str | None, draft_year: int, d
         start_date = free_agency_start_date(con, draft_year)
         if date.fromisoformat(start_date) >= date.fromisoformat(draft_date):
             return False
+    script_args = [
+        "start",
+        "--league-year",
+        str(draft_year),
+        "--start-date",
+        start_date,
+        "--cpu-resign-per-team",
+        "2",
+        "--cpu-retention-per-team",
+        "1",
+        "--opening-cpu-offers",
+        "112",
+        "--no-cap-snapshot",
+        "--apply",
+    ]
+    if cpu_controls_user_team:
+        script_args.append("--cpu-controls-user-team")
     run_tool_script(
         target_game_id,
         "free_agency_processor.py",
-        [
-            "start",
-            "--league-year",
-            str(draft_year),
-            "--start-date",
-            start_date,
-            "--cpu-resign-per-team",
-            "2",
-            "--cpu-retention-per-team",
-            "1",
-            "--opening-cpu-offers",
-            "112",
-            "--cpu-controls-user-team",
-            "--no-cap-snapshot",
-            "--apply",
-        ],
+        script_args,
     )
     return True
 
 
-def process_offseason_free_agency_to_draft(game_id: str | None, draft_year: int, draft_date: str, base_cpu_offers: int) -> None:
+def process_offseason_free_agency_to_draft(
+    game_id: str | None,
+    draft_year: int,
+    draft_date: str,
+    base_cpu_offers: int,
+    *,
+    cpu_controls_user_team: bool = False,
+) -> None:
     target_game_id, db_path = save_db(game_id)
     while True:
         sim_control.raise_if_cancelled(db_path, "before offseason free agency processing.")
@@ -1414,21 +1506,23 @@ def process_offseason_free_agency_to_draft(game_id: str | None, draft_year: int,
 
         if current_stage == "day_one_hourly" and current_hour < end_hour:
             sim_control.raise_if_cancelled(db_path, "before advancing free agency hour.")
+            script_args = [
+                "advance-hour",
+                "--league-year",
+                str(draft_year),
+                "--cpu-offers",
+                str(max(32, min(64, base_cpu_offers))),
+                "--signing-limit",
+                "24",
+                "--no-cap-snapshot",
+                "--apply",
+            ]
+            if cpu_controls_user_team:
+                script_args.append("--cpu-controls-user-team")
             run_tool_script(
                 target_game_id,
                 "free_agency_processor.py",
-                [
-                    "advance-hour",
-                    "--league-year",
-                    str(draft_year),
-                    "--cpu-offers",
-                    str(max(32, min(64, base_cpu_offers))),
-                    "--signing-limit",
-                    "24",
-                    "--cpu-controls-user-team",
-                    "--no-cap-snapshot",
-                    "--apply",
-                ],
+                script_args,
             )
             continue
 
@@ -1451,25 +1545,102 @@ def process_offseason_free_agency_to_draft(game_id: str | None, draft_year: int,
             cpu_offers = 44 if remaining_days > 35 else 34
             signing_limit = 48
         sim_control.raise_if_cancelled(db_path, "before advancing free agency days.")
+        script_args = [
+            "advance-day",
+            "--league-year",
+            str(draft_year),
+            "--days",
+            str(step_days),
+            "--cpu-offers",
+            str(cpu_offers),
+            "--signing-limit",
+            str(signing_limit),
+            "--force",
+            "--no-cap-snapshot",
+            "--apply",
+        ]
+        if cpu_controls_user_team:
+            script_args.append("--cpu-controls-user-team")
         run_tool_script(
             target_game_id,
             "free_agency_processor.py",
-            [
-                "advance-day",
-                "--league-year",
-                str(draft_year),
-                "--days",
-                str(step_days),
-                "--cpu-offers",
-                str(cpu_offers),
-                "--signing-limit",
-                str(signing_limit),
-                "--force",
-                "--cpu-controls-user-team",
-                "--no-cap-snapshot",
-                "--apply",
-            ],
+            script_args,
         )
+
+
+def finalize_pre_draft_free_agency_state(
+    game_id: str | None,
+    draft_year: int,
+    draft_date: str,
+    *,
+    cpu_controls_user_team: bool,
+) -> None:
+    """Run the final FA guardrails that should be true before the draft room opens."""
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        try:
+            import free_agency_processor
+        except Exception as exc:
+            print(f"Pre-draft free-agency cleanup skipped: {exc}.")
+            return
+        if not table_exists(con, "free_agency_periods"):
+            return
+        period = con.execute(
+            """
+            SELECT *
+            FROM free_agency_periods
+            WHERE league_year = ?
+              AND status = 'active'
+            """,
+            (draft_year,),
+        ).fetchone()
+        if not period:
+            return
+        if str(period["current_date"]) < draft_date:
+            return
+        user_team = None if cpu_controls_user_team else active_user_team(con)
+        cleanup = free_agency_processor.cpu_cap_compliance_sweep(
+            con,
+            draft_year,
+            user_team=user_team,
+            min_space=0,
+            max_moves_per_team=10,
+            max_teams=32,
+            time_budget_seconds=90.0,
+            write_snapshot=False,
+        )
+        if int(cleanup.get("still_over") or 0):
+            followup = free_agency_processor.cpu_cap_compliance_sweep(
+                con,
+                draft_year,
+                user_team=user_team,
+                min_space=0,
+                max_moves_per_team=8,
+                max_teams=32,
+                time_budget_seconds=90.0,
+                write_snapshot=False,
+            )
+            for key, value in followup.items():
+                if key == "still_over":
+                    cleanup[key] = value
+                else:
+                    cleanup[key] = int(cleanup.get(key) or 0) + int(value or 0)
+        waiver_result = free_agency_processor.settle_due_market_waivers(
+            con,
+            league_year=draft_year,
+            target_date=draft_date,
+            include_user_team=cpu_controls_user_team,
+        )
+        free_agency_processor.sync_active_game_to_date(con, draft_date)
+        con.commit()
+        print(
+            "Pre-draft free-agency cleanup: "
+            f"{cleanup.get('restructures', 0)} restructure(s), "
+            f"{cleanup.get('releases', 0)} release(s), "
+            f"{cleanup.get('still_over', 0)} team(s) still below the cap target, "
+            f"{waiver_result.get('processed', 0)} waiver(s) settled."
+        )
+    sync_save(target_game_id)
 
 
 def draft_room_already_started(con, draft_year: int) -> bool:
@@ -1539,6 +1710,92 @@ def clear_draft_class_pending_settings(con: sqlite3.Connection, draft_year: int)
     for key in ("draft_class_setup_pending_year", "draft_class_setup_pending_reason"):
         con.execute("DELETE FROM game_settings WHERE setting_key = ?", (key,))
     game_flow.upsert_setting(con, "draft_class_ready_year", str(draft_year))
+
+
+def game_is_observe_mode(game: Any | None) -> bool:
+    if game is None:
+        return False
+    control_mode = str(getattr(game, "control_mode", "") or "").lower()
+    return control_mode == "observe" or getattr(game, "user_team_id", None) is None
+
+
+def auto_generate_pending_draft_class_for_observe(
+    game_id: str,
+    con: sqlite3.Connection,
+    *,
+    reason: str,
+) -> bool:
+    game = game_flow.active_game(con)
+    if not game_is_observe_mode(game):
+        return False
+    draft_year = game_flow.pending_draft_class_setup_year(con)
+    if draft_year is None:
+        return False
+    seed = f"{game_id}:draft-class:{draft_year}"
+    result = draft_class_bootstrap.ensure_draft_class(
+        con,
+        draft_year=draft_year,
+        seed=seed,
+        notes=f"Auto-generated by observe mode during {reason}.",
+        refresh_legacy_without_offboard=False,
+        replace_existing=False,
+    )
+    scouting_result = scouting.initialize_for_game(
+        con,
+        game_id=game_id,
+        draft_year=draft_year,
+        welcome_message=True,
+    )
+    clear_draft_class_pending_settings(con, draft_year)
+    con.commit()
+    print(
+        f"Observe mode auto-generated the {draft_year} draft class during {reason}. "
+        f"{result.message} Scouting initialized with "
+        f"{scouting_result['public']} public prospects and "
+        f"{scouting_result['hidden']} discovery candidates."
+    )
+    return True
+
+
+def advance_calendar_for_play_action(game_id: str, target_date: str) -> None:
+    target = date.fromisoformat(str(target_date))
+    current_game_id, _db_path, con = open_save_db(game_id)
+    try:
+        while True:
+            game = game_flow.active_game(con)
+            if not game:
+                raise ValueError("No active game. Run start first.")
+            auto_generate_pending_draft_class_for_observe(
+                current_game_id,
+                con,
+                reason="calendar advance",
+            )
+            current = date.fromisoformat(str(game.current_date))
+            if target <= current:
+                return
+            sim_year_start = game_flow.first_sim_year_start_between(
+                con,
+                str(game.current_date),
+                target.isoformat(),
+            )
+            if sim_year_start and game_is_observe_mode(game):
+                checkpoint = str(sim_year_start["event_start_date"])
+                game_flow.action_advance_to_date(con, SimpleNamespace(date=checkpoint))
+                auto_generate_pending_draft_class_for_observe(
+                    current_game_id,
+                    con,
+                    reason=f"June 1 league-year start ({checkpoint})",
+                )
+                continue
+            game_flow.action_advance_to_date(con, SimpleNamespace(date=target.isoformat()))
+            auto_generate_pending_draft_class_for_observe(
+                current_game_id,
+                con,
+                reason="calendar advance",
+            )
+            return
+    finally:
+        con.close()
 
 
 def action_draft_class_generate(args: argparse.Namespace) -> None:
@@ -1663,11 +1920,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
         print(gate_message)
     auto_top30_before_calendar_advance(game_id, target_date)
     finish_draft_before_calendar_advance(game_id, target_date)
-    game_id, _db_path, con = open_save_db(game_id)
-    try:
-        game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
-    finally:
-        con.close()
+    advance_calendar_for_play_action(game_id, target_date)
     ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
     apply_cpu_roster_cutdowns_if_due(
         game_id,
@@ -1675,7 +1928,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
-    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1703,11 +1956,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
         print(gate_message)
     auto_top30_before_calendar_advance(game_id, target_date)
     finish_draft_before_calendar_advance(game_id, target_date)
-    game_id, _db_path, con = open_save_db(game_id)
-    try:
-        game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
-    finally:
-        con.close()
+    advance_calendar_for_play_action(game_id, target_date)
     ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
     apply_cpu_roster_cutdowns_if_due(
         game_id,
@@ -1715,7 +1964,7 @@ def action_advance_to_next_event(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
-    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1748,11 +1997,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         print(gate_message)
     auto_top30_before_calendar_advance(game_id, target_date)
     finish_draft_before_calendar_advance(game_id, target_date)
-    game_id, _db_path, con = open_save_db(args.game_id)
-    try:
-        game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
-    finally:
-        con.close()
+    advance_calendar_for_play_action(game_id, target_date)
     ensure_post_draft_free_agency_after_calendar_advance(game_id, target_date)
     apply_cpu_roster_cutdowns_if_due(
         game_id,
@@ -1760,7 +2005,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=start_date,
     )
-    settle_expired_waivers_if_due(game_id, target_date, include_user_team=False)
+    settle_expired_waivers_if_due(game_id, target_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(game_id)
     sync_save(game_id)
 
@@ -1801,7 +2046,7 @@ def advance_calendar_to_preseason_checkpoint(game_id: str | None, season: int) -
         if date.fromisoformat(str(target_date)) <= date.fromisoformat(str(game.current_date)):
             return
         print(f"Advancing calendar to preseason checkpoint {target_date}.")
-        game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
+    advance_calendar_for_play_action(target_game_id, target_date)
     sync_save(target_game_id)
 
 
@@ -1862,6 +2107,7 @@ def simulate_preseason_before_target(game_id: str | None, season: int, target_da
                 "--apply",
             ],
         )
+        advance_calendar_to_preseason_checkpoint(target_game_id, season)
 
 
 def next_unplayed_preseason_week(game_id: str | None, season: int, requested_week: int | None = None) -> int | None:
@@ -1922,11 +2168,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
     if gated_target != target_date:
         auto_top30_before_calendar_advance(target_game_id, gated_target)
         finish_draft_before_calendar_advance(target_game_id, gated_target)
-        game_id, _db_path, con = open_save_db(target_game_id)
-        try:
-            game_flow.action_advance_to_date(con, SimpleNamespace(date=gated_target))
-        finally:
-            con.close()
+        advance_calendar_for_play_action(target_game_id, gated_target)
         ensure_post_draft_free_agency_after_calendar_advance(target_game_id, gated_target)
         apply_cpu_roster_cutdowns_if_due(
             target_game_id,
@@ -1934,7 +2176,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
             include_user_team=args.auto_roster_cutdown,
             from_date=current_date,
         )
-        settle_expired_waivers_if_due(target_game_id, gated_target, include_user_team=False)
+        settle_expired_waivers_if_due(target_game_id, gated_target, include_user_team=args.auto_roster_cutdown)
         refresh_dirty_cpu_depth_charts(target_game_id)
         sync_save(target_game_id)
         return
@@ -1946,13 +2188,13 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
     game_id, _db_path, con = open_save_db(target_game_id)
     try:
         current_date = active_game_current_date(con)
-        if date.fromisoformat(target_date) <= date.fromisoformat(current_date):
-            print(f"Already at or past {event_name} ({target_date}).")
-        else:
-            game_flow.action_advance_to_date(con, SimpleNamespace(date=target_date))
-            print(f"Advanced {target_game_id} from {current_date} to {event_name} ({target_date}).")
     finally:
         con.close()
+    if date.fromisoformat(target_date) <= date.fromisoformat(current_date):
+        print(f"Already at or past {event_name} ({target_date}).")
+    else:
+        advance_calendar_for_play_action(target_game_id, target_date)
+        print(f"Advanced {target_game_id} from {current_date} to {event_name} ({target_date}).")
     ensure_post_draft_free_agency_after_calendar_advance(target_game_id, target_date)
     apply_cpu_roster_cutdowns_if_due(
         target_game_id,
@@ -1960,7 +2202,7 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
         include_user_team=args.auto_roster_cutdown,
         from_date=current_date,
     )
-    settle_expired_waivers_if_due(target_game_id, target_date, include_user_team=False)
+    settle_expired_waivers_if_due(target_game_id, target_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(target_game_id)
     sync_save(game_id)
 
@@ -1977,6 +2219,18 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         draft_date = draft_event_date(con, draft_year)
         user_team = (args.user_team or active_user_team(con) or "")
         user_team = user_team.upper() if user_team else None
+        if not draft_class_exists(con, draft_year) and game_is_observe_mode(game):
+            game_flow.upsert_setting(con, "draft_class_setup_pending_year", str(draft_year))
+            game_flow.upsert_setting(
+                con,
+                "draft_class_setup_pending_reason",
+                f"Observe mode auto setup for the {draft_year} draft.",
+            )
+            auto_generate_pending_draft_class_for_observe(
+                target_game_id,
+                con,
+                reason="advance to draft",
+            )
         if not draft_class_exists(con, draft_year):
             raise ValueError(
                 f"No {draft_year} draft class is loaded yet. "
@@ -1998,13 +2252,23 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
         args.game_id,
         season=draft_year - 1,
         auto_roster_cutdown=args.auto_roster_cutdown,
+        cpu_controls_user_team=bool(getattr(args, "cpu_controls_user_team", False)),
         skip_roster_gate=getattr(args, "skip_roster_gate", False),
     )
+    sim_control.raise_if_cancelled(db_path, "after completing regular season before draft.")
     ensure_final_draft_order(args.game_id, season=draft_year - 1, draft_year=draft_year)
+    sim_control.raise_if_cancelled(db_path, "after finalizing draft order.")
     ensure_postseason_progression_for_league_year(args.game_id, draft_year)
+    sim_control.raise_if_cancelled(db_path, "after postseason progression before draft.")
 
     if not args.no_resolve_free_agency:
-        opened_fa = ensure_offseason_free_agency_started(args.game_id, draft_year, draft_date)
+        cpu_controls_user_team = bool(getattr(args, "cpu_controls_user_team", False))
+        opened_fa = ensure_offseason_free_agency_started(
+            args.game_id,
+            draft_year,
+            draft_date,
+            cpu_controls_user_team=cpu_controls_user_team,
+        )
         if opened_fa:
             print(f"Opened {draft_year} offseason free agency before advancing to the draft.")
         process_offseason_free_agency_to_draft(
@@ -2012,9 +2276,18 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
             draft_year,
             draft_date,
             max(28, int(args.cpu_offers or 40)),
+            cpu_controls_user_team=cpu_controls_user_team,
         )
+        finalize_pre_draft_free_agency_state(
+            args.game_id,
+            draft_year,
+            draft_date,
+            cpu_controls_user_team=cpu_controls_user_team,
+        )
+    sim_control.raise_if_cancelled(db_path, "after offseason free agency before draft.")
 
     auto_top30_before_calendar_advance(target_game_id, draft_date, draft_year)
+    sim_control.raise_if_cancelled(db_path, "after Top 30 visit auto-fill before draft.")
     with game_flow.connect(db_path) as con:
         result = scouting.run_pre_draft_public_scouting_sweep(
             con,
@@ -2030,19 +2303,22 @@ def action_advance_to_draft(args: argparse.Namespace) -> None:
             f"Pre-draft scouting sweep: {result['user_updates']} user file(s), "
             f"{result['cpu_updates']} CPU-team file(s) moved from Low to Medium."
         )
+    sim_control.raise_if_cancelled(db_path, "after pre-draft scouting sweep.")
 
     game_id, _db_path, con = open_save_db(args.game_id)
     try:
         current_date = active_game_current_date(con)
-        if date.fromisoformat(draft_date) > date.fromisoformat(current_date):
-            game_flow.action_advance_to_date(con, SimpleNamespace(date=draft_date))
-        else:
-            print(f"Already at or past the {draft_year} draft date ({draft_date}).")
     finally:
         con.close()
-    settle_expired_waivers_if_due(target_game_id, draft_date, include_user_team=False)
+    if date.fromisoformat(draft_date) > date.fromisoformat(current_date):
+        advance_calendar_for_play_action(target_game_id, draft_date)
+    else:
+        print(f"Already at or past the {draft_year} draft date ({draft_date}).")
+    sim_control.raise_if_cancelled(db_path, "after moving calendar to draft date.")
+    settle_expired_waivers_if_due(target_game_id, draft_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(target_game_id, season=draft_year)
     sync_save(game_id)
+    sim_control.raise_if_cancelled(db_path, "after draft-date roster refresh.")
 
     room_started = False
     with game_flow.connect(db_path) as con:
@@ -2141,8 +2417,34 @@ def action_view_team(args: argparse.Namespace) -> None:
 def run_tool_script(game_id: str | None, script_name: str, script_args: list[str]) -> None:
     target_game_id, db_path = save_db(game_id)
     command = [sys.executable, str(TOOLS_DIR / script_name), "--db", str(db_path), *script_args]
-    subprocess.run(command, check=True)
-    sync_save(target_game_id)
+    process = subprocess.Popen(command)
+    cancelled = False
+    try:
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if sim_control.cancel_requested(db_path):
+                cancelled = True
+                process.terminate()
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10)
+                break
+            time.sleep(0.5)
+    finally:
+        try:
+            sync_save(target_game_id)
+        except Exception as exc:
+            print(f"Save sync after {script_name} skipped: {exc}", file=sys.stderr)
+
+    if cancelled:
+        raise sim_control.SimCancelled(f"Simulation stop requested while running {script_name}.")
+    returncode = process.returncode
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command)
 
 
 def action_cap(args: argparse.Namespace) -> None:
@@ -2641,6 +2943,10 @@ def action_complete_season(args: argparse.Namespace) -> None:
         script_args.append("--no-replace-next-schedule")
     if args.no_advance_date:
         script_args.append("--no-advance-date")
+    if args.no_awards:
+        script_args.append("--no-awards")
+    if args.force_awards:
+        script_args.append("--force-awards")
     if args.no_progression:
         script_args.append("--no-progression")
     if args.progression_seed is not None:
@@ -2806,6 +3112,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--auto-roster-cutdown",
         action="store_true",
         help="Automatically handle the user team's roster cutdown if the regular season must be completed first.",
+    )
+    draft_date_parser.add_argument(
+        "--cpu-controls-user-team",
+        action="store_true",
+        help="Allow CPU free-agency/cap automation for the user team while fast-forwarding to the draft.",
     )
     draft_date_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     draft_date_parser.add_argument("--no-resolve-free-agency", action="store_true", help="Skip the free-agency fast-forward tick before the draft.")
@@ -3192,6 +3503,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Replace an existing unplayed next-season schedule.",
     )
     complete_parser.add_argument("--no-advance-date", action="store_true", help="Do not advance the active save date.")
+    complete_parser.add_argument("--no-awards", action="store_true", help="Do not generate player awards/accolades.")
+    complete_parser.add_argument("--force-awards", action="store_true", help="Replace existing generated accolades for this season.")
     complete_parser.add_argument("--no-progression", action="store_true", help="Do not run automatic offseason progression/regression.")
     complete_parser.add_argument("--progression-seed", type=int, help="Seed for automatic offseason progression. Defaults to <season><next season>.")
     complete_parser.add_argument("--force-progression", action="store_true", help="Replace an existing progression run for this season transition.")
@@ -3214,6 +3527,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         args.func(args)
+    except sim_control.SimCancelled as exc:
+        print(str(exc), file=sys.stderr)
+        return 130
     except (FileNotFoundError, ValueError) as exc:
         print(f"Play command unavailable: {exc}", file=sys.stderr)
         return 1

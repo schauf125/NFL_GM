@@ -2030,6 +2030,152 @@ body[data-view="season"] .row .tag {
   overflow: auto;
 }
 
+.awards-grid .panel {
+  min-width: 0;
+}
+
+.awards-metrics.metric-grid.compact-metrics {
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+}
+
+.award-player-cell {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.award-player-cell small {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.award-team-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.award-team-logo {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+
+.award-team-logo.logo-fallback {
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 950;
+}
+
+.award-inline-list {
+  display: grid;
+  gap: 6px;
+}
+
+.accolade-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.accolade-badge {
+  --accolade-accent: #aab4c2;
+  --accolade-soft: rgba(170, 180, 194, 0.15);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--accolade-accent) 62%, rgba(255, 255, 255, 0.12));
+  border-radius: 999px;
+  padding: 5px 10px 5px 6px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accolade-accent) 20%, transparent), transparent 72%),
+    var(--accolade-soft);
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.13);
+}
+
+.accolade-badge strong {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 22px;
+  border-radius: 999px;
+  padding: 0 7px;
+  background: color-mix(in srgb, var(--accolade-accent) 28%, rgba(255, 255, 255, 0.08));
+  color: #fff;
+  font-size: 0.66rem;
+  font-weight: 950;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.accolade-badge span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in srgb, var(--text) 88%, var(--accolade-accent));
+  font-size: 0.74rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+}
+
+.accolade-badge.compact {
+  min-height: 26px;
+  padding: 3px 7px 3px 4px;
+}
+
+.accolade-badge.compact strong {
+  min-width: 24px;
+  height: 19px;
+  padding: 0 6px;
+  font-size: 0.6rem;
+}
+
+.accolade-mvp {
+  --accolade-accent: #ffd76a;
+  --accolade-soft: rgba(255, 215, 106, 0.13);
+}
+
+.accolade-champion {
+  --accolade-accent: #87d9ff;
+  --accolade-soft: rgba(91, 178, 255, 0.14);
+}
+
+.accolade-position,
+.accolade-rookie,
+.accolade-comeback {
+  --accolade-accent: #d7b66b;
+  --accolade-soft: rgba(215, 182, 107, 0.13);
+}
+
+.accolade-allpro-first {
+  --accolade-accent: #f3c658;
+  --accolade-soft: rgba(243, 198, 88, 0.14);
+}
+
+.accolade-allpro-second {
+  --accolade-accent: #c7d2df;
+  --accolade-soft: rgba(199, 210, 223, 0.12);
+}
+
+.accolade-pro-bowl {
+  --accolade-accent: #b27a44;
+  --accolade-soft: rgba(178, 122, 68, 0.13);
+}
+
 .box-score-output {
   max-height: min(68vh, 720px);
   overflow: auto;
@@ -2807,6 +2953,17 @@ body[data-view="season"] .row .tag {
   font-weight: 850;
 }
 
+.sim-advance-cpu-note {
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--line));
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: rgba(116, 184, 255, 0.08);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
 .sim-advance-checkpoints {
   display: grid;
   gap: 6px;
@@ -3043,6 +3200,39 @@ body[data-view="season"] .row .tag {
   padding-top: 10px;
 }
 
+.injury-auto-control {
+  margin-right: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 330px;
+  color: var(--text-soft);
+  font-size: 0.75rem;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.injury-auto-control input {
+  margin-top: 3px;
+  accent-color: var(--good);
+}
+
+.injury-auto-control span {
+  display: grid;
+  gap: 2px;
+}
+
+.injury-auto-control strong {
+  color: var(--text);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.injury-auto-control small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
 .injury-alert-card {
   display: grid;
   gap: 5px;
@@ -3083,6 +3273,93 @@ body[data-view="season"] .row .tag {
   color: var(--text-soft);
   font-size: 0.78rem;
   line-height: 1.4;
+}
+
+.injury-staff-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.injury-staff-control.enabled {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.injury-staff-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.injury-staff-copy strong {
+  color: var(--text);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.injury-staff-copy span {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.injury-staff-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.injury-staff-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.injury-staff-switch {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.08);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.injury-staff-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.injury-staff-toggle input:checked + .injury-staff-switch {
+  border-color: rgba(34, 197, 94, 0.6);
+  background: rgba(34, 197, 94, 0.22);
+}
+
+.injury-staff-toggle input:checked + .injury-staff-switch::after {
+  transform: translateX(18px);
+  background: var(--good);
+}
+
+.injury-staff-toggle input:disabled + .injury-staff-switch {
+  opacity: 0.55;
 }
 
 .player-link {
@@ -5858,6 +6135,13 @@ body[data-view="draft"] .draft-side-rail .control-secondary .action-card {
   margin-bottom: 12px;
 }
 
+.inbox-action-note {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .mini-button {
   min-height: 28px;
   padding: 5px 8px;
@@ -5875,6 +6159,48 @@ body[data-view="draft"] .draft-side-rail .control-secondary .action-card {
 .inbox-list {
   display: grid;
   gap: 9px;
+}
+
+.inbox-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.inbox-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.inbox-tab strong {
+  color: var(--text-soft);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.inbox-tab span {
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.inbox-tab.active {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
+  background: rgba(140, 161, 183, 0.12);
+}
+
+.inbox-tab.active strong {
+  color: var(--text);
 }
 
 .message-card {

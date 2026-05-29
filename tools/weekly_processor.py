@@ -25,6 +25,7 @@ import game_flow
 import league_calendar
 import league_news
 import roster_cutdown
+import roster_rules
 import scouting
 import season_storylines
 import pro_player_fog
@@ -339,6 +340,7 @@ def roster_maintenance_plan(
         "practice_squad": week in PRACTICE_SQUAD_SANITY_WEEKS,
         "injury_replacements": checkpoint or new_unavailable > 0,
         "position_replacements": checkpoint or new_unavailable > 0,
+        "veteran_free_agents": checkpoint or new_unavailable > 0,
         "practice_squad_poaching": week in PRACTICE_SQUAD_POACH_WEEKS or new_unavailable > 0,
         "depth_swaps": week in DEPTH_SANITY_WEEKS,
         "active_trim": checkpoint or new_unavailable > 0,
@@ -665,6 +667,18 @@ def process_week(
     mark_timing("position_replacements", started)
 
     started = time.perf_counter()
+    if roster_plan["veteran_free_agents"]:
+        veteran_fa_depth_result = roster_cutdown.process_cpu_veteran_free_agent_depth_signings(
+            con,
+            season=season,
+            game_id=target_game_id,
+            include_user_team=False,
+        )
+    else:
+        veteran_fa_depth_result = empty_roster_result(str(roster_plan["reason"]))
+    mark_timing("veteran_fa_depth", started)
+
+    started = time.perf_counter()
     if roster_plan["practice_squad_poaching"]:
         practice_squad_poach_result = roster_cutdown.process_cpu_practice_squad_poaching(
             con,
@@ -701,16 +715,34 @@ def process_week(
     mark_timing("active_trim", started)
 
     started = time.perf_counter()
+    if roster_rules.table_exists(con, "waiver_wire"):
+        waiver_settlement_result = roster_rules.settle_expired_waivers(
+            con,
+            season=season,
+            target_date=window.end_date,
+            game_id=target_game_id,
+            include_user_team=False,
+            max_claims_per_team=3,
+            max_claims_total=64,
+            post_cutdown=True,
+            max_rounds=10,
+        )
+    else:
+        waiver_settlement_result = {"claims": 0, "processed": 0, "claimed": 0, "cleared": 0}
+    mark_timing("waiver_settlement", started)
+
+    started = time.perf_counter()
     reminder_alerts = daily_processor.create_upcoming_event_alerts(con, target_game_id, window.end_date)
     roster_moves = roster_move_count(
         practice_squad_sanity_result,
         injury_replacement_result,
         position_replacement_result,
+        veteran_fa_depth_result,
         practice_squad_poach_result,
         depth_swap_result,
         active_trim_result,
     )
-    if roster_plan["validation"] or roster_moves:
+    if roster_plan["validation"] or roster_moves or int(waiver_settlement_result.get("processed", 0) or 0):
         teams_checked, failures, roster_errors, roster_warnings, roster_alerts = daily_processor.validate_rosters_if_needed(
             con,
             target_game_id,
@@ -867,6 +899,7 @@ def process_week(
     )
     replacement_moves = int(injury_replacement_result.get("promoted", 0)) + int(injury_replacement_result.get("signed", 0))
     position_moves = int(position_replacement_result.get("promoted", 0)) + int(position_replacement_result.get("signed", 0))
+    veteran_fa_moves = int(veteran_fa_depth_result.get("signed", 0))
     poach_moves = int(practice_squad_poach_result.get("poached", 0))
     scouting_note += (
         f" CPU injury replacements made {replacement_moves} move(s) "
@@ -880,6 +913,8 @@ def process_week(
     )
     if position_moves:
         scouting_note += f" CPU position-depth replacements made {position_moves} move(s)."
+    if veteran_fa_moves:
+        scouting_note += f" CPU veteran FA depth signings added {veteran_fa_moves} player(s)."
     if poach_moves:
         scouting_note += (
             f" CPU practice squad poaching signed {poach_moves} player(s) "
@@ -892,6 +927,11 @@ def process_week(
     trim_moves = int(active_trim_result.get("moved_to_ps", 0)) + int(active_trim_result.get("released", 0))
     if trim_moves:
         scouting_note += f" CPU roster sanity trimmed {trim_moves} active overage(s)."
+    if int(waiver_settlement_result.get("processed", 0) or 0):
+        scouting_note += (
+            f" Waivers settled {int(waiver_settlement_result.get('processed', 0) or 0)} entr"
+            f"{'y' if int(waiver_settlement_result.get('processed', 0) or 0) == 1 else 'ies'}."
+        )
     fa_signings = 0
     fa_resolve_note = ""
     trade_market_note = ""
