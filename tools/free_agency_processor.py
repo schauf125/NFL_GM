@@ -41,6 +41,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT / "database" / "nfl_gm.db"
 SOURCE = "free_agency_processor"
 PHASE = "Free Agency"
+CPU_CONTROL_USER_TEAM_SETTING = "fast_forward_cpu_controls_user_team"
+QB_DRAFT_BRIDGE_CONFIDENCE = {"high", "very high"}
+QB_DRAFT_BRIDGE_TOP3_CONFIDENCE = {"medium", "high", "very high"}
+QB_DRAFT_BRIDGE_TOP3_AAV_CAP = 12_000_000
+QB_DRAFT_BRIDGE_TOP10_AAV_CAP = 18_000_000
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from engine import injury_model  # noqa: E402
 
 POSITION_GROUP_BY_POS = {
     "QB": "QB",
@@ -188,9 +197,9 @@ MARKET_GROUP_TIER_FLOORS = {
     ("Starter", "ST"): 2_500_000,
 }
 
-CPU_FA_CAP_RESERVE = 22_000_000
+CPU_FA_CAP_RESERVE = 26_000_000
 CPU_FA_LATE_MARKET_RESERVE = 8_000_000
-CPU_FINAL_SIGNING_MIN_BUFFER = 4_000_000
+CPU_FINAL_SIGNING_MIN_BUFFER = 6_000_000
 
 CPU_GROUP_SPEND_LIMITS = {
     "QB": 30_000_000,
@@ -298,6 +307,17 @@ POSITION_OLD_AGE = {
     "IOL": 32,
     "ST": 34,
 }
+
+FA_ROSTER_EVALUATION_STATUSES = (
+    "Active",
+    "Questionable",
+    "Doubtful",
+    "Out",
+    "IR",
+    "PUP",
+    "NFI",
+    "Reserve/Future",
+)
 
 
 def round_to(value: float, increment: int = 50_000) -> int:
@@ -479,6 +499,40 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
+        CREATE TABLE IF NOT EXISTS free_agency_decision_explanations (
+            explanation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fingerprint TEXT NOT NULL UNIQUE,
+            league_year INTEGER NOT NULL,
+            decision_date TEXT,
+            decision_hour INTEGER,
+            decision_type TEXT NOT NULL,
+            team_id INTEGER REFERENCES teams(team_id) ON DELETE SET NULL,
+            player_id INTEGER REFERENCES players(player_id) ON DELETE SET NULL,
+            offer_id INTEGER REFERENCES free_agency_offers(offer_id) ON DELETE SET NULL,
+            contract_id INTEGER REFERENCES contracts(contract_id) ON DELETE SET NULL,
+            transaction_id INTEGER,
+            position_group TEXT,
+            need_score REAL,
+            value_score REAL,
+            cap_space_before INTEGER,
+            projected_cap_after INTEGER,
+            scheme_fit_score REAL,
+            bridge_qb_plan INTEGER NOT NULL DEFAULT 0,
+            role_plan TEXT,
+            market_context TEXT,
+            reason_summary TEXT NOT NULL,
+            reason_json TEXT,
+            source TEXT NOT NULL DEFAULT 'free_agency_processor',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_fa_decision_explanations_year
+            ON free_agency_decision_explanations(league_year, decision_date, explanation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_fa_decision_explanations_offer
+            ON free_agency_decision_explanations(offer_id, decision_type);
+
         DROP VIEW IF EXISTS free_agency_period_view;
         CREATE VIEW free_agency_period_view AS
         SELECT *
@@ -571,6 +625,31 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         FROM free_agency_offers o
         JOIN teams t ON t.team_id = o.team_id
         JOIN players p ON p.player_id = o.player_id;
+
+        DROP VIEW IF EXISTS free_agency_decision_explanations_view;
+        CREATE VIEW free_agency_decision_explanations_view AS
+        SELECT
+            e.*,
+            t.abbreviation AS team,
+            t.city || ' ' || t.nickname AS team_name,
+            p.first_name || ' ' || p.last_name AS player_name,
+            p.position,
+            p.age,
+            p.overall,
+            p.potential,
+            o.aav,
+            o.years,
+            o.status AS offer_status,
+            m.market_tier,
+            m.asking_aav,
+            m.minimum_aav
+        FROM free_agency_decision_explanations e
+        LEFT JOIN teams t ON t.team_id = e.team_id
+        LEFT JOIN players p ON p.player_id = e.player_id
+        LEFT JOIN free_agency_offers o ON o.offer_id = e.offer_id
+        LEFT JOIN free_agency_player_markets m
+          ON m.league_year = e.league_year
+         AND m.player_id = e.player_id;
         """
     )
     for table, column, ddl in (
@@ -643,6 +722,27 @@ def current_game_date_value(con: sqlite3.Connection) -> str | None:
     return max(values) if values else None
 
 
+def truthy_value(value: Any) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def resolve_stale_injuries_for_free_agency(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any] | None = None,
+    *,
+    target_date: str | None = None,
+) -> int:
+    """Clear injuries whose return date has passed before FA room checks run."""
+    as_of = target_date or (str(row_value(period, "current_date", "") or "") if period else "") or current_game_date_value(con)
+    if not as_of:
+        return 0
+    try:
+        injury_model.ensure_schema(con)
+        return injury_model.resolve_available_injuries(con, str(as_of))
+    except Exception:
+        return 0
+
+
 def default_league_year(con: sqlite3.Connection) -> int:
     contract_year = current_setting(con, "current_contract_year")
     if contract_year:
@@ -696,6 +796,379 @@ def log_event(
         """,
         (league_year, event_date, event_hour, event_type, team_id, player_id, offer_id, message),
     )
+
+
+def team_scheme_key_for_group(
+    con: sqlite3.Connection,
+    team_id: int,
+    group: str,
+    season: int,
+) -> str | None:
+    if not table_exists(con, "team_scheme_identities"):
+        return None
+    side = "defense" if group in {"EDGE", "IDL", "LB", "CB", "S"} else "offense"
+    column = "defense_scheme_key" if side == "defense" else "offense_scheme_key"
+    row = con.execute(
+        f"""
+        SELECT {column} AS scheme_key
+        FROM team_scheme_identities
+        WHERE team_id = ?
+        ORDER BY
+            CASE WHEN season = ? THEN 0 ELSE 1 END,
+            ABS(season - ?),
+            season DESC
+        LIMIT 1
+        """,
+        (int(team_id), int(season), int(season)),
+    ).fetchone()
+    return str(row["scheme_key"]) if row and row["scheme_key"] else None
+
+
+def free_agent_scheme_fit_score(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    player_id: int,
+    group: str,
+    season: int,
+) -> float | None:
+    scheme_key = team_scheme_key_for_group(con, team_id, group, season)
+    if scheme_key and table_exists(con, "player_scheme_fits"):
+        row = con.execute(
+            """
+            SELECT current_fit
+            FROM player_scheme_fits
+            WHERE player_id = ?
+              AND scheme_key = ?
+            ORDER BY
+                CASE WHEN season = ? THEN 0 ELSE 1 END,
+                ABS(season - ?),
+                season DESC
+            LIMIT 1
+            """,
+            (int(player_id), scheme_key, int(season), int(season)),
+        ).fetchone()
+        if row and row["current_fit"] is not None:
+            return round(float(row["current_fit"]), 1)
+    if table_exists(con, "player_role_scores"):
+        row = con.execute(
+            """
+            SELECT MAX(role_score) AS role_score
+            FROM player_role_scores
+            WHERE player_id = ?
+              AND scheme_key = 'default'
+            """,
+            (int(player_id),),
+        ).fetchone()
+        if row and row["role_score"] is not None:
+            return round(float(row["role_score"]), 1)
+    return None
+
+
+def need_label_for_score(group: str, score: float) -> str:
+    if score >= 82:
+        return f"major {group} need"
+    if score >= 64:
+        return f"clear {group} need"
+    if score >= 42:
+        return f"{group} depth need"
+    if score >= 22:
+        return f"{group} room competition"
+    return f"{group} value opportunity"
+
+
+def value_label_for_offer(aav: int, asking: int, minimum: int) -> tuple[float | None, str]:
+    if asking <= 0 and minimum <= 0:
+        return None, "market value unknown"
+    anchor = asking if asking > 0 else minimum
+    ratio = float(aav) / max(1.0, float(anchor))
+    if ratio <= 0.82:
+        return 92.0, "clear discount to ask"
+    if ratio <= 0.96:
+        return 82.0, "below ask"
+    if ratio <= 1.04:
+        return 72.0, "near ask"
+    if ratio <= 1.14:
+        return 56.0, "small market premium"
+    return 38.0, "bidding-war premium"
+
+
+def free_agency_market_context_label(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    notes: str,
+) -> str:
+    league_year = int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con))
+    note_text = notes.lower()
+    if "own-player retention" in note_text:
+        return "own-player retention"
+    if "post-draft depth" in note_text:
+        return "post-draft depth market"
+    if "injury-leverage" in note_text:
+        return "injury leverage"
+    if is_post_draft_market_context(con, league_year):
+        return "post-draft market"
+    if cpu_late_market(period):
+        return "late market"
+    if str(row_value(period, "current_stage", "") or "") == "day_one_hourly":
+        return "opening wave"
+    return "free-agent market"
+
+
+def build_free_agency_decision_explanation(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    offer: sqlite3.Row | dict[str, Any],
+    market: sqlite3.Row | dict[str, Any],
+    *,
+    decision_type: str,
+    cap_space_before: int | None = None,
+    projected_cap_after: int | None = None,
+    market_context: str | None = None,
+    role_plan: str | None = None,
+    need_scores: dict[tuple[int, str], float] | None = None,
+    room_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    league_year = int(row_value(period, "league_year", row_value(offer, "league_year", default_league_year(con))) or default_league_year(con))
+    team_id = int(row_value(offer, "team_id", row_value(market, "signed_team_id", 0)) or 0)
+    player_id = int(row_value(offer, "player_id", row_value(market, "player_id", 0)) or 0)
+    group = position_group_for(str(row_value(market, "position_group", row_value(market, "position", ""))))
+    aav = int(row_value(offer, "aav", 0) or 0)
+    years = int(row_value(offer, "years", 1) or 1)
+    signing_bonus = int(row_value(offer, "signing_bonus", 0) or 0)
+    structure = str(row_value(offer, "contract_structure", "balanced") or "balanced")
+    asking = int(row_value(market, "asking_aav", 0) or 0)
+    minimum = int(row_value(market, "minimum_aav", 0) or 0)
+    notes = str(row_value(offer, "notes", "") or "")
+    need_lookup = need_scores if need_scores is not None else load_team_need_scores(con)
+    need_score = float(need_lookup.get((team_id, group), 0.0))
+    room = room_context if room_context is not None else (
+        team_group_room_context(con, team_id, group, season=league_year, exclude_player_id=player_id)
+        if team_id and player_id
+        else {}
+    )
+    room_best = int(room.get("best", 0) or 0)
+    starter_floor = int(room.get("starter_floor", 0) or 0)
+    starter_slots = int(room.get("starter_slots", STARTER_SLOTS_BY_GROUP.get(group, 1)) or 1)
+    room_count = int(room.get("count", 0) or 0)
+    ideal = int(room.get("ideal", ROOM_IDEAL_BY_GROUP.get(group, starter_slots + 2)) or starter_slots + 2)
+    target_floor = STARTER_FLOOR_BY_GROUP.get(group, 68)
+    starter_hole = room_count < starter_slots or starter_floor < target_floor - 4
+    value_score, value_label = value_label_for_offer(aav, asking, minimum)
+    if cap_space_before is None and team_id:
+        cap = roster_actions.cap_row(con, team_id)
+        cap_space_before = int(cap["cap_space"] or 0) if cap else None
+    if projected_cap_after is None and cap_space_before is not None:
+        projected_cap_after = int(cap_space_before) - first_year_cap_estimate(
+            aav=aav,
+            years=years,
+            signing_bonus=signing_bonus,
+            structure=structure,
+        )
+    scheme_fit = (
+        free_agent_scheme_fit_score(
+            con,
+            team_id=team_id,
+            player_id=player_id,
+            group=group,
+            season=league_year,
+        )
+        if team_id and player_id
+        else None
+    )
+    bridge_context = qb_draft_bridge_context(
+        con,
+        team_id,
+        league_year,
+        game_id=active_game_id_value(con),
+        need_scores=need_lookup,
+    ) if team_id and group == "QB" else None
+    bridge_plan = bool(bridge_context)
+    player_score = float(true_overall(market))
+    if role_plan is None:
+        if bridge_plan:
+            target = bridge_context.get("target", {}) if bridge_context else {}
+            role_plan = f"one-year bridge while tracking {target.get('player_name') or 'a scouted draft QB'}"
+        elif starter_hole or player_score >= max(target_floor, starter_floor + 3):
+            role_plan = "starter-path signing"
+        elif room_count < ideal:
+            role_plan = "depth and rotation fill"
+        elif value_score is not None and value_score >= 80:
+            role_plan = "value-board competition"
+        else:
+            role_plan = "room competition"
+    market_context = market_context or free_agency_market_context_label(con, period, notes)
+    need_text = need_label_for_score(group, need_score)
+    cap_text = f"cap after {money(projected_cap_after)}" if projected_cap_after is not None else "cap room unknown"
+    scheme_text = f"scheme fit {scheme_fit:.0f}" if scheme_fit is not None else "scheme fit not graded"
+    if bridge_plan:
+        top_pick = int(bridge_context.get("top_pick", 0) or 0) if bridge_context else 0
+        summary = (
+            f"Bridge QB plan: owns pick {top_pick}, kept this to {years} yr at {money(aav)}; "
+            f"{cap_text}; {scheme_text}."
+        )
+    else:
+        need_head = f"{need_text[:1].upper()}{need_text[1:]}"
+        summary = (
+            f"{need_head}: {role_plan}; room top {room_best}, "
+            f"starter floor {starter_floor}; {value_label}; {cap_text}; {scheme_text}."
+        )
+    reason = {
+        "needScore": round(need_score, 1),
+        "needLabel": need_text,
+        "valueScore": value_score,
+        "valueLabel": value_label,
+        "capSpaceBefore": cap_space_before,
+        "projectedCapAfter": projected_cap_after,
+        "schemeFitScore": scheme_fit,
+        "bridgeQbPlan": bridge_plan,
+        "rolePlan": role_plan,
+        "marketContext": market_context,
+        "room": {
+            "count": room_count,
+            "ideal": ideal,
+            "best": room_best,
+            "starterFloor": starter_floor,
+            "starterSlots": starter_slots,
+            "starterTarget": target_floor,
+        },
+    }
+    if bridge_context:
+        reason["bridgeContext"] = {
+            "topPick": int(bridge_context.get("top_pick", 0) or 0),
+            "bestQb": int(bridge_context.get("best_qb", 0) or 0),
+            "bridgeAavCap": int(bridge_context.get("bridge_aav_cap", 0) or 0),
+            "target": bridge_context.get("target"),
+        }
+    return {
+        "league_year": league_year,
+        "decision_date": str(row_value(period, "current_date", row_value(offer, "submitted_date", "")) or ""),
+        "decision_hour": int(row_value(period, "current_hour", row_value(offer, "submitted_hour", 0)) or 0)
+        if str(row_value(period, "current_stage", "") or "") == "day_one_hourly"
+        else None,
+        "decision_type": decision_type,
+        "team_id": team_id,
+        "player_id": player_id,
+        "offer_id": int(row_value(offer, "offer_id", 0) or 0) or None,
+        "position_group": group,
+        "need_score": round(need_score, 1),
+        "value_score": value_score,
+        "cap_space_before": cap_space_before,
+        "projected_cap_after": projected_cap_after,
+        "scheme_fit_score": scheme_fit,
+        "bridge_qb_plan": 1 if bridge_plan else 0,
+        "role_plan": role_plan,
+        "market_context": market_context,
+        "reason_summary": summary,
+        "reason_json": reason,
+    }
+
+
+def record_free_agency_decision_explanation(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    offer: sqlite3.Row | dict[str, Any],
+    market: sqlite3.Row | dict[str, Any],
+    *,
+    decision_type: str,
+    contract_id: int | None = None,
+    transaction_id: int | None = None,
+    cap_space_before: int | None = None,
+    projected_cap_after: int | None = None,
+    market_context: str | None = None,
+    role_plan: str | None = None,
+    need_scores: dict[tuple[int, str], float] | None = None,
+    room_context: dict[str, Any] | None = None,
+) -> int | None:
+    if not table_exists(con, "free_agency_decision_explanations"):
+        return None
+    try:
+        explanation = build_free_agency_decision_explanation(
+            con,
+            period,
+            offer,
+            market,
+            decision_type=decision_type,
+            cap_space_before=cap_space_before,
+            projected_cap_after=projected_cap_after,
+            market_context=market_context,
+            role_plan=role_plan,
+            need_scores=need_scores,
+            room_context=room_context,
+        )
+        offer_id = explanation.get("offer_id")
+        fingerprint = ":".join(
+            str(part)
+            for part in (
+                explanation["league_year"],
+                decision_type,
+                explanation["team_id"],
+                explanation["player_id"],
+                offer_id or "nooffer",
+                contract_id or "nocontract",
+                transaction_id or "notxn",
+            )
+        )
+        cur = con.execute(
+            """
+            INSERT INTO free_agency_decision_explanations (
+                fingerprint, league_year, decision_date, decision_hour, decision_type,
+                team_id, player_id, offer_id, contract_id, transaction_id,
+                position_group, need_score, value_score, cap_space_before,
+                projected_cap_after, scheme_fit_score, bridge_qb_plan, role_plan,
+                market_context, reason_summary, reason_json, source, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(fingerprint) DO UPDATE SET
+                decision_date = excluded.decision_date,
+                decision_hour = excluded.decision_hour,
+                contract_id = excluded.contract_id,
+                transaction_id = excluded.transaction_id,
+                position_group = excluded.position_group,
+                need_score = excluded.need_score,
+                value_score = excluded.value_score,
+                cap_space_before = excluded.cap_space_before,
+                projected_cap_after = excluded.projected_cap_after,
+                scheme_fit_score = excluded.scheme_fit_score,
+                bridge_qb_plan = excluded.bridge_qb_plan,
+                role_plan = excluded.role_plan,
+                market_context = excluded.market_context,
+                reason_summary = excluded.reason_summary,
+                reason_json = excluded.reason_json,
+                updated_at = datetime('now')
+            """,
+            (
+                fingerprint,
+                explanation["league_year"],
+                explanation["decision_date"],
+                explanation["decision_hour"],
+                explanation["decision_type"],
+                explanation["team_id"],
+                explanation["player_id"],
+                explanation["offer_id"],
+                contract_id,
+                transaction_id,
+                explanation["position_group"],
+                explanation["need_score"],
+                explanation["value_score"],
+                explanation["cap_space_before"],
+                explanation["projected_cap_after"],
+                explanation["scheme_fit_score"],
+                explanation["bridge_qb_plan"],
+                explanation["role_plan"],
+                explanation["market_context"],
+                explanation["reason_summary"],
+                json.dumps(explanation["reason_json"], sort_keys=True),
+                SOURCE,
+            ),
+        )
+        row = con.execute(
+            "SELECT explanation_id FROM free_agency_decision_explanations WHERE fingerprint = ?",
+            (fingerprint,),
+        ).fetchone()
+        return int(row["explanation_id"] or cur.lastrowid) if row else int(cur.lastrowid)
+    except Exception:
+        return None
 
 
 def team_by_abbr(con: sqlite3.Connection, abbreviation: str) -> sqlite3.Row:
@@ -1041,14 +1514,20 @@ def cpu_post_draft_depth_offer_reserve(
     return base
 
 
+def cpu_controls_user_team_enabled(con: sqlite3.Connection, args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "cpu_controls_user_team", False)) or truthy_value(
+        current_setting(con, CPU_CONTROL_USER_TEAM_SETTING)
+    )
+
+
 def cpu_excluded_user_team(con: sqlite3.Connection, args: argparse.Namespace) -> str | None:
-    if bool(getattr(args, "cpu_controls_user_team", False)):
+    if cpu_controls_user_team_enabled(con, args):
         return None
     return contract_negotiations.active_user_team(con)
 
 
 def cpu_controlled_user_team(con: sqlite3.Connection, args: argparse.Namespace) -> str | None:
-    if not bool(getattr(args, "cpu_controls_user_team", False)):
+    if not cpu_controls_user_team_enabled(con, args):
         return None
     team = contract_negotiations.active_user_team(con)
     return team.upper() if team else None
@@ -1225,6 +1704,448 @@ def ensure_missing_specialists_for_fa(
                 team_id=int(team["team_id"]),
                 message=f"{team['abbreviation']} filled a missing {position} spot before roster finalization.",
             )
+    if signed:
+        sync_team_cap_space(con)
+    return signed
+
+
+def fa_roster_floor_due(period: sqlite3.Row | dict[str, Any], *, force: bool = False) -> bool:
+    if force:
+        return True
+    if str(row_value(period, "current_stage", "") or "") != "daily":
+        return False
+    if int(row_value(period, "day_count", 1) or 1) >= 8:
+        return True
+    current_date = str(row_value(period, "current_date", "") or "")
+    league_year = int(row_value(period, "league_year", 0) or 0)
+    return bool(current_date and league_year and current_date >= f"{league_year}-04-01")
+
+
+def exact_position_count(con: sqlite3.Connection, team_id: int, position: str) -> int:
+    row = con.execute(
+        f"""
+        SELECT COUNT(*) AS count
+        FROM players
+        WHERE team_id = ?
+          AND position = ?
+          AND status IN ({','.join('?' for _ in FA_ROSTER_EVALUATION_STATUSES)})
+        """,
+        (int(team_id), str(position).upper(), *FA_ROSTER_EVALUATION_STATUSES),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def exact_position_best(con: sqlite3.Connection, team_id: int, position: str) -> int:
+    row = con.execute(
+        f"""
+        SELECT MAX(COALESCE(overall, 0)) AS best
+        FROM players
+        WHERE team_id = ?
+          AND position = ?
+          AND status IN ({','.join('?' for _ in FA_ROSTER_EVALUATION_STATUSES)})
+        """,
+        (int(team_id), str(position).upper(), *FA_ROSTER_EVALUATION_STATUSES),
+    ).fetchone()
+    return int(row["best"] or 0) if row else 0
+
+
+def roster_floor_bargain_candidates(
+    candidates: list[sqlite3.Row],
+    *,
+    group: str,
+    cap_space: int,
+    period: sqlite3.Row | dict[str, Any],
+    post_draft: bool,
+    critical: bool,
+) -> list[sqlite3.Row]:
+    """Defer non-critical room polishing for cap-tight teams until prices soften."""
+    if critical:
+        return candidates
+    reserve = cpu_cap_reserve_for_period(period)
+    cap_tight = cap_space < max(14_000_000, reserve + 4_000_000)
+    if not cap_tight:
+        return candidates
+    if not post_draft:
+        return []
+    max_minimum = 3_000_000
+    if group == "IOL":
+        max_minimum = 4_000_000
+    elif group in {"RB", "S", "LB"}:
+        max_minimum = 2_750_000
+    return [
+        player for player in candidates
+        if int(row_value(player, "minimum_aav", 9_999_999) or 9_999_999) <= max_minimum
+        and int(row_value(player, "asking_aav", 9_999_999) or 9_999_999) <= max_minimum * 2
+    ]
+
+
+def available_roster_floor_candidates(
+    con: sqlite3.Connection,
+    *,
+    league_year: int,
+    group: str,
+    position: str | None = None,
+    allow_pending: bool = False,
+    limit: int = 36,
+) -> list[sqlite3.Row]:
+    filters = [
+        "league_year = ?",
+        "market_status = 'available'",
+    ]
+    params: list[Any] = [int(league_year)]
+    if position:
+        filters.append("position = ?")
+        params.append(str(position).upper())
+    else:
+        filters.append("position_group = ?")
+        params.append(group)
+    if not allow_pending:
+        filters.append("COALESCE(pending_offers, 0) = 0")
+    return con.execute(
+        f"""
+        SELECT *
+        FROM free_agency_board_view
+        WHERE {' AND '.join(filters)}
+        ORDER BY
+            CASE
+                WHEN position_group = 'QB' AND market_score BETWEEN 64 AND 76 THEN 0
+                WHEN market_score >= 62 THEN 1
+                ELSE 2
+            END,
+            market_score DESC,
+            potential DESC,
+            minimum_aav ASC,
+            asking_aav ASC,
+            player_id
+        LIMIT ?
+        """,
+        (*params, int(limit)),
+    ).fetchall()
+
+
+def roster_floor_offer_terms(
+    player: sqlite3.Row | dict[str, Any],
+    *,
+    group: str,
+    current_best: int,
+    rng: random.Random,
+) -> dict[str, int | str]:
+    asking = int(row_value(player, "asking_aav", 1_500_000) or 1_500_000)
+    minimum = int(row_value(player, "minimum_aav", 915_000) or 915_000)
+    score = true_overall(player)
+    potential = int(row_value(player, "potential", score) or score)
+    age = int(row_value(player, "age", 29) or 29)
+    if group == "QB":
+        discount = 0.78 if current_best else 0.82
+        if score >= 76:
+            discount += 0.04
+        quality_cap = int(cpu_true_quality_aav_cap(player) * (0.82 if current_best else 0.90))
+        if score <= 72 and potential < 82:
+            quality_cap = min(quality_cap, 9_750_000)
+        years = 1 if score < 78 or age >= 32 else 2
+    else:
+        discount = 0.70 if current_best else 0.76
+        quality_cap = int(cpu_true_quality_aav_cap(player) * (0.76 if current_best else 0.84))
+        years = 1 if age >= POSITION_OLD_AGE.get(group, 31) else 2
+    discount = clamp(discount + rng.gauss(0.0, 0.025), 0.58, 0.88)
+    aav = round_to(max(minimum, min(int(asking * discount), quality_cap)), 50_000)
+    guarantee = min(32, max(12, int(row_value(player, "guarantee_pct", 0) or 0) + 6))
+    bonus = cpu_signing_bonus_for_offer(
+        player,
+        aav=aav,
+        years=years,
+        guarantee_pct=guarantee,
+        rng=rng,
+    )
+    return {
+        "years": years,
+        "aav": aav,
+        "signing_bonus": bonus,
+        "guarantee_pct": guarantee,
+        "contract_structure": "balanced",
+    }
+
+
+def sign_roster_floor_free_agent(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    *,
+    team: sqlite3.Row,
+    player: sqlite3.Row,
+    group: str,
+    current_best: int,
+    reason: str,
+    rng: random.Random,
+) -> bool:
+    terms = roster_floor_offer_terms(player, group=group, current_best=current_best, rng=rng)
+    cap_row = roster_actions.cap_row(con, int(team["team_id"]))
+    cap_space = int(cap_row["cap_space"] or 0) if cap_row else 0
+    first_year = first_year_cap_estimate(
+        aav=int(terms["aav"]),
+        years=int(terms["years"]),
+        signing_bonus=int(terms["signing_bonus"]),
+        structure=str(terms["contract_structure"]),
+    )
+    reserve = max(2_500_000, min(cpu_cap_reserve_for_period(period), 8_000_000))
+    league_year = int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con))
+    if is_post_draft_market_context(con, league_year):
+        reserve = cpu_post_draft_depth_offer_reserve(
+            period,
+            group=group,
+            aav=int(terms["aav"]),
+            years=int(terms["years"]),
+            starter_hole="no " in reason,
+            guarantee_pct=int(terms["guarantee_pct"]),
+        )
+    if cap_space - first_year < reserve:
+        return False
+    event_date, event_hour = event_time(period)
+    offer_id = submit_offer(
+        con,
+        league_year=league_year,
+        team_id=int(team["team_id"]),
+        player_id=int(player["player_id"]),
+        years=int(terms["years"]),
+        aav=int(terms["aav"]),
+        signing_bonus=int(terms["signing_bonus"]),
+        guarantee_pct=int(terms["guarantee_pct"]),
+        submitted_date=event_date,
+        submitted_hour=event_hour,
+        contract_structure=str(terms["contract_structure"]),
+        notes=f"CPU roster floor signing: {reason}",
+    )
+    offer = con.execute("SELECT * FROM free_agency_offers WHERE offer_id = ?", (offer_id,)).fetchone()
+    market = con.execute(
+        """
+        SELECT *
+        FROM free_agency_board_view
+        WHERE league_year = ? AND player_id = ?
+        """,
+        (league_year, int(player["player_id"])),
+    ).fetchone()
+    if not offer or not market:
+        return False
+    try:
+        sign_offer(con, period, offer, market)
+    except ValueError as exc:
+        con.execute(
+            """
+            UPDATE free_agency_offers
+            SET status = 'rejected',
+                decided_date = ?,
+                decided_hour = ?,
+                notes = COALESCE(notes || ' | ', '') || ?,
+                updated_at = datetime('now')
+            WHERE offer_id = ?
+            """,
+            (event_date, event_hour, str(exc), offer_id),
+        )
+        return False
+    log_event(
+        con,
+        league_year=league_year,
+        event_date=event_date,
+        event_hour=event_hour,
+        event_type="cpu_roster_floor_signing",
+        team_id=int(team["team_id"]),
+        player_id=int(player["player_id"]),
+        offer_id=offer_id,
+        message=(
+            f"{team['abbreviation']} filled a required {group} roster floor with "
+            f"{player['player_name']} ({reason})."
+        ),
+    )
+    return True
+
+
+def ensure_playable_roster_floors_for_fa(
+    con: sqlite3.Connection,
+    period: sqlite3.Row | dict[str, Any],
+    *,
+    user_team: str | None = None,
+    force: bool = False,
+    max_total: int = 32,
+) -> int:
+    """Patch true roster holes late in FA so teams do not reach the draft broken."""
+    if not fa_roster_floor_due(period, force=force):
+        return 0
+    league_year = int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con))
+    ensure_market(con, league_year)
+    post_draft = is_post_draft_market_context(con, league_year)
+    rng = random.Random(f"fa-roster-floor:{league_year}:{row_value(period, 'current_date', '')}:{force}")
+    teams = con.execute(
+        """
+        SELECT team_id, abbreviation
+        FROM teams
+        WHERE (? IS NULL OR abbreviation <> ?)
+        ORDER BY abbreviation
+        """,
+        (user_team, user_team),
+    ).fetchall()
+    signed = 0
+    for team in teams:
+        if signed >= max_total:
+            break
+        team_id = int(team["team_id"])
+        cap_row = roster_actions.cap_row(con, team_id)
+        cap_space = int(cap_row["cap_space"] or 0) if cap_row else 0
+
+        qb_room = team_group_room_context(con, team_id, "QB")
+        if int(qb_room["count"]) == 0 or int(qb_room["best"]) < 62:
+            for allow_pending in (False, True):
+                candidates = available_roster_floor_candidates(
+                    con,
+                    league_year=league_year,
+                    group="QB",
+                    allow_pending=allow_pending,
+                    limit=30,
+                )
+                if any(
+                    sign_roster_floor_free_agent(
+                        con,
+                        period,
+                        team=team,
+                        player=player,
+                        group="QB",
+                        current_best=int(qb_room["best"]),
+                        reason="no playable QB room",
+                        rng=rng,
+                    )
+                    for player in candidates
+                ):
+                    signed += 1
+                    break
+
+        if signed >= max_total:
+            break
+
+        center_count = exact_position_count(con, team_id, "C")
+        center_best = exact_position_best(con, team_id, "C")
+        center_critical = center_count == 0
+        if center_critical or (center_count < 2 and center_best < 68):
+            iol_room = team_group_room_context(con, team_id, "IOL")
+            for allow_pending in (False, True):
+                candidates = available_roster_floor_candidates(
+                    con,
+                    league_year=league_year,
+                    group="IOL",
+                    position="C",
+                    allow_pending=allow_pending,
+                    limit=24,
+                )
+                candidates = roster_floor_bargain_candidates(
+                    candidates,
+                    group="IOL",
+                    cap_space=cap_space,
+                    period=period,
+                    post_draft=post_draft,
+                    critical=center_critical,
+                )
+                if any(
+                    sign_roster_floor_free_agent(
+                        con,
+                        period,
+                        team=team,
+                        player=player,
+                        group="IOL",
+                        current_best=int(iol_room["best"]),
+                        reason="no playable center room" if center_count else "no center under contract",
+                        rng=rng,
+                    )
+                    for player in candidates
+                ):
+                    signed += 1
+                    break
+
+        if signed >= max_total:
+            break
+
+        rb_count = exact_position_count(con, team_id, "RB")
+        rb_best = exact_position_best(con, team_id, "RB")
+        rb_critical = rb_count == 0
+        if rb_critical or rb_count < 2 or rb_best < 64:
+            rb_room = team_group_room_context(con, team_id, "RB")
+            for allow_pending in (False, True):
+                candidates = available_roster_floor_candidates(
+                    con,
+                    league_year=league_year,
+                    group="RB",
+                    position="RB",
+                    allow_pending=allow_pending,
+                    limit=24,
+                )
+                candidates = roster_floor_bargain_candidates(
+                    candidates,
+                    group="RB",
+                    cap_space=cap_space,
+                    period=period,
+                    post_draft=post_draft,
+                    critical=rb_critical,
+                )
+                if any(
+                    sign_roster_floor_free_agent(
+                        con,
+                        period,
+                        team=team,
+                        player=player,
+                        group="RB",
+                        current_best=int(rb_room["best"]),
+                        reason="thin halfback room",
+                        rng=rng,
+                    )
+                    for player in candidates
+                ):
+                    signed += 1
+                    break
+
+        if signed >= max_total:
+            break
+
+        safety_room = team_group_room_context(con, team_id, "S")
+        fs_count = exact_position_count(con, team_id, "FS")
+        ss_count = exact_position_count(con, team_id, "SS")
+        safety_critical = int(safety_room["count"]) < 2
+        needs_safety = (
+            safety_critical
+            or int(safety_room["count"]) < 3
+            or int(safety_room["starter_floor"]) < 67
+            or fs_count == 0
+            or ss_count == 0
+        )
+        if needs_safety:
+            preferred_position = "FS" if fs_count == 0 else "SS" if ss_count == 0 else None
+            for allow_pending in (False, True):
+                candidates = available_roster_floor_candidates(
+                    con,
+                    league_year=league_year,
+                    group="S",
+                    position=preferred_position,
+                    allow_pending=allow_pending,
+                    limit=24,
+                )
+                candidates = roster_floor_bargain_candidates(
+                    candidates,
+                    group="S",
+                    cap_space=cap_space,
+                    period=period,
+                    post_draft=post_draft,
+                    critical=safety_critical,
+                )
+                if any(
+                    sign_roster_floor_free_agent(
+                        con,
+                        period,
+                        team=team,
+                        player=player,
+                        group="S",
+                        current_best=int(safety_room["best"]),
+                        reason="thin safety room",
+                        rng=rng,
+                    )
+                    for player in candidates
+                ):
+                    signed += 1
+                    break
     if signed:
         sync_team_cap_space(con)
     return signed
@@ -1636,6 +2557,7 @@ def apply_post_draft_strategy_prices(
 
 
 def active_fa_injury_pressure_groups(con: sqlite3.Connection) -> set[tuple[int, str]]:
+    resolve_stale_injuries_for_free_agency(con)
     if not table_exists(con, "active_player_injuries"):
         return set()
     rows = con.execute(
@@ -2148,7 +3070,6 @@ def auto_open_street_market(con: sqlite3.Connection, league_year: int) -> sqlite
             league_year,
             current_date,
             "Auto-opened street free agency during the open transaction calendar window.",
-            current_date,
         ),
     )
     log_event(
@@ -2174,6 +3095,7 @@ def active_period(con: sqlite3.Connection, league_year: int) -> sqlite3.Row:
     if current_game_date and can_auto_open_street_market(con, league_year):
         if sync_period_to_game_date(con, league_year):
             row = current_period(con, league_year)
+    resolve_stale_injuries_for_free_agency(con, row)
     return row
 
 
@@ -2262,7 +3184,9 @@ def cpu_re_sign_probability(player: dict[str, Any] | sqlite3.Row) -> float:
     overall = float(row_value(player, "overall", score) or score)
     potential = float(row_value(player, "potential", overall) or overall)
     age = int(player["age"] or 28) if "age" in player.keys() else 28
-    if group == "WR" and overall >= 83 and potential >= 86 and age <= 29:
+    if group == "QB" and age <= 34 and (overall >= 78 or (overall >= 72 and potential >= 85)):
+        base = 0.96
+    elif group == "WR" and overall >= 83 and potential >= 86 and age <= 29:
         base = 0.98
     elif group == "TE" and overall >= 88 and potential >= 90 and age <= 29:
         base = 0.96
@@ -2294,7 +3218,11 @@ def cpu_must_protect_expiring_player(player: dict[str, Any] | sqlite3.Row) -> bo
     potential = int(row_value(player, "potential", overall) or overall)
     age = int(row_value(player, "age", 28) or 28)
     if group == "QB":
-        return overall >= 81 and potential >= 84 and age <= 33
+        return age <= 34 and (
+            (overall >= 80 and potential >= 84)
+            or (overall >= 74 and potential >= 88)
+            or potential >= 91
+        )
     if group == "WR":
         return age <= 29 and (overall >= 84 or (overall >= 82 and potential >= 88) or score >= 86)
     if group in {"OT", "EDGE", "CB", "IDL"}:
@@ -2405,11 +3333,11 @@ def cpu_aav_bounds(
     cap = max(minimum, cpu_true_quality_aav_cap(player))
     if group == "WR":
         if score >= 88:
-            star_floor = 29_000_000
+            star_floor = 34_000_000
         elif score >= 86 and potential >= 88:
-            star_floor = 27_000_000
-        elif score >= 84 and potential >= 87:
-            star_floor = 25_000_000
+            star_floor = 32_000_000
+        elif score >= 84 and potential >= 84:
+            star_floor = 30_000_000
         elif score >= 82 and potential >= 86:
             star_floor = 22_000_000
         else:
@@ -3026,6 +3954,7 @@ def cpu_extend_expiring_players(
 ) -> int:
     if per_team <= 0:
         return 0
+    resolve_stale_injuries_for_free_agency(con, target_date=f"{int(league_year)}-03-10")
     rng = random.Random(seed or f"cpu-extensions:{league_year}")
     teams = con.execute("SELECT abbreviation FROM teams ORDER BY abbreviation").fetchall()
     retained = 0
@@ -3448,6 +4377,7 @@ def cpu_apply_fifth_year_options(
 
 def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
     sync_active_game_to_date(con, str(args.start_date))
+    resolve_stale_injuries_for_free_agency(con, target_date=str(args.start_date))
     user_team = cpu_excluded_user_team(con, args)
     market_user_team = general_market_excluded_user_team(con, args)
     write_cap_snapshot = not getattr(args, "no_cap_snapshot", False)
@@ -3543,7 +4473,7 @@ def start_period(con: sqlite3.Connection, args: argparse.Namespace) -> None:
         con,
         league_year=int(args.league_year),
         target_date=str(args.start_date),
-        include_user_team=bool(getattr(args, "cpu_controls_user_team", False)),
+        include_user_team=cpu_controls_user_team_enabled(con, args),
     )
     cpu_restructures = cpu_restructure_core_contracts_for_fa(con, period, user_team=user_team)
     cpu_cap_releases = cpu_release_bad_contracts_for_fa(con, period, user_team=user_team, max_total=24)
@@ -3792,7 +4722,7 @@ def load_playing_time_competition(
             GROUP BY player_id
         ) role ON role.player_id = p.player_id
         WHERE p.team_id IS NOT NULL
-          AND p.status = 'Active'
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'PUP', 'NFI', 'IR')
         """,
         (season,),
     ).fetchall()
@@ -3900,7 +4830,7 @@ def load_team_need_scores(con: sqlite3.Connection) -> dict[tuple[int, str], floa
             COALESCE(potential, overall, 50) AS potential
         FROM players
         WHERE team_id IS NOT NULL
-          AND status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'PUP', 'NFI', 'IR')
         """
     ).fetchall()
     by_team: dict[int, list[int]] = {}
@@ -3957,7 +4887,7 @@ def load_team_group_counts(con: sqlite3.Connection) -> dict[tuple[int, str], int
         SELECT team_id, position
         FROM players
         WHERE team_id IS NOT NULL
-          AND status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
+          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'PUP', 'NFI', 'IR')
         """
     ).fetchall()
     counts: dict[tuple[int, str], int] = {}
@@ -3999,7 +4929,7 @@ def load_team_active_group_spend(con: sqlite3.Connection) -> dict[tuple[int, str
           ON c.contract_id = cy.contract_id
          AND c.is_active = 1
         WHERE p.team_id IS NOT NULL
-          AND p.status IN ('Active', 'Reserve/Future', 'PUP', 'IR')
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'Reserve/Future', 'PUP', 'NFI', 'IR')
         GROUP BY p.team_id, p.position
         """,
         (season,),
@@ -4121,7 +5051,7 @@ def team_group_room_context(
             p.status
         FROM players p
         WHERE p.team_id = ?
-          AND p.status IN ('Active', 'IR', 'PUP', 'Reserve/Future')
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'IR', 'PUP', 'NFI', 'Reserve/Future')
           AND (? IS NULL OR p.player_id <> ?)
         """,
         (int(team_id), exclude_player_id, exclude_player_id),
@@ -4161,6 +5091,210 @@ def team_group_room_context(
         "starter_floor": scores[starters - 1] if len(scores) >= starters else 0,
         "young_upside": young_upside,
     }
+
+
+def team_top_owned_round_one_pick(con: sqlite3.Connection, team_id: int, draft_year: int) -> int | None:
+    if not table_exists(con, "draft_picks"):
+        return None
+    row = con.execute(
+        """
+        WITH ordered AS (
+            SELECT
+                dp.*,
+                ROW_NUMBER() OVER (
+                    ORDER BY dp.round, COALESCE(dp.pick_number, dp.pick_id), dp.pick_id
+                ) AS effective_pick_number
+            FROM draft_picks dp
+            WHERE dp.draft_year = ?
+        )
+        SELECT MIN(COALESCE(pick_number, effective_pick_number)) AS top_pick
+        FROM ordered
+        WHERE round = 1
+          AND current_team_id = ?
+          AND COALESCE(is_used, 0) = 0
+        """,
+        (int(draft_year), int(team_id)),
+    ).fetchone()
+    if row and row["top_pick"] is not None:
+        return int(row["top_pick"])
+    if table_exists(con, "draft_order_slots"):
+        row = con.execute(
+            """
+            SELECT MIN(slot) AS top_pick
+            FROM draft_order_slots
+            WHERE draft_year = ?
+              AND team_id = ?
+              AND slot <= 32
+            """,
+            (int(draft_year), int(team_id)),
+        ).fetchone()
+        if row and row["top_pick"] is not None:
+            return int(row["top_pick"])
+    return None
+
+
+def scouted_draft_qb_target(
+    con: sqlite3.Connection,
+    team_id: int,
+    draft_year: int,
+    top_pick: int,
+    *,
+    game_id: str | None = None,
+) -> dict[str, Any] | None:
+    if not (table_exists(con, "draft_prospects") and table_exists(con, "draft_classes")):
+        return None
+    game_id = game_id or active_game_id_value(con)
+    has_cpu_progress = table_exists(con, "cpu_scouting_prospect_progress")
+    join_sql = ""
+    confidence_sql = "LOWER(COALESCE(dp.scout_confidence, 'Low'))"
+    level_sql = "0"
+    if has_cpu_progress:
+        join_sql = """
+        LEFT JOIN cpu_scouting_prospect_progress csp
+          ON csp.prospect_id = dp.prospect_id
+         AND csp.game_id = ?
+         AND csp.draft_year = ?
+         AND csp.team_id = ?
+        """
+        confidence_sql = "LOWER(COALESCE(csp.scouting_confidence, dp.scout_confidence, 'Low'))"
+        level_sql = "COALESCE(csp.scouting_level, 0)"
+    params: tuple[Any, ...]
+    if has_cpu_progress:
+        params = (game_id, int(draft_year), int(team_id), int(draft_year))
+    else:
+        params = (int(draft_year),)
+    rows = con.execute(
+        f"""
+        SELECT
+            dp.prospect_id,
+            COALESCE(dp.display_name, TRIM(dp.first_name || ' ' || dp.last_name)) AS player_name,
+            COALESCE(dp.public_board_rank, dp.scouting_rank, 999) AS board_rank,
+            COALESCE(dp.scout_grade, dp.true_grade, dp.overall, 50) AS perceived_grade,
+            COALESCE(dp.scout_ceiling, dp.ceiling_grade, dp.potential, dp.overall, 50) AS perceived_ceiling,
+            COALESCE(dp.true_grade, dp.overall, 50) AS true_grade,
+            COALESCE(dp.ceiling_grade, dp.potential, dp.overall, 50) AS true_ceiling,
+            {confidence_sql} AS scouting_confidence,
+            {level_sql} AS scouting_level
+        FROM draft_prospects dp
+        JOIN draft_classes dc
+          ON dc.draft_class_id = dp.draft_class_id
+        {join_sql}
+        WHERE dc.draft_year = ?
+          AND dp.position = 'QB'
+          AND COALESCE(dp.status, 'Available') = 'Available'
+        ORDER BY
+            CASE WHEN COALESCE(dp.public_board_rank, dp.scouting_rank) IS NULL THEN 999 ELSE COALESCE(dp.public_board_rank, dp.scouting_rank) END,
+            dp.prospect_id
+        LIMIT 12
+        """,
+        params,
+    ).fetchall()
+    if not rows:
+        return None
+
+    top_three = int(top_pick) <= 3
+    for row in rows:
+        confidence = str(row["scouting_confidence"] or "low").strip().lower()
+        board_rank = int(row["board_rank"] or 999)
+        grade = float(row["perceived_grade"] or 50)
+        ceiling = float(row["perceived_ceiling"] or grade)
+        if top_three:
+            board_window = max(8, int(top_pick) + 8)
+            if confidence in QB_DRAFT_BRIDGE_TOP3_CONFIDENCE and board_rank <= board_window and grade >= 70 and ceiling >= 84:
+                return dict(row)
+            continue
+        board_window = max(18, int(top_pick) + 10)
+        if confidence in QB_DRAFT_BRIDGE_CONFIDENCE and board_rank <= board_window and grade >= 70 and ceiling >= 84:
+            return dict(row)
+    return None
+
+
+def qb_draft_bridge_context(
+    con: sqlite3.Connection,
+    team_id: int,
+    league_year: int,
+    *,
+    game_id: str | None = None,
+    need_scores: dict[tuple[int, str], float] | None = None,
+) -> dict[str, Any] | None:
+    top_pick = team_top_owned_round_one_pick(con, team_id, league_year)
+    if top_pick is None or top_pick > 10:
+        return None
+    room = team_group_room_context(con, team_id, "QB", season=league_year)
+    best_qb = int(room.get("best", 0) or 0)
+    young_upside = int(room.get("young_upside", 0) or 0)
+    need_lookup = need_scores if need_scores is not None else load_team_need_scores(con)
+    need_score = need_lookup.get((int(team_id), "QB"), 0.0)
+    if best_qb >= 84:
+        return None
+    if best_qb >= 80 and young_upside > 0 and need_score < 86:
+        return None
+    top_three = int(top_pick) <= 3
+    qb_needy = top_three or best_qb < 79 or need_score >= 82 or (best_qb < 82 and young_upside == 0)
+    if not qb_needy:
+        return None
+    target = scouted_draft_qb_target(
+        con,
+        team_id,
+        league_year,
+        int(top_pick),
+        game_id=game_id,
+    )
+    if not target:
+        return None
+    cap = QB_DRAFT_BRIDGE_TOP3_AAV_CAP if top_three else QB_DRAFT_BRIDGE_TOP10_AAV_CAP
+    return {
+        "active": True,
+        "top_pick": int(top_pick),
+        "top_three": top_three,
+        "bridge_aav_cap": cap,
+        "best_qb": best_qb,
+        "need_score": float(need_score),
+        "target": target,
+    }
+
+
+def qb_draft_bridge_candidate_block_reason(
+    player: sqlite3.Row | dict[str, Any],
+    bridge_context: dict[str, Any] | None,
+    *,
+    score: float | None = None,
+    potential: int | None = None,
+    aav: int | None = None,
+    years: int | None = None,
+) -> str | None:
+    if not bridge_context:
+        return None
+    cap = int(bridge_context.get("bridge_aav_cap") or QB_DRAFT_BRIDGE_TOP10_AAV_CAP)
+    top_three = bool(bridge_context.get("top_three"))
+    incoming_score = float(score if score is not None else true_overall(player))
+    incoming_potential = int(
+        potential
+        if potential is not None
+        else row_value(player, "potential", incoming_score) or incoming_score
+    )
+    age = int(row_value(player, "age", 28) or 28)
+    minimum = int(row_value(player, "minimum_aav", 0) or 0)
+    if years is not None and int(years) > 1:
+        return "team is holding a top draft pick with a scouted QB target and should only add a one-year bridge QB."
+    if aav is not None and int(aav) > cap:
+        return f"team is holding a top draft pick with a scouted QB target and should keep bridge QB spending under {money(cap)}."
+    if minimum > cap:
+        return f"QB market floor is above bridge budget ({money(cap)})."
+    if age <= 30 and incoming_potential >= 82:
+        return "young/upside QB would conflict with the scouted draft QB plan."
+    if top_three and age <= 33 and incoming_score >= 78:
+        cheap_short_bridge = (
+            incoming_potential < 82
+            and minimum <= 8_000_000
+            and (aav is None or int(aav) <= 8_000_000)
+            and (years is None or int(years) <= 1)
+        )
+        if not cheap_short_bridge:
+            return "top-three QB plan should avoid a starter-track veteran unless he is a cheap short bridge."
+    if not top_three and age <= 31 and incoming_score >= 80:
+        return "starter-track QB would conflict with the scouted draft QB plan."
+    return None
 
 
 def rb_starter_stack_block_reason(
@@ -4235,7 +5369,7 @@ def team_group_active_spend(
           ON c.contract_id = cy.contract_id
          AND c.is_active = 1
         WHERE p.team_id = ?
-          AND p.status IN ('Active', 'IR', 'PUP', 'Reserve/Future')
+          AND p.status IN ('Active', 'Questionable', 'Doubtful', 'Out', 'IR', 'PUP', 'NFI', 'Reserve/Future')
           AND (? IS NULL OR p.player_id <> ?)
         """,
         (season, int(team_id), exclude_player_id, exclude_player_id),
@@ -4276,7 +5410,7 @@ def team_group_active_spend(
 
 def cpu_offer_notes(notes: Any) -> bool:
     text = str(notes or "").lower()
-    return text.startswith("cpu") or "cpu " in text or "post-draft depth" in text
+    return text.startswith("cpu") or "cpu " in text or "ai gm" in text or "post-draft depth" in text
 
 
 def cpu_final_signing_guardrails(
@@ -4302,6 +5436,10 @@ def cpu_final_signing_guardrails(
     guarantee_pct = int(row_value(offer, "guarantee_pct", 0) or 0)
     notes_text = str(row_value(offer, "notes", "") or "").lower()
     post_draft_depth_offer = "post-draft depth" in notes_text
+    roster_floor_offer = "roster floor signing" in notes_text
+    critical_roster_floor_offer = roster_floor_offer and (
+        "no " in notes_text or "playable" in notes_text
+    )
     group = position_group_for(str(row_value(market, "position_group", row_value(market, "position", ""))))
     actual_overall = true_overall(market)
     score = float(actual_overall) if post_draft_depth_offer else float(row_value(market, "market_score", row_value(market, "overall", 60)) or 60)
@@ -4333,6 +5471,8 @@ def cpu_final_signing_guardrails(
                 guarantee_pct=guarantee_pct,
             ),
         )
+    if roster_floor_offer:
+        reserve = min(reserve, 2_000_000 if critical_roster_floor_offer else CPU_FINAL_SIGNING_MIN_BUFFER)
 
     cap = roster_actions.cap_row(con, team_id)
     cap_space = int(cap["cap_space"] or 0) if cap else 0
@@ -4379,6 +5519,22 @@ def cpu_final_signing_guardrails(
         and aav >= 9_750_000
     ):
         return False, "CPU signing blocked: low-70s role player priced above his ceiling."
+    if (
+        group in {"IOL", "IDL", "LB", "S", "TE"}
+        and actual_overall <= 72
+        and potential <= 82
+        and aav >= 12_000_000
+        and team_need < 86
+    ):
+        return False, "CPU signing blocked: low-70s non-premium target above realistic starter value."
+    if (
+        group == "WR"
+        and actual_overall <= 74
+        and potential <= 82
+        and aav >= 11_000_000
+        and team_need < 82
+    ):
+        return False, "CPU signing blocked: low-ceiling WR priced above realistic role value."
 
     room_scores = [float(value) for value in room.get("scores", [])]
     high_upside_candidate = potential >= max(84, actual_overall + 7) and age <= 26
@@ -4419,6 +5575,23 @@ def cpu_final_signing_guardrails(
             return False, f"CPU signing blocked: {rb_block}"
 
     if group == "QB":
+        bridge_context = qb_draft_bridge_context(
+            con,
+            team_id,
+            int(row_value(period, "league_year", default_league_year(con)) or default_league_year(con)),
+            game_id=active_game_id_value(con),
+        )
+        bridge_block = qb_draft_bridge_candidate_block_reason(
+            market,
+            bridge_context,
+            score=actual_overall,
+            potential=potential,
+            aav=aav,
+            years=years,
+        )
+        if bridge_block:
+            pick_text = f"top-{bridge_context['top_pick']}" if bridge_context else "top"
+            return False, f"CPU signing blocked: {pick_text} draft QB bridge plan; {bridge_block}"
         qb_limits = qb_room_offer_limits(
             con,
             market,
@@ -4487,6 +5660,8 @@ def cpu_final_signing_guardrails(
         return False, "CPU signing blocked: already has premium money committed at position."
     if starter_money_count >= ideal and aav >= 7_000_000 and not (high_upside and team_need >= 45):
         return False, "CPU signing blocked: position room already has enough paid depth."
+    if roster_floor_offer and (critical_roster_floor_offer or aav <= 4_000_000):
+        return True, "ok"
     if not expensive_room_offer_allowed(
         group=group,
         team_need=team_need,
@@ -4900,6 +6075,18 @@ def sign_offer(con: sqlite3.Connection, period: sqlite3.Row, offer: sqlite3.Row,
             offer["player_id"],
         ),
     )
+    if cpu_offer_notes(offer["notes"]):
+        record_free_agency_decision_explanation(
+            con,
+            period,
+            offer,
+            market,
+            decision_type="cpu_signing",
+            contract_id=contract_id,
+            transaction_id=transaction_id,
+            cap_space_before=int(before["cap_space"] or 0),
+            projected_cap_after=int(after["cap_space"] or 0) if after else None,
+        )
     log_event(
         con,
         league_year=int(period["league_year"]),
@@ -5032,6 +6219,7 @@ def cpu_retain_own_free_agents(
 ) -> int:
     if per_team <= 0:
         return 0
+    resolve_stale_injuries_for_free_agency(con, period)
     rng = random.Random(seed or f"cpu-retain-fa:{period['league_year']}:{period['current_date']}")
     rows = con.execute(
         """
@@ -5076,7 +6264,9 @@ def cpu_retain_own_free_agents(
         group = normalized_group(player)
         overall = true_overall(player)
         potential = int(row_value(player, "potential", overall) or overall)
-        if group == "WR" and overall < 80 and potential < 91:
+        if group == "WR" and overall < 76 and potential < 84:
+            retention_cap = min(retention_cap, 10_000_000)
+        elif group == "WR" and overall < 80 and potential < 91:
             retention_cap = min(retention_cap, 19_500_000)
         if aav > retention_cap:
             aav = round_to(retention_cap)
@@ -5149,6 +6339,31 @@ def cpu_retain_own_free_agents(
             submitted_hour=event_hour,
             contract_structure=structure,
             notes="CPU own-player retention offer",
+        )
+        cap_before_offer = (
+            int(cap["cap_space"] or 0) - team_spend.get(int(player["previous_team_id"]), 0)
+            if cap
+            else None
+        )
+        record_free_agency_decision_explanation(
+            con,
+            period,
+            {**synthetic_offer, "offer_id": offer_id, "guarantee_pct": guarantee},
+            player,
+            decision_type="cpu_offer",
+            cap_space_before=cap_before_offer,
+            projected_cap_after=(
+                cap_before_offer - first_year_cap_estimate(
+                    aav=aav,
+                    years=years,
+                    signing_bonus=bonus,
+                    structure=structure,
+                )
+                if cap_before_offer is not None
+                else None
+            ),
+            market_context="own-player retention",
+            role_plan="retain core player" if overall >= 80 or potential >= 86 else "retain room continuity",
         )
         contract_id = con.execute(
             """
@@ -5271,6 +6486,28 @@ def cpu_retain_own_free_agents(
                 int(period["league_year"]),
                 int(player["player_id"]),
             ),
+        )
+        record_free_agency_decision_explanation(
+            con,
+            period,
+            {**synthetic_offer, "offer_id": offer_id, "guarantee_pct": guarantee},
+            player,
+            decision_type="cpu_signing",
+            contract_id=int(contract_id),
+            transaction_id=int(transaction_id),
+            cap_space_before=cap_before_offer,
+            projected_cap_after=(
+                cap_before_offer - first_year_cap_estimate(
+                    aav=aav,
+                    years=years,
+                    signing_bonus=bonus,
+                    structure=structure,
+                )
+                if cap_before_offer is not None
+                else None
+            ),
+            market_context="own-player retention",
+            role_plan="retain core player" if overall >= 80 or potential >= 86 else "retain room continuity",
         )
         team_spend[int(player["previous_team_id"])] = team_spend.get(int(player["previous_team_id"]), 0) + aav
         kept_by_team[previous_team] = kept_by_team.get(previous_team, 0) + 1
@@ -5465,6 +6702,35 @@ def create_cpu_competing_offers(
             submitted_hour=event_hour,
             contract_structure=structure,
             notes="CPU response offer after user bid",
+        )
+        cap_before_offer = int(team["cap_space"] or 0)
+        record_free_agency_decision_explanation(
+            con,
+            period,
+            {
+                "league_year": int(period["league_year"]),
+                "team_id": int(team["team_id"]),
+                "player_id": player_id,
+                "offer_id": offer_id,
+                "years": years,
+                "aav": aav,
+                "total_value": aav * years,
+                "signing_bonus": bonus,
+                "guarantee_pct": guarantee,
+                "contract_structure": structure,
+                "notes": "CPU response offer after user bid",
+            },
+            player,
+            decision_type="cpu_offer",
+            cap_space_before=cap_before_offer,
+            projected_cap_after=cap_before_offer - first_year_cap_estimate(
+                aav=aav,
+                years=years,
+                signing_bonus=bonus,
+                structure=structure,
+            ),
+            market_context="counter offer",
+            need_scores=need_scores,
         )
         log_event(
             con,
@@ -6327,6 +7593,14 @@ def cap_compliance_restructure_grade(
         and (potential >= 84 or overall >= 74)
     ):
         return False, "rookie-scale deal protected from routine restructure"
+    if (
+        cap_space < 0
+        and not rookie_scale
+        and savings >= max(2_000_000, min_space - cap_space)
+        and overall >= 58
+        and potential >= 62
+    ):
+        return True, "emergency cap compliance conversion"
     if keeper_score < required_score:
         return False, f"keeper score {keeper_score} below {required_score}"
     return True, f"keeper score {keeper_score}"
@@ -6623,6 +7897,7 @@ def create_cpu_offers(
 ) -> int:
     if count <= 0:
         return 0
+    resolve_stale_injuries_for_free_agency(con, period)
     rng = random.Random(seed or f"{period['league_year']}:{period['current_date']}:{period['current_hour']}")
     cap_reserve = cpu_cap_reserve_for_period(period)
     teams = con.execute(
@@ -6700,6 +7975,19 @@ def create_cpu_offers(
     post_draft_context = is_post_draft_market_context(con, int(period["league_year"]))
     fog_game_id = pro_player_fog.active_game_id(con)
     fog_season = int(period["league_year"])
+    qb_bridge_contexts: dict[int, dict[str, Any] | None] = {}
+
+    def qb_bridge_for_team(team_id: int) -> dict[str, Any] | None:
+        if team_id not in qb_bridge_contexts:
+            qb_bridge_contexts[team_id] = qb_draft_bridge_context(
+                con,
+                team_id,
+                int(period["league_year"]),
+                game_id=fog_game_id,
+                need_scores=need_scores,
+            )
+        return qb_bridge_contexts[team_id]
+
     if late_market:
         candidates.sort(
             key=lambda player: (
@@ -6856,10 +8144,21 @@ def create_cpu_offers(
             room_starters = int(room_context["starter_slots"])
             room_starter_floor = int(room_context["starter_floor"])
             late_need_exception = late_market and top_remaining and team_need >= 28
+            qb_bridge_context = qb_bridge_for_team(team_id) if player_group == "QB" else None
             if player_group == "RB" and group_offer_count >= 1 and player_score >= 70 and team_need < 82 and not late_need_exception:
                 continue
             qb_backup_cap: int | None = None
             if player_group == "QB":
+                bridge_block = qb_draft_bridge_candidate_block_reason(
+                    player,
+                    qb_bridge_context,
+                    score=player_score,
+                    potential=player_potential,
+                )
+                if bridge_block:
+                    continue
+                if qb_bridge_context:
+                    qb_backup_cap = int(qb_bridge_context.get("bridge_aav_cap") or QB_DRAFT_BRIDGE_TOP10_AAV_CAP)
                 if roster_group_count >= group_depth_limit and team_need < 70:
                     continue
                 if group_offer_count >= 1 and team_need < 70:
@@ -6885,7 +8184,8 @@ def create_cpu_offers(
                 )
                 if not qb_limits["allowed"]:
                     continue
-                qb_backup_cap = qb_limits["backup_cap"]
+                if qb_limits["backup_cap"] is not None:
+                    qb_backup_cap = min(qb_backup_cap, int(qb_limits["backup_cap"])) if qb_backup_cap else int(qb_limits["backup_cap"])
             elif roster_group_count >= group_depth_limit and group_offer_count >= 1 and team_need < 40 and not late_need_exception:
                 continue
             elif roster_group_count >= room_ideal and group_offer_count >= 1 and team_need < 64 and not late_need_exception:
@@ -7027,6 +8327,9 @@ def create_cpu_offers(
             if player_group == "QB" and player_score < 75 and team_need < 75:
                 years = min(years, 1)
                 aav = min(aav, max(low, round_to(quality_cap * 0.92, 50_000)))
+            if player_group == "QB" and qb_bridge_context:
+                years = 1
+                aav = min(aav, int(qb_bridge_context.get("bridge_aav_cap") or QB_DRAFT_BRIDGE_TOP10_AAV_CAP))
             if post_draft_context:
                 starter_path = (
                     team_need >= 82
@@ -7083,6 +8386,24 @@ def create_cpu_offers(
                 submitted_hour=event_hour,
                 contract_structure=structure,
                 notes="CPU injury-leverage market offer" if injury_leverage_offer else "CPU market offer",
+            )
+            cap_before_offer = int(team["cap_space"] or 0) - team_spend.get(team_id, 0)
+            record_free_agency_decision_explanation(
+                con,
+                period,
+                {**offer_preview, "offer_id": offer_id, "contract_structure": structure},
+                player,
+                decision_type="cpu_offer",
+                cap_space_before=cap_before_offer,
+                projected_cap_after=cap_before_offer - first_year_cap_estimate(
+                    aav=aav,
+                    years=years,
+                    signing_bonus=bonus,
+                    structure=structure,
+                ),
+                market_context="injury leverage" if injury_leverage_offer else None,
+                need_scores=need_scores,
+                room_context=room_context,
             )
             offers_by_team[team_id] = offers_by_team.get(team_id, 0) + 1
             team_spend[team_id] = team_spend.get(team_id, 0) + aav
@@ -7191,6 +8512,7 @@ def cpu_post_draft_depth_signings(
         period["current_date"] = event_date_override
         period["current_hour"] = 12
         period["current_stage"] = "daily"
+    resolve_stale_injuries_for_free_agency(con, period)
     specialist_signings = (
         ensure_missing_specialists_for_fa(
             con,
@@ -7479,6 +8801,24 @@ def cpu_post_draft_depth_signings(
                     contract_structure="balanced",
                     notes=str(offer_preview["notes"]),
                 )
+                record_free_agency_decision_explanation(
+                    con,
+                    period,
+                    {**offer_preview, "offer_id": offer_id},
+                    player,
+                    decision_type="cpu_offer",
+                    cap_space_before=cap_space,
+                    projected_cap_after=cap_space - first_year_cap_estimate(
+                        aav=aav,
+                        years=years,
+                        signing_bonus=bonus,
+                        structure="balanced",
+                    ),
+                    market_context="post-draft depth market",
+                    role_plan="starter-path signing" if candidate_starter_hole else "depth and rotation fill",
+                    need_scores=need_scores,
+                    room_context=context,
+                )
                 offer = con.execute("SELECT * FROM free_agency_offers WHERE offer_id = ?", (offer_id,)).fetchone()
                 market = con.execute(
                     "SELECT * FROM free_agency_board_view WHERE league_year = ? AND player_id = ?",
@@ -7596,7 +8936,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         con,
         period,
         args,
-        max_offers=max(1, min(3, int(args.cpu_offers or 0) // 12 if int(args.cpu_offers or 0) else 2)),
+        max_offers=max(2, min(5, int(args.cpu_offers or 0) // 10 if int(args.cpu_offers or 0) else 3)),
     )
     created = create_cpu_offers(con, period, args.cpu_offers, args.seed, user_team=market_user_team)
     signed = resolve_pending_offers(
@@ -7610,7 +8950,9 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
     fresh_period_for_resolution = current_period(con, args.league_year)
     signed_after_advance = 0
     specialist_signings = 0
+    roster_floor_signings = 0
     if fresh_period_for_resolution and fresh_period_for_resolution["status"] == "active":
+        resolve_stale_injuries_for_free_agency(con, fresh_period_for_resolution)
         signed_after_advance = resolve_pending_offers(
             con,
             fresh_period_for_resolution,
@@ -7624,6 +8966,12 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
                 fresh_period_for_resolution,
                 user_team=user_team,
             )
+        roster_floor_signings = ensure_playable_roster_floors_for_fa(
+            con,
+            fresh_period_for_resolution,
+            user_team=user_team,
+            max_total=24,
+        )
     cleanup = reconcile_market_state(con, args.league_year)
     cap_cleanup = {"teams": 0, "restructures": 0, "releases": 0, "still_over": 0}
     if not skip_cap_cleanup:
@@ -7654,12 +9002,13 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
             else:
                 cap_cleanup[key] = int(cap_cleanup.get(key) or 0) + int(value or 0)
     fresh_period = active_period(con, args.league_year)
-    sync_active_game_to_date(con, str(fresh_period["current_date"]))
+    if getattr(args, "sync_game_date", True):
+        sync_active_game_to_date(con, str(fresh_period["current_date"]))
     waiver_settlement = settle_due_market_waivers(
         con,
         league_year=int(args.league_year),
         target_date=str(fresh_period["current_date"]),
-        include_user_team=bool(getattr(args, "cpu_controls_user_team", False)),
+        include_user_team=cpu_controls_user_team_enabled(con, args),
     )
     log_event(
         con,
@@ -7670,6 +9019,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         message=(
             f"Free agency advanced. CPU offers: {created}. User auto-plan offers: {user_plan.get('offers', 0)}. "
             f"Signings: {signed}. Specialist signings: {specialist_signings}. "
+            f"Roster-floor signings: {roster_floor_signings}. "
             f"Demand drops: {demand_drops}. Retirements: {retirements}. "
             f"Strategic releases: {cpu_strategic_releases}. "
             f"Due waivers settled: {waiver_settlement.get('processed', 0)}."
@@ -7689,6 +9039,7 @@ def process_tick(con: sqlite3.Connection, args: argparse.Namespace, *, hours: in
         "user_auto_plan_offers": user_plan.get("offers", 0),
         "signings": signed,
         "specialist_signings": specialist_signings,
+        "roster_floor_signings": roster_floor_signings,
         "demand_drops": demand_drops,
         "retirements": retirements,
         "restructures": cpu_restructures,
@@ -7859,6 +9210,7 @@ def action_advance_hour(args: argparse.Namespace) -> None:
         f"Advanced one free-agency hour ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
         f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
+        f"{result.get('roster_floor_signings', 0)} roster-floor signing(s), "
         f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s), "
         f"{result.get('waivers_processed', 0)} waiver(s) settled."
     )
@@ -7871,6 +9223,7 @@ def action_advance_day(args: argparse.Namespace) -> None:
         f"Advanced {args.days} free-agency day(s) ({'saved' if args.apply else 'dry run'}): "
         f"{result['cpu_offers']} CPU offer(s), {result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
         f"{result['signings']} signing(s), {result.get('specialist_signings', 0)} specialist signing(s), "
+        f"{result.get('roster_floor_signings', 0)} roster-floor signing(s), "
         f"{result['demand_drops']} demand drop(s), {result.get('retirements', 0)} retirement(s), "
         f"{result.get('waivers_processed', 0)} waiver(s) settled."
     )
@@ -7913,9 +9266,15 @@ def action_cpu_seed(args: argparse.Namespace) -> None:
                 c,
                 period,
                 a,
-                max_offers=max(1, min(3, int(a.cpu_offers or 0) // 12 if int(a.cpu_offers or 0) else 2)),
+                max_offers=max(2, min(5, int(a.cpu_offers or 0) // 10 if int(a.cpu_offers or 0) else 3)),
             )
             offers = create_cpu_offers(c, period, a.cpu_offers, a.seed, user_team=market_user_team)
+            roster_floor_signings = ensure_playable_roster_floors_for_fa(
+                c,
+                period,
+                user_team=user_team,
+                max_total=16,
+            )
             log_event(
                 c,
                 league_year=a.league_year,
@@ -7926,17 +9285,24 @@ def action_cpu_seed(args: argparse.Namespace) -> None:
                     "Seeded CPU market activity. "
                     f"Own-player re-signings: {retained}. "
                     f"User auto-plan offers: {user_plan.get('offers', 0)}. "
-                    f"Open offers: {offers}."
+                    f"Open offers: {offers}. "
+                    f"Roster-floor signings: {roster_floor_signings}."
                 ),
             )
-            return {"retained": retained, "cpu_offers": offers, "user_auto_plan_offers": user_plan.get("offers", 0)}
+            return {
+                "retained": retained,
+                "cpu_offers": offers,
+                "user_auto_plan_offers": user_plan.get("offers", 0),
+                "roster_floor_signings": roster_floor_signings,
+            }
 
         result = run_mutation(con, args, run_seed)
     print(
         f"CPU market seed ({'saved' if args.apply else 'dry run'}): "
         f"{result['retained']} own-player re-signing(s), "
         f"{result.get('user_auto_plan_offers', 0)} user-plan offer(s), "
-        f"{result['cpu_offers']} open offer(s)."
+        f"{result['cpu_offers']} open offer(s), "
+        f"{result.get('roster_floor_signings', 0)} roster-floor signing(s)."
     )
 
 
@@ -7969,7 +9335,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--skip-expirations", action="store_true", help="Do not move expired contracts into free agency before opening the market.")
     start.add_argument("--cpu-resign-per-team", type=int, default=2, help="CPU own-team extensions before expirations.")
     start.add_argument("--cpu-retention-per-team", type=int, default=0, help="CPU own-player FA re-signings after the market opens.")
-    start.add_argument("--opening-cpu-offers", type=int, default=64, help="CPU market offers created immediately when FA opens.")
+    start.add_argument("--opening-cpu-offers", type=int, default=96, help="CPU market offers created immediately when FA opens.")
     start.add_argument("--cpu-controls-user-team", action="store_true", help="Allow CPU FA automation for the active user team when fast-forwarding past free agency.")
     start.add_argument("--seed", type=int)
     start.add_argument("--no-cap-snapshot", action="store_true", help="Skip cap-ledger snapshots for faster UI/background runs.")

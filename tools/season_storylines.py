@@ -213,6 +213,10 @@ def player_label(player: sqlite3.Row) -> str:
     return f"{player['player_name']} ({player['position']})"
 
 
+def story_choice(rng: random.Random, options: list[str]) -> str:
+    return options[rng.randrange(len(options))] if options else ""
+
+
 def process_camp_storylines(
     con: sqlite3.Connection,
     *,
@@ -248,30 +252,63 @@ def process_camp_storylines(
             potential_gap = int(player["potential"] or 50) - int(player["overall"] or 50)
             if age >= 30 and rng.random() < 0.55:
                 kind = "practice_decline_note"
-                title = f"Practice report: {player['player_name']} losing a step"
-                body = (
-                    f"Coaches still trust {player_label(player)}, but camp movement notes suggest the margin "
-                    "is narrowing. This is a small regression input, not a hard depth-chart decision."
+                title = story_choice(
+                    rng,
+                    [
+                        f"Camp Note: {player['player_name']} Under Watch",
+                        f"Staff Monitoring {player['player_name']}",
+                        f"{player['player_name']} Has a Quieter Camp",
+                    ],
+                )
+                body = story_choice(
+                    rng,
+                    [
+                        f"Coaches still trust {player_label(player)}, but the practice notes have been a little less clean than usual. The staff wants to see whether it is timing, workload, or a real physical dip.",
+                        f"{player_label(player)} is not in danger of being written off, but the staff has noticed fewer easy wins in individual work. Preseason reps should give a better read.",
+                        f"The veteran baseline is still respected, but {player_label(player)} has looked more ordinary than expected in camp. Coaches are watching how the body responds as the weeks stack up.",
+                    ],
                 )
                 momentum = -rng.uniform(0.18, 0.42)
                 confidence = -rng.uniform(0.06, 0.18)
                 potential = -rng.uniform(0.00, 0.06)
             elif rookie and rng.random() < 0.42:
                 kind = "practice_playbook_struggle"
-                title = f"Practice report: {player['player_name']} still processing"
-                body = (
-                    f"{player_label(player)} has flashed traits, but the staff noted some playbook and assignment "
-                    "friction. Rookies can grow out of it, especially with snaps and coaching."
+                title = story_choice(
+                    rng,
+                    [
+                        f"Camp Note: {player['player_name']} Still Processing",
+                        f"{player['player_name']} Learning the Details",
+                        f"Rookie Check-In: {player['player_name']}",
+                    ],
+                )
+                body = story_choice(
+                    rng,
+                    [
+                        f"{player_label(player)} has flashed enough talent to keep coaches interested, but the assignment details are not automatic yet. The staff is treating it as a normal rookie checkpoint.",
+                        f"The tools show up for {player_label(player)}, then the playbook slows the next rep down. Coaches want the game to settle before expanding the role.",
+                        f"{player_label(player)} has had the kind of uneven camp that makes the preseason important: traits on one snap, corrections on the next.",
+                    ],
                 )
                 momentum = -rng.uniform(0.08, 0.32)
                 confidence = -rng.uniform(0.06, 0.20)
                 potential = -rng.uniform(0.00, 0.04)
             else:
                 kind = "practice_flash"
-                title = f"Practice report: {player['player_name']} flashing"
-                body = (
-                    f"{player_label(player)} has shown enough on the practice field for coaches to keep watching. "
-                    "This gives a small development bump if it is backed by preseason or regular-season usage."
+                title = story_choice(
+                    rng,
+                    [
+                        f"Camp Note: {player['player_name']} Flashing",
+                        f"{player['player_name']} Keeps Showing Up",
+                        f"Staff Takes Notice of {player['player_name']}",
+                    ],
+                )
+                body = story_choice(
+                    rng,
+                    [
+                        f"{player_label(player)} has stacked enough positive practice reps for coaches to keep looking for a role. The next test is whether it carries into live work.",
+                        f"The staff has started circling {player_label(player)} after a few loud camp reps. It is not a finished story yet, but the player has earned more attention.",
+                        f"{player_label(player)} is giving the staff something to think about. Coaches want to see if the flash can become a weekly assignment instead of a camp note.",
+                    ],
                 )
                 momentum = rng.uniform(0.16, 0.42)
                 confidence = rng.uniform(0.05, 0.18)
@@ -368,10 +405,21 @@ def process_position_battles_for_team(
         challenger_score = int(challenger["potential"] or 0) - int(challenger["overall"] or 0) + rng.uniform(-2.0, 3.5)
         leader_score = int(leader["overall"] or 0) - int(challenger["overall"] or 0) + rng.uniform(-1.5, 2.5)
         winner, other = (challenger, leader) if challenger_score > leader_score else (leader, challenger)
-        title = f"Camp battle: {winner['player_name']} gaining ground at {pos}"
-        body = (
-            f"{player_label(winner)} has made the {pos} competition more interesting. "
-            f"{player_label(other)} is still in the mix, but the staff has a real decision to monitor through preseason."
+        title = story_choice(
+            rng,
+            [
+                f"{pos} Battle Tightens: {winner['player_name']}",
+                f"Camp Competition Brewing at {pos}",
+                f"{winner['player_name']} Forces a Longer Look",
+            ],
+        )
+        body = story_choice(
+            rng,
+            [
+                f"{player_label(winner)} has made the {pos} competition more interesting. {player_label(other)} is still firmly in the mix, but the staff has a real decision to monitor through preseason.",
+                f"The staff expected the {pos} room to have an order by now, but {player_label(winner)} has kept the battle alive. {player_label(other)} still has the cleaner resume.",
+                f"{player_label(winner)} has done enough in camp to keep stealing staff meeting time. The coaches are not ready to move off {player_label(other)}, but the gap is worth watching.",
+            ],
         )
         if insert_storyline(
             con,
@@ -622,12 +670,41 @@ def weekly_confidence_score(player: sqlite3.Row, stats: dict[str, float]) -> flo
 def weekly_story_text(player: sqlite3.Row, stats: dict[str, float], score: float) -> tuple[str, str, str]:
     name = str(player["player_name"])
     pos = str(player["position"])
+    rng = random.Random(f"{player['player_id']}:{pos}:{round(score, 3)}:{round(sum(stats.values()), 2)}")
     if score > 0:
-        title = f"{name} building confidence"
-        body = f"{name} ({pos}) put together a positive week, and the staff sees a small confidence bump if the trend continues."
+        title = story_choice(
+            rng,
+            [
+                f"{name} Builds Momentum",
+                f"{name} Gives Staff a Strong Week",
+                f"{name} Makes the Week Count",
+            ],
+        )
+        body = story_choice(
+            rng,
+            [
+                f"{name} ({pos}) put together the kind of week coaches can point to in meetings. The staff wants to see whether it becomes a trend or stays as one good Sunday.",
+                f"The staff came away encouraged by {name}'s ({pos}) week. It was not enough to settle the long-term read, but it gives the player something to build on.",
+                f"{name} ({pos}) gave the coaches a positive data point this week. Another similar performance would make the role conversation more interesting.",
+            ],
+        )
         return title, body, "hot_streak"
-    title = f"{name} needs a reset"
-    body = f"{name} ({pos}) had a shaky week. Coaches are treating it as a confidence/adversity checkpoint rather than a permanent verdict."
+    title = story_choice(
+        rng,
+        [
+            f"{name} Draws Staff Attention",
+            f"{name} Has a Week to Clean Up",
+            f"Coaches Want a Response from {name}",
+        ],
+    )
+    body = story_choice(
+        rng,
+        [
+            f"{name} ({pos}) had a shaky week, and the staff wants a cleaner response before letting one game change the evaluation.",
+            f"The coaches are not overreacting to {name}'s ({pos}) week, but the mistakes were clear enough to make the next one matter.",
+            f"{name} ({pos}) left the staff with corrections to make. The bigger question is whether the player responds quickly or lets it linger.",
+        ],
+    )
     return title, body, "cold_streak"
 
 
@@ -694,11 +771,21 @@ def process_trade_deadline_rumors(
             continue
         player = rng.choice(vets[: min(4, len(vets))])
         buyer = rng.choice(buyers)
-        title = f"Deadline rumor: {seller['abbreviation']} could listen on {player['player_name']}"
-        body = (
-            f"With {seller['abbreviation']} drifting toward seller territory, rival teams believe veteran "
-            f"{player['player_name']} ({player['position']}) could draw calls. Contenders like {buyer['abbreviation']} "
-            "are expected to monitor holes before the deadline."
+        title = story_choice(
+            rng,
+            [
+                f"Deadline Watch: {player['player_name']}",
+                f"{seller['abbreviation']} Could Get Calls on {player['player_name']}",
+                f"Trade Market Watching {player['player_name']}",
+            ],
+        )
+        body = story_choice(
+            rng,
+            [
+                f"With {seller['abbreviation']} drifting toward seller territory, rival teams believe veteran {player['player_name']} ({player['position']}) could draw calls. Contenders like {buyer['abbreviation']} are expected to monitor holes before the deadline.",
+                f"Teams around the league are watching whether {seller['abbreviation']} gets realistic about selling. {player['player_name']} ({player['position']}) is one name that could interest a contender such as {buyer['abbreviation']}.",
+                f"{seller['abbreviation']} is not openly shopping {player['player_name']}, but the club's record has made other front offices curious. {buyer['abbreviation']} is among the teams expected to keep tabs on the market.",
+            ],
         )
         news_id = league_news.add_news_item(
             con,

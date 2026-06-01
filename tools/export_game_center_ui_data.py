@@ -28,9 +28,11 @@ import league_news
 import roster_rules
 import scouting
 import draft_portrait_assets
+import league_balance_dashboards
 import saved_draft_class_package
 import pro_player_fog
 import player_accolades
+import talent_supply_guardrails
 from engine import depth_packages
 from engine import injury_model
 from export_player_card_ui_data import POSITION_RATING_KEYS, grade_label as rating_grade_label
@@ -1038,6 +1040,70 @@ def format_transaction(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def format_decision_explanation(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    details = data.get("reason_json")
+    if details:
+        try:
+            details = json.loads(str(details))
+        except (TypeError, ValueError):
+            details = None
+    return {
+        "id": int(data["explanation_id"]),
+        "transactionId": data.get("transaction_id"),
+        "decisionType": data.get("decision_type"),
+        "date": data.get("decision_date"),
+        "hour": data.get("decision_hour"),
+        "team": data.get("team"),
+        "teamName": data.get("team_name"),
+        "playerId": data.get("player_id"),
+        "player": data.get("player_name"),
+        "position": data.get("position"),
+        "positionGroup": data.get("position_group"),
+        "summary": data.get("reason_summary") or "",
+        "details": details,
+        "needScore": data.get("need_score"),
+        "valueScore": data.get("value_score"),
+        "capSpaceBefore": data.get("cap_space_before"),
+        "projectedCapAfter": data.get("projected_cap_after"),
+        "schemeFitScore": data.get("scheme_fit_score"),
+        "bridgeQbPlan": bool(data.get("bridge_qb_plan")),
+        "rolePlan": data.get("role_plan"),
+        "marketContext": data.get("market_context"),
+        "aav": data.get("aav"),
+        "years": data.get("years"),
+        "offerStatus": data.get("offer_status"),
+        "marketTier": data.get("market_tier"),
+        "askingAav": data.get("asking_aav"),
+        "minimumAav": data.get("minimum_aav"),
+        "source": data.get("source"),
+    }
+
+
+def transaction_decision_explanations(conn: sqlite3.Connection, transaction_ids: list[int]) -> dict[int, dict[str, Any]]:
+    if not transaction_ids or not table_exists(conn, "free_agency_decision_explanations_view"):
+        return {}
+    placeholders = ",".join("?" for _ in transaction_ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM free_agency_decision_explanations_view
+        WHERE transaction_id IN ({placeholders})
+        ORDER BY explanation_id DESC
+        """,
+        transaction_ids,
+    ).fetchall()
+    explanations: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        transaction_id = row["transaction_id"]
+        if transaction_id is None:
+            continue
+        transaction_id = int(transaction_id)
+        if transaction_id not in explanations:
+            explanations[transaction_id] = format_decision_explanation(row)
+    return explanations
+
+
 def league_transactions_summary(conn: sqlite3.Connection, *, limit: int = 400, include_baseline: bool = False) -> dict[str, Any]:
     if not table_exists(conn, "transaction_log_view"):
         return {"items": [], "counts": {"total": 0}, "categories": [], "includeBaseline": include_baseline}
@@ -1113,8 +1179,14 @@ def league_transactions_summary(conn: sqlite3.Connection, *, limit: int = 400, i
     categories = [str(row["category"]) for row in count_rows]
     counts = {str(row["category"]): int(row["count"] or 0) for row in count_rows}
     counts["total"] = sum(counts.values())
+    items = [format_transaction(row) for row in rows]
+    explanation_map = transaction_decision_explanations(conn, [int(item["id"]) for item in items if int(item["id"]) > 0])
+    for item in items:
+        explanation = explanation_map.get(int(item["id"]))
+        if explanation:
+            item["why"] = explanation
     return {
-        "items": [format_transaction(row) for row in rows],
+        "items": items,
         "counts": counts,
         "categories": categories,
         "includeBaseline": include_baseline,
@@ -2866,13 +2938,114 @@ def enrich_scouting_payload_with_draft_board(scouting_payload: dict[str, Any], d
     return scouting_payload
 
 
+def free_agency_market_day(period: dict[str, Any] | None, start_date: str | None) -> int | None:
+    if period:
+        try:
+            day_count = int(period.get("day_count") or 0)
+        except (TypeError, ValueError):
+            day_count = 0
+        if day_count > 0:
+            return day_count
+        current_date = period.get("current_date")
+    else:
+        current_date = None
+    if not current_date or not start_date:
+        return None
+    try:
+        return max(1, (date.fromisoformat(str(current_date)[:10]) - date.fromisoformat(str(start_date)[:10])).days + 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def free_agency_market_read(player: dict[str, Any], period: dict[str, Any] | None, start_date: str | None) -> dict[str, Any]:
+    day_count = free_agency_market_day(period, start_date)
+    stage = str((period or {}).get("current_stage") or "").lower()
+    pending = int(player.get("pending_offers") or 0)
+    heat = int(player.get("market_heat") or 0)
+    asking = int(player.get("offer_floor_aav") or player.get("asking_aav") or 0)
+    minimum = int(player.get("minimum_aav") or 0)
+    best = int(player.get("best_aav") or 0)
+    strategy = str(player.get("post_draft_strategy") or "normal").lower()
+    notes = str(player.get("decision_notes") or "")
+    adjusted = "demand adjustment" in notes.lower()
+    clock = f"Day {day_count}" if day_count else "Market watch"
+    if period and period.get("current_date"):
+        clock = f"{clock} | {str(period.get('current_date'))[:10]}"
+
+    if pending >= 3 or (asking > 0 and best >= asking * 1.04) or heat >= 90:
+        temperature = "Hot"
+        temp_tone = "warn"
+        temp_note = "Multiple clubs are active around his price."
+    elif pending > 0 or heat >= 74:
+        temperature = "Warm"
+        temp_tone = "good"
+        temp_note = "There is real interest, but the market is not runaway."
+    elif strategy == "injury_wait":
+        temperature = "Patient"
+        temp_tone = "quiet"
+        temp_note = "He may wait for a clearer role or camp injury."
+    elif day_count and day_count >= 18 and pending == 0:
+        temperature = "Cold"
+        temp_tone = "quiet"
+        temp_note = "The market has been quiet for a while."
+    elif day_count and day_count >= 7 and pending == 0:
+        temperature = "Cooling"
+        temp_tone = "quiet"
+        temp_note = "Interest is light enough that price movement is possible."
+    else:
+        temperature = "Steady"
+        temp_tone = ""
+        temp_note = "The ask is still near the current market read."
+
+    if pending >= 3 and (not asking or best >= asking * 0.95):
+        movement = "Rising"
+        demand_tone = "warn"
+        demand_note = "Bidding pressure could push the deal above the listed ask."
+    elif adjusted:
+        movement = "Softening"
+        demand_tone = "good"
+        demand_note = "The ask has moved down after limited interest."
+    elif strategy == "injury_wait":
+        movement = "Patient"
+        demand_tone = "quiet"
+        demand_note = "He is more likely to wait than chase the first offer."
+    elif minimum and asking and asking <= minimum * 1.08 and (day_count or 0) >= 7:
+        movement = "At Floor"
+        demand_tone = "good"
+        demand_note = "The ask is close to his current floor."
+    elif stage == "day_one_hourly" or (day_count or 1) <= 1:
+        movement = "Opening Ask"
+        demand_tone = ""
+        demand_note = "Early market price before much discount pressure."
+    elif pending:
+        movement = "Holding"
+        demand_tone = ""
+        demand_note = "Active offers are keeping the ask stable."
+    else:
+        movement = "Holding"
+        demand_tone = ""
+        demand_note = "No major price signal has appeared yet."
+
+    return {
+        "market_temperature": temperature,
+        "market_temperature_tone": temp_tone,
+        "market_temperature_note": temp_note,
+        "demand_movement": movement,
+        "demand_movement_tone": demand_tone,
+        "demand_note": demand_note,
+        "market_clock_label": clock,
+    }
+
+
 def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str, Any]:
     period = None
     board: list[dict[str, Any]] = []
     offers: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
+    decision_explanations: list[dict[str, Any]] = []
     team_logos: dict[str, str] = {}
     best_offers: dict[int, dict[str, Any]] = {}
+    start_date = free_agency_start_date(conn, league_year)
     if table_exists(conn, "free_agency_periods"):
         period = one_as_dict(
             conn.execute(
@@ -2992,6 +3165,33 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
                 player["headshot"] = headshots.get(int(player.get("player_id") or 0))
             except (TypeError, ValueError):
                 player["headshot"] = None
+    if board and table_exists(conn, "free_agency_player_markets"):
+        player_ids = [
+            int(player["player_id"])
+            for player in board
+            if player.get("player_id") is not None
+        ]
+        if player_ids:
+            placeholders = ",".join("?" for _ in player_ids)
+            market_meta = {
+                int(row["player_id"]): row
+                for row in rows_as_dicts(
+                    conn.execute(
+                        f"""
+                        SELECT player_id, decision_notes, last_offer_at, created_at, updated_at
+                        FROM free_agency_player_markets
+                        WHERE league_year = ?
+                          AND player_id IN ({placeholders})
+                        """,
+                        [league_year, *player_ids],
+                    ).fetchall()
+                )
+            }
+            for player in board:
+                try:
+                    player.update(market_meta.get(int(player.get("player_id") or 0), {}))
+                except (TypeError, ValueError):
+                    pass
     if table_exists(conn, "free_agency_offers_view"):
         offers = rows_as_dicts(
             conn.execute(
@@ -3065,12 +3265,53 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
             row["abbreviation"]: "/" + str(row["local_path"]).replace("\\", "/").lstrip("/")
             for row in rows
         }
+    if table_exists(conn, "free_agency_decision_explanations_view"):
+        decision_explanations = rows_as_dicts(
+            conn.execute(
+                """
+                SELECT *
+                FROM free_agency_decision_explanations_view
+                WHERE league_year = ?
+                ORDER BY
+                    COALESCE(decision_date, '') DESC,
+                    COALESCE(decision_hour, 99) DESC,
+                    explanation_id DESC
+                LIMIT 64
+                """,
+                (league_year,),
+            ).fetchall()
+        )
+        for explanation in decision_explanations:
+            explanation["teamLogo"] = team_logos.get(str(explanation.get("team") or ""))
+            details = explanation.get("reason_json")
+            if details:
+                try:
+                    explanation["details"] = json.loads(details)
+                except (TypeError, ValueError):
+                    explanation["details"] = None
+        offer_reasons = {
+            int(row["offer_id"]): row
+            for row in decision_explanations
+            if row.get("offer_id") is not None and row.get("decision_type") == "cpu_offer"
+        }
+        for offer in offers:
+            try:
+                reason = offer_reasons.get(int(offer.get("offer_id") or 0))
+            except (TypeError, ValueError):
+                reason = None
+            if reason:
+                offer["gm_reason_summary"] = reason.get("reason_summary")
+                offer["gm_reason"] = reason.get("details")
     for player in board:
-        best = best_offers.get(int(player["player_id"]))
+        try:
+            best = best_offers.get(int(player["player_id"]))
+        except (TypeError, ValueError):
+            best = None
         if best:
             player["best_offer_team"] = best.get("team")
             player["best_offer_team_name"] = best.get("team_name")
             player["best_offer_team_logo"] = team_logos.get(str(best.get("team")))
+        player.update(free_agency_market_read(player, period, start_date))
     if table_exists(conn, "free_agency_events"):
         events = rows_as_dicts(
             conn.execute(
@@ -3112,11 +3353,12 @@ def free_agency_summary(conn: sqlite3.Connection, league_year: int) -> dict[str,
         market_counts["pendingOffers"] = int(row["count"] or 0) if row else 0
     return {
         "leagueYear": league_year,
-        "startDate": free_agency_start_date(conn, league_year),
+        "startDate": start_date,
         "period": period,
         "board": board,
         "offers": offers,
         "events": events,
+        "decisionExplanations": decision_explanations,
         "counts": market_counts,
     }
 
@@ -3750,6 +3992,649 @@ def awards_summary(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
         "final": final,
         "recentSeasons": recent_seasons,
     }
+
+
+HISTORY_RECORD_CHASE_FIELDS: list[dict[str, Any]] = [
+    {"key": "passing_yards", "label": "Passing Yards", "group": "Passing"},
+    {"key": "passing_tds", "label": "Passing Touchdowns", "group": "Passing"},
+    {"key": "rushing_yards", "label": "Rushing Yards", "group": "Rushing"},
+    {"key": "rushing_tds", "label": "Rushing Touchdowns", "group": "Rushing"},
+    {"key": "receiving_yards", "label": "Receiving Yards", "group": "Receiving"},
+    {"key": "receiving_tds", "label": "Receiving Touchdowns", "group": "Receiving"},
+    {"key": "receptions", "label": "Receptions", "group": "Receiving"},
+    {"key": "def_sacks", "label": "Sacks", "group": "Defense"},
+    {"key": "def_interceptions", "label": "Interceptions", "group": "Defense"},
+    {"key": "def_tackles_combined", "label": "Tackles", "group": "Defense"},
+    {"key": "fg_made", "label": "Field Goals", "group": "Kicking"},
+]
+
+HISTORY_MILESTONE_ALERT_FIELDS: list[dict[str, Any]] = [
+    {"key": "passing_yards", "label": "Passing Yards", "group": "Passing", "thresholds": [10000, 20000, 30000, 40000, 50000, 60000]},
+    {"key": "passing_tds", "label": "Passing TD", "group": "Passing", "thresholds": [100, 200, 300, 400, 500]},
+    {"key": "rushing_yards", "label": "Rushing Yards", "group": "Rushing", "thresholds": [3000, 5000, 8000, 10000, 12000]},
+    {"key": "rushing_tds", "label": "Rushing TD", "group": "Rushing", "thresholds": [25, 50, 75, 100]},
+    {"key": "receiving_yards", "label": "Receiving Yards", "group": "Receiving", "thresholds": [3000, 5000, 8000, 10000, 12000, 15000]},
+    {"key": "receptions", "label": "Receptions", "group": "Receiving", "thresholds": [250, 500, 750, 1000, 1250]},
+    {"key": "receiving_tds", "label": "Receiving TD", "group": "Receiving", "thresholds": [25, 50, 75, 100]},
+    {"key": "scrimmage_yards", "label": "Scrimmage Yards", "group": "Offense", "thresholds": [5000, 8000, 10000, 12000, 15000]},
+    {"key": "def_sacks", "label": "Sacks", "group": "Defense", "thresholds": [25, 50, 75, 100, 125, 150]},
+    {"key": "def_tackles_combined", "label": "Tackles", "group": "Defense", "thresholds": [500, 750, 1000, 1250]},
+    {"key": "def_interceptions", "label": "Interceptions", "group": "Defense", "thresholds": [10, 25, 40, 50]},
+    {"key": "fg_made", "label": "Field Goals", "group": "Kicking", "thresholds": [100, 200, 300, 400, 500]},
+]
+
+
+def _history_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _history_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _history_record(wins: Any, losses: Any, ties: Any = 0) -> str:
+    w = _history_int(wins)
+    l = _history_int(losses)
+    t = _history_int(ties)
+    return f"{w}-{l}" + (f"-{t}" if t else "")
+
+
+def history_timeline_items(
+    champions: list[dict[str, Any]],
+    stories: list[dict[str, Any]],
+    milestones: list[dict[str, Any]],
+    draft_classes: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in champions[:8]:
+        items.append(
+            {
+                "kind": "champion",
+                "tone": "gold",
+                "season": row.get("season"),
+                "date": row.get("season"),
+                "team": row.get("team"),
+                "teamName": row.get("teamName"),
+                "title": f"{row.get('teamName') or row.get('team') or 'Champion'} wins the Super Bowl",
+                "summary": f"{row.get('record') or '-'} record, {_history_int(row.get('pointsFor')):,} PF, {_history_int(row.get('pointsAgainst')):,} PA.",
+            }
+        )
+    for row in stories[:14]:
+        items.append(
+            {
+                "kind": row.get("type") or "story",
+                "tone": row.get("tier") or "note",
+                "season": row.get("season"),
+                "date": row.get("date") or row.get("season"),
+                "team": row.get("team"),
+                "playerId": row.get("playerId"),
+                "playerName": row.get("playerName"),
+                "position": row.get("position"),
+                "title": row.get("title") or "League story",
+                "summary": row.get("summary") or "",
+            }
+        )
+    for row in milestones[:12]:
+        items.append(
+            {
+                "kind": "milestone",
+                "tone": "silver",
+                "season": row.get("season"),
+                "date": row.get("season"),
+                "team": row.get("team"),
+                "playerId": row.get("playerId"),
+                "playerName": row.get("playerName"),
+                "position": row.get("position"),
+                "title": f"{row.get('playerName') or 'Player'} reaches {row.get('name') or 'milestone'}",
+                "summary": f"{_history_int(row.get('value')):,} career {str(row.get('name') or 'mark').lower()}.",
+            }
+        )
+    for row in draft_classes[:8]:
+        items.append(
+            {
+                "kind": "draft",
+                "tone": "bronze",
+                "season": row.get("draftYear"),
+                "date": row.get("draftYear"),
+                "team": row.get("topPickTeam"),
+                "playerId": row.get("topPickPlayerId"),
+                "playerName": row.get("topPickName"),
+                "position": row.get("topPickPosition"),
+                "title": f"{row.get('draftYear') or '-'} draft class enters the record",
+                "summary": row.get("summary")
+                or f"{_history_int(row.get('selectedCount'))} selected, {_history_int(row.get('qbsSelected'))} QBs, {row.get('topPickName') or 'top pick'} at 1.1.",
+            }
+        )
+    tone_rank = {"gold": 0, "silver": 1, "bronze": 2, "note": 3}
+    return sorted(
+        items,
+        key=lambda item: (
+            -_history_int(item.get("season")),
+            tone_rank.get(str(item.get("tone") or "note"), 4),
+            str(item.get("title") or ""),
+        ),
+    )[:24]
+
+
+def team_history_pages(conn: sqlite3.Connection, team_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not table_exists(conn, "team_season_history_view"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM team_season_history_view
+        ORDER BY team_id, season DESC
+        """
+    ).fetchall()
+    by_team: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_team.setdefault(int(row["team_id"]), []).append(row)
+    records_by_team: dict[int, list[dict[str, Any]]] = {}
+    for record in team_records:
+        team_id = _history_int(record.get("teamId") or record.get("team_id"), -1)
+        if team_id > 0:
+            records_by_team.setdefault(team_id, []).append(record)
+    pages: list[dict[str, Any]] = []
+    for team_id, seasons in by_team.items():
+        latest = seasons[0]
+        best = sorted(
+            seasons,
+            key=lambda row: (
+                -_history_float(row["win_pct"]),
+                -_history_int(row["wins"]),
+                -_history_int(row["point_diff"]),
+                -_history_int(row["points_for"]),
+            ),
+        )[0]
+        titles = sum(_history_int(row["is_champion"]) for row in seasons)
+        runner_ups = sum(_history_int(row["is_runner_up"]) for row in seasons)
+        playoff_apps = sum(1 for row in seasons if str(row["playoff_result"] or "") != "Missed Playoffs")
+        division_titles = sum(1 for row in seasons if _history_int(row["division_rank"], 99) == 1)
+        if titles:
+            identity = f"{titles} title{'s' if titles != 1 else ''}"
+            tone = "gold"
+        elif playoff_apps >= max(2, len(seasons) // 2):
+            identity = "regular playoff presence"
+            tone = "silver"
+        elif _history_float(latest["win_pct"]) >= 0.58:
+            identity = "current contender"
+            tone = "silver"
+        elif _history_float(latest["win_pct"]) <= 0.35:
+            identity = "rebuild watch"
+            tone = "bronze"
+        else:
+            identity = "middle-class profile"
+            tone = "note"
+        pages.append(
+            {
+                "teamId": team_id,
+                "team": latest["abbreviation"],
+                "teamName": latest["team_name"],
+                "conference": latest["conference"],
+                "division": latest["division"],
+                "tone": tone,
+                "identity": identity,
+                "seasons": len(seasons),
+                "titles": titles,
+                "runnerUps": runner_ups,
+                "playoffApps": playoff_apps,
+                "divisionTitles": division_titles,
+                "latestSeason": _history_int(latest["season"]),
+                "latestRecord": _history_record(latest["wins"], latest["losses"], latest["ties"]),
+                "latestResult": latest["playoff_result"],
+                "latestPointDiff": _history_int(latest["point_diff"]),
+                "bestSeason": _history_int(best["season"]),
+                "bestRecord": _history_record(best["wins"], best["losses"], best["ties"]),
+                "bestResult": best["playoff_result"],
+                "bestPointDiff": _history_int(best["point_diff"]),
+                "records": sorted(records_by_team.get(team_id, []), key=lambda row: (str(row.get("group") or ""), str(row.get("statName") or "")))[:6],
+            }
+        )
+    return sorted(pages, key=lambda row: (-_history_int(row["titles"]), -_history_int(row["playoffApps"]), row["teamName"]))[:32]
+
+
+def draft_retrospectives(conn: sqlite3.Connection, draft_classes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not draft_classes or not table_exists(conn, "draft_class_pick_history_view"):
+        return []
+    draft_years = [_history_int(row.get("draftYear")) for row in draft_classes if row.get("draftYear")]
+    if not draft_years:
+        return []
+    placeholders = ", ".join("?" for _ in draft_years)
+    picks = conn.execute(
+        f"""
+        SELECT *
+        FROM draft_class_pick_history_view
+        WHERE draft_year IN ({placeholders})
+          AND player_id IS NOT NULL
+        ORDER BY draft_year DESC, pick_number
+        """,
+        draft_years,
+    ).fetchall()
+    by_year: dict[int, list[sqlite3.Row]] = {}
+    for row in picks:
+        by_year.setdefault(_history_int(row["draft_year"]), []).append(row)
+    out: list[dict[str, Any]] = []
+    for draft_class in draft_classes:
+        year = _history_int(draft_class.get("draftYear"))
+        year_picks = by_year.get(year, [])
+        first_round = [row for row in year_picks if _history_int(row["round"]) == 1]
+        day2 = [row for row in year_picks if _history_int(row["round"]) in {2, 3}]
+        day3 = [row for row in year_picks if _history_int(row["round"]) >= 4]
+        premium = [row for row in year_picks if _history_int(row["potential"]) >= 86 or _history_int(row["true_grade"]) >= 82]
+        sleepers = sorted(
+            [row for row in day3 if _history_int(row["potential"]) >= 78 or _history_int(row["true_grade"]) >= 74],
+            key=lambda row: (-_history_int(row["potential"]), -_history_int(row["true_grade"]), _history_int(row["pick_number"], 999)),
+        )[:5]
+        reaches = sorted(
+            [row for row in first_round if _history_int(row["potential"]) <= 72 and _history_int(row["true_grade"]) <= 70],
+            key=lambda row: (_history_int(row["potential"]), _history_int(row["true_grade"]), _history_int(row["pick_number"], 999)),
+        )[:4]
+
+        def pick_card(row: sqlite3.Row) -> dict[str, Any]:
+            return {
+                "playerId": row["player_id"],
+                "playerName": row["player_name"],
+                "position": row["position"],
+                "team": row["team"],
+                "originalTeam": row["original_team"],
+                "round": row["round"],
+                "pickNumber": row["pick_number"],
+                "pickInRound": row["pick_in_round"],
+                "college": row["college"],
+                "trueGrade": row["true_grade"],
+                "potential": row["potential"],
+                "confidence": row["scout_confidence"],
+            }
+
+        out.append(
+            {
+                **draft_class,
+                "firstRound": [pick_card(row) for row in first_round[:8]],
+                "premiumCount": len(premium),
+                "day2StarterLooks": sum(1 for row in day2 if _history_int(row["true_grade"]) >= 72 or _history_int(row["potential"]) >= 78),
+                "day3Gems": [pick_card(row) for row in sleepers],
+                "firstRoundConcerns": [pick_card(row) for row in reaches],
+            }
+        )
+    return out
+
+
+def record_chase_rows(conn: sqlite3.Connection, season: int) -> list[dict[str, Any]]:
+    if not table_exists(conn, "player_season_stats") or not table_exists(conn, "team_record_book_view"):
+        return []
+    if not conn.execute("SELECT 1 FROM team_record_book_view LIMIT 1").fetchone():
+        return []
+    stat_keys = [item["key"] for item in HISTORY_RECORD_CHASE_FIELDS]
+    available = relation_columns(conn, "player_season_stats")
+    stat_keys = [key for key in stat_keys if key in available]
+    if not stat_keys:
+        return []
+    records = conn.execute(
+        """
+        SELECT *
+        FROM team_record_book_view
+        WHERE rank = 1
+        """
+    ).fetchall()
+    record_map = {(row["team"], row["stat_key"]): row for row in records}
+    fields_sql = ", ".join(f"s.{key}" for key in stat_keys)
+    rows = conn.execute(
+        f"""
+        SELECT
+            s.player_id,
+            p.first_name || ' ' || p.last_name AS player_name,
+            s.position,
+            s.team,
+            s.games,
+            {fields_sql}
+        FROM player_season_stats s
+        JOIN players p ON p.player_id = s.player_id
+        WHERE s.season = ?
+          AND COALESCE(s.games, 0) > 0
+        """,
+        (season,),
+    ).fetchall()
+    field_meta = {item["key"]: item for item in HISTORY_RECORD_CHASE_FIELDS}
+    chases: list[dict[str, Any]] = []
+    for row in rows:
+        games = max(1, _history_int(row["games"]))
+        for key in stat_keys:
+            current = _history_float(row[key])
+            if current <= 0:
+                continue
+            record = record_map.get((row["team"], key))
+            if not record:
+                continue
+            record_value = _history_float(record["value"])
+            if record_value <= 0:
+                continue
+            projected = current / games * 17.0
+            pace_pct = projected / record_value * 100.0
+            current_pct = current / record_value * 100.0
+            if pace_pct < 92.0 and current_pct < 82.0:
+                continue
+            chases.append(
+                {
+                    "season": season,
+                    "playerId": row["player_id"],
+                    "playerName": row["player_name"],
+                    "position": row["position"],
+                    "team": row["team"],
+                    "statKey": key,
+                    "statName": field_meta.get(key, {}).get("label", key),
+                    "group": field_meta.get(key, {}).get("group", "Record"),
+                    "current": round(current, 1),
+                    "projected": round(projected, 1),
+                    "recordValue": round(record_value, 1),
+                    "recordHolder": record["player_name"] or record["team_name"],
+                    "recordSeason": record["season"],
+                    "pacePct": round(pace_pct, 1),
+                    "games": games,
+                    "tone": "gold" if projected >= record_value else "silver" if pace_pct >= 98.0 else "bronze",
+                }
+            )
+    return sorted(chases, key=lambda row: (-_history_float(row["pacePct"]), -_history_float(row["projected"])))[:16]
+
+
+def milestone_alert_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    if not table_exists(conn, "player_career_stats_view"):
+        return []
+    available = relation_columns(conn, "player_career_stats_view")
+    fields = [item for item in HISTORY_MILESTONE_ALERT_FIELDS if item["key"] in available]
+    if not fields:
+        return []
+    stat_sql = ", ".join(item["key"] for item in fields)
+    rows = conn.execute(
+        f"""
+        SELECT
+            player_id,
+            player_name,
+            current_team,
+            current_position,
+            age,
+            overall,
+            {stat_sql}
+        FROM player_career_stats_view
+        WHERE status IN ('Active', 'IR', 'PUP', 'NFI', 'Suspended')
+        """
+    ).fetchall()
+    alerts: list[dict[str, Any]] = []
+    for row in rows:
+        for item in fields:
+            value = _history_float(row[item["key"]])
+            if value <= 0:
+                continue
+            next_threshold = next((threshold for threshold in item["thresholds"] if value < threshold), None)
+            if not next_threshold:
+                continue
+            remaining = next_threshold - value
+            near_window = max(next_threshold * 0.06, 12)
+            if remaining > near_window:
+                continue
+            alerts.append(
+                {
+                    "playerId": row["player_id"],
+                    "playerName": row["player_name"],
+                    "team": row["current_team"],
+                    "position": row["current_position"],
+                    "age": row["age"],
+                    "overall": row["overall"],
+                    "statKey": item["key"],
+                    "statName": item["label"],
+                    "group": item["group"],
+                    "current": round(value, 1),
+                    "threshold": next_threshold,
+                    "remaining": round(remaining, 1),
+                    "tone": "gold" if next_threshold >= max(item["thresholds"][-2:]) else "silver",
+                }
+            )
+    return sorted(alerts, key=lambda row: (_history_float(row["remaining"]), -_history_float(row["threshold"])))[:18]
+
+
+def league_history_summary(conn: sqlite3.Connection, season: int) -> dict[str, Any]:
+    if not table_exists(conn, "franchise_history_runs"):
+        return {
+            "runs": [],
+            "champions": [],
+            "milestones": [],
+            "stories": [],
+            "draftClasses": [],
+            "timeline": [],
+            "teamPages": [],
+            "draftRetrospectives": [],
+            "recordChases": [],
+            "milestoneAlerts": [],
+            "teamRecords": [],
+            "counts": {
+                "runs": 0,
+                "champions": 0,
+                "milestones": 0,
+                "stories": 0,
+                "draftClasses": 0,
+                "teamRecords": 0,
+                "timeline": 0,
+                "teamPages": 0,
+                "draftRetrospectives": 0,
+                "recordChases": 0,
+                "milestoneAlerts": 0,
+            },
+        }
+    runs = [
+        {
+            "season": int(row["season"]),
+            "draftThroughYear": row["draft_through_year"],
+            "teamsArchived": int(row["teams_archived"] or 0),
+            "milestonesArchived": int(row["milestones_archived"] or 0),
+            "storyEventsArchived": int(row["story_events_archived"] or 0),
+            "draftClassesArchived": int(row["draft_classes_archived"] or 0),
+            "teamRecordsArchived": int(row["team_records_archived"] or 0),
+            "updatedAt": row["updated_at"],
+        }
+        for row in conn.execute(
+            """
+            SELECT *
+            FROM franchise_history_runs
+            ORDER BY season DESC
+            LIMIT 8
+            """
+        ).fetchall()
+    ]
+    champions: list[dict[str, Any]] = []
+    if table_exists(conn, "team_season_history_view"):
+        champions = [
+            {
+                "season": int(row["season"]),
+                "teamId": int(row["team_id"]),
+                "team": row["abbreviation"],
+                "teamName": row["team_name"],
+                "record": f"{int(row['wins'] or 0)}-{int(row['losses'] or 0)}" + (f"-{int(row['ties'] or 0)}" if int(row["ties"] or 0) else ""),
+                "pointsFor": int(row["points_for"] or 0),
+                "pointsAgainst": int(row["points_against"] or 0),
+                "playoffSeed": row["playoff_seed"],
+            }
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM team_season_history_view
+                WHERE is_champion = 1
+                ORDER BY season DESC
+                LIMIT 16
+                """
+            ).fetchall()
+        ]
+    milestones: list[dict[str, Any]] = []
+    if table_exists(conn, "player_career_milestones_view"):
+        milestones = [
+            {
+                "id": int(row["milestone_id"]),
+                "season": int(row["season"]),
+                "playerId": int(row["player_id"]),
+                "playerName": row["player_name"],
+                "position": row["position"],
+                "team": row["team"],
+                "name": row["milestone_name"],
+                "group": row["milestone_group"],
+                "value": row["milestone_value"],
+            }
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM player_career_milestones_view
+                ORDER BY season DESC, threshold_value DESC, milestone_id DESC
+                LIMIT 32
+                """
+            ).fetchall()
+        ]
+    stories: list[dict[str, Any]] = []
+    if table_exists(conn, "career_story_events_view"):
+        stories = [
+            {
+                "id": int(row["story_id"]),
+                "season": int(row["season"]),
+                "date": row["story_date"],
+                "playerId": row["player_id"],
+                "playerName": row["player_name"],
+                "position": row["position"],
+                "team": row["team"],
+                "type": row["story_type"],
+                "tier": row["story_tier"],
+                "title": row["title"],
+                "summary": row["summary"],
+            }
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM career_story_events_view
+                ORDER BY COALESCE(story_date, printf('%04d-12-31', season)) DESC, story_id DESC
+                LIMIT 36
+                """
+            ).fetchall()
+        ]
+    draft_classes: list[dict[str, Any]] = []
+    if table_exists(conn, "draft_class_history_view"):
+        draft_classes = [
+            {
+                "draftYear": int(row["draft_year"]),
+                "className": row["class_name"],
+                "selectedCount": int(row["selected_count"] or 0),
+                "qbsSelected": int(row["qbs_selected"] or 0),
+                "firstRoundQbs": int(row["first_round_qbs"] or 0),
+                "top50PowerCount": int(row["top50_power_count"] or 0),
+                "top50NonPowerCount": int(row["top50_non_power_count"] or 0),
+                "topPickPlayerId": row["top_pick_player_id"],
+                "topPickName": row["top_pick_name"],
+                "topPickPosition": row["top_pick_position"],
+                "topPickTeam": row["top_pick_team"],
+                "topPickTrueGrade": row["top_pick_true_grade"],
+                "topPickPotential": row["top_pick_potential"],
+                "summary": row["summary"],
+            }
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM draft_class_history_view
+                ORDER BY draft_year DESC
+                LIMIT 8
+                """
+            ).fetchall()
+        ]
+    team_records: list[dict[str, Any]] = []
+    if table_exists(conn, "team_record_book_view"):
+        team_records = [
+            {
+                "scope": row["record_scope"],
+                "teamId": row["team_id"],
+                "team": row["team"],
+                "teamName": row["team_name"],
+                "statKey": row["stat_key"],
+                "statName": row["stat_name"],
+                "group": row["stat_group"],
+                "season": int(row["season"]),
+                "playerId": row["player_id"],
+                "playerName": row["player_name"],
+                "value": row["value"],
+                "rank": int(row["rank"] or 1),
+            }
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM team_record_book_view
+                WHERE rank = 1
+                ORDER BY team, stat_group, stat_name
+                LIMIT 96
+                """
+            ).fetchall()
+        ]
+    timeline = history_timeline_items(champions, stories, milestones, draft_classes)
+    team_pages = team_history_pages(conn, team_records)
+    draft_retro = draft_retrospectives(conn, draft_classes)
+    record_chases = record_chase_rows(conn, season)
+    milestone_alerts = milestone_alert_rows(conn)
+    return {
+        "season": season,
+        "runs": runs,
+        "champions": champions,
+        "milestones": milestones,
+        "stories": stories,
+        "draftClasses": draft_classes,
+        "timeline": timeline,
+        "teamPages": team_pages,
+        "draftRetrospectives": draft_retro,
+        "recordChases": record_chases,
+        "milestoneAlerts": milestone_alerts,
+        "teamRecords": team_records,
+        "counts": {
+            "runs": len(runs),
+            "champions": len(champions),
+            "milestones": len(milestones),
+            "stories": len(stories),
+            "draftClasses": len(draft_classes),
+            "teamRecords": len(team_records),
+            "timeline": len(timeline),
+            "teamPages": len(team_pages),
+            "draftRetrospectives": len(draft_retro),
+            "recordChases": len(record_chases),
+            "milestoneAlerts": len(milestone_alerts),
+        },
+    }
+
+
+def talent_supply_summary(conn: sqlite3.Connection, league_year: int) -> dict[str, Any]:
+    try:
+        return talent_supply_guardrails.latest_summary(conn, league_year=league_year, limit_flags=24)
+    except Exception as exc:
+        return {
+            "leagueYear": league_year,
+            "positions": [],
+            "flags": [],
+            "history": [],
+            "counts": {"positions": 0, "flags": 0, "critical": 0, "warning": 0},
+            "error": str(exc),
+        }
+
+
+def league_balance_summary(conn: sqlite3.Connection, league_year: int) -> dict[str, Any]:
+    try:
+        return league_balance_dashboards.latest_summary(conn, league_year=league_year)
+    except Exception as exc:
+        return {
+            "leagueYear": league_year,
+            "categories": [],
+            "flags": [],
+            "history": [],
+            "counts": {"categories": 0, "flags": 0, "critical": 0, "warning": 0},
+            "error": str(exc),
+        }
 
 
 def best_roles(
@@ -4755,6 +5640,9 @@ def build_payload(db_path: Path) -> dict[str, Any]:
             "season": season_summary(conn, current_season, user_team_id),
             "stats": stat_leaders(conn, current_season),
             "awards": awards_summary(conn, current_season),
+            "history": league_history_summary(conn, current_season),
+            "talentSupply": talent_supply_summary(conn, current_season),
+            "leagueBalance": league_balance_summary(conn, current_season),
             "transactions": league_transactions_summary(conn, limit=400),
             "injuries": injury_center_summary(conn, current_date=current_date, user_team_id=user_team_id),
             "leagueNews": league_news.build_ui_payload(conn, limit=80),

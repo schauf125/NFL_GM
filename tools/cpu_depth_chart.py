@@ -348,14 +348,17 @@ def rebuild_dirty_depth_charts(
 
 def legal_candidates(team: match_engine.TeamSnapshot, slot: str) -> list[match_engine.PlayerSnapshot]:
     canonical = depth_packages.canonical_slot(slot)
-    positions = match_engine.SLOT_POSITION_FALLBACKS.get(canonical, [canonical])
     if canonical == "FB":
         primary_positions = ["FB", "TE"]
         primary = [player for player in team.roster if player.position in primary_positions]
         if primary:
-            positions = primary_positions
+            return sorted(
+                primary,
+                key=lambda player: depth_sort_score(team, player, slot),
+                reverse=True,
+            )
     return sorted(
-        [player for player in team.roster if player.position in positions],
+        [player for player in team.roster if match_engine.player_is_slot_eligible(player, canonical)],
         key=lambda player: depth_sort_score(team, player, slot),
         reverse=True,
     )
@@ -371,6 +374,22 @@ def depth_sort_score(
     overall = float(player.metadata.get("overall") or player.general_score())
     potential = float(player.metadata.get("potential") or overall)
     age = float(player.metadata.get("age") or 27)
+    years_exp = float(player.metadata.get("years_exp") or 0)
+    draft_pick_raw = player.metadata.get("draft_pick_number")
+    try:
+        draft_pick = int(draft_pick_raw) if draft_pick_raw is not None else 999
+    except (TypeError, ValueError):
+        draft_pick = 999
+    rookie_contract = str(player.metadata.get("contract_type") or "").lower() == "rookiescale"
+    young_investment_bonus = 0.0
+    if years_exp <= 2 and potential >= 78 and (draft_pick <= 96 or rookie_contract):
+        young_investment_bonus = min(2.0, max(0.0, potential - overall) * 0.08)
+        if draft_pick <= 32:
+            young_investment_bonus += 1.2
+        elif draft_pick <= 64:
+            young_investment_bonus += 0.7
+        elif draft_pick <= 96:
+            young_investment_bonus += 0.35
     position_bonus = 0.0
     if slot == "FB":
         if player.position == "FB":
@@ -398,11 +417,17 @@ def depth_sort_score(
             + player.rating("composure")
             + player.rating("discipline")
         ) / 4.0
-        years_exp = float(player.metadata.get("years_exp") or 0)
         contract_aav = float(player.metadata.get("contract_aav") or 0)
         starter_investment = min(2.25, max(0.0, (contract_aav - 5_000_000.0) / 7_500_000.0))
         veteran_trust = min(1.15, max(0.0, years_exp - 8.0) * 0.08) if overall >= 68 else 0.0
         veteran_decline = max(0.0, age - 38.0) * 0.08
+        young_qb_path = 0.0
+        if years_exp <= 2 and potential >= 84 and overall >= 68:
+            young_qb_path = min(4.0, max(0.0, potential - overall) * 0.13)
+            if draft_pick <= 10:
+                young_qb_path += 2.0
+            elif draft_pick <= 32:
+                young_qb_path += 1.3
         primary = (
             overall * 0.58
             + role_score * 0.28
@@ -410,6 +435,7 @@ def depth_sort_score(
             + potential * 0.02
             + starter_investment
             + veteran_trust
+            + young_qb_path
             - veteran_decline
         )
     elif slot == "RB":
@@ -462,7 +488,7 @@ def depth_sort_score(
             - age_penalty
         )
     else:
-        primary = overall * 0.45 + role_score * 0.55 + position_bonus
+        primary = overall * 0.45 + role_score * 0.55 + position_bonus + young_investment_bonus
     youth_tiebreak = max(0.0, potential - overall) * 0.35 - max(0.0, age - 30.0) * 0.20
     return (primary, overall, youth_tiebreak, potential)
 

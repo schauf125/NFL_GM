@@ -537,7 +537,7 @@ CREATE INDEX IF NOT EXISTS idx_draft_prospect_specialist_behavior_label
 
 VIEW_SCHEMA_SQL = """
 DROP VIEW IF EXISTS draft_class_summary_view;
-CREATE VIEW draft_class_summary_view AS
+CREATE VIEW IF NOT EXISTS draft_class_summary_view AS
 SELECT
     dc.draft_class_id,
     dc.draft_year,
@@ -561,7 +561,7 @@ LEFT JOIN draft_prospects dp ON dp.draft_class_id = dc.draft_class_id
 GROUP BY dc.draft_class_id;
 
 DROP VIEW IF EXISTS draft_board_view;
-CREATE VIEW draft_board_view AS
+CREATE VIEW IF NOT EXISTS draft_board_view AS
 SELECT
     dp.prospect_id,
     dc.draft_year,
@@ -687,7 +687,7 @@ LEFT JOIN teams t ON t.team_id = dp.selected_team_id
 LEFT JOIN draft_picks picks ON picks.pick_id = dp.selected_pick_id;
 
 DROP VIEW IF EXISTS draft_internal_board_view;
-CREATE VIEW draft_internal_board_view AS
+CREATE VIEW IF NOT EXISTS draft_internal_board_view AS
 SELECT
     dp.*,
     dc.draft_year,
@@ -717,7 +717,7 @@ LEFT JOIN draft_prospect_pro_day_results dpd ON dpd.prospect_id = dp.prospect_id
 LEFT JOIN draft_prospect_private_workouts dpw ON dpw.prospect_id = dp.prospect_id;
 
 DROP VIEW IF EXISTS draft_prospect_combine_results_view;
-CREATE VIEW draft_prospect_combine_results_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_combine_results_view AS
 SELECT
     dp.prospect_id,
     dc.draft_year,
@@ -749,7 +749,7 @@ JOIN draft_prospects dp ON dp.prospect_id = dpc.prospect_id
 JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id;
 
 DROP VIEW IF EXISTS draft_prospect_pro_day_results_view;
-CREATE VIEW draft_prospect_pro_day_results_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_pro_day_results_view AS
 SELECT
     dp.prospect_id,
     dc.draft_year,
@@ -782,7 +782,7 @@ JOIN draft_prospects dp ON dp.prospect_id = dpd.prospect_id
 JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id;
 
 DROP VIEW IF EXISTS draft_prospect_private_workouts_view;
-CREATE VIEW draft_prospect_private_workouts_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_private_workouts_view AS
 SELECT
     dpw.workout_id,
     dp.prospect_id,
@@ -806,7 +806,7 @@ JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id
 LEFT JOIN teams t ON t.team_id = dpw.team_id;
 
 DROP VIEW IF EXISTS draft_prospect_personalities_view;
-CREATE VIEW draft_prospect_personalities_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_personalities_view AS
 SELECT
     dpp.prospect_id,
     dc.draft_class_id,
@@ -840,7 +840,7 @@ JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id
 JOIN personality_trait_definitions ptd ON ptd.trait_key = dpp.trait_key;
 
 DROP VIEW IF EXISTS draft_prospect_sim_ratings_view;
-CREATE VIEW draft_prospect_sim_ratings_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_sim_ratings_view AS
 SELECT
     dp.prospect_id,
     dc.draft_year,
@@ -863,7 +863,7 @@ JOIN draft_classes dc ON dc.draft_class_id = dp.draft_class_id
 LEFT JOIN rating_definitions rd ON rd.rating_key = dpr.rating_key;
 
 DROP VIEW IF EXISTS draft_prospect_role_scores_view;
-CREATE VIEW draft_prospect_role_scores_view AS
+CREATE VIEW IF NOT EXISTS draft_prospect_role_scores_view AS
 SELECT
     dp.prospect_id,
     dc.draft_year,

@@ -750,7 +750,7 @@ def run_post_waiver_market_pass(con: sqlite3.Connection, *, game_id: str, event:
             season=season,
             game_id=game_id,
             include_user_team=False,
-            max_teams=6,
+            max_teams=3,
             max_poaches_per_team=1,
         )
         same_position_depth = roster_cutdown.optimize_cpu_same_position_depth(

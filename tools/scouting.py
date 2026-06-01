@@ -1594,17 +1594,17 @@ def initialize_for_game(
               AND title = ?
             LIMIT 1
             """,
-            (target_game_id, f"{target_year} Draft Scouting Opened"),
+            (target_game_id, f"{target_year} Draft Board Is Live"),
         ).fetchone()
         if not existing:
             add_inbox_message(
                 con,
                 game_id=target_game_id,
-                title=f"{target_year} Draft Scouting Opened",
+                title=f"{target_year} Draft Board Is Live",
                 body=(
-                    f"The scouting department loaded {len(public_rows)} public-board prospects. "
-                    f"{hidden_count} off-board names are not visible yet and can be discovered during the season. "
-                    f"{senior_bowl_setup['accepted']} prospects are currently listed as Senior Bowl participants."
+                    f"The scouting department opened the class with {len(public_rows)} public-board prospects. "
+                    f"Another {hidden_count} names are still off the public board and can surface through area work. "
+                    f"{senior_bowl_setup['accepted']} prospects are already marked as Senior Bowl participants."
                 ),
                 category="Scouting",
                 priority="normal",
@@ -1621,6 +1621,162 @@ def initialize_for_game(
 
 def prospect_name(row: sqlite3.Row) -> str:
     return f"{row['first_name']} {row['last_name']}"
+
+
+def _stable_message_rng(*parts: Any) -> random.Random:
+    raw = "|".join("" if part is None else str(part) for part in parts)
+    return random.Random(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
+def _message_choice(options: list[str], *parts: Any) -> str:
+    if not options:
+        return ""
+    return _stable_message_rng(*parts).choice(options)
+
+
+def _clean_message_phrase(value: Any, fallback: str) -> str:
+    text = str(value or "").strip().rstrip(".")
+    return text or fallback
+
+
+def _prospect_context(prospect: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row_value(prospect, "prospect_id", prospect_name(prospect)),
+        "name": prospect_name(prospect),
+        "position": str(row_value(prospect, "position", "prospect") or "prospect"),
+        "college": str(row_value(prospect, "college", "his program") or "his program"),
+        "strengths": _clean_message_phrase(
+            row_value(prospect, "scouting_strengths"),
+            "the staff found usable traits worth another look",
+        ),
+        "concerns": _clean_message_phrase(
+            row_value(prospect, "scouting_concerns"),
+            "the projection still needs more evidence",
+        ),
+    }
+
+
+def _scouting_reason_lead(reason: str) -> str:
+    lowered = str(reason or "").strip().lower()
+    if "senior bowl" in lowered:
+        return "The Senior Bowl look"
+    if "regional" in lowered:
+        return "A regional cross-check"
+    if "area scout" in lowered or "focused" in lowered:
+        return "The area report"
+    if "auto" in lowered or "director" in lowered or "weekly staff" in lowered:
+        return "The weekly staff assignments"
+    return "The latest scouting pass"
+
+
+def scouting_update_title(prospect: sqlite3.Row, old_confidence: str, new_confidence: str, *, source: str = "") -> str:
+    ctx = _prospect_context(prospect)
+    templates = [
+        "{position} File Updated: {name}",
+        "Scouting Room Firms Up {name}",
+        "{name} Moves to {new_confidence} Confidence",
+        "{position} Board Note: {name}",
+    ]
+    if source == "Senior Bowl Staff":
+        templates.extend([
+            "Senior Bowl Read: {name}",
+            "{name} Moves After Senior Bowl Week",
+        ])
+    return _message_choice(templates, ctx["id"], old_confidence, new_confidence, source).format(
+        **ctx,
+        old_confidence=old_confidence,
+        new_confidence=new_confidence,
+    )
+
+
+def hidden_discovery_title(prospect: sqlite3.Row, *, source_key: str) -> str:
+    ctx = _prospect_context(prospect)
+    templates = [
+        "Area Scout Adds {name}",
+        "New Name on the Board: {name}",
+        "{position} Discovery: {name}",
+        "Regional Note: {name}",
+    ]
+    return _message_choice(templates, ctx["id"], source_key).format(**ctx)
+
+
+def hidden_discovery_report(prospect: sqlite3.Row, *, source_key: str, confidence: str = DISCOVERY_START_CONFIDENCE) -> str:
+    ctx = _prospect_context(prospect)
+    opener = _message_choice(
+        [
+            "An area scout brought {name} ({position}, {college}) into the room from outside the public board.",
+            "{name} ({position}, {college}) was not on the public board, but a regional contact pushed the staff to open a file.",
+            "The staff added {name} ({position}, {college}) after a late area report surfaced enough traits to keep watching.",
+            "A cross-check uncovered {name} ({position}, {college}), giving the board a new off-public name to track.",
+        ],
+        ctx["id"],
+        source_key,
+    ).format(**ctx)
+    closer = _message_choice(
+        [
+            "The starting read is {confidence} confidence, so the next step is a cleaner follow-up.",
+            "The first grade sits at {confidence} confidence and should not be treated as settled yet.",
+            "This is now a {confidence}-confidence file, with enough smoke to justify another look.",
+            "The report is useful enough to log at {confidence} confidence, but the staff still needs a second pass.",
+        ],
+        ctx["id"],
+        source_key,
+        confidence,
+    ).format(confidence=confidence.lower())
+    return f"{opener} {closer}"
+
+
+def top30_visit_title(prospect: sqlite3.Row, result_type: str) -> str:
+    ctx = _prospect_context(prospect)
+    templates = {
+        "full": [
+            "Top 30 Visit Lands Clean Read: {name}",
+            "{name} Gives Staff a Fuller Picture",
+            "Private Visit Sharpens {name} File",
+        ],
+        "personality": [
+            "Top 30 Background Read: {name}",
+            "{name} Interview Adds Context",
+            "Private Visit Notes: {name}",
+        ],
+        "default": [
+            "Top 30 Visit Logged: {name}",
+            "{name} Visit Leaves Room Split",
+            "Private Visit Follow-Up: {name}",
+        ],
+    }
+    pool = templates.get(result_type, templates["default"])
+    return _message_choice(pool, ctx["id"], result_type).format(**ctx)
+
+
+def senior_bowl_trait_note(team_abbr: str, prospect: sqlite3.Row, trait_text: str) -> str:
+    ctx = _prospect_context(prospect)
+    template = _message_choice(
+        [
+            "Senior Bowl week gave {team_abbr} a cleaner background read on {name}: {trait_text}.",
+            "{team_abbr}'s staff came out of Senior Bowl interviews with a sharper personality note on {name}: {trait_text}.",
+            "The all-star week did not settle the full grade, but {team_abbr} did get useful character context on {name}: {trait_text}.",
+        ],
+        ctx["id"],
+        team_abbr,
+        trait_text,
+    )
+    return template.format(**ctx, team_abbr=team_abbr, trait_text=trait_text)
+
+
+def senior_bowl_confidence_note(team_abbr: str, prospect: sqlite3.Row) -> str:
+    ctx = _prospect_context(prospect)
+    template = _message_choice(
+        [
+            "Senior Bowl practice gave {team_abbr} enough live exposure to move {name}'s file up one confidence tier.",
+            "{team_abbr}'s week in Mobile made {name}'s grade a little easier to trust.",
+            "The all-star practice setting helped {team_abbr} separate the flashes from the concerns on {name}.",
+        ],
+        ctx["id"],
+        team_abbr,
+        "confidence",
+    )
+    return template.format(**ctx, team_abbr=team_abbr)
 
 
 def assignment_period(con: sqlite3.Connection, season: int | None = None, week: int | None = None) -> ScoutingPeriod:
@@ -1819,23 +1975,78 @@ def trait_display(con: sqlite3.Connection, trait_key: str) -> str:
 
 
 def scouting_note(prospect: sqlite3.Row, focus: str, level_gain: int, personality_text: str | None) -> str:
-    name = prospect_name(prospect)
-    strengths = str(prospect["scouting_strengths"] or "the early flashes are still being sorted")
-    concerns = str(prospect["scouting_concerns"] or "the staff wants a cleaner second look")
-    if focus == "personality":
-        base = f"Area scouts dug into {name}'s background. The current read is still incomplete, but the file is more useful than last week."
-    elif focus == "medical":
-        base = f"The medical cross-check on {name} added availability context and helped separate normal risk from real red flags."
-    elif focus == "workout":
-        base = f"The workout review on {name} gave the staff more confidence in which athletic traits should translate."
-    elif focus == "game":
-        base = f"Live-game exposure on {name} clarified how the traits showed up when the script got messy."
-    else:
-        base = f"Additional tape study on {name} sharpened the role projection and cleaned up some first-pass uncertainty."
-    detail = f" Level +{level_gain}. Strengths noted: {strengths}. Concerns noted: {concerns}."
+    ctx = _prospect_context(prospect)
+    focus_templates = {
+        "personality": [
+            "Area scouts spent the week on {name}'s background and how the room talks about the player.",
+            "The staff used this pass to get away from the tape and understand what {name} may be like inside a building.",
+            "{name}'s file got a background check-in, with scouts trying to separate real habits from campus noise.",
+        ],
+        "medical": [
+            "The medical cross-check on {name} gave the staff more context on availability and workload risk.",
+            "The staff reviewed {name}'s health file and came away with a cleaner sense of what needs monitoring.",
+            "{name}'s medical pass helped separate ordinary football wear from risk that could affect the role.",
+        ],
+        "workout": [
+            "The workout review on {name} helped the staff decide which athletic traits are more likely to travel.",
+            "Scouts rechecked {name}'s testing profile against the tape so the workout numbers did not stand alone.",
+            "{name}'s movement profile got another look, with the staff trying to tie the traits back to a football job.",
+        ],
+        "game": [
+            "Live-game exposure on {name} made the projection a little less theoretical.",
+            "The staff watched {name} through a game-flow lens, especially when the script got messy.",
+            "This week's live exposure helped scouts see how {name}'s traits held up outside the clean reps.",
+        ],
+        "film": [
+            "Additional tape work on {name} sharpened the role projection.",
+            "The staff took another pass through {name}'s film and cleaned up some first-read uncertainty.",
+            "{name}'s tape file is a little sturdier after this week's cross-check.",
+        ],
+    }
+    base = _message_choice(
+        focus_templates.get(focus, focus_templates["film"]),
+        ctx["id"],
+        focus,
+        level_gain,
+        personality_text or "",
+    ).format(**ctx)
+    detail = _message_choice(
+        [
+            "The best part of the report remains {strengths}; the main hesitation is {concerns}.",
+            "Scouts are still circling {strengths}, while {concerns} is the piece that needs another answer.",
+            "The room likes {strengths}, but the file is not closed because {concerns}.",
+            "The encouraging thread is {strengths}. The counterweight is {concerns}.",
+        ],
+        ctx["id"],
+        focus,
+        level_gain,
+        "detail",
+    ).format(**ctx)
+    movement = _message_choice(
+        [
+            "The confidence needle moved a bit, but the grade still needs another checkpoint.",
+            "It was a useful step forward without turning the evaluation into a finished answer.",
+            "The report is more actionable now, even if the staff still wants a second set of eyes.",
+            "The file gained enough support to matter in the room, not enough to stop asking questions.",
+        ],
+        ctx["id"],
+        focus,
+        level_gain,
+        "movement",
+    )
     if personality_text:
-        detail += f" Background note: {personality_text}."
-    return base + detail
+        background = _message_choice(
+            [
+                "Background note: {personality_text}.",
+                "The character file now includes {personality_text}.",
+                "One staff note worth tracking: {personality_text}.",
+            ],
+            ctx["id"],
+            focus,
+            personality_text,
+        ).format(personality_text=personality_text)
+        return f"{base} {detail} {background} {movement}"
+    return f"{base} {detail} {movement}"
 
 
 def require_weekly_action_available(
@@ -2148,14 +2359,44 @@ def select_with_scouting_tier_budgets(
 
 
 def simple_scouting_report(prospect: sqlite3.Row, old_confidence: str, new_confidence: str, reason: str) -> str:
-    name = prospect_name(prospect)
-    strengths = str(prospect["scouting_strengths"] or "the staff found usable traits worth another look")
-    concerns = str(prospect["scouting_concerns"] or "the projection still needs more evidence")
-    return (
-        f"{reason} {name}'s file moved from {old_confidence} to {new_confidence} confidence. "
-        f"Current read: {prospect['position']} from {prospect['college']}. "
-        f"Strengths: {strengths}. Concerns: {concerns}."
+    ctx = _prospect_context(prospect)
+    lead = _scouting_reason_lead(reason)
+    opener = _message_choice(
+        [
+            "{lead} moved {name}'s file from {old_confidence} to {new_confidence} confidence.",
+            "{lead} improved the room's trust in {name}, moving the file from {old_confidence} to {new_confidence}.",
+            "{lead} pushed {name} into a {new_confidence}-confidence slot after another pass through the report.",
+        ],
+        ctx["id"],
+        old_confidence,
+        new_confidence,
+        reason,
+    ).format(**ctx, lead=lead, old_confidence=old_confidence, new_confidence=new_confidence)
+    detail = _message_choice(
+        [
+            "The current read is a {position} from {college}; the staff likes {strengths}, but still has to answer {concerns}.",
+            "For now, scouts are treating the {position} from {college} as a player whose appeal starts with {strengths}. The concern remains {concerns}.",
+            "The {college} {position} has a clearer file now: {strengths} is carrying the grade, while {concerns} keeps it from feeling settled.",
+            "The role conversation is cleaner, with {strengths} on the positive side and {concerns} still holding the grade in check.",
+        ],
+        ctx["id"],
+        old_confidence,
+        new_confidence,
+        "detail",
+    ).format(**ctx)
+    closer = _message_choice(
+        [
+            "The next look should be about confirming whether this read holds.",
+            "That makes the grade more usable, not automatic.",
+            "The board can trust the file more than it did last week, but there is still room for movement.",
+            "The staff has enough to act on now, with one more checkpoint preferred before draft day.",
+        ],
+        ctx["id"],
+        old_confidence,
+        new_confidence,
+        "closer",
     )
+    return f"{opener} {detail} {closer}"
 
 
 def tighten_displayed_scout_read(
@@ -2331,7 +2572,7 @@ def advance_prospect_one_tier(
     add_inbox_message(
         con,
         game_id=game_id,
-        title=f"Scouting Update: {prospect_name(prospect)}",
+        title=scouting_update_title(prospect, old_confidence, new_confidence, source=source),
         body=report,
         category="Scouting",
         priority="normal" if new_confidence in {"Low", "Medium"} else "high",
@@ -2691,10 +2932,7 @@ def discover_non_public_players(
         )
         if not allowed:
             continue
-        report = (
-            f"Area scouts found {prospect_name(prospect)} ({prospect['position']}, {prospect['college']}). "
-            "He was not on the public board. The early file starts at medium confidence, but still needs follow-up work."
-        )
+        report = hidden_discovery_report(prospect, source_key="user_hidden_search")
         con.execute(
             """
             INSERT INTO scouting_prospect_progress (
@@ -2729,7 +2967,7 @@ def discover_non_public_players(
         add_inbox_message(
             con,
             game_id=target_game_id,
-            title=f"New Prospect Found: {prospect_name(prospect)}",
+            title=hidden_discovery_title(prospect, source_key="user_hidden_search"),
             body=report,
             category="Scouting",
             priority="normal",
@@ -3746,11 +3984,11 @@ def process_assignments(
             add_inbox_message(
                 con,
                 game_id=target_game_id,
-                title=f"Scouting Reassigned: {prospect_name(assignment)}",
+                title=f"Scouting Room Redirected: {prospect_name(assignment)}",
                 body=(
-                    f"The scouting staff did not spend this week's deeper look on {prospect_name(assignment)} "
-                    f"because {reason_blocked or 'that board tier has reached its confidence budget'}. "
-                    "They will redirect future work toward another part of the board."
+                    f"The staff pulled this week's deeper look on {prospect_name(assignment)} because "
+                    f"{reason_blocked or 'that part of the board already has enough firm reads'}. "
+                    "The time will shift toward a cleaner opening elsewhere on the board."
                 ),
                 category="Scouting",
                 priority="normal",
@@ -3859,7 +4097,7 @@ def process_assignments(
         add_inbox_message(
             con,
             game_id=target_game_id,
-            title=f"Scouting Report: {prospect_name(assignment)}",
+            title=scouting_update_title(assignment, old_confidence, confidence, source="College Scouting"),
             body=note,
             category="Scouting",
             priority="normal" if confidence in {"Low", "Medium"} else "high",
@@ -3976,10 +4214,7 @@ def discover_user_extra_hidden_prospect(
     )
     if not allowed:
         return []
-    report = (
-        f"An area scout surfaced {prospect_name(candidate)} ({candidate['position']}, {candidate['college']}) "
-        "outside the public board. The early file starts at medium confidence, but still needs follow-up work."
-    )
+    report = hidden_discovery_report(candidate, source_key="background_area_scout")
     con.execute(
         """
         INSERT INTO scouting_prospect_progress (
@@ -4021,7 +4256,7 @@ def discover_user_extra_hidden_prospect(
     add_inbox_message(
         con,
         game_id=game_id,
-        title=f"Area Scout Found: {prospect_name(candidate)}",
+        title=hidden_discovery_title(candidate, source_key="background_area_scout"),
         body=report,
         category="Scouting",
         priority="normal",
@@ -4135,7 +4370,7 @@ def discover_hidden_prospects(
                 period.season,
                 period.week,
                 period.date,
-                "Area scout discovery. Needs follow-up work before the board should trust the grade.",
+                hidden_discovery_report(prospect, source_key="weekly_area_scout"),
             ),
         )
         con.execute(
@@ -4151,12 +4386,8 @@ def discover_hidden_prospects(
         add_inbox_message(
             con,
             game_id=game_id,
-            title=f"New Prospect Found: {prospect_name(prospect)}",
-            body=(
-                f"An area scout added {prospect_name(prospect)} "
-                f"({prospect['position']}, {prospect['college']}) to the watch list. "
-                "The report is very light, but there may be enough traits to justify a manual look."
-            ),
+            title=hidden_discovery_title(prospect, source_key="weekly_area_scout"),
+            body=hidden_discovery_report(prospect, source_key="weekly_area_scout"),
             category="Scouting",
             priority="normal",
             source="Area Scout",
@@ -4233,21 +4464,45 @@ def top30_visit_note(
     name = prospect_name(prospect)
     if result_type == "full":
         trait_text = ", ".join(f"{t['displayName']} {t['intensity']}/100" for t in traits) or "no strong personality markers"
+        opener = _message_choice(
+            [
+                "The private visit with {name} gave the staff one of its cleanest reads of the cycle.",
+                "{name}'s Top 30 visit answered enough questions for the room to trust the internal file.",
+                "This was a high-value visit for {name}; the staff came away with both football and background clarity.",
+            ],
+            row_value(prospect, "prospect_id", name),
+            result_type,
+        ).format(name=name)
         return (
-            f"Top 30 visit with {name} produced a full reveal. "
-            f"Personality: {trait_text}. "
-            f"Hidden eval: true grade {hidden_info.get('trueGrade') if hidden_info else '-'}, "
+            f"{opener} Personality read: {trait_text}. "
+            f"Internal eval: grade {hidden_info.get('trueGrade') if hidden_info else '-'}, "
             f"ceiling {hidden_info.get('ceilingGrade') if hidden_info else '-'}, "
             f"development {hidden_info.get('devTrait') if hidden_info else '-'}, "
             f"risk {hidden_info.get('riskLevel') if hidden_info else '-'}."
         )
     if result_type == "personality":
         trait_text = ", ".join(f"{t['displayName']} {t['intensity']}/100" for t in traits) or "no strong personality markers"
-        return f"Top 30 visit with {name} successfully revealed personality traits: {trait_text}."
-    return (
-        f"Top 30 visit with {name} was inconclusive. The meeting did not reveal reliable hidden traits, "
-        "but the staff still logged the interview."
+        template = _message_choice(
+            [
+                "The Top 30 visit with {name} did not settle the full grade, but it did sharpen the background file: {trait_text}.",
+                "{name}'s private meeting gave the staff useful personality context: {trait_text}.",
+                "The room came away from {name}'s visit with a better feel for the person, if not every football answer: {trait_text}.",
+            ],
+            row_value(prospect, "prospect_id", name),
+            result_type,
+            trait_text,
+        )
+        return template.format(name=name, trait_text=trait_text)
+    template = _message_choice(
+        [
+            "The Top 30 visit with {name} was useful but not decisive. The staff logged the meeting and still wants the tape to carry the grade.",
+            "{name}'s private meeting left the room split. Nothing disqualified the player, but the visit did not unlock a cleaner read.",
+            "The visit with {name} added color without changing the board much. The staff will keep the file open through the final stack.",
+        ],
+        row_value(prospect, "prospect_id", name),
+        result_type,
     )
+    return template.format(name=name)
 
 
 def top30_context(
@@ -4477,7 +4732,7 @@ def execute_top30_visit(
     add_inbox_message(
         con,
         game_id=target_game_id,
-        title=f"Top 30 Visit: {prospect_name(prospect)}",
+        title=top30_visit_title(prospect, result_type),
         body=notes,
         category="Scouting",
         priority="high" if result_type == "full" else "normal",
@@ -4755,10 +5010,10 @@ def auto_assign_top30_visits(
         add_inbox_message(
             con,
             game_id=target_game_id,
-            title="Staff Filled Remaining Top 30 Visits",
+            title="Scouting Staff Finalizes Visit List",
             body=(
-                f"Your scouting staff automatically scheduled {len(visits)} remaining Top 30 visit(s) "
-                f"before the facility-visit deadline. Prospects included: {names}."
+                f"With the visit deadline closing, the staff used {len(visits)} remaining slot(s) "
+                f"to cover priority targets and late board checks. Names logged: {names}."
             ),
             category="Scouting",
             priority="normal",
@@ -5376,7 +5631,7 @@ def reveal_senior_bowl_trait(
 ) -> str:
     name = prospect_name(prospect)
     trait_text = ", ".join(f"{trait['displayName']} {trait['intensity']}/100" for trait in traits) or "no strong marker"
-    notes = f"Senior Bowl exposure gave {team_abbr} a cleaner read on {name}'s personality: {trait_text}."
+    notes = senior_bowl_trait_note(team_abbr, prospect, trait_text)
     if team_abbr == user_team_abbr(con):
         con.execute(
             """
@@ -5408,7 +5663,7 @@ def reveal_senior_bowl_trait(
         add_inbox_message(
             con,
             game_id=game_id,
-            title=f"Senior Bowl Note: {name}",
+            title=f"Senior Bowl Background: {name}",
             body=notes,
             category="Scouting",
             priority="normal",
@@ -5502,7 +5757,7 @@ def process_senior_bowl(
                     )
             else:
                 confidence_up = 1
-                notes = f"Senior Bowl practice exposure moved {team_abbr}'s grade confidence on {prospect_name(prospect)} up one tier."
+                notes = senior_bowl_confidence_note(team_abbr, prospect)
                 if team_abbr == user_team:
                     advance_prospect_one_tier(
                         con,
@@ -5571,10 +5826,10 @@ def process_senior_bowl(
     add_inbox_message(
         con,
         game_id=target_game_id,
-        title=f"{target_year} Senior Bowl Reports",
+        title=f"{target_year} Senior Bowl Notebook",
         body=(
             f"{counts['accepted']} prospects accepted Senior Bowl invites. "
-            f"Your staff came away with {user_report_count} useful scouting note(s)."
+            f"Your staff came away with {user_report_count} useful note(s) for the final board."
         ),
         category="Scouting",
         priority="normal",
@@ -6356,6 +6611,7 @@ def mark_inbox_read(
     *,
     game_id: str | None = None,
     message_id: int | None = None,
+    message_ids: list[int] | None = None,
     category: str | None = None,
     exclude_category: str | None = None,
 ) -> int:
@@ -6363,9 +6619,16 @@ def mark_inbox_read(
     target_game_id = active_game_id(con, game_id)
     filters = ["game_id = ?"]
     params: list[object] = [target_game_id]
+    ids: list[int] = []
     if message_id:
-        filters.append("message_id = ?")
-        params.append(int(message_id))
+        ids.append(int(message_id))
+    if message_ids:
+        ids.extend(int(value) for value in message_ids if value)
+    ids = sorted(set(ids))
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        filters.append(f"message_id IN ({placeholders})")
+        params.extend(ids)
     if category:
         filters.append("category = ?")
         params.append(str(category))
@@ -6717,11 +6980,12 @@ def action_inbox(args: argparse.Namespace) -> None:
 
 
 def action_mark_read(args: argparse.Namespace) -> None:
+    message_ids = args.message_id or []
     with connect(args.db) as con:
         count = mark_inbox_read(
             con,
             game_id=args.game_id,
-            message_id=args.message_id,
+            message_ids=message_ids,
             category=args.category,
             exclude_category=args.exclude_category,
         )
@@ -6848,7 +7112,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     read = subparsers.add_parser("mark-read", help="Mark inbox messages read.")
     read.add_argument("--game-id")
-    read.add_argument("--message-id", type=int)
+    read.add_argument("--message-id", type=int, action="append")
     read.add_argument("--category")
     read.add_argument("--exclude-category")
     read.set_defaults(func=action_mark_read)

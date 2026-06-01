@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+import hashlib
+import random
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,17 @@ import scouting
 USER_ALERT_MIN_GAMES = 2
 MAJOR_NEWS_MIN_GAMES = 4
 MAJOR_SEVERITIES = {"major", "severe"}
+
+
+def message_rng(*parts: Any) -> random.Random:
+    raw = "|".join("" if part is None else str(part) for part in parts)
+    return random.Random(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
+def message_choice(options: list[str], *parts: Any) -> str:
+    if not options:
+        return ""
+    return message_rng(*parts).choice(options)
 
 
 def table_exists(con: sqlite3.Connection, table_name: str) -> bool:
@@ -153,10 +166,49 @@ def notification_body(row: sqlite3.Row) -> str:
     injury = str(row["injury_label"] or "an injury").lower()
     duration = format_duration(row)
     status = str(row["status"] or "Unavailable")
-    return (
-        f"{player} suffered {injury} and is expected to miss about {duration}. "
-        f"Current status: {status}."
+    template = message_choice(
+        [
+            "{player} suffered {injury} and is expected to miss about {duration}. Current status: {status}.",
+            "The medical staff expects {player} to miss about {duration} with {injury}. Current status: {status}.",
+            "{player} is headed into the medical plan with {injury}. The early timetable is about {duration}; status is {status}.",
+            "The training room logged {player} with {injury}. The current estimate is about {duration}, with status listed as {status}.",
+        ],
+        row["event_id"],
+        row["player_id"],
+        row["injury_label"],
+        row["expected_games"],
     )
+    return template.format(player=player, injury=injury, duration=duration, status=status)
+
+
+def injury_inbox_title(row: sqlite3.Row) -> str:
+    player = str(row["player_name"] or "Player").strip()
+    return message_choice(
+        [
+            "Medical Update: {player}",
+            "{player} Injury Update",
+            "Training Room: {player}",
+            "Availability Watch: {player}",
+        ],
+        row["event_id"],
+        row["player_id"],
+        "inbox-title",
+    ).format(player=player)
+
+
+def major_injury_title(row: sqlite3.Row) -> str:
+    player = str(row["player_name"] or "Player").strip()
+    duration = format_duration(row)
+    return message_choice(
+        [
+            "{player} expected to miss {duration}",
+            "{team} monitoring {player} injury",
+            "{player} injury shifts {team} availability",
+        ],
+        row["event_id"],
+        row["player_id"],
+        "major-title",
+    ).format(player=player, duration=duration, team=str(row["team"] or "").strip())
 
 
 def inbox_already_exists(
@@ -193,8 +245,7 @@ def add_user_inbox_message(
     game_id: str,
     row: sqlite3.Row,
 ) -> bool:
-    player = str(row["player_name"] or "Player").strip()
-    body = f"{player}: {notification_body(row)}"
+    body = notification_body(row)
     if inbox_already_exists(
         con,
         game_id=game_id,
@@ -207,7 +258,7 @@ def add_user_inbox_message(
     scouting.add_inbox_message(
         con,
         game_id=game_id,
-        title=f"Injury Update: {player}",
+        title=injury_inbox_title(row),
         body=body,
         category="Medical",
         priority=priority,
@@ -229,15 +280,13 @@ def add_major_news_item(
     severity = str(row["severity"] or "").lower()
     if expected_games < MAJOR_NEWS_MIN_GAMES and severity not in MAJOR_SEVERITIES:
         return False
-    player = str(row["player_name"] or "Player").strip()
     team = str(row["team"] or "").strip()
-    duration = format_duration(row)
     news_id = league_news.add_news_item(
         con,
         game_id=game_id,
         news_date=str(row["game_date"]),
         category="Injuries",
-        title=f"{player} expected to miss {duration}",
+        title=major_injury_title(row),
         body=f"{team} {row['position']} {notification_body(row)}",
         priority="high",
         scope="league",

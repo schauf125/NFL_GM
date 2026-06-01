@@ -625,6 +625,87 @@ def strict_plan_priority_groups(need_by_group: dict[str, dict[str, Any]], limit:
     return set(dict.fromkeys(groups))
 
 
+def room_shortage_need_for_group(group: str, room: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert obvious roster-room holes into spendable needs for skipped FA."""
+    starter_slots = as_int(room.get("starter_slots"), ROOM_STARTER_SLOTS.get(group, 2))
+    ideal = as_int(room.get("ideal"), ROOM_IDEAL_COUNTS.get(group, starter_slots + 2))
+    count = as_int(room.get("count"))
+    best = as_int(room.get("best"))
+    starter_floor = as_int(room.get("starter_floor"))
+    target_floor = fa.STARTER_FLOOR_BY_GROUP.get(group, 68)
+
+    if group == "QB":
+        if count == 0:
+            return {"position_group": "QB", "priority": "urgent", "need_score": 100.0, "reason": "no playable QB under contract"}
+        if count < 2 and best < 72:
+            return {"position_group": "QB", "priority": "high", "need_score": 82.0, "reason": "thin low-end QB room"}
+        return None
+
+    if group == "RB":
+        halfbacks = as_int(room.get("halfback_count"))
+        halfback_floor = as_int(room.get("halfback_starter_floor"))
+        if halfbacks == 0:
+            return {"position_group": "RB", "priority": "urgent", "need_score": 90.0, "reason": "no true halfback depth"}
+        if halfbacks < 2 or halfback_floor < 68:
+            return {"position_group": "RB", "priority": "medium", "need_score": 64.0, "reason": "thin true halfback room"}
+        return None
+
+    if count < starter_slots:
+        return {
+            "position_group": EVALUATOR_GROUP.get(group, group),
+            "priority": "urgent",
+            "need_score": 88.0,
+            "reason": f"{group} room below starter count",
+        }
+    if starter_floor and starter_floor < target_floor - 6:
+        return {
+            "position_group": EVALUATOR_GROUP.get(group, group),
+            "priority": "high",
+            "need_score": 76.0,
+            "reason": f"{group} starter floor is too low",
+        }
+    if count < max(starter_slots + 1, ideal - 2) and starter_floor < target_floor - 3:
+        return {
+            "position_group": EVALUATOR_GROUP.get(group, group),
+            "priority": "medium",
+            "need_score": 58.0,
+            "reason": f"{group} depth is thin",
+        }
+    return None
+
+
+def augment_needs_with_room_shortages(
+    need_by_group: dict[str, dict[str, Any]],
+    target_groups: list[str],
+    room_context: dict[str, dict[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """Make skipped/user-auto FA keep addressing obvious holes after wave one."""
+    augmented = dict(need_by_group)
+    targets = list(target_groups)
+    for group in ROOM_IDEAL_COUNTS:
+        if group in LOW_COST_GROUPS:
+            continue
+        shortage = room_shortage_need_for_group(group, room_context.get(group, {}))
+        if not shortage:
+            continue
+        eval_group = EVALUATOR_GROUP.get(group, group)
+        current = augmented.get(eval_group)
+        if (
+            current is None
+            or need_priority_value(shortage) > need_priority_value(current)
+            or as_float(shortage.get("need_score")) > as_float(current.get("need_score"))
+        ):
+            replacement = dict(shortage)
+            replacement["position_group"] = eval_group
+            replacement["source"] = "room_shortage"
+            augmented[eval_group] = replacement
+        if eval_group == "OL":
+            targets.extend(["OT", "IOL"])
+        else:
+            targets.append(eval_group)
+    return augmented, list(dict.fromkeys(targets))
+
+
 def strict_group_offer_limit(group: str) -> int:
     if group in {"CB", "WR", "IOL"}:
         return 2
@@ -646,14 +727,17 @@ def strict_plan_allows_low_priority_room_offer(
     starter_floor = as_int(room.get("starter_floor"))
     best = as_int(room.get("best"))
     if group == "RB":
-        return as_int(room.get("halfback_count")) < 2 or as_int(room.get("halfback_starter_floor")) < 64
+        return as_int(room.get("halfback_count")) < 2 or as_int(room.get("halfback_starter_floor")) < 68
     if group == "QB":
-        return count < 2 or best < 64
+        return count < 2 or best < 70
     if group in {"K", "P", "LS", "ST", "FB"}:
         return count < max(1, starter_slots)
     if count < starter_slots:
         return True
-    if count < max(starter_slots + 1, ideal - 2) and starter_floor < 64:
+    target_floor = fa.STARTER_FLOOR_BY_GROUP.get(group, 68)
+    if starter_floor and starter_floor < target_floor - 5:
+        return True
+    if count < max(starter_slots + 1, ideal - 2) and starter_floor < max(64, target_floor - 3):
         return True
     return False
 
@@ -676,7 +760,14 @@ def recommended_years(player: dict[str, Any], bucket: str) -> int:
     return min(3, preferred)
 
 
-def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_band: str) -> dict[str, Any]:
+def offer_shape(
+    player: dict[str, Any],
+    bucket: str,
+    remaining_budget: int,
+    cap_band: str,
+    *,
+    qb_bridge_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     asking = as_int(player.get("asking_aav"))
     minimum = as_int(player.get("minimum_aav"))
     tier = str(player.get("market_tier") or "Depth")
@@ -699,12 +790,16 @@ def offer_shape(player: dict[str, Any], bucket: str, remaining_budget: int, cap_
     quality_cap = max(minimum, fa.cpu_true_quality_aav_cap(player))
     if group == "QB" and overall <= 76 and potential < 82:
         quality_cap = min(quality_cap, max(minimum, 16_500_000))
+    if group == "QB" and qb_bridge_context:
+        quality_cap = min(quality_cap, max(minimum, as_int(qb_bridge_context.get("bridge_aav_cap"), 18_000_000)))
     max_aav = min(max_aav, quality_cap)
     initial = min(initial, max_aav)
     if remaining_budget > 0 and bucket in {"primary_targets", "value_targets", "bridge_or_depth"}:
         max_aav = min(max_aav, max(minimum, remaining_budget))
         initial = min(initial, max_aav)
     years = min(recommended_years(player, bucket), fa.cpu_offer_year_cap(player))
+    if group == "QB" and qb_bridge_context:
+        years = 1
     if group == "QB" and overall <= 76 and potential < 82:
         years = min(years, 1)
     guarantee = max(as_int(player.get("guarantee_pct")), 15)
@@ -749,6 +844,7 @@ def player_fit_score(
     budget: int,
     biases: dict[str, Any],
     strict_need_plan: bool = False,
+    qb_bridge_context: dict[str, Any] | None = None,
 ) -> tuple[float, list[str]]:
     score = as_float(player.get("market_score"), 60.0)
     overall = as_float(player.get("overall"), score)
@@ -803,6 +899,18 @@ def player_fit_score(
         fit += 3
     room = room_context.get(group, {})
     if group == "QB":
+        bridge_block = fa.qb_draft_bridge_candidate_block_reason(
+            player,
+            qb_bridge_context,
+            score=overall,
+            potential=as_int(potential),
+        )
+        if qb_bridge_context and bridge_block:
+            fit -= 42 if qb_bridge_context.get("top_three") else 30
+            reasons.append("draft QB bridge plan")
+        elif qb_bridge_context:
+            fit += 6
+            reasons.append("short bridge QB fits draft plan")
         young_qb_plan = bool(room.get("young_qb_plan"))
         young_qb_best = as_float(room.get("young_qb_best"), 0.0)
         best_qb = as_float(room.get("best"), young_qb_best)
@@ -866,6 +974,7 @@ def classify_player(
     total_budget: int,
     cap_band: str,
     strict_need_plan: bool = False,
+    qb_bridge_context: dict[str, Any] | None = None,
 ) -> str:
     score = as_float(player.get("market_score"))
     asking = as_int(player.get("asking_aav"))
@@ -878,6 +987,18 @@ def classify_player(
     need_priority = str(need.get("priority") if need else "").lower()
     surplus_score = as_float(surplus.get("surplus_score")) if surplus else 0.0
     room = room or {}
+    if group == "QB" and qb_bridge_context:
+        bridge_block = fa.qb_draft_bridge_candidate_block_reason(
+            player,
+            qb_bridge_context,
+            score=score,
+            potential=as_int(player.get("potential"), as_int(score)),
+        )
+        if bridge_block:
+            return "monitor" if score >= 82 else "avoid"
+        if minimum > as_int(qb_bridge_context.get("bridge_aav_cap"), 18_000_000):
+            return "monitor" if score >= 82 else "avoid"
+        return "bridge_or_depth" if minimum <= remaining_budget else "monitor"
     low_priority_room_shortage = strict_plan_allows_low_priority_room_offer(group, need, room)
     if strict_need_plan:
         real_need = (
@@ -991,6 +1112,18 @@ def build_free_agent_plan(
     need_by_group, target_groups = need_maps(evaluation)
     surplus_by_group = surplus_maps(evaluation)
     room_context = room_context_for_team(con, team_id, league_year)
+    qb_bridge_context = fa.qb_draft_bridge_context(
+        con,
+        team_id,
+        league_year,
+        game_id=game_id,
+    )
+    if strict_need_plan:
+        need_by_group, target_groups = augment_needs_with_room_shortages(
+            need_by_group,
+            target_groups,
+            room_context,
+        )
     projected_cap = (
         contract_negotiations.projected_cap_summary(con, team_id, league_year)
         or contract_negotiations.cap_summary(con, team_id)
@@ -1025,6 +1158,7 @@ def build_free_agent_plan(
             budget=remaining or as_int(budget["practical_free_agent_budget"]),
             biases=biases,
             strict_need_plan=strict_need_plan,
+            qb_bridge_context=qb_bridge_context,
         )
         candidates.append((fit_score, player, need, surplus, reasons))
     candidates.sort(key=lambda item: (item[0], as_float(item[1].get("market_score")), -as_int(item[1].get("asking_aav"))), reverse=True)
@@ -1040,8 +1174,15 @@ def build_free_agent_plan(
             total_budget=as_int(budget["practical_free_agent_budget"]),
             cap_band=str(budget["cap_band"]),
             strict_need_plan=strict_need_plan,
+            qb_bridge_context=qb_bridge_context,
         )
-        offer = offer_shape(player, bucket, remaining, str(budget["cap_band"]))
+        offer = offer_shape(
+            player,
+            bucket,
+            remaining,
+            str(budget["cap_band"]),
+            qb_bridge_context=qb_bridge_context if str(player.get("position_group") or "") == "QB" else None,
+        )
         if bucket in {"primary_targets", "value_targets", "bridge_or_depth"}:
             remaining = max(0, remaining - as_int(offer["initial_aav"]))
         buckets[bucket].append(

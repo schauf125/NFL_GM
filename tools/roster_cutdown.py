@@ -15,7 +15,7 @@ import shutil
 import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
@@ -50,6 +50,7 @@ ACTIVE_STATUS = "Active"
 PRACTICE_SQUAD_STATUS = "Practice Squad"
 FREE_AGENT_STATUS = "Free Agent"
 ACTIVE_ROSTER_STATUSES = {"Active", "Questionable", "Doubtful", "Out"}
+INJURY_ACTIVE_STATUSES = {"Questionable", "Doubtful", "Out"}
 INJURY_REPLACEMENT_STATUSES = {"IR"}
 
 
@@ -115,6 +116,14 @@ VETERAN_FA_DEPTH_FLOORS: dict[str, int] = {
     "S": 64,
 }
 
+EXTERNAL_MOVE_COOLDOWN_DAYS = 28
+PLAYER_CHURN_LOOKBACK_DAYS = 75
+PLAYER_CHURN_MOVE_LIMIT = 4
+TEAM_POACH_WEEKLY_LIMIT = 1
+TEAM_POACH_MONTHLY_LIMIT = 3
+TEAM_VETERAN_SIGNING_WEEKLY_LIMIT = 1
+TEAM_VETERAN_SIGNING_MONTHLY_LIMIT = 2
+
 
 POSITION_TO_GROUP = {
     position: group
@@ -131,12 +140,15 @@ class PlayerCandidate:
     name: str
     position: str
     group: str
+    status: str
     age: int
     years_exp: int
     is_rookie: int
     is_international_pathway: int
     overall: float
     potential: float
+    true_overall: float
+    true_potential: float
     contract_aav: int
     role_score: float
     depth_rank: int | None
@@ -196,6 +208,120 @@ def current_date(con: sqlite3.Connection) -> str:
         if row and row["current_date"]:
             return str(row["current_date"])
     return f"{current_season(con)}-06-01"
+
+
+def date_days_before(base: str | None, days: int) -> str:
+    try:
+        base_date = date.fromisoformat(str(base or ""))
+    except ValueError:
+        base_date = date(2026, 6, 1)
+    return (base_date - timedelta(days=days)).isoformat()
+
+
+def recent_player_transaction_count(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    days: int,
+    before_date: str | None = None,
+    transaction_types: tuple[str, ...] | None = None,
+    sources: tuple[str, ...] | None = None,
+) -> int:
+    if not table_exists(con, "transaction_log"):
+        return 0
+    anchor = before_date or current_date(con)
+    try:
+        date.fromisoformat(anchor)
+    except ValueError:
+        anchor = current_date(con)
+    since = date_days_before(anchor, days)
+    where = [
+        "player_id = ?",
+        "date(transaction_date) >= date(?)",
+        "date(transaction_date) <= date(?)",
+    ]
+    params: list[object] = [player_id, since, anchor]
+    if transaction_types:
+        where.append(f"transaction_type IN ({','.join('?' for _ in transaction_types)})")
+        params.extend(transaction_types)
+    if sources:
+        where.append(f"source IN ({','.join('?' for _ in sources)})")
+        params.extend(sources)
+    row = con.execute(
+        f"SELECT COUNT(*) AS count FROM transaction_log WHERE {' AND '.join(where)}",
+        params,
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def player_external_move_cooldown_active(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    before_date: str | None = None,
+    days: int = EXTERNAL_MOVE_COOLDOWN_DAYS,
+) -> bool:
+    return recent_player_transaction_count(
+        con,
+        player_id=player_id,
+        days=days,
+        before_date=before_date,
+        transaction_types=(
+            "Waiver Claim",
+            "Practice Squad Poaching",
+            "Signing",
+            "Roster Status Change",
+        ),
+    ) > 0
+
+
+def player_has_excessive_churn(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    before_date: str | None = None,
+) -> bool:
+    return recent_player_transaction_count(
+        con,
+        player_id=player_id,
+        days=PLAYER_CHURN_LOOKBACK_DAYS,
+        before_date=before_date,
+        transaction_types=(
+            "Waiver",
+            "Waiver Claim",
+            "Practice Squad Poaching",
+            "Practice Squad Signing",
+            "Roster Status Change",
+            "Release",
+            "Signing",
+        ),
+    ) >= PLAYER_CHURN_MOVE_LIMIT
+
+
+def team_recent_transaction_count(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    days: int,
+    source: str,
+    before_date: str | None = None,
+) -> int:
+    if not table_exists(con, "transaction_log"):
+        return 0
+    anchor = before_date or current_date(con)
+    since = date_days_before(anchor, days)
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM transaction_log
+        WHERE source = ?
+          AND date(transaction_date) >= date(?)
+          AND date(transaction_date) <= date(?)
+          AND (team_id = ? OR to_team_id = ?)
+        """,
+        (source, since, anchor, team_id, team_id),
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
 
 
 def backup_database(db_path: Path) -> Path:
@@ -339,6 +465,19 @@ def active_contract_aav(con: sqlite3.Connection, player_id: int) -> int:
     return int(row["aav"] or 0) if row else 0
 
 
+def is_injury_active_status(status: str | None) -> bool:
+    return str(status or "") in INJURY_ACTIVE_STATUSES
+
+
+def asset_overall(candidate: PlayerCandidate) -> float:
+    """Conservative team-side floor for protecting obvious young roster assets."""
+    return max(candidate.overall, candidate.true_overall)
+
+
+def asset_potential(candidate: PlayerCandidate) -> float:
+    return max(candidate.potential, candidate.true_potential - 3.0)
+
+
 def player_candidate(
     con: sqlite3.Connection,
     row: sqlite3.Row,
@@ -348,8 +487,10 @@ def player_candidate(
 ) -> PlayerCandidate:
     position = (row["position"] or "").upper()
     group = POSITION_TO_GROUP.get(position, "OTHER")
-    overall = float(row["overall"] or 55)
-    potential = float(row["potential"] or overall)
+    true_overall = float(row["overall"] or 55)
+    true_potential = float(row["potential"] or true_overall)
+    overall = true_overall
+    potential = true_potential
     if team_id is not None:
         overall, potential, _read = pro_player_fog.perceived_overall_potential(
             con,
@@ -397,12 +538,15 @@ def player_candidate(
         name=f"{row['first_name']} {row['last_name']}",
         position=position,
         group=group,
+        status=str(row["status"] or ACTIVE_STATUS),
         age=age,
         years_exp=years_exp,
         is_rookie=is_rookie,
         is_international_pathway=is_international_pathway,
         overall=overall,
         potential=potential,
+        true_overall=true_overall,
+        true_potential=true_potential,
         contract_aav=contract_aav_value,
         role_score=base,
         depth_rank=rank,
@@ -478,32 +622,69 @@ def choose_active_roster(candidates: list[PlayerCandidate], active_limit: int) -
                 continue
             selected.remove(candidate.player_id)
 
+    if len(selected) > active_limit:
+        soft_stashes = sorted(
+            [
+                candidate
+                for candidate in candidates
+                if candidate.player_id in selected and is_soft_practice_squad_asset(candidate)
+            ],
+            key=lambda item: (item.keep_score, item.potential, item.overall, -item.age),
+        )
+        for candidate in soft_stashes:
+            if len(selected) <= active_limit:
+                break
+            selected.remove(candidate.player_id)
+
     return selected
 
 
 def is_cutdown_release_protected(candidate: PlayerCandidate) -> bool:
     """Protect starter-caliber or high-upside players from automatic cutdown releases."""
+    if is_injury_active_status(candidate.status):
+        return True
     if candidate.is_international_pathway:
         return False
-    if candidate.age <= 24 and candidate.potential >= 76 and candidate.overall >= 60:
+    overall = asset_overall(candidate)
+    potential = asset_potential(candidate)
+    if candidate.age <= 24 and potential >= 76 and overall >= 60:
         return True
-    if candidate.age <= 25 and candidate.potential >= 80:
+    if candidate.age <= 25 and potential >= 80:
         return True
-    if candidate.years_exp <= 2 and candidate.potential >= 78 and candidate.overall >= 62:
+    if candidate.years_exp <= 2 and potential >= 78 and overall >= 62:
         return True
-    if candidate.contract_aav >= 4_000_000 and candidate.overall >= 62:
+    if candidate.years_exp <= 2 and potential >= 74 and overall >= 68:
+        return True
+    if candidate.contract_aav >= 4_000_000 and overall >= 62:
         return True
     if candidate.position in SPECIALIST_POSITIONS:
-        return candidate.overall >= 72
-    if candidate.overall >= 72 and candidate.age <= 31:
+        return overall >= 72
+    if overall >= 72 and candidate.age <= 31:
         return True
-    if candidate.position == "QB" and candidate.overall >= 68 and candidate.age <= 32:
+    if candidate.position == "QB" and overall >= 68 and candidate.age <= 32:
         return True
-    if candidate.overall >= 68 and candidate.potential >= 80 and candidate.age <= 26:
+    if overall >= 68 and potential >= 80 and candidate.age <= 26:
         return True
-    if candidate.depth_rank is not None and candidate.depth_rank <= 2 and candidate.overall >= 68:
+    if candidate.depth_rank is not None and candidate.depth_rank <= 2 and overall >= 68:
         return True
     return False
+
+
+def is_soft_practice_squad_asset(candidate: PlayerCandidate) -> bool:
+    """Young players protected from waivers can still be stashable when the 53 is squeezed."""
+    if is_injury_active_status(candidate.status):
+        return False
+    if candidate.position in SPECIALIST_POSITIONS or candidate.position == "QB":
+        return False
+    if candidate.is_international_pathway:
+        return True
+    if candidate.depth_rank == 1 or candidate.contract_aav >= 2_500_000:
+        return False
+    overall = asset_overall(candidate)
+    potential = asset_potential(candidate)
+    if overall >= 70 or potential >= 80:
+        return False
+    return candidate.age <= 24 and candidate.years_exp <= 2 and overall <= 68 and potential <= 78
 
 
 def choose_practice_squad(
@@ -557,13 +738,15 @@ def choose_practice_squad(
 
 def is_practice_squad_stash_candidate(candidate: PlayerCandidate) -> bool:
     """Keep established active-roster caliber players out of cutdown stashes."""
+    if is_injury_active_status(candidate.status):
+        return False
     if candidate.position in SPECIALIST_POSITIONS:
         return False
     if candidate.is_international_pathway:
         return True
     if candidate.contract_aav >= 2_500_000 and candidate.years_exp >= 3:
         return False
-    if is_cutdown_release_protected(candidate):
+    if is_cutdown_release_protected(candidate) and not is_soft_practice_squad_asset(candidate):
         return False
     if candidate.overall >= 70:
         return False
@@ -581,6 +764,8 @@ def is_practice_squad_stash_candidate(candidate: PlayerCandidate) -> bool:
 
 
 def is_practice_squad_swap_demote_candidate(candidate: PlayerCandidate, promoted: PlayerCandidate) -> bool:
+    if is_injury_active_status(candidate.status):
+        return False
     if candidate.position in SPECIALIST_POSITIONS or candidate.is_international_pathway:
         return False
     if candidate.depth_rank == 1:
@@ -716,6 +901,8 @@ def move_to_practice_squad(con: sqlite3.Connection, player_id: int, season: int,
     if not player:
         return False
     old_status = player["status"] or ACTIVE_STATUS
+    if is_injury_active_status(old_status):
+        return False
     team_id = int(player["team_id"])
     team = con.execute("SELECT * FROM teams WHERE team_id = ?", (team_id,)).fetchone()
     rule_set = roster_rules.get_rule_set(con, season, PHASE)
@@ -879,6 +1066,8 @@ def release_player(
     if not player:
         return
     old_status = player["status"] or ACTIVE_STATUS
+    if source in {SOURCE, PRACTICE_SQUAD_SANITY_SOURCE} and is_injury_active_status(old_status):
+        return
     from_team_id = int(player["team_id"]) if player["team_id"] is not None else None
     contract_id = active_contract_id(con, player_id)
     if (
@@ -1194,6 +1383,49 @@ def minimum_contract_aav(player: sqlite3.Row) -> int:
     return max(floor, min(2_500_000, int((overall * 18_000) // 10_000 * 10_000)))
 
 
+def replacement_contract_aav(player: sqlite3.Row, *, source: str) -> int:
+    """Price emergency/veteran depth deals without turning unsigned starters into minimum steals."""
+    minimum = minimum_contract_aav(player)
+    overall = int(player["overall"] or 60)
+    age = int(player["age"] or 26)
+    group = POSITION_TO_GROUP.get(str(player["position"] or ""), str(player["position"] or ""))
+    if source != VETERAN_DEPTH_SOURCE and overall < 72:
+        return minimum
+
+    if overall >= 79:
+        base = 6_000_000
+    elif overall >= 76:
+        base = 4_200_000
+    elif overall >= 73:
+        base = 2_750_000
+    elif overall >= 70:
+        base = 1_750_000
+    else:
+        base = minimum
+
+    premium = {
+        "QB": 1.35,
+        "WR": 1.18,
+        "OL": 1.18,
+        "EDGE": 1.18,
+        "CB": 1.16,
+        "IDL": 1.08,
+        "TE": 1.05,
+        "S": 1.00,
+        "LB": 0.95,
+        "RB": 0.82,
+    }.get(group, 1.0)
+    age_discount = 1.0
+    if age >= 35:
+        age_discount = 0.65
+    elif age >= 33:
+        age_discount = 0.78
+    elif age >= 31:
+        age_discount = 0.9
+    priced = int(base * premium * age_discount)
+    return max(minimum, min(9_500_000, (priced // 50_000) * 50_000))
+
+
 def best_free_agent_replacement(
     con: sqlite3.Connection,
     *,
@@ -1212,6 +1444,11 @@ def best_free_agent_replacement(
     by_group: dict[str, list[PlayerCandidate]] = {group: [] for group in groups}
     row_by_id = {int(row["player_id"]): row for row in rows}
     for row in rows:
+        player_id = int(row["player_id"])
+        if player_external_move_cooldown_active(con, player_id=player_id):
+            continue
+        if player_has_excessive_churn(con, player_id=player_id):
+            continue
         candidate = player_candidate(con, row, season=season, team_id=None)
         by_group.setdefault(candidate.group, []).append(candidate)
     for group in groups:
@@ -1333,6 +1570,10 @@ def external_practice_squad_candidates(
                 continue
             if candidate.overall < 58 and candidate.potential < 72:
                 continue
+            if player_external_move_cooldown_active(con, player_id=candidate.player_id):
+                continue
+            if player_has_excessive_churn(con, player_id=candidate.player_id):
+                continue
             score = practice_squad_poach_score(
                 con,
                 player=row,
@@ -1355,8 +1596,13 @@ def sign_practice_squad_poach(
     old_team_id = int(player["team_id"]) if player["team_id"] is not None else None
     if old_team_id is None or old_team_id == int(team["team_id"]):
         return False
+    player_id = int(player["player_id"])
+    if player_external_move_cooldown_active(con, player_id=player_id):
+        return False
+    if player_has_excessive_churn(con, player_id=player_id):
+        return False
     old_status = player["status"] or PRACTICE_SQUAD_STATUS
-    contract_id = roster_rules.transfer_active_contract(con, int(player["player_id"]), int(team["team_id"]))
+    contract_id = roster_rules.transfer_active_contract(con, player_id, int(team["team_id"]))
     if contract_id is None:
         aav = minimum_contract_aav(player)
         cur = con.execute(
@@ -1497,7 +1743,7 @@ def best_free_agent_position_replacement(
     *,
     position: str,
 ) -> sqlite3.Row | None:
-    return con.execute(
+    rows = con.execute(
         """
         SELECT *
         FROM players
@@ -1505,10 +1751,18 @@ def best_free_agent_position_replacement(
           AND status = 'Free Agent'
           AND position = ?
         ORDER BY COALESCE(overall, 50) DESC, COALESCE(potential, overall, 50) DESC, age ASC
-        LIMIT 1
+        LIMIT 12
         """,
         (position,),
-    ).fetchone()
+    ).fetchall()
+    for row in rows:
+        player_id = int(row["player_id"])
+        if player_external_move_cooldown_active(con, player_id=player_id):
+            continue
+        if player_has_excessive_churn(con, player_id=player_id):
+            continue
+        return row
+    return None
 
 
 def active_group_count(con: sqlite3.Connection, team_id: int, group: str) -> int:
@@ -1570,7 +1824,7 @@ def best_free_agent_group_replacement(con: sqlite3.Connection, *, group: str) ->
     if not positions:
         return None
     placeholders = ",".join("?" for _ in positions)
-    return con.execute(
+    rows = con.execute(
         f"""
         SELECT *
         FROM players
@@ -1578,10 +1832,18 @@ def best_free_agent_group_replacement(con: sqlite3.Connection, *, group: str) ->
           AND status = 'Free Agent'
           AND position IN ({placeholders})
         ORDER BY COALESCE(overall, 50) DESC, COALESCE(potential, overall, 50) DESC, age ASC
-        LIMIT 1
+        LIMIT 12
         """,
         positions,
-    ).fetchone()
+    ).fetchall()
+    for row in rows:
+        player_id = int(row["player_id"])
+        if player_external_move_cooldown_active(con, player_id=player_id):
+            continue
+        if player_has_excessive_churn(con, player_id=player_id):
+            continue
+        return row
+    return None
 
 
 def promote_practice_squad_replacement(
@@ -1658,6 +1920,8 @@ def move_active_to_practice_squad_sanity(
     season: int,
     reason: str,
 ) -> bool:
+    if is_injury_active_status(player["status"]):
+        return False
     rule_set = roster_rules.get_rule_set(con, season, PHASE)
     eligibility = roster_rules.practice_squad_eligibility(con, player, team, rule_set, season=season)
     if not eligibility["eligible"]:
@@ -1721,7 +1985,7 @@ def practice_squad_sanity_swap_candidate(
         SELECT *
         FROM players
         WHERE team_id = ?
-          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND status = 'Active'
         """,
         (team_id,),
     ).fetchall()
@@ -1779,6 +2043,9 @@ def sanitize_cpu_practice_squads(
             continue
         candidate = player_candidate(con, player, season=season, team_id=team_id)
         if is_practice_squad_stash_candidate(candidate):
+            continue
+        if player_external_move_cooldown_active(con, player_id=candidate.player_id):
+            left += 1
             continue
         reason = "CPU practice squad sanity: active-roster caliber player should not be stashed."
         if active_roster_count(con, team_id) < 53:
@@ -1870,13 +2137,15 @@ def trim_cpu_active_roster_overages(
                 SELECT *
                 FROM players
                 WHERE team_id = ?
-                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  AND status = 'Active'
                 """,
                 (team_id,),
             ):
                 if int(row["player_id"]) in protected_poaches:
                     continue
                 candidate = player_candidate(con, row, season=season, team_id=team_id)
+                if player_external_move_cooldown_active(con, player_id=candidate.player_id):
+                    continue
                 if candidate.position in SPECIALIST_POSITIONS:
                     continue
                 position_floor = MIN_ACTIVE_BY_POSITION.get(candidate.position)
@@ -1951,11 +2220,13 @@ def has_plausible_poach_corresponding_move(
         SELECT *
         FROM players
         WHERE team_id = ?
-          AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+          AND status = 'Active'
         """,
         (team_id,),
     ):
         candidate = player_candidate(con, row, season=season, team_id=team_id)
+        if player_external_move_cooldown_active(con, player_id=candidate.player_id):
+            continue
         if candidate.position in SPECIALIST_POSITIONS:
             continue
         position_floor = MIN_ACTIVE_BY_POSITION.get(candidate.position)
@@ -2111,7 +2382,7 @@ def process_cpu_practice_squad_poaching(
     season: int,
     game_id: str | None = None,
     include_user_team: bool = False,
-    max_teams: int = 8,
+    max_teams: int = 4,
     max_poaches_per_team: int = 1,
 ) -> dict[str, int]:
     ensure_cutdown_schema(con)
@@ -2127,6 +2398,20 @@ def process_cpu_practice_squad_poaching(
         if not include_user_team and user_team_id is not None and team_id == user_team_id:
             continue
         if active_roster_count(con, team_id) > 53:
+            continue
+        if team_recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=7,
+            source=PRACTICE_SQUAD_POACH_SOURCE,
+        ) >= TEAM_POACH_WEEKLY_LIMIT:
+            continue
+        if team_recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=30,
+            source=PRACTICE_SQUAD_POACH_SOURCE,
+        ) >= TEAM_POACH_MONTHLY_LIMIT:
             continue
         need_groups = [
             group
@@ -2147,6 +2432,12 @@ def process_cpu_practice_squad_poaching(
             if team_poaches >= max_poaches_per_team:
                 break
             candidate = player_candidate(con, player, season=season, team_id=team_id)
+            if player_external_move_cooldown_active(con, player_id=candidate.player_id):
+                skipped_prospect_protection += 1
+                continue
+            if player_has_excessive_churn(con, player_id=candidate.player_id):
+                skipped_prospect_protection += 1
+                continue
             if has_protected_young_depth(con, team_id=team_id, season=season, group=candidate.group):
                 if active_group_count(con, team_id, candidate.group) >= MIN_ACTIVE_BY_GROUP.get(candidate.group, 0):
                     skipped_prospect_protection += 1
@@ -2231,7 +2522,7 @@ def optimize_cpu_same_position_depth(
                 SELECT *
                 FROM players
                 WHERE team_id = ?
-                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  AND status = 'Active'
                   AND position = ?
                 """,
                 (team_id, position),
@@ -2290,7 +2581,8 @@ def sign_free_agent_replacement(
     source: str = INJURY_REPLACEMENT_SOURCE,
 ) -> None:
     old_status = player["status"] or FREE_AGENT_STATUS
-    aav = minimum_contract_aav(player)
+    aav = replacement_contract_aav(player, source=source)
+    contract_type = "Veteran Depth" if source == VETERAN_DEPTH_SOURCE else "Minimum"
     cur = con.execute(
         """
         INSERT INTO contracts (
@@ -2299,7 +2591,7 @@ def sign_free_agent_replacement(
             workout_bonus, is_guaranteed, dead_cap_current, dead_cap_next,
             contract_type, is_active
         )
-        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 0, 0, 0, 'Minimum', 1)
+        VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, 0, 0, 0, 0, 0, ?, 1)
         """,
         (
             player["player_id"],
@@ -2309,6 +2601,7 @@ def sign_free_agent_replacement(
             season,
             aav,
             aav,
+            contract_type,
         ),
     )
     contract_id = int(cur.lastrowid)
@@ -2429,8 +2722,8 @@ def process_cpu_veteran_free_agent_depth_signings(
     season: int,
     game_id: str | None = None,
     include_user_team: bool = False,
-    max_teams: int = 4,
-    max_signings: int = 4,
+    max_teams: int = 2,
+    max_signings: int = 2,
 ) -> dict[str, int]:
     """Occasionally add outside veteran depth when PS/internal moves do not solve a weak room."""
     ensure_cutdown_schema(con)
@@ -2441,6 +2734,20 @@ def process_cpu_veteran_free_agent_depth_signings(
         if not include_user_team and user_team_id is not None and team_id == user_team_id:
             continue
         if active_roster_count(con, team_id) > 53:
+            continue
+        if team_recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=7,
+            source=VETERAN_DEPTH_SOURCE,
+        ) >= TEAM_VETERAN_SIGNING_WEEKLY_LIMIT:
+            continue
+        if team_recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=30,
+            source=VETERAN_DEPTH_SOURCE,
+        ) >= TEAM_VETERAN_SIGNING_MONTHLY_LIMIT:
             continue
         for group, floor in VETERAN_FA_DEPTH_FLOORS.items():
             active_count = active_group_count(con, team_id, group)
@@ -2474,7 +2781,11 @@ def process_cpu_veteran_free_agent_depth_signings(
                 continue
             score = (upgrade * 7.0) + (quality_gap * 3.0) + deficit_bonus
             if free_agent.age >= 31:
-                score += 2.0
+                score -= 2.0
+            if active_count >= target and quality_gap <= 1:
+                score -= 10.0
+            if score < 42.0:
+                continue
             candidates.append((score, team, group, player))
 
     teams_touched: set[int] = set()
@@ -2579,6 +2890,8 @@ def cutdown_team(
     touched_ids = {candidate.player_id for candidate in candidates}
     for candidate in sorted(candidates, key=lambda item: item.keep_score):
         if candidate.player_id in active_ids:
+            continue
+        if is_injury_active_status(candidate.status):
             continue
         if candidate.player_id in ps_ids:
             if move_to_practice_squad(con, candidate.player_id, season, notes):

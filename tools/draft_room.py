@@ -90,6 +90,9 @@ SELLER_LIKED_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_LOW_VALUE_POSITIONS = {"FB", "K", "P", "LS"}
 EARLY_DRAFT_STRONG_CONFIDENCE = {"high", "very high"}
 EARLY_DRAFT_ELITE_CONFIDENCE = {"very high"}
+SPECIALIST_POSITIONS = {"K", "P", "LS"}
+SPECIALIST_LATE_ROUND_NEED_BONUS = {5: 92.0, 6: 124.0, 7: 148.0}
+SPECIALIST_LATE_ROUND_WEAK_PROFILE_DISCOUNT = 0.45
 QB_DUPLICATE_PICK_PENALTY_BY_ROUND = {1: 95.0, 2: 95.0, 3: 90.0, 4: 72.0, 5: 42.0, 6: 20.0, 7: 8.0}
 QB_ROOM_PICK_PENALTY_BY_ROUND = {1: 125.0, 2: 105.0, 3: 46.0, 4: 22.0, 5: 10.0, 6: 4.0, 7: 0.0}
 QB_RECENT_INVESTMENT_BLOCK_BY_ROUND = {1: 150.0, 2: 125.0, 3: 82.0, 4: 36.0, 5: 18.0, 6: 8.0, 7: 0.0}
@@ -100,6 +103,10 @@ QB_CROWDED_ROOM_BLOCK_BY_ROUND = {1: 280.0, 2: 185.0, 3: 68.0, 4: 18.0, 5: 4.0, 
 RB_CROWDED_ROOM_PENALTY_BY_ROUND = {1: 105.0, 2: 44.0, 3: 14.0, 4: 4.0}
 QB_FRANCHISE_SEARCH_TOP10_BONUS = 92.0
 QB_FRANCHISE_SEARCH_TOP5_BONUS = 122.0
+WIN_NOW_TEAM_PHASES = {"contending"}
+WIN_NOW_COMPETITIVENESS_FLOOR = 74.0
+WIN_NOW_RECORD_WIN_FLOOR = 10.0
+_TEAM_WINDOW_CACHE: dict[tuple[int, str, int], dict[str, Any]] = {}
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -985,6 +992,62 @@ def position_need_bonus(con: sqlite3.Connection, team_id: int, position: str) ->
     return 0
 
 
+def team_has_rostered_specialist(con: sqlite3.Connection, team_id: int, position: str) -> bool:
+    """Return whether the team already has a real rostered option at K/P/LS."""
+
+    pos = position.upper()
+    if pos not in SPECIALIST_POSITIONS:
+        return False
+    row = con.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM players
+        WHERE team_id = ?
+          AND position = ?
+          AND status IN (
+              'Active', 'Questionable', 'Doubtful', 'Out',
+              'Reserve/Future', 'Practice Squad', 'PUP', 'IR'
+          )
+        """,
+        (team_id, pos),
+    ).fetchone()
+    return int(row["count"] if row else 0) > 0
+
+
+def late_round_specialist_need_bonus(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    round_number: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    selected_counts: dict[str, int] | None = None,
+) -> float:
+    """Push CPU teams toward K/P/LS in rounds 5+ when the room is empty."""
+
+    position = str(row["position"] or "").upper()
+    if round_number < 5 or position not in SPECIALIST_POSITIONS:
+        return 0.0
+    selected_counts = selected_counts or {}
+    if selected_counts.get(position, 0) > 0 or team_has_rostered_specialist(con, team_id, position):
+        return 0.0
+
+    bonus = SPECIALIST_LATE_ROUND_NEED_BONUS.get(max(5, min(7, round_number)), 0.0)
+    if position in {"K", "P"}:
+        replacement_profile = perceived_grade >= 66.0 or perceived_ceiling >= 74.0
+        usable_profile = perceived_grade >= 60.0 or perceived_ceiling >= 68.0
+    else:
+        replacement_profile = perceived_grade >= 63.0 or perceived_ceiling >= 72.0
+        usable_profile = perceived_grade >= 57.0 or perceived_ceiling >= 66.0
+
+    if replacement_profile:
+        return bonus + 18.0
+    if usable_profile:
+        return bonus
+    return bonus * SPECIALIST_LATE_ROUND_WEAK_PROFILE_DISCOUNT
+
+
 def qb_room_summary(con: sqlite3.Connection, team_id: int) -> dict[str, Any]:
     qbs = con.execute(
         """
@@ -1118,6 +1181,81 @@ def active_game_id(con: sqlite3.Connection) -> str:
     if select_draft_pick.active_game_id(con):
         return str(select_draft_pick.active_game_id(con))
     return "default"
+
+
+def team_win_now_context(con: sqlite3.Connection, team_id: int) -> dict[str, Any]:
+    game_id = active_game_id(con)
+    key = (id(con), game_id, int(team_id))
+    cached = _TEAM_WINDOW_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    phase = ""
+    competitiveness = 0.0
+    record_wins = 0.0
+    record_games = 0
+    source = "default"
+
+    if table_exists(con, "ai_gm_team_evaluations"):
+        row = con.execute(
+            """
+            SELECT team_phase, competitiveness_score
+            FROM ai_gm_team_evaluations
+            WHERE team_id = ?
+              AND (game_id = ? OR game_id = 'master')
+            ORDER BY
+                CASE WHEN game_id = ? THEN 0 ELSE 1 END,
+                season DESC,
+                evaluation_date DESC,
+                evaluation_id DESC
+            LIMIT 1
+            """,
+            (int(team_id), game_id, game_id),
+        ).fetchone()
+        if row:
+            phase = str(row["team_phase"] or "").lower()
+            competitiveness = row_float(row, "competitiveness_score", 0.0)
+            source = "team_evaluation"
+
+    if table_exists(con, "season_team_records"):
+        record = con.execute(
+            """
+            SELECT wins, losses, ties
+            FROM season_team_records
+            WHERE team_id = ?
+            ORDER BY season DESC
+            LIMIT 1
+            """,
+            (int(team_id),),
+        ).fetchone()
+        if record:
+            wins = float(record["wins"] or 0)
+            losses = float(record["losses"] or 0)
+            ties = float(record["ties"] or 0)
+            record_wins = wins + (ties * 0.5)
+            record_games = int(wins + losses + ties)
+            if source == "default":
+                source = "record"
+
+    win_now = (
+        phase in WIN_NOW_TEAM_PHASES
+        or competitiveness >= WIN_NOW_COMPETITIVENESS_FLOOR
+        or (record_games >= 16 and record_wins >= WIN_NOW_RECORD_WIN_FLOOR)
+    )
+    context = {
+        "win_now": bool(win_now),
+        "phase": phase,
+        "competitiveness": competitiveness,
+        "record_wins": record_wins,
+        "record_games": record_games,
+        "source": source,
+    }
+    _TEAM_WINDOW_CACHE[key] = context
+    return context
+
+
+def team_is_win_now(con: sqlite3.Connection, team_id: int) -> bool:
+    return bool(team_win_now_context(con, team_id).get("win_now"))
 
 
 def cpu_auto_candidate_rows(
@@ -1266,6 +1404,7 @@ def cpu_round_one_value_profile(
     perceived_ceiling: float,
     confidence: str,
     need: float = 0.0,
+    win_now: bool = False,
 ) -> dict[str, bool]:
     """Classify whether a round-one target has enough value to stand on its own.
 
@@ -1321,6 +1460,14 @@ def cpu_round_one_value_profile(
         and perceived_ceiling >= 78.0
         and base_rank <= max(24, pick_number + board_window)
     )
+    ready_now_starter = (
+        late
+        and confidence in {"medium", "high", "very high"}
+        and need >= (8.0 if win_now else 18.0)
+        and perceived_grade >= 73.0
+        and perceived_ceiling >= 76.0
+        and base_rank <= max(56, pick_number + 18)
+    )
     late_clean_need_fit = (
         late
         and need >= 24.0
@@ -1336,6 +1483,7 @@ def cpu_round_one_value_profile(
             scouted_value_outlier,
             immediate_starter,
             close_starter,
+            ready_now_starter,
             late_clean_need_fit,
         )
     )
@@ -1343,7 +1491,8 @@ def cpu_round_one_value_profile(
         "takeable": takeable,
         "clean_board_value": clean_board_value,
         "high_upside": high_upside or premium_upside or scouted_value_outlier,
-        "starter": immediate_starter or close_starter or late_clean_need_fit,
+        "starter": immediate_starter or close_starter or ready_now_starter or late_clean_need_fit,
+        "ready_now": ready_now_starter,
     }
 
 
@@ -2009,6 +2158,146 @@ def round_one_immediate_premium_need_fit(
     )
 
 
+def round_one_ready_now_need_fit(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    confidence: str,
+    need: float | None = None,
+) -> bool:
+    position = str(row["position"] or "").upper()
+    if position in EARLY_DRAFT_LOW_VALUE_POSITIONS or position == "QB":
+        return False
+    confidence = confidence.lower()
+    if confidence not in {"medium", "high", "very high"}:
+        return False
+    pick_number = pick_number or 32
+    if pick_number < 20:
+        return False
+    team_need = position_need_bonus(con, team_id, position) if need is None else float(need)
+    win_now = team_is_win_now(con, team_id)
+    if team_need < 18.0 and not (win_now and team_need >= 8.0):
+        return False
+    grade_floor = 74.0 if pick_number <= 24 else 73.0
+    ceiling_floor = 77.0 if pick_number <= 24 else 76.0
+    return (
+        perceived_grade >= grade_floor
+        and perceived_ceiling >= ceiling_floor
+        and base_rank <= max(56, pick_number + 18)
+    )
+
+
+def round_one_low_ceiling_need_allowed(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    confidence: str,
+    need: float | None = None,
+) -> bool:
+    position = str(row["position"] or "").upper()
+    if position in EARLY_DRAFT_LOW_VALUE_POSITIONS or position == "QB":
+        return False
+    if perceived_ceiling >= 80.0:
+        return True
+    confidence = confidence.lower()
+    if confidence not in {"medium", "high", "very high"}:
+        return False
+    pick_number = pick_number or 32
+    team_need = position_need_bonus(con, team_id, position) if need is None else float(need)
+    if team_need >= 18.0:
+        return True
+    win_now = team_is_win_now(con, team_id)
+    if (
+        win_now
+        and pick_number >= 24
+        and team_need >= 8.0
+        and perceived_grade >= 74.0
+        and perceived_ceiling >= 76.0
+        and base_rank <= max(48, pick_number + 12)
+    ):
+        return True
+    if (
+        win_now
+        and pick_number >= 30
+        and perceived_grade >= 77.0
+        and perceived_ceiling >= 76.0
+        and base_rank <= max(36, pick_number + 4)
+    ):
+        return True
+    return False
+
+
+def round_one_luxury_profile_blocked(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    team_id: int,
+    pick_number: int,
+    base_rank: int,
+    perceived_grade: float,
+    perceived_ceiling: float,
+    confidence: str,
+    need: float | None = None,
+) -> bool:
+    position = str(row["position"] or "").upper()
+    if position == "QB":
+        return False
+    team_need = position_need_bonus(con, team_id, position) if need is None else float(need)
+    if team_need >= 8.0:
+        return False
+    confidence = confidence.lower()
+    pick_number = pick_number or 32
+    win_now = team_is_win_now(con, team_id)
+
+    if (
+        win_now
+        and pick_number >= 30
+        and confidence in {"medium", "high", "very high"}
+        and perceived_grade >= 77.0
+        and perceived_ceiling >= 76.0
+        and base_rank <= max(36, pick_number + 4)
+    ):
+        return False
+
+    premium_position = position in ROUND_ONE_PREMIUM_SWING_POSITIONS
+    if (
+        premium_position
+        and confidence in {"high", "very high"}
+        and perceived_grade >= 70.0
+        and perceived_ceiling >= 88.0
+        and base_rank <= max(32, pick_number + 8)
+    ):
+        return False
+    if (
+        premium_position
+        and pick_number >= 25
+        and confidence == "medium"
+        and perceived_grade >= 68.0
+        and perceived_ceiling >= 90.0
+        and base_rank <= pick_number + 10
+    ):
+        return False
+    if (
+        pick_number >= 25
+        and confidence in {"high", "very high"}
+        and perceived_grade >= 75.0
+        and perceived_ceiling >= 88.0
+        and base_rank <= pick_number + 3
+    ):
+        return False
+    return True
+
+
 def round_one_low_ceiling_profile_blocked(
     con: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2019,7 +2308,7 @@ def round_one_low_ceiling_profile_blocked(
     perceived_grade: float,
     perceived_ceiling: float,
 ) -> bool:
-    true_grade = row_float(row, "true_grade", row_float(row, "overall", perceived_grade))
+    confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
     true_ceiling = row_float(row, "ceiling_grade", row_float(row, "potential", perceived_ceiling))
     immediate_premium_need = round_one_immediate_premium_need_fit(
         con,
@@ -2030,15 +2319,27 @@ def round_one_low_ceiling_profile_blocked(
         perceived_grade=perceived_grade,
         perceived_ceiling=perceived_ceiling,
     )
-    if true_ceiling < 74.0:
-        return True
-    if true_ceiling < ROUND_ONE_LOW_CEILING_TRUE_FLOOR and not immediate_premium_need:
+    ready_now_need = round_one_ready_now_need_fit(
+        con,
+        row,
+        team_id=team_id,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+    )
+    if ready_now_need:
+        return False
+    if perceived_ceiling < 74.0:
         return True
     if perceived_ceiling < ROUND_ONE_LOW_CEILING_PERCEIVED_FLOOR and not immediate_premium_need:
         return True
-    if pick_number >= 25 and true_ceiling < 78.0 and perceived_grade < 74.0 and not immediate_premium_need:
+    if pick_number >= 25 and perceived_ceiling < 78.0 and perceived_grade < 73.0 and not immediate_premium_need:
         return True
-    if true_grade < 66.0 and true_ceiling < 78.0:
+    if perceived_grade < 66.0 and perceived_ceiling < 78.0:
+        return True
+    if true_ceiling < 70.0 and perceived_ceiling < 80.0:
         return True
     return False
 
@@ -2057,7 +2358,45 @@ def cpu_round_one_absolute_reject(
     if round_number != 1:
         return False
     confidence = str(row["cpu_scouting_confidence"] or "Unscouted").strip().lower()
+    position = str(row["position"] or "").upper()
     pick_number = overall_pick_number or 32
+    need = position_need_bonus(con, team_id, position)
+    if (
+        pick_number <= 10
+        and position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+        and need < 18.0
+        and not (
+            confidence == "very high"
+            and perceived_grade >= 80.0
+            and perceived_ceiling >= 88.0
+            and base_rank <= max(8, pick_number + 2)
+        )
+    ):
+        return True
+    if round_one_luxury_profile_blocked(
+        con,
+        row,
+        team_id=team_id,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+        need=need,
+    ):
+        return True
+    if perceived_ceiling < 80.0 and not round_one_low_ceiling_need_allowed(
+        con,
+        row,
+        team_id=team_id,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+        need=need,
+    ):
+        return True
     if round_one_offboard_profile_blocked(
         row,
         confidence=confidence,
@@ -2184,7 +2523,44 @@ def cpu_round_one_hard_reject(
         perceived_ceiling=perceived_ceiling,
         confidence=confidence,
         need=need,
+        win_now=team_is_win_now(con, team_id),
     )
+    if (
+        pick_number <= 10
+        and position in ROUND_ONE_NEEDS_CLEANER_VALUE_POSITIONS
+        and need < 18.0
+        and not (
+            confidence == "very high"
+            and perceived_grade >= 80.0
+            and perceived_ceiling >= 88.0
+            and base_rank <= max(8, pick_number + 2)
+        )
+    ):
+        return True
+    if round_one_luxury_profile_blocked(
+        con,
+        row,
+        team_id=team_id,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+        need=need,
+    ):
+        return True
+    if perceived_ceiling < 80.0 and not round_one_low_ceiling_need_allowed(
+        con,
+        row,
+        team_id=team_id,
+        pick_number=pick_number,
+        base_rank=base_rank,
+        perceived_grade=perceived_grade,
+        perceived_ceiling=perceived_ceiling,
+        confidence=confidence,
+        need=need,
+    ):
+        return True
 
     premium_upside_swing = (
         position in ROUND_ONE_PREMIUM_SWING_POSITIONS
@@ -2448,7 +2824,11 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
     game_id = active_game_id(con)
     round_number = int(pick["round"])
     overall_pick_number = effective_pick_number(pick)
-    candidate_limit = 180 if round_number == 1 else 112 if round_number == 2 else 96
+    late_specialist_window = (
+        round_number >= 5
+        and any(not team_has_rostered_specialist(con, team_id, position) for position in SPECIALIST_POSITIONS)
+    )
+    candidate_limit = 180 if round_number == 1 else 112 if round_number == 2 else 220 if late_specialist_window else 96
     candidates = cpu_auto_candidate_rows(con, draft_year, team_id, limit=candidate_limit)
     if not candidates:
         raise ValueError("No available prospects remain on the board.")
@@ -2596,6 +2976,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 perceived_ceiling=perceived_ceiling,
                 confidence=confidence,
                 need=bonus,
+                win_now=team_is_win_now(con, team_id),
             )
             if not round_one_profile["takeable"]:
                 poor_first_round_value = (
@@ -2690,6 +3071,15 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             perceived_grade=perceived_grade,
             perceived_ceiling=perceived_ceiling,
         )
+        specialist_need_bonus = late_round_specialist_need_bonus(
+            con,
+            row,
+            team_id=team_id,
+            round_number=round_number,
+            perceived_grade=perceived_grade,
+            perceived_ceiling=perceived_ceiling,
+            selected_counts=selected_counts,
+        )
         adjusted = (
             base_rank
             - bonus
@@ -2697,6 +3087,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             - scouting_adjustment
             - plan_bonus
             - qb_search_bonus
+            - specialist_need_bonus
             - deep_scout_value_bonus
             + confidence_penalty
             + early_value_penalty
@@ -2790,6 +3181,7 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                     perceived_ceiling=perceived_ceiling,
                     confidence=confidence,
                     need=position_need_bonus(con, team_id, str(row["position"])),
+                    win_now=team_is_win_now(con, team_id),
                 )
                 if not round_one_profile["takeable"]:
                     if confidence == "medium" and (perceived_grade < 68.0 or base_rank > (overall_pick_number or 32) + 40):
@@ -2867,10 +3259,20 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
                 perceived_grade=perceived_grade,
                 perceived_ceiling=perceived_ceiling,
             )
+            specialist_need_bonus = late_round_specialist_need_bonus(
+                con,
+                row,
+                team_id=team_id,
+                round_number=round_number,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                selected_counts=selected_counts,
+            )
             adjusted = (
                 base_rank
                 - position_need_bonus(con, team_id, str(row["position"]))
                 - qb_search_bonus
+                - specialist_need_bonus
                 - deep_scout_value_bonus
                 - max(0.0, perceived_grade - 65.0) * 0.45
                 - max(0.0, perceived_ceiling - perceived_grade) * 0.2
@@ -2884,6 +3286,155 @@ def choose_auto_prospect(con: sqlite3.Connection, draft_year: int, pick: sqlite3
             )
             scored.append((adjusted, base_rank, row))
     if not scored:
+        # The round-one guardrails should shape CPU behavior, not dead-end the draft.
+        # If every visible option is filtered out, force a conservative public-board
+        # fallback with heavy penalties for the profiles we were trying to avoid.
+        for allow_unfollowed_offboard in (False, True):
+            emergency_scored = []
+            for row in candidates:
+                evaluation = candidate_evaluations[int(row["prospect_id"])]
+                base_rank = int(evaluation["base_rank"])
+                confidence = str(evaluation["confidence"])
+                perceived_grade = float(evaluation["grade"])
+                perceived_ceiling = float(evaluation["ceiling"])
+                position = str(row["position"] or "").upper()
+                public_status = str(row["public_board_status"] or "").lower()
+                offboard = public_status == "off_public_board" or row["public_board_rank"] is None
+                if (
+                    round_number == 1
+                    and offboard
+                    and not allow_unfollowed_offboard
+                    and confidence not in EARLY_DRAFT_STRONG_CONFIDENCE
+                ):
+                    continue
+                absolute_rejected = (
+                    round_number == 1
+                    and cpu_round_one_absolute_reject(
+                        con,
+                        row,
+                        team_id=team_id,
+                        round_number=round_number,
+                        overall_pick_number=overall_pick_number,
+                        base_rank=base_rank,
+                        perceived_grade=perceived_grade,
+                        perceived_ceiling=perceived_ceiling,
+                    )
+                )
+                hard_rejected = cpu_round_one_hard_reject(
+                    con,
+                    row,
+                    team_id=team_id,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                )
+                confidence_penalty = cpu_confidence_rank_penalty(row, round_number) * 0.7
+                duplicate_position_penalty = cpu_duplicate_position_penalty(
+                    row,
+                    round_number=round_number,
+                    base_rank=base_rank,
+                    overall_pick_number=overall_pick_number,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                    selected_counts=selected_counts,
+                    qb_investments=qb_investments,
+                )
+                same_position_better_option_penalty = cpu_same_position_better_option_penalty(
+                    row,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                    candidate_evaluations=candidate_evaluations,
+                )
+                position_room_penalty = cpu_position_room_penalty(
+                    con,
+                    row,
+                    team_id=team_id,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                )
+                qb_room_penalty = cpu_qb_room_pick_penalty(
+                    con,
+                    row,
+                    draft_year=draft_year,
+                    team_id=team_id,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                )
+                luxury_room_penalty = cpu_luxury_room_reach_penalty(
+                    con,
+                    row,
+                    team_id=team_id,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                )
+                qb_search_bonus = franchise_qb_search_bonus(
+                    con,
+                    row,
+                    team_id=team_id,
+                    round_number=round_number,
+                    overall_pick_number=overall_pick_number,
+                    base_rank=base_rank,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                )
+                specialist_need_bonus = late_round_specialist_need_bonus(
+                    con,
+                    row,
+                    team_id=team_id,
+                    round_number=round_number,
+                    perceived_grade=perceived_grade,
+                    perceived_ceiling=perceived_ceiling,
+                    selected_counts=selected_counts,
+                )
+                fallback_penalty = 0.0
+                if absolute_rejected:
+                    fallback_penalty += 180.0
+                elif hard_rejected:
+                    fallback_penalty += 84.0
+                if round_number == 1:
+                    fallback_penalty += max(0.0, 68.0 - perceived_grade) * 4.0
+                    fallback_penalty += max(0.0, 78.0 - perceived_ceiling) * 2.0
+                    if confidence in {"unscouted", "low"}:
+                        fallback_penalty += 36.0 if base_rank > 32 else 14.0
+                    elif confidence == "medium":
+                        fallback_penalty += 16.0 if base_rank > 48 else 6.0
+                    if position in ROUND_ONE_LOW_CEILING_POSITIONS and perceived_ceiling < 76.0:
+                        fallback_penalty += 34.0
+                    if offboard:
+                        fallback_penalty += 72.0 if confidence not in EARLY_DRAFT_STRONG_CONFIDENCE else 24.0
+                adjusted = (
+                    base_rank
+                    - position_need_bonus(con, team_id, str(row["position"]))
+                    - qb_search_bonus
+                    - specialist_need_bonus
+                    - max(0.0, perceived_grade - 67.0) * 0.35
+                    - max(0.0, perceived_ceiling - perceived_grade) * 0.12
+                    + confidence_penalty
+                    + duplicate_position_penalty
+                    + same_position_better_option_penalty
+                    + position_room_penalty
+                    + qb_room_penalty
+                    + luxury_room_penalty
+                    + fallback_penalty
+                )
+                emergency_scored.append((adjusted, base_rank, row))
+            if emergency_scored:
+                emergency_scored.sort(key=lambda item: (item[0], item[1], item[2]["prospect_id"]))
+                return emergency_scored[0][2]
         raise ValueError("No CPU-visible prospects remain on the board.")
     scored.sort(key=lambda item: (item[0], item[1], item[2]["prospect_id"]))
     return scored[0][2]
@@ -3115,6 +3666,7 @@ def seller_has_round_one_anchor_target(
             perceived_ceiling=perceived_ceiling,
             confidence=confidence,
             need=need,
+            win_now=team_is_win_now(con, seller_team_id),
         )
         if not profile["takeable"]:
             continue
@@ -3197,12 +3749,31 @@ def draft_trade_target_for_team(
                 perceived_ceiling=perceived_ceiling,
                 confidence=confidence,
                 need=need,
+                win_now=team_is_win_now(con, team_id),
             )
             if round_number == 1
             else {"takeable": True, "high_upside": False, "starter": False, "clean_board_value": False}
         )
         if round_number == 1 and not round_one_profile["takeable"]:
             continue
+        if round_number == 1 and position != "QB" and perceived_ceiling < 80.0:
+            ready_now_trade_fit = round_one_ready_now_need_fit(
+                con,
+                row,
+                team_id=team_id,
+                pick_number=current_pick_number,
+                base_rank=board_rank,
+                perceived_grade=perceived_grade,
+                perceived_ceiling=perceived_ceiling,
+                confidence=confidence,
+                need=need,
+            )
+            if not ready_now_trade_fit:
+                continue
+            if current_pick_number <= 16:
+                continue
+            if not team_is_win_now(con, team_id) and current_pick_number <= 24:
+                continue
         if round_number == 1 and current_pick_number <= 10 and position != "QB":
             top_ten_ceiling_floor = 84.0 if current_pick_number <= 5 else 83.0
             top_ten_grade_floor = 70.0 if current_pick_number <= 5 else 69.0
@@ -3405,6 +3976,7 @@ def seller_should_keep_pick(
             perceived_ceiling=perceived_ceiling,
             confidence=confidence,
             need=need,
+            win_now=team_is_win_now(con, seller_team_id),
         )
         premium_target = (
             premium_position
@@ -3669,6 +4241,7 @@ def seller_board_temperature(
                 perceived_ceiling=perceived_ceiling,
                 confidence=confidence,
                 need=need,
+                win_now=team_is_win_now(con, seller_team_id),
             )
             quality_floor = profile["takeable"] and not hard_rejected
         else:
@@ -3764,6 +4337,7 @@ def seller_trade_down_willingness(
             perceived_ceiling=perceived_ceiling,
             confidence=confidence,
             need=need,
+            win_now=team_is_win_now(con, seller_team_id),
         )
         if absolute_reject:
             willingness += 0.22 if pick_number >= 20 else 0.14

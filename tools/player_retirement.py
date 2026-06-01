@@ -5,7 +5,7 @@ The model is intentionally probabilistic and auditable:
 - position sets the rough age curve,
 - a Gaussian target age gives players individual variance,
 - high-quality and low-injury-history players usually last longer,
-- fringe free agents can quietly retire earlier,
+- fringe free agents and stale practice-squad players can quietly retire earlier,
 - medical retirement is rare and tied to severe active/history risk.
 """
 
@@ -30,8 +30,10 @@ import setup_contract_years  # noqa: E402
 import setup_transactions_cap_ledger  # noqa: E402
 
 
-MODEL_VERSION = "retirement_v1"
+MODEL_VERSION = "retirement_v2"
 SOURCE = "player_retirement"
+FRINGE_MARKET_STATUSES = {"Free Agent", "Practice Squad", "Reserve/Future"}
+FRINGE_LOW_QUALITY_REASON = "fringe_low_quality_exit"
 
 POSITION_AGE_CURVES = {
     "QB": (36.0, 3.4),
@@ -69,6 +71,7 @@ class RetirementCandidate:
     years_exp: int
     status: str
     overall: float
+    potential: float
     quality_score: float
     durability: float
     future_contract_years: int
@@ -245,7 +248,67 @@ def medical_probability(candidate: RetirementCandidate) -> float:
     return clamp(chance, 0.001, 0.075)
 
 
+def fringe_low_quality_probability(candidate: RetirementCandidate) -> float:
+    """Retire stale fringe players before they linger as 40-OVR practice bodies."""
+
+    if candidate.status not in FRINGE_MARKET_STATUSES:
+        return 0.0
+    if candidate.position in {"K", "P", "LS"} and candidate.quality_score >= 62:
+        return 0.0
+    if candidate.years_exp <= 0 and candidate.age <= 23:
+        return 0.0
+
+    quality = max(candidate.overall, candidate.quality_score)
+    if quality >= 58:
+        return 0.0
+
+    probability = 0.0
+    if quality < 42:
+        probability = 0.82
+    elif quality < 46:
+        probability = 0.68
+    elif quality < 50:
+        probability = 0.50
+    elif quality < 54:
+        probability = 0.28
+    else:
+        probability = 0.14
+
+    if candidate.status == "Practice Squad":
+        probability += 0.08
+    elif candidate.status == "Free Agent":
+        probability += 0.12
+
+    if candidate.years_exp >= 3:
+        probability += 0.08
+    if candidate.years_exp >= 5:
+        probability += 0.12
+    if candidate.age >= 27:
+        probability += 0.08
+    if candidate.age >= 30:
+        probability += 0.10
+    if candidate.current_season_games == 0 and candidate.current_snaps == 0:
+        probability += 0.10
+    elif candidate.current_snaps < 80:
+        probability += 0.04
+    if candidate.career_games <= 4 and candidate.years_exp >= 3:
+        probability += 0.08
+
+    if candidate.potential >= 78 and candidate.age <= 25:
+        probability *= 0.18
+    elif candidate.potential >= 72 and candidate.age <= 25:
+        probability *= 0.45
+    elif candidate.potential >= 68 and candidate.years_exp <= 2:
+        probability *= 0.70
+
+    return clamp(probability, 0.0, 0.94)
+
+
 def normal_retirement_probability(candidate: RetirementCandidate, target_age: float) -> tuple[float, str]:
+    fringe_probability = fringe_low_quality_probability(candidate)
+    if fringe_probability > 0:
+        return fringe_probability, FRINGE_LOW_QUALITY_REASON
+
     if candidate.age < 27 and candidate.status != "Free Agent":
         return 0.0, "too_young"
 
@@ -323,7 +386,8 @@ def decision_for_candidate(candidate: RetirementCandidate, rng: random.Random) -
     retired = roll < normal_chance
     reason = (
         f"Age {candidate.age}, target {target_age:.1f}, quality {candidate.quality_score:.1f}, "
-        f"durability {candidate.durability:.0f}, injury missed games {candidate.injury_games_missed}."
+        f"potential {candidate.potential:.1f}, durability {candidate.durability:.0f}, "
+        f"injury missed games {candidate.injury_games_missed}."
     )
     return RetirementDecision(
         candidate=candidate,
@@ -532,6 +596,7 @@ def load_candidates(con: sqlite3.Connection, season: int) -> list[RetirementCand
         """
         SELECT player_id, first_name, last_name, position, team_id, age, years_exp,
                COALESCE(status, 'Active') AS status, COALESCE(overall, 50) AS overall,
+               COALESCE(potential, overall, 50) AS potential,
                COALESCE(injury_prone, 50) AS injury_prone
         FROM players
         WHERE COALESCE(status, 'Active') NOT IN ('Retired')
@@ -557,6 +622,7 @@ def load_candidates(con: sqlite3.Connection, season: int) -> list[RetirementCand
                 years_exp=int(row["years_exp"] or 0),
                 status=str(row["status"] or "Active"),
                 overall=float(row["overall"] or 50),
+                potential=float(row["potential"] or row["overall"] or 50),
                 quality_score=quality,
                 durability=float(player_durability),
                 future_contract_years=contract_years.get(player_id, 0),

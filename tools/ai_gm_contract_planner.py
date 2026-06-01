@@ -235,6 +235,8 @@ def core_score(player: dict[str, Any], evaluator_row: dict[str, Any] | None) -> 
     priority = str(player.get("priority") or "")
     group = str(player.get("position_group") or "")
     age = as_int(player.get("age"), 27)
+    potential = as_float(player.get("potential"), score)
+    role_score = as_float(player.get("best_role_score") or player.get("role_score"), score)
     value = score
     if evaluator_row:
         value += as_float(evaluator_row.get("score")) * 0.18
@@ -244,12 +246,24 @@ def core_score(player: dict[str, Any], evaluator_row: dict[str, Any] | None) -> 
         value += 4
     if group == "QB" and score >= 74:
         value += 6
+    if group == "QB" and age <= 30 and potential >= 86:
+        value += 7
+    elif group == "QB" and potential >= 90:
+        value += 5
+    if group in PREMIUM_GROUPS and age <= 27 and potential >= 86:
+        value += 4
+    if group in PREMIUM_GROUPS and age <= 29 and potential >= 90:
+        value += 3
+    if role_score >= score + 4 and score >= 68:
+        value += 3
     if group == "ST":
         value -= 8
     if group == "RB" and age >= 28:
         value -= 8
     elif age >= 31 and group not in {"QB", "OT", "IOL", "ST"}:
         value -= 7
+    if age >= 30 and role_score <= score - 6 and group not in {"QB", "ST"}:
+        value -= 3
     return value
 
 
@@ -286,6 +300,14 @@ def classify_player(
         return "extension_targets", reasons or ["value retention"], ask
     if group == "QB" and score >= 76 and ask <= max(1_000_000, budget_remaining + 12_000_000):
         return "extension_targets", reasons or ["quarterback continuity"], ask
+    young_qb_core = group == "QB" and age <= 34 and (score >= 74 or (score >= 68 and potential >= 84) or potential >= 88)
+    young_premium_core = group in PREMIUM_GROUPS and age <= 29 and (score >= 76 or (score >= 70 and potential >= 86) or potential >= 90)
+    if young_qb_core and ask <= max(1_000_000, budget_remaining + 16_000_000):
+        reasons.append("quarterback continuity")
+        return "extension_targets", reasons or ["quarterback continuity"], ask
+    if young_premium_core and ask <= max(1_000_000, budget_remaining + 8_000_000):
+        reasons.append("young premium-position core")
+        return "extension_targets", reasons or ["young core retention"], ask
 
     tag_cost = tag_estimate(group)
     tag_fit = tag_age_fit(group, age, score, potential)

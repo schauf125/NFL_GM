@@ -52,9 +52,9 @@ POSITION_WEIGHTS: dict[str, float] = {
     "NB": 2.0,
     "FS": 4.0,
     "SS": 4.0,
-    "K": 1.0,
-    "P": 1.0,
-    "LS": 0.5,
+    "K": 2.0,
+    "P": 2.0,
+    "LS": 1.5,
 }
 
 POSITION_BUCKET_END_RANKS = {
@@ -118,9 +118,9 @@ POSITION_WEIGHTS_BY_BUCKET: dict[str, dict[str, float]] = {
         "NB": 2.5,
         "FS": 5.0,
         "SS": 5.0,
-        "K": 0.7,
-        "P": 0.7,
-        "LS": 0.3,
+        "K": 1.3,
+        "P": 1.3,
+        "LS": 0.7,
     },
     "round_6_7": {
         "QB": 3.0,
@@ -138,11 +138,17 @@ POSITION_WEIGHTS_BY_BUCKET: dict[str, dict[str, float]] = {
         "NB": 3.0,
         "FS": 5.0,
         "SS": 5.0,
-        "K": 1.5,
-        "P": 1.5,
-        "LS": 1.0,
+        "K": 2.4,
+        "P": 2.4,
+        "LS": 1.6,
     },
     "leftover": POSITION_WEIGHTS,
+}
+
+SPECIALIST_MIN_COUNTS_BY_BUCKET: dict[str, dict[str, int]] = {
+    "round_4_5": {"K": 1, "P": 1},
+    "round_6_7": {"K": 2, "P": 2, "LS": 2},
+    "leftover": {"K": 2, "P": 2, "LS": 2},
 }
 
 GENERATION_VERSION = str(PREVIEW_CONFIG["generation_version"])
@@ -1139,7 +1145,7 @@ class DraftClassPreviewGenerator:
         if row.position.upper() in {"K", "P"}:
             return row.true_grade * 0.58 + row.ceiling_grade * 0.10 + role_score * 0.04 - 16.0 - age_penalty * 0.35
         if row.position.upper() == "LS":
-            return row.true_grade * 0.45 + row.ceiling_grade * 0.06 + role_score * 0.03 - 24.0 - age_penalty * 0.35
+            return row.true_grade * 0.54 + row.ceiling_grade * 0.08 + role_score * 0.035 - 18.0 - age_penalty * 0.35
         return (
             row.true_grade * 0.74
             + row.ceiling_grade * 0.18
@@ -1179,7 +1185,7 @@ class DraftClassPreviewGenerator:
             "FB": -2.4,
             "K": -10.0,
             "P": -10.0,
-            "LS": -16.0,
+            "LS": -10.5,
         }.get(position.upper(), 0.0)
 
     def _public_board_score(self, row: DraftClassPreviewRow) -> float:
@@ -1203,6 +1209,8 @@ class DraftClassPreviewGenerator:
             production_anchor = 0.0
             workout_component *= 0.50
             late_process_component *= 0.50
+            late_process_component += max(0, row.true_grade - 66) * 0.18
+            late_process_component += max(0, row.ceiling_grade - 74) * 0.10
         confidence_sigma = {"High": 1.8, "Medium": 3.2, "Low": 5.2}.get(row.scout_confidence, 3.2)
         if row.true_rank > 256:
             confidence_sigma += 2.0
@@ -1983,6 +1991,25 @@ class DraftClassPreviewGenerator:
         )
         for position in remainders[:remaining]:
             counts[position] += 1
+        minimums = SPECIALIST_MIN_COUNTS_BY_BUCKET.get(bucket, {})
+        if minimums and count >= sum(minimums.values()):
+            for specialist, minimum in minimums.items():
+                deficit = max(0, minimum - counts.get(specialist, 0))
+                for _ in range(deficit):
+                    donors = sorted(
+                        (
+                            position
+                            for position, position_count in counts.items()
+                            if position not in minimums and position_count > 1
+                        ),
+                        key=lambda position: counts[position],
+                        reverse=True,
+                    )
+                    if not donors:
+                        break
+                    donor = donors[0]
+                    counts[donor] -= 1
+                    counts[specialist] = counts.get(specialist, 0) + 1
         positions = [
             position
             for position, position_count in counts.items()

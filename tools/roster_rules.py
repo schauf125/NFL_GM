@@ -12,7 +12,7 @@ import argparse
 import re
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from setup_contract_years import ensure_schema as ensure_contract_schema
@@ -88,6 +88,12 @@ WAIVER_CLAIM_GROUP_TARGETS = {
     "S": 4,
     "ST": 3,
 }
+
+WAIVER_PLAYER_MOVE_COOLDOWN_DAYS = 28
+WAIVER_PLAYER_CHURN_LOOKBACK_DAYS = 75
+WAIVER_PLAYER_CHURN_LIMIT = 4
+WAIVER_TEAM_WEEKLY_CLAIM_LIMIT = 2
+WAIVER_TEAM_MONTHLY_CLAIM_LIMIT = 5
 
 
 @dataclass(frozen=True)
@@ -821,6 +827,122 @@ def today(con: sqlite3.Connection) -> str:
     except sqlite3.OperationalError:
         pass
     return f"{current_season(con)}-06-01"
+
+
+def days_before(value: str | None, days: int) -> str:
+    try:
+        anchor = date.fromisoformat(str(value or ""))
+    except ValueError:
+        anchor = date(2026, 6, 1)
+    return (anchor - timedelta(days=days)).isoformat()
+
+
+def recent_transaction_count(
+    con: sqlite3.Connection,
+    *,
+    player_id: int | None = None,
+    team_id: int | None = None,
+    days: int,
+    before_date: str | None = None,
+    transaction_types: tuple[str, ...] | None = None,
+    source: str | None = None,
+) -> int:
+    if not table_exists(con, "transaction_log"):
+        return 0
+    anchor = before_date or today(con)
+    since = days_before(anchor, days)
+    where = [
+        "date(transaction_date) >= date(?)",
+        "date(transaction_date) <= date(?)",
+    ]
+    params: list[object] = [since, anchor]
+    if player_id is not None:
+        where.append("player_id = ?")
+        params.append(player_id)
+    if team_id is not None:
+        where.append("(team_id = ? OR to_team_id = ?)")
+        params.extend([team_id, team_id])
+    if transaction_types:
+        where.append(f"transaction_type IN ({','.join('?' for _ in transaction_types)})")
+        params.extend(transaction_types)
+    if source:
+        where.append("source = ?")
+        params.append(source)
+    row = con.execute(
+        f"SELECT COUNT(*) AS count FROM transaction_log WHERE {' AND '.join(where)}",
+        params,
+    ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def player_recently_moved(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    before_date: str | None = None,
+    days: int = WAIVER_PLAYER_MOVE_COOLDOWN_DAYS,
+) -> bool:
+    return recent_transaction_count(
+        con,
+        player_id=player_id,
+        days=days,
+        before_date=before_date,
+        transaction_types=(
+            "Waiver Claim",
+            "Practice Squad Poaching",
+            "Signing",
+            "Roster Status Change",
+        ),
+    ) > 0
+
+
+def player_has_waiver_churn(
+    con: sqlite3.Connection,
+    *,
+    player_id: int,
+    before_date: str | None = None,
+) -> bool:
+    return recent_transaction_count(
+        con,
+        player_id=player_id,
+        days=WAIVER_PLAYER_CHURN_LOOKBACK_DAYS,
+        before_date=before_date,
+        transaction_types=(
+            "Waiver",
+            "Waiver Claim",
+            "Practice Squad Poaching",
+            "Practice Squad Signing",
+            "Roster Status Change",
+            "Release",
+            "Signing",
+        ),
+    ) >= WAIVER_PLAYER_CHURN_LIMIT
+
+
+def team_claim_cooldown_active(
+    con: sqlite3.Connection,
+    *,
+    team_id: int,
+    before_date: str | None = None,
+) -> bool:
+    return (
+        recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=7,
+            before_date=before_date,
+            transaction_types=("Waiver Claim",),
+        )
+        >= WAIVER_TEAM_WEEKLY_CLAIM_LIMIT
+        or recent_transaction_count(
+            con,
+            team_id=team_id,
+            days=30,
+            before_date=before_date,
+            transaction_types=("Waiver Claim",),
+        )
+        >= WAIVER_TEAM_MONTHLY_CLAIM_LIMIT
+    )
 
 
 def current_week(con: sqlite3.Connection) -> int | None:
@@ -2679,6 +2801,19 @@ def waiver_claim_cut_candidate_filter_sql(*, allow_specialists: bool = False) ->
     return f"""
           AND COALESCE(overall, 50) < 75
           AND COALESCE(potential, COALESCE(overall, 50)) < 82
+          AND NOT (
+                COALESCE(age, 26) <= 24
+            AND COALESCE(overall, 50) >= 64
+            AND COALESCE(potential, COALESCE(overall, 50)) >= 74
+          )
+          AND NOT (
+                COALESCE(age, 26) <= 25
+            AND COALESCE(potential, COALESCE(overall, 50)) >= 78
+          )
+          AND NOT (
+                COALESCE(age, 26) <= 30
+            AND COALESCE(overall, 50) >= 70
+          )
           {specialist_clause}
     """
 
@@ -2699,7 +2834,7 @@ def team_has_claim_roster_path(con: sqlite3.Connection, team_id: int, group: str
             SELECT player_id
             FROM players
             WHERE team_id = ?
-              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+              AND status = 'Active'
               AND position IN ({placeholders})
               AND COALESCE(overall, 50) < 67
               AND COALESCE(potential, overall, 50) < 74
@@ -2717,7 +2852,7 @@ def team_has_claim_roster_path(con: sqlite3.Connection, team_id: int, group: str
             SELECT player_id
             FROM players
             WHERE team_id = ?
-              AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+              AND status = 'Active'
               AND COALESCE(overall, 50) < 64
               AND COALESCE(potential, overall, 50) < 72
               {waiver_claim_cut_candidate_filter_sql()}
@@ -2753,6 +2888,13 @@ def waiver_claim_fit_score(
     deficit = max(0, target - group_count)
     cap_hit = active_contract_cap_hit(con, int(player["player_id"]), season)
     cap_space = team_cap_space(con, team_id)
+    waiver_date = str(waiver["claim_deadline"] or waiver["waiver_date"] or today(con))
+    if player_recently_moved(con, player_id=int(player["player_id"]), before_date=waiver_date):
+        return -95.0, "player recently moved teams"
+    if player_has_waiver_churn(con, player_id=int(player["player_id"]), before_date=waiver_date):
+        return -92.0, "player has already bounced around the waiver/practice-squad market"
+    if str(waiver["source"] or "") != "roster_cutdown" and team_claim_cooldown_active(con, team_id=team_id, before_date=waiver_date):
+        return -88.0, "team has already used recent waiver activity"
     if cap_hit > max(1_500_000, cap_space + 1_000_000):
         return -100.0, f"cap space cannot absorb {format_money(cap_hit)} claim"
     if active_count > active_limit + 1:
@@ -2839,6 +2981,12 @@ def seed_cpu_waiver_claims(
         player = con.execute("SELECT * FROM players WHERE player_id = ?", (waiver["player_id"],)).fetchone()
         if not player:
             continue
+        waiver_reference_date = str(waiver["claim_deadline"] or waiver["waiver_date"] or claim_date or today(con))
+        if str(waiver["source"] or "") != "roster_cutdown":
+            if player_recently_moved(con, player_id=int(player["player_id"]), before_date=waiver_reference_date):
+                continue
+            if player_has_waiver_churn(con, player_id=int(player["player_id"]), before_date=waiver_reference_date):
+                continue
         fits: list[tuple[float, str, sqlite3.Row]] = []
         for team in teams:
             team_id = int(team["team_id"])
@@ -2847,6 +2995,12 @@ def seed_cpu_waiver_claims(
             if not include_user_team and user_team_id is not None and team_id == user_team_id:
                 continue
             if claims_by_team.get(team_id, 0) >= max_claims_per_team:
+                continue
+            if str(waiver["source"] or "") != "roster_cutdown" and team_claim_cooldown_active(
+                con,
+                team_id=team_id,
+                before_date=waiver_reference_date,
+            ):
                 continue
             evaluated += 1
             score, reason = waiver_claim_fit_score(
@@ -3112,13 +3266,13 @@ def make_room_for_waiver_claim(
         target = WAIVER_CLAIM_GROUP_TARGETS.get(group, 4)
         candidate = None
         if active_group_count(con, team_id, group) > target:
-            candidate = con.execute(
+            candidates = con.execute(
                 f"""
                 SELECT *
                 FROM players
                 WHERE team_id = ?
                   AND player_id != ?
-                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  AND status = 'Active'
                   AND position IN ({placeholders})
                   {waiver_claim_cut_candidate_filter_sql(allow_specialists=(group == "ST"))}
                 ORDER BY
@@ -3126,18 +3280,22 @@ def make_room_for_waiver_claim(
                   COALESCE(overall, 50),
                   COALESCE(potential, overall, 50),
                   age DESC
-                LIMIT 1
+                LIMIT 8
                 """,
                 (team_id, claimed_player_id, *positions),
-            ).fetchone()
+            ).fetchall()
+            for row in candidates:
+                if not player_recently_moved(con, player_id=int(row["player_id"]), before_date=waiver_date):
+                    candidate = row
+                    break
         if not candidate:
-            candidate = con.execute(
+            candidates = con.execute(
                 f"""
                 SELECT *
                 FROM players
                 WHERE team_id = ?
                   AND player_id != ?
-                  AND status IN ('Active', 'Questionable', 'Doubtful', 'Out')
+                  AND status = 'Active'
                   {waiver_claim_cut_candidate_filter_sql()}
                 ORDER BY
                   CASE WHEN position IN ('QB','K','P','LS') THEN 1 ELSE 0 END,
@@ -3145,10 +3303,14 @@ def make_room_for_waiver_claim(
                   COALESCE(overall, 50),
                   COALESCE(potential, overall, 50),
                   age DESC
-                LIMIT 1
+                LIMIT 8
                 """,
                 (team_id, claimed_player_id),
-            ).fetchone()
+            ).fetchall()
+            for row in candidates:
+                if not player_recently_moved(con, player_id=int(row["player_id"]), before_date=waiver_date):
+                    candidate = row
+                    break
         if not candidate:
             break
         reason = "Corresponding roster move after waiver claim."
@@ -3178,6 +3340,7 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
     seed_rules(con)
     process_date = args.date or today(con)
     defer_cap_sync = bool(getattr(args, "defer_cap_sync", False))
+    quiet = bool(getattr(args, "quiet", False))
     rows = con.execute(
         """
         SELECT *
@@ -3189,7 +3352,8 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
         (1 if args.all_open else 0, process_date),
     ).fetchall()
     if not rows:
-        print("No waiver entries ready to process.")
+        if not quiet:
+            print("No waiver entries ready to process.")
         return {"processed": 0, "claimed": 0, "cleared": 0}
 
     processed = 0
@@ -3267,11 +3431,12 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 description=f"{winner['claiming_team']} awarded waiver claim for {player_name(player)}.",
                 transaction_date=process_date,
             )
-            print(
-                f"Awarded {player_name(player)} to {winner['claiming_team']} "
-                f"(waiver {waiver['waiver_id']}, transaction {transaction_id}, "
-                f"{corresponding_moves} corresponding move(s))."
-            )
+            if not quiet:
+                print(
+                    f"Awarded {player_name(player)} to {winner['claiming_team']} "
+                    f"(waiver {waiver['waiver_id']}, transaction {transaction_id}, "
+                    f"{corresponding_moves} corresponding move(s))."
+                )
             claimed_count += 1
         else:
             contract_id = deactivate_active_contract(con, waiver["player_id"])
@@ -3314,16 +3479,18 @@ def action_process_waivers(con: sqlite3.Connection, args: argparse.Namespace) ->
                 description=f"{player_name(player)} cleared waivers and became a free agent.",
                 transaction_date=process_date,
             )
-            print(
-                f"{player_name(player)} cleared waivers "
-                f"(waiver {waiver['waiver_id']}, transaction {transaction_id})."
-            )
+            if not quiet:
+                print(
+                    f"{player_name(player)} cleared waivers "
+                    f"(waiver {waiver['waiver_id']}, transaction {transaction_id})."
+                )
             cleared_count += 1
         processed += 1
     if not defer_cap_sync:
         rebuild_contract_years(con)
         sync_team_cap_space(con)
-    print(f"Processed {processed} waiver entr{'y' if processed == 1 else 'ies'}.")
+    if not quiet:
+        print(f"Processed {processed} waiver entr{'y' if processed == 1 else 'ies'}.")
     return {"processed": processed, "claimed": claimed_count, "cleared": cleared_count}
 
 
@@ -3380,7 +3547,7 @@ def settle_expired_waivers(
         )
         process_result = action_process_waivers(
             con,
-            argparse.Namespace(date=process_date, all_open=False, defer_cap_sync=True),
+            argparse.Namespace(date=process_date, all_open=False, defer_cap_sync=True, quiet=True),
         )
         total_claims += int(claim_result.get("claims", 0))
         total_processed += int((process_result or {}).get("processed", 0))
@@ -4017,6 +4184,7 @@ def main() -> int:
     process_parser = subparsers.add_parser("process-waivers", help="Process waiver entries whose deadlines have passed.")
     process_parser.add_argument("--date")
     process_parser.add_argument("--all-open", action="store_true", help="Process all open waivers regardless of deadline.")
+    process_parser.add_argument("--quiet", action="store_true", help="Suppress per-player waiver output.")
     process_parser.add_argument("--dry-run", action="store_true")
 
     sign_ps_parser = subparsers.add_parser("sign-ps", help="Sign a player to a practice squad.")

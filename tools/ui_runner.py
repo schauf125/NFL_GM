@@ -2817,7 +2817,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             or (state.get("freeAgency") or {}).get("startDate")
             or f"{free_agency_year}-03-10"
         )
-        return play(
+        command = [
             "free-agency",
             "start",
             "--league-year",
@@ -2832,9 +2832,12 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(params.get("cpu_retention_per_team") or 1)),
             "--no-cap-snapshot",
             "--apply",
-        )
+        ]
+        if cpu_manage_user:
+            command.append("--cpu-controls-user-team")
+        return play(*command)
     if action == "free_agency_advance_hour":
-        return play(
+        command = [
             "free-agency",
             "advance-hour",
             "--league-year",
@@ -2843,10 +2846,13 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(params.get("cpu_offers") or 44)),
             "--no-cap-snapshot",
             "--apply",
-        )
+        ]
+        if cpu_manage_user:
+            command.append("--cpu-controls-user-team")
+        return play(*command)
     if action == "free_agency_advance_day":
         days = int(params.get("days") or 1)
-        return play(
+        command = [
             "free-agency",
             "advance-day",
             "--league-year",
@@ -2857,7 +2863,10 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(params.get("cpu_offers") or 36)),
             "--no-cap-snapshot",
             "--apply",
-        )
+        ]
+        if cpu_manage_user:
+            command.append("--cpu-controls-user-team")
+        return play(*command)
     if action == "free_agency_offer":
         if not user_team:
             raise ValueError("Free-agent offers require a team-controlled save.")
@@ -2893,7 +2902,7 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             command.extend(["--cpu-response-offers", str(int(params["cpu_response_offers"]))])
         return play(*command)
     if action == "free_agency_cpu_seed":
-        return play(
+        command = [
             "free-agency",
             "cpu-seed",
             "--league-year",
@@ -2902,7 +2911,10 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(int(params.get("cpu_offers") or 64)),
             "--no-cap-snapshot",
             "--apply",
-        )
+        ]
+        if cpu_manage_user:
+            command.append("--cpu-controls-user-team")
+        return play(*command)
     if action == "waiver_claim":
         if not user_team:
             raise ValueError("Waiver claims require a team-controlled save.")
@@ -2999,10 +3011,10 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
             str(max(remaining, 1)),
             "--until-user-pick",
             "--no-cap-snapshot",
+            "--no-pause-on-trade",
+            "--commit-each",
             "--apply",
         )
-        if observe_mode:
-            command.append("--no-pause-on-trade")
         return command
     if action == "draft_finish":
         remaining = remaining_draft_pick_count(draft_year)
@@ -3485,6 +3497,8 @@ def action_command(action: str, params: dict[str, Any], state: dict[str, Any]) -
         command = ["scouting", "mark-read"]
         if params.get("message_id"):
             command.extend(["--message-id", str(int(params["message_id"]))])
+        for message_id in params.get("message_ids") or []:
+            command.extend(["--message-id", str(int(message_id))])
         scope = str(params.get("scope") or "").strip().lower()
         category = str(params.get("category") or "").strip()
         exclude_category = str(params.get("exclude_category") or "").strip()

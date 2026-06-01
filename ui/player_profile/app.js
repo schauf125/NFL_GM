@@ -99,6 +99,25 @@
     return String(value);
   }
 
+  function whole(value) {
+    if (value === null || value === undefined || value === "") {
+      return "-";
+    }
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return fmt(value);
+    }
+    return new Intl.NumberFormat().format(Math.round(number));
+  }
+
+  function decimal(value, digits = 1) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      return "-";
+    }
+    return number.toFixed(digits);
+  }
+
   function shortDateTime(value) {
     if (!value) {
       return "";
@@ -207,6 +226,26 @@
     url.searchParams.set("name", player.name || "");
     url.searchParams.set("team", playerTeam(player));
     url.searchParams.set("position", player.position || "");
+    url.searchParams.set("returnTo", currentPageHref());
+    return `${url.pathname}${url.search}`;
+  }
+
+  function gameCenterHref(view, player, extra = {}) {
+    const url = new URL("../game_center/index.html", window.location.href);
+    if (view) {
+      url.searchParams.set("view", view);
+    }
+    if (player) {
+      url.searchParams.set("player", playerId(player));
+      if (playerTeam(player) && playerTeam(player) !== "FA") {
+        url.searchParams.set("team", playerTeam(player));
+      }
+    }
+    Object.entries(extra).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, value);
+      }
+    });
     url.searchParams.set("returnTo", currentPageHref());
     return `${url.pathname}${url.search}`;
   }
@@ -343,6 +382,674 @@
 
   function currentRead(player) {
     return bestRole(player).grade;
+  }
+
+  function shortDate(value) {
+    if (!value) {
+      return "";
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return value;
+    }
+    return parsed.toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
+
+  function clipText(value, limit = 118) {
+    const text = String(value || "").trim();
+    if (text.length <= limit) {
+      return text;
+    }
+    return `${text.slice(0, Math.max(0, limit - 1)).trim()}...`;
+  }
+
+  function accuracyText(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return "";
+    }
+    return `${Math.round(Math.max(0, Math.min(1, numeric)) * 100)}%`;
+  }
+
+  function evaluationTone(evaluation) {
+    if (!evaluation) {
+      return "warn";
+    }
+    const average = [evaluation.overallAccuracy, evaluation.potentialAccuracy]
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .reduce((sum, value, index, values) => (index === values.length - 1 ? (sum + value) / values.length : sum + value), 0);
+    const label = String(evaluation.confidenceLabel || evaluation.confidence || "").toLowerCase();
+    if (label.includes("firm") || average >= 0.82) {
+      return "good";
+    }
+    if (label.includes("cloudy") || average < 0.5) {
+      return "warn";
+    }
+    return "neutral";
+  }
+
+  function evaluationAccuracyDetail(evaluation) {
+    if (!evaluation) {
+      return "Ratings are still forming.";
+    }
+    const parts = [];
+    const overall = accuracyText(evaluation.overallAccuracy);
+    const potential = accuracyText(evaluation.potentialAccuracy);
+    if (overall) {
+      parts.push(`${overall} current`);
+    }
+    if (potential) {
+      parts.push(`${potential} potential`);
+    }
+    return parts.length ? parts.join(" / ") : "Ratings are still forming.";
+  }
+
+  function roleSignal(player) {
+    const role = bestRole(player);
+    const value = Number(role.value || 0);
+    const tone = value >= 82 ? "good" : value >= 66 ? "neutral" : "warn";
+    return {
+      label: "Role",
+      value: role.grade || currentRead(player),
+      note: role.label || "Depth Role",
+      tone,
+    };
+  }
+
+  function evaluationSignal(player) {
+    const evaluation = player.evaluation || {};
+    const revealAge = evaluation.revealAge ? ` Fuller read near age ${evaluation.revealAge}.` : "";
+    const note = clipText(`${evaluationAccuracyDetail(evaluation)}. ${evaluation.confidenceNote || "More snaps and staff events will sharpen this read."}${revealAge}`, 138);
+    return {
+      label: "Staff Read",
+      value: evaluation.confidenceLabel || evaluation.confidence || "Cloudy",
+      note,
+      tone: evaluationTone(evaluation),
+    };
+  }
+
+  function contractSignal(player) {
+    const contract = player.contract;
+    const freeAgency = player.freeAgency;
+    if (contract) {
+      const range = contract.endYear ? `Signed through ${contract.endYear}` : "Under contract";
+      const dead = Number(contract.deadPreJune1 || 0) > 0 ? ` | ${money(contract.deadPreJune1)} dead` : "";
+      return {
+        label: "Contract",
+        value: range,
+        note: `${money(contract.capHit)} cap${dead}`,
+        tone: "neutral",
+      };
+    }
+    if (freeAgency) {
+      return {
+        label: "Contract",
+        value: freeAgency.marketTier || "Free Agent",
+        note: `${money(freeAgency.askingAav)} ask${freeAgency.preferredYears ? ` | ${freeAgency.preferredYears} yr pref` : ""}`,
+        tone: "warn",
+      };
+    }
+    return {
+      label: "Contract",
+      value: "No Active Deal",
+      note: "Open roster decision.",
+      tone: "warn",
+    };
+  }
+
+  function availabilitySignal(player) {
+    const medical = player.medical || {};
+    const active = (medical.active || [])[0];
+    if (active) {
+      const expected = active.expectedGames ? `${active.expectedGames} game outlook` : active.returnEarliestDate ? `possible return ${shortDate(active.returnEarliestDate)}` : "timeline pending";
+      return {
+        label: "Availability",
+        value: active.status || "Injured",
+        note: clipText(`${active.injury || "Injury"} | ${expected}`, 118),
+        tone: "bad",
+      };
+    }
+    const risk = (medical.bodyRisk || [])[0];
+    if (risk && Number(risk.recurrenceRisk || 0) >= 30) {
+      return {
+        label: "Availability",
+        value: player.profile.status || "Active",
+        note: `${risk.bodyPart || "Medical"} recurrence risk ${risk.recurrenceRisk}%`,
+        tone: "warn",
+      };
+    }
+    return {
+      label: "Availability",
+      value: player.profile.status || "Active",
+      note: "No active injury designation.",
+      tone: "good",
+    };
+  }
+
+  function seasonProductionText(player, seasonRow) {
+    const pos = String(player.position || "").toUpperCase();
+    if (!seasonRow) {
+      return "";
+    }
+    const gamesText = `${fmt(seasonRow.games)} games`;
+    if (pos === "QB") {
+      return `${fmt(seasonRow.passing_yards)} pass yds, ${fmt(seasonRow.passing_tds)}-${fmt(seasonRow.passing_interceptions)} TD-INT`;
+    }
+    if (["RB", "FB"].includes(pos)) {
+      return `${fmt(seasonRow.rushing_yards)} rush yds, ${fmt(seasonRow.rushing_tds)} TD`;
+    }
+    if (["WR", "TE"].includes(pos)) {
+      return `${fmt(seasonRow.receiving_yards)} rec yds, ${fmt(seasonRow.receptions)} rec`;
+    }
+    if (pos === "K") {
+      return `${fmt(seasonRow.fg_made)}/${fmt(seasonRow.fg_att)} FG, long ${fmt(seasonRow.fg_long)}`;
+    }
+    if (["OT", "OG", "C", "LS", "P"].includes(pos)) {
+      return gamesText;
+    }
+    const combined = Number.isFinite(Number(seasonRow.def_tackles_combined))
+      ? Number(seasonRow.def_tackles_combined)
+      : (Number(seasonRow.def_tackles_solo || 0) + Number(seasonRow.def_tackle_assists || 0));
+    return `${fmt(combined)} tackles, ${fmt(seasonRow.def_sacks)} sacks, ${fmt(seasonRow.def_interceptions)} INT`;
+  }
+
+  function seasonRows(player) {
+    return (player.seasonStats || [])
+      .slice()
+      .filter(Boolean)
+      .sort((a, b) => Number(b.season || 0) - Number(a.season || 0));
+  }
+
+  function statNumber(row, key) {
+    const value = Number(row?.[key]);
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  function combinedTackles(row) {
+    if (Number.isFinite(Number(row?.def_tackles_combined))) {
+      return statNumber(row, "def_tackles_combined");
+    }
+    return statNumber(row, "def_tackles_solo") + statNumber(row, "def_tackle_assists");
+  }
+
+  function positionSide(position) {
+    const pos = String(position || "").toUpperCase();
+    if (["QB", "RB", "FB", "WR", "TE", "OT", "OG", "C"].includes(pos)) {
+      return "offense";
+    }
+    if (["K", "P", "LS"].includes(pos)) {
+      return "specialist";
+    }
+    return "defense";
+  }
+
+  function primaryProductionMetric(player, row) {
+    const pos = String(player.position || "").toUpperCase();
+    if (!row) {
+      return { label: "Production", value: "No stat row", raw: null, note: "No completed regular-season sample yet." };
+    }
+    if (pos === "QB") {
+      return {
+        label: "Pass Yards",
+        value: `${whole(row.passing_yards)} yards`,
+        raw: statNumber(row, "passing_yards"),
+        note: `${whole(row.passing_tds)}-${whole(row.passing_interceptions)} TD-INT | ${whole(row.sacks_suffered)} sacks`,
+      };
+    }
+    if (["RB", "FB"].includes(pos)) {
+      const scrimmage = statNumber(row, "rushing_yards") + statNumber(row, "receiving_yards");
+      return {
+        label: "Scrimmage",
+        value: `${whole(scrimmage)} yards`,
+        raw: scrimmage,
+        note: `${whole(row.carries)} carries | ${whole(row.receptions)} catches`,
+      };
+    }
+    if (["WR", "TE"].includes(pos)) {
+      const avg = statNumber(row, "receptions") > 0 ? statNumber(row, "receiving_yards") / statNumber(row, "receptions") : null;
+      return {
+        label: "Receiving",
+        value: `${whole(row.receiving_yards)} yards`,
+        raw: statNumber(row, "receiving_yards"),
+        note: `${whole(row.receptions)}/${whole(row.targets)} rec/tgt${avg !== null ? ` | ${decimal(avg)} avg` : ""}`,
+      };
+    }
+    if (pos === "K") {
+      return {
+        label: "Kicking",
+        value: `${whole(row.fg_made)}/${whole(row.fg_att)} FG`,
+        raw: statNumber(row, "fg_made"),
+        note: `Long ${whole(row.fg_long)} | ${whole(row.pat_made)}/${whole(row.pat_att)} XP`,
+      };
+    }
+    if (["P", "LS", "OT", "OG", "C"].includes(pos)) {
+      return {
+        label: "Availability",
+        value: `${whole(row.games)} games`,
+        raw: statNumber(row, "games"),
+        note: "Line and specialist value leans on usage and role stability.",
+      };
+    }
+    if (["EDGE", "IDL", "DE", "DT", "NT"].includes(pos)) {
+      return {
+        label: "Pass Rush",
+        value: `${decimal(row.def_sacks)} sacks`,
+        raw: statNumber(row, "def_sacks"),
+        note: `${whole(combinedTackles(row))} tackles | ${whole(row.def_fumbles_forced)} FF`,
+      };
+    }
+    if (["CB", "NB", "S", "FS", "SS"].includes(pos)) {
+      return {
+        label: "Coverage",
+        value: `${whole(row.def_interceptions)} INT`,
+        raw: statNumber(row, "def_interceptions") * 20 + statNumber(row, "def_pass_defended"),
+        note: `${whole(row.def_pass_defended)} PD | ${whole(combinedTackles(row))} tackles`,
+      };
+    }
+    return {
+      label: "Defense",
+      value: `${whole(combinedTackles(row))} tackles`,
+      raw: combinedTackles(row),
+      note: `${decimal(row.def_sacks)} sacks | ${whole(row.def_interceptions)} INT`,
+    };
+  }
+
+  function primarySnapMetric(player, row) {
+    if (!row) {
+      return { label: "Usage", value: "No sample", raw: null, total: 0, note: "No completed regular-season sample yet." };
+    }
+    const side = positionSide(player.position);
+    const offensive = statNumber(row, "offensive_snaps");
+    const defensive = statNumber(row, "defensive_snaps");
+    const special = statNumber(row, "special_teams_snaps");
+    const total = statNumber(row, "total_snaps") || offensive + defensive + special;
+    if (total <= 0) {
+      return {
+        label: "Usage",
+        value: `${whole(row.games)} games`,
+        raw: statNumber(row, "games"),
+        total: 0,
+        note: "Snap data appears after simulated games.",
+      };
+    }
+    if (side === "offense") {
+      return {
+        label: "Usage",
+        value: `${whole(offensive)} offensive snaps`,
+        raw: offensive,
+        total,
+        note: `${whole(total)} total | ${whole(special)} special teams`,
+      };
+    }
+    if (side === "specialist") {
+      return {
+        label: "Usage",
+        value: `${whole(special || total)} special teams snaps`,
+        raw: special || total,
+        total,
+        note: `${whole(total)} total snaps`,
+      };
+    }
+    return {
+      label: "Usage",
+      value: `${whole(defensive)} defensive snaps`,
+      raw: defensive,
+      total,
+      note: `${whole(total)} total | ${whole(special)} special teams`,
+    };
+  }
+
+  function trendDelta(current, previous, label) {
+    if (!current || current.raw === null || current.raw === undefined || !previous || previous.raw === null || previous.raw === undefined) {
+      return {
+        value: "New sample",
+        note: previous ? `No comparable ${label.toLowerCase()} metric.` : "No prior season row to compare.",
+        tone: "neutral",
+      };
+    }
+    const delta = Number(current.raw) - Number(previous.raw);
+    if (!Number.isFinite(delta) || Math.abs(delta) < 0.5) {
+      return {
+        value: "Steady",
+        note: `Nearly unchanged from ${previous.season || "prior season"}.`,
+        tone: "neutral",
+      };
+    }
+    return {
+      value: `${delta > 0 ? "+" : ""}${whole(delta)}`,
+      note: `${label} vs ${previous.season || "prior season"}.`,
+      tone: delta > 0 ? "good" : "warn",
+    };
+  }
+
+  function snapSplit(row) {
+    const offensive = statNumber(row, "offensive_snaps");
+    const defensive = statNumber(row, "defensive_snaps");
+    const special = statNumber(row, "special_teams_snaps");
+    const total = statNumber(row, "total_snaps") || offensive + defensive + special;
+    if (total <= 0) {
+      return null;
+    }
+    const split = node("div", "snap-split");
+    [
+      ["Off", offensive, "off"],
+      ["Def", defensive, "def"],
+      ["ST", special, "st"],
+    ].filter(([, value]) => value > 0).forEach(([label, value, key]) => {
+      const segment = node("span", `snap-segment ${key}`, label);
+      segment.style.setProperty("--share", `${Math.max(7, Math.round((value / total) * 100))}%`);
+      split.append(segment);
+    });
+    return split;
+  }
+
+  function trendCard(label, value, note, tone, detail) {
+    const card = node("article", `profile-trend-card ${tone || "neutral"}`.trim());
+    append(card, [
+      node("span", "section-title", label),
+      node("strong", null, value || "-"),
+      note ? node("p", null, note) : null,
+    ]);
+    if (detail) {
+      card.append(detail);
+    }
+    return card;
+  }
+
+  function recentPerformancePanel(player) {
+    const rows = seasonRows(player);
+    const latest = rows[0];
+    const previous = latest ? rows.find((row) => Number(row.season || 0) < Number(latest.season || 0)) : null;
+    const latestProduction = primaryProductionMetric(player, latest);
+    const previousProduction = previous ? primaryProductionMetric(player, previous) : null;
+    const productionTrend = trendDelta(
+      latest ? { ...latestProduction, season: latest.season } : null,
+      previous ? { ...previousProduction, season: previous.season } : null,
+      latestProduction.label || "Production",
+    );
+    const usage = primarySnapMetric(player, latest);
+    const previousUsage = previous ? primarySnapMetric(player, previous) : null;
+    const usageTrend = trendDelta(
+      latest ? { ...usage, season: latest.season } : null,
+      previous ? { ...previousUsage, season: previous.season } : null,
+      "Usage",
+    );
+
+    const container = panel("Recent Form", latest ? `${latest.season} regular season` : "Current sample");
+    const cards = node("section", "profile-trend-grid");
+    append(cards, [
+      trendCard(latestProduction.label, latestProduction.value, latest ? `${latest.stat_team || player.team.abbr} | ${latestProduction.note}` : latestProduction.note, "neutral"),
+      trendCard("Production Trend", productionTrend.value, productionTrend.note, productionTrend.tone),
+      trendCard(usage.label, usage.value, usage.note, usage.total > 0 ? "good" : "neutral", snapSplit(latest)),
+      trendCard("Usage Trend", usageTrend.value, usageTrend.note, usageTrend.tone),
+    ]);
+    container.append(cards);
+    return container;
+  }
+
+  function developmentTone(player) {
+    const trait = String(player.profile?.devTrait || "Normal").toLowerCase();
+    if (["x-factor", "superstar", "elite"].some((label) => trait.includes(label))) {
+      return "good";
+    }
+    if (trait.includes("star") || trait.includes("impact")) {
+      return "neutral";
+    }
+    return "neutral";
+  }
+
+  function developmentPosture(player) {
+    const evaluation = player.evaluation || {};
+    const trait = player.profile?.devTrait || "Normal";
+    const age = Number(player.profile?.age);
+    const confidence = String(evaluation.confidenceLabel || evaluation.confidence || "Cloudy");
+    if (Number.isFinite(age) && age <= 24) {
+      return `${trait} development track with a ${confidence.toLowerCase()} staff read. Snaps, camp reports, and season review events will sharpen the picture.`;
+    }
+    if (Number.isFinite(age) && age >= 30) {
+      return `${trait} development track. Veteran movement is more about role stability, health, and age curve than hidden upside.`;
+    }
+    return `${trait} development track with a ${confidence.toLowerCase()} staff read. Recent staff events carry the strongest visible signal.`;
+  }
+
+  function personalityTone(trait) {
+    const polarity = String(trait?.polarity || "").toLowerCase();
+    if (polarity === "positive") return "good";
+    if (polarity === "negative") return "warn";
+    return "neutral";
+  }
+
+  function developmentNotes(player) {
+    const rows = (player.developmentNotes || []).map((item) => ({
+      ...item,
+      sourceType: item.type || "staff",
+    }));
+    (player.careerStories || []).forEach((story) => {
+      const blob = `${story.type || ""} ${story.title || ""} ${story.summary || ""}`.toLowerCase();
+      if (!/(development|camp|preseason|personality|practice|progression)/.test(blob)) {
+        return;
+      }
+      rows.push({
+        date: story.date,
+        type: story.type || "story",
+        sourceType: "story",
+        source: story.team ? `${story.team} File` : "Career File",
+        title: story.title,
+        summary: story.summary,
+        priority: story.tier || "normal",
+        visibility: "Career archive",
+      });
+    });
+    const seen = new Set();
+    return rows
+      .filter((item) => {
+        const key = `${item.date || ""}|${item.title || ""}|${item.summary || ""}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
+      .slice(0, 5);
+  }
+
+  function developmentNotesPanel(player) {
+    const notes = developmentNotes(player);
+    const traits = player.personality || [];
+    const container = panel("Development Notes", traits.length || notes.length ? "Revealed staff signals" : "No revealed notes yet");
+    const top = node("section", "development-signal-grid");
+    const posture = node("article", `development-signal-card ${developmentTone(player)}`);
+    append(posture, [
+      node("span", "section-title", "Development Track"),
+      node("strong", null, player.profile?.devTrait || "Normal"),
+      node("p", null, developmentPosture(player)),
+    ]);
+    const traitsCard = node("article", "development-signal-card");
+    append(traitsCard, [
+      node("span", "section-title", "Revealed Traits"),
+      node("strong", null, traits.length ? `${traits.length} known` : "None revealed"),
+    ]);
+    const traitWrap = node("div", "personality-pill-row");
+    if (traits.length) {
+      traits.forEach((trait) => {
+        const pill = node("span", `personality-pill ${personalityTone(trait)}`);
+        pill.textContent = `${trait.label || "Trait"} · ${trait.strength || "Known"}`;
+        traitWrap.append(pill);
+      });
+    } else {
+      traitWrap.append(node("p", "subtle", "Camp, practice, and staff events can reveal more over time."));
+    }
+    traitsCard.append(traitWrap);
+    top.append(posture, traitsCard);
+    container.append(top);
+
+    if (!notes.length) {
+      container.append(node("div", "empty-state compact", "No development or personality note has been revealed for this player yet."));
+      return container;
+    }
+
+    const list = node("div", "development-note-list");
+    notes.forEach((item) => {
+      const row = node("article", `development-note-row ${item.tone || item.priority || "normal"}`.trim());
+      const meta = [
+        shortDate(item.date),
+        item.source,
+        item.visibility,
+      ].filter(Boolean).join(" | ");
+      append(row, [
+        append(node("div"), [
+          node("strong", null, item.title || "Staff Note"),
+          node("p", null, clipText(item.summary || "", 210)),
+          meta ? node("small", null, meta) : null,
+        ]),
+        node("span", "grade", item.type || "note"),
+      ]);
+      list.append(row);
+    });
+    container.append(list);
+    return container;
+  }
+
+  function actionLink(label, view, player, note, tone, extra) {
+    const link = node("a", `profile-action-card ${tone || ""}`.trim());
+    link.href = gameCenterHref(view, player, extra);
+    append(link, [
+      node("strong", null, label),
+      note ? node("span", null, note) : null,
+    ]);
+    return link;
+  }
+
+  function profileActionPanel(player) {
+    const status = String(player.profile?.status || "Active");
+    const rostered = playerTeam(player) && playerTeam(player) !== "FA";
+    const hasActiveInjury = Boolean((player.medical?.active || [])[0]);
+    const hasContract = Boolean(player.contract);
+    const freeAgent = Boolean(player.freeAgency) || !rostered || !hasContract;
+    const container = panel("Front Office Actions", rostered ? playerTeam(player) : "Free Agent");
+    const grid = node("section", "profile-action-grid");
+    if (rostered) {
+      grid.append(actionLink("Open Roster", "roster", player, "View role, contract, status, and roster tools.", "primary"));
+      grid.append(actionLink("Depth Chart", "depth", player, "Set package usage and formation roles."));
+      grid.append(actionLink("Trade Center", "trades", player, "Build player and pick packages."));
+    } else {
+      grid.append(actionLink("Free Agency", "freeAgency", player, "Review market ask and submit offers.", "primary"));
+    }
+    if (hasContract) {
+      grid.append(actionLink("Contracts", "contracts", player, "Review extension, restructure, tag, and cap context."));
+    }
+    if (freeAgent) {
+      grid.append(actionLink("Free Agency", "freeAgency", player, "Compare demand, role fit, and offer status.", rostered ? "" : "primary"));
+    }
+    if (hasActiveInjury || /ir|pup|nfi|out|doubtful/i.test(status)) {
+      grid.append(actionLink("Medical Board", "injuries", player, "Review injury status and reserve decisions.", "warn"));
+    }
+    if (!grid.children.length) {
+      grid.append(node("div", "empty-state compact", "No roster action is available for this profile yet."));
+    }
+    container.append(grid);
+    container.append(node("p", "profile-action-note", "These shortcuts open the right front-office screen. Save-changing moves still happen from the roster, contract, free agency, trade, or medical tools."));
+    return container;
+  }
+
+  function recentSignal(player) {
+    const story = (player.careerStories || [])[0];
+    if (story) {
+      return {
+        label: "Latest Signal",
+        value: story.title || "Staff Note",
+        note: clipText(`${story.date ? `${shortDate(story.date)} | ` : ""}${story.summary || "Recent team note."}`, 132),
+        tone: story.tier === "major" ? "good" : "neutral",
+      };
+    }
+    const injuryEvent = (player.medical?.recentEvents || [])[0];
+    if (injuryEvent) {
+      return {
+        label: "Latest Signal",
+        value: injuryEvent.status || "Medical Note",
+        note: clipText(`${injuryEvent.date ? `${shortDate(injuryEvent.date)} | ` : ""}${injuryEvent.description || injuryEvent.injury || "Recent medical update."}`, 132),
+        tone: "warn",
+      };
+    }
+    const milestone = (player.milestones || [])[0];
+    if (milestone) {
+      return {
+        label: "Latest Signal",
+        value: milestone.name || "Milestone",
+        note: `${milestone.season || data.season} | ${milestone.value || milestone.group || "Career mark"}`,
+        tone: "good",
+      };
+    }
+    const latestSeason = (player.seasonStats || [])
+      .slice()
+      .sort((a, b) => Number(b.season || 0) - Number(a.season || 0))[0];
+    if (latestSeason) {
+      return {
+        label: "Latest Season",
+        value: `${latestSeason.season || data.season}`,
+        note: seasonProductionText(player, latestSeason) || `${fmt(latestSeason.games)} games`,
+        tone: "neutral",
+      };
+    }
+    const transaction = (player.transactions || [])[0];
+    if (transaction) {
+      return {
+        label: "Latest Signal",
+        value: transaction.type || "Transaction",
+        note: clipText(`${transaction.date ? `${shortDate(transaction.date)} | ` : ""}${transaction.description || transaction.team || ""}`, 132),
+        tone: "neutral",
+      };
+    }
+    return {
+      label: "Latest Signal",
+      value: "No recent note",
+      note: "Staff file has no recent event logged.",
+      tone: "neutral",
+    };
+  }
+
+  function summaryCard(signal) {
+    const card = node("article", `profile-summary-card ${signal.tone || "neutral"}`);
+    append(card, [
+      node("span", "section-title", signal.label),
+      node("strong", null, signal.value || "-"),
+      node("p", null, signal.note || ""),
+    ]);
+    return card;
+  }
+
+  function playerSummaryBand(player) {
+    const band = node("section", "profile-summary-band", null);
+    [
+      roleSignal(player),
+      evaluationSignal(player),
+      contractSignal(player),
+      availabilitySignal(player),
+      recentSignal(player),
+    ].forEach((signal) => band.append(summaryCard(signal)));
+    return band;
+  }
+
+  function evaluationContextPanel(player) {
+    const evaluation = player.evaluation;
+    if (!evaluation) {
+      return null;
+    }
+    const confidencePanel = panel("Staff Read", evaluation.confidenceLabel || evaluation.confidence || "Cloudy");
+    const note = node("div", `evaluation-context ${evaluationTone(evaluation)}`);
+    append(note, [
+      node("strong", null, evaluationAccuracyDetail(evaluation)),
+      node("p", null, clipText(evaluation.confidenceNote || "More snaps, practices, and staff events will sharpen the visible ratings.", 180)),
+    ]);
+    if (evaluation.revealAge) {
+      note.append(node("small", null, `Typical full confidence window: age ${evaluation.revealAge}.`));
+    }
+    confidencePanel.append(note);
+    return confidencePanel;
   }
 
   function accoladeData(player) {
@@ -606,6 +1313,8 @@
     const career = player.career || {};
     const contract = player.contract;
 
+    root.append(playerSummaryBand(player));
+
     const summaryPanel = panel("Scouting Summary", "Profile");
     summaryPanel.append(node("p", "summary-text", player.summary));
     root.append(summaryPanel);
@@ -621,6 +1330,10 @@
     const metricsPanel = panel("Snapshot", player.position);
     metricsPanel.append(metrics);
     root.append(metricsPanel);
+
+    root.append(profileActionPanel(player));
+    root.append(recentPerformancePanel(player));
+    root.append(developmentNotesPanel(player));
 
     const grid = node("div", "grid-row");
     const facts = panel("Information", player.team.abbr);
@@ -667,6 +1380,11 @@
 
   function renderAttributes(player) {
     const root = document.createDocumentFragment();
+    const confidencePanel = evaluationContextPanel(player);
+    if (confidencePanel) {
+      root.append(confidencePanel);
+    }
+
     const flexPanel = panel("Position Flex", "Current / Potential");
     flexPanel.append(flexRows(player.flex));
     root.append(flexPanel);
@@ -1017,6 +1735,51 @@
   function renderHistory(player) {
     const root = document.createDocumentFragment();
     root.append(renderAccoladesPanel(player));
+
+    const milestones = player.milestones || [];
+    const milestonePanel = panel("Career Milestones", milestones.length ? `${milestones.length} logged` : "Career marks");
+    if (!milestones.length) {
+      milestonePanel.append(node("div", "empty-state", "No career milestones logged yet."));
+    } else {
+      const stack = node("div", "list-stack career-story-stack");
+      milestones.forEach((item) => {
+        const row = node("div", "career-story-row");
+        append(row, [
+          append(node("div"), [
+            node("strong", null, item.name || "Milestone"),
+            node("div", "subtle", `${item.group || "Career"}${item.team ? ` | ${item.team}` : ""}`),
+          ]),
+          node("span", "season-badge", item.season || "-"),
+        ]);
+        stack.append(row);
+      });
+      milestonePanel.append(stack);
+    }
+    root.append(milestonePanel);
+
+    const stories = player.careerStories || [];
+    const storyPanel = panel("Career Stories", stories.length ? `${stories.length} entries` : "Storyline log");
+    if (!stories.length) {
+      storyPanel.append(node("div", "empty-state", "No career story events logged yet."));
+    } else {
+      const stack = node("div", "list-stack career-story-stack");
+      stories.forEach((item) => {
+        const row = node("div", `career-story-row story-${item.tier || "note"}`.trim());
+        append(row, [
+          append(node("div"), [
+            node("strong", null, item.title || "Story"),
+            node("div", "subtle", item.summary || ""),
+          ]),
+          append(node("div", "career-story-meta"), [
+            node("span", "season-badge", item.season || "-"),
+            item.team ? node("span", "grade", item.team) : null,
+          ]),
+        ]);
+        stack.append(row);
+      });
+      storyPanel.append(stack);
+    }
+    root.append(storyPanel);
 
     const historyPanel = panel("Transaction History", `${(player.transactions || []).length} rows`);
     if (!player.transactions || !player.transactions.length) {

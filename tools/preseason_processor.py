@@ -765,9 +765,30 @@ def process_free_agency_movement(
             force=True,
             no_cap_snapshot=True,
             skip_cap_cleanup=True,
+            sync_game_date=False,
             apply=True,
         )
-        return free_agency_processor.process_tick(con, args, days=max(1, days))
+        result = free_agency_processor.process_tick(con, args, days=max(1, days))
+        negative_cap = con.execute(
+            "SELECT 1 FROM team_cap_view WHERE cap_space < 0 LIMIT 1"
+        ).fetchone()
+        if negative_cap:
+            user_team = free_agency_processor.cpu_excluded_user_team(con, args)
+            cleanup = free_agency_processor.cpu_cap_compliance_sweep(
+                con,
+                league_year,
+                user_team=user_team,
+                min_space=1_000_000,
+                max_moves_per_team=4,
+                max_teams=16,
+                time_budget_seconds=12.0,
+                write_snapshot=False,
+            )
+            result["cap_cleanup_teams"] = int(cleanup.get("teams", 0) or 0)
+            result["cap_cleanup_restructures"] = int(cleanup.get("restructures", 0) or 0)
+            result["cap_cleanup_releases"] = int(cleanup.get("releases", 0) or 0)
+            result["cap_cleanup_still_over"] = int(cleanup.get("still_over", 0) or 0)
+        return result
     except Exception as exc:
         free_agency_processor.log_event(
             con,

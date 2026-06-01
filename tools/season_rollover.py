@@ -20,10 +20,13 @@ import game_flow  # noqa: E402
 import daily_processor  # noqa: E402
 import league_calendar  # noqa: E402
 import league_schedule  # noqa: E402
+import history_archive  # noqa: E402
+import league_balance_dashboards  # noqa: E402
 import player_accolades  # noqa: E402
 import player_progression  # noqa: E402
 import player_retirement  # noqa: E402
 import postseason  # noqa: E402
+import talent_supply_guardrails  # noqa: E402
 from engine import match_engine  # noqa: E402
 
 
@@ -431,6 +434,12 @@ def action_complete(args: argparse.Namespace) -> None:
                 print(f"  Would generate season awards and player accolades for {args.season}.")
             if not args.no_retirements:
                 print("  Would run offseason retirement decisions.")
+            if not args.no_talent_guardrails:
+                print(f"  Would snapshot league talent supply for {next_season} and flag drift.")
+            if not args.no_balance_dashboards:
+                print(f"  Would snapshot long-term balance dashboards for {next_season}.")
+            if not args.no_history_archive:
+                print("  Would archive season history, career milestones, draft history, and team records.")
             if not args.no_advance_date and active_game_advance_needed(con, target_offseason_date):
                 print(f"  Would advance active game to {target_offseason_date}.")
             con.rollback()
@@ -521,6 +530,81 @@ def action_complete(args: argparse.Namespace) -> None:
                 force=args.force_retirements,
             )
 
+        talent_result = None
+        if args.no_talent_guardrails:
+            print("Skipped talent supply guardrails.")
+        else:
+            print("")
+            print("Snapshotting league talent supply...")
+            con.execute("SAVEPOINT talent_supply_guardrails")
+            try:
+                talent_result = talent_supply_guardrails.run_guardrails(
+                    con,
+                    league_year=next_season,
+                    apply=True,
+                    persist_baseline=True,
+                )
+                con.execute("RELEASE talent_supply_guardrails")
+                print(
+                    "Talent supply: "
+                    f"{talent_result['positionsTracked']} positions, "
+                    f"{talent_result['flagCount']} flag(s)."
+                )
+            except Exception as exc:
+                con.execute("ROLLBACK TO talent_supply_guardrails")
+                con.execute("RELEASE talent_supply_guardrails")
+                print(f"Talent supply warning: {exc}")
+
+        balance_result = None
+        if args.no_balance_dashboards:
+            print("Skipped long-term balance dashboards.")
+        else:
+            print("")
+            print("Snapshotting long-term league balance...")
+            con.execute("SAVEPOINT league_balance_dashboards")
+            try:
+                balance_result = league_balance_dashboards.run_dashboards(
+                    con,
+                    league_year=next_season,
+                    apply=True,
+                )
+                con.execute("RELEASE league_balance_dashboards")
+                print(
+                    "League balance: "
+                    f"{balance_result['counts']['categories']} dashboards, "
+                    f"{balance_result['counts']['flags']} flag(s)."
+                )
+            except Exception as exc:
+                con.execute("ROLLBACK TO league_balance_dashboards")
+                con.execute("RELEASE league_balance_dashboards")
+                print(f"League balance warning: {exc}")
+
+        history_result = None
+        if args.no_history_archive:
+            print("Skipped franchise history archive.")
+        else:
+            print("")
+            print("Archiving franchise history...")
+            con.execute("SAVEPOINT season_history_archive")
+            try:
+                history_result = history_archive.archive_history(
+                    con,
+                    season=args.season,
+                    draft_through_year=draft_year,
+                    force=args.force_history_archive,
+                )
+                con.execute("RELEASE season_history_archive")
+                print(
+                    "History archive: "
+                    f"{history_result['teamsArchived']} team seasons, "
+                    f"{history_result['milestonesArchived']} milestones, "
+                    f"{history_result['storyEventsArchived']} story events."
+                )
+            except Exception as exc:
+                con.execute("ROLLBACK TO season_history_archive")
+                con.execute("RELEASE season_history_archive")
+                print(f"History archive warning: {exc}")
+
         advanced = False
         if args.no_advance_date:
             print("Skipped active game date advance.")
@@ -558,6 +642,20 @@ def action_complete(args: argparse.Namespace) -> None:
             print(f"Retirements: {retirement_result['retired']}")
         if accolade_result:
             print(f"Accolades generated: {accolade_result['inserted']}")
+        if talent_result:
+            print(
+                "Talent supply flags: "
+                f"{talent_result['flagCount']} "
+                f"({talent_result['criticalFlags']} critical, {talent_result['warningFlags']} warning)"
+            )
+        if balance_result:
+            print(
+                "League balance flags: "
+                f"{balance_result['counts']['flags']} "
+                f"({balance_result['counts']['critical']} critical, {balance_result['counts']['warning']} warning)"
+            )
+        if history_result:
+            print(f"History story events: {history_result['storyEventsArchived']}")
     finally:
         con.close()
 
@@ -597,6 +695,10 @@ def build_parser() -> argparse.ArgumentParser:
     complete_parser.add_argument("--no-retirements", action="store_true", help="Do not run automatic offseason retirements.")
     complete_parser.add_argument("--retirement-seed", type=int, help="Seed for automatic offseason retirements.")
     complete_parser.add_argument("--force-retirements", action="store_true", help="Replace an existing retirement run for this season.")
+    complete_parser.add_argument("--no-talent-guardrails", action="store_true", help="Do not snapshot league talent supply and drift flags.")
+    complete_parser.add_argument("--no-balance-dashboards", action="store_true", help="Do not snapshot long-term league balance dashboards.")
+    complete_parser.add_argument("--no-history-archive", action="store_true", help="Do not archive franchise history for this completed season.")
+    complete_parser.add_argument("--force-history-archive", action="store_true", help="Replace generated history rows for this season before archiving.")
     complete_parser.add_argument(
         "--process-days-on-advance",
         action="store_true",

@@ -562,7 +562,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
             ON player_scheme_fits(season, scheme_key, current_fit);
 
         DROP VIEW IF EXISTS team_scheme_identities_view;
-        CREATE VIEW team_scheme_identities_view AS
+        CREATE VIEW IF NOT EXISTS team_scheme_identities_view AS
         SELECT
             tsi.team_id,
             t.abbreviation AS team,
@@ -589,7 +589,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         JOIN scheme_definitions ds ON ds.scheme_key = tsi.defense_scheme_key;
 
         DROP VIEW IF EXISTS coach_scheme_fits_view;
-        CREATE VIEW coach_scheme_fits_view AS
+        CREATE VIEW IF NOT EXISTS coach_scheme_fits_view AS
         SELECT
             csf.coach_id,
             c.team_id,
@@ -615,7 +615,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         JOIN scheme_definitions sd ON sd.scheme_key = csf.scheme_key;
 
         DROP VIEW IF EXISTS player_scheme_fits_view;
-        CREATE VIEW player_scheme_fits_view AS
+        CREATE VIEW IF NOT EXISTS player_scheme_fits_view AS
         SELECT
             psf.player_id,
             p.first_name || ' ' || p.last_name AS player_name,
@@ -640,7 +640,7 @@ def ensure_schema(con: sqlite3.Connection) -> None:
         JOIN scheme_definitions sd ON sd.scheme_key = psf.scheme_key;
 
         DROP VIEW IF EXISTS current_player_scheme_fit_view;
-        CREATE VIEW current_player_scheme_fit_view AS
+        CREATE VIEW IF NOT EXISTS current_player_scheme_fit_view AS
         SELECT
             p.player_id,
             p.first_name || ' ' || p.last_name AS player_name,

@@ -394,6 +394,11 @@ def recalculate_role_scores(
                 scores["slot_wr"] = max(scores["slot_wr"], 93.75)
             if "boundary_wr" in scores and "slot_wr" in scores and scores["slot_wr"] >= scores["boundary_wr"]:
                 scores["boundary_wr"] = min(99.0, round(scores["slot_wr"] + 0.75, 2))
+        elif player_names.get(player_id) == ("Puka", "Nacua"):
+            if "boundary_wr" in scores:
+                scores["boundary_wr"] = max(scores["boundary_wr"], 89.0)
+            if "slot_wr" in scores:
+                scores["slot_wr"] = max(scores["slot_wr"], 88.0)
         elif player_names.get(player_id) == ("Josh", "Oliver"):
             if "inline_te" in scores:
                 scores["inline_te"] = max(scores["inline_te"], 78.5)

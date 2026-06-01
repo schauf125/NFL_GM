@@ -549,6 +549,333 @@ h1 {
   color: var(--muted);
 }
 
+.profile-summary-band {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.profile-summary-card {
+  min-width: 0;
+  min-height: 118px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team-secondary);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.052), transparent 50%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.profile-summary-card.good {
+  border-left-color: var(--great);
+  background:
+    linear-gradient(145deg, rgba(31, 154, 99, 0.14), transparent 52%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.profile-summary-card.warn {
+  border-left-color: var(--warn);
+  background:
+    linear-gradient(145deg, rgba(214, 139, 49, 0.13), transparent 52%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.profile-summary-card.bad {
+  border-left-color: var(--bad);
+  background:
+    linear-gradient(145deg, rgba(178, 59, 59, 0.13), transparent 52%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.profile-summary-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.08rem;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.profile-summary-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.profile-trend-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.profile-trend-card {
+  min-width: 0;
+  min-height: 122px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.052), transparent 54%),
+    rgba(255, 255, 255, 0.035);
+}
+
+.profile-trend-card.good {
+  border-color: color-mix(in srgb, var(--great) 42%, var(--line));
+}
+
+.profile-trend-card.warn {
+  border-color: color-mix(in srgb, var(--warn) 46%, var(--line));
+}
+
+.profile-trend-card strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 1.32rem;
+  line-height: 1.05;
+}
+
+.profile-trend-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.snap-split {
+  display: flex;
+  min-height: 11px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.snap-segment {
+  flex: 0 0 var(--share);
+  min-width: 24px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.snap-segment.off {
+  background: color-mix(in srgb, var(--team-secondary) 72%, #1f9a63);
+}
+
+.snap-segment.def {
+  background: color-mix(in srgb, var(--team-primary) 64%, #4f8df7);
+}
+
+.snap-segment.st {
+  background: color-mix(in srgb, var(--warn) 78%, #f0f5fa);
+  color: #12161c;
+}
+
+.profile-action-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.profile-action-card {
+  min-width: 0;
+  min-height: 86px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team-secondary);
+  border-radius: 8px;
+  padding: 12px;
+  color: var(--text);
+  text-decoration: none;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.055), transparent 52%),
+    rgba(255, 255, 255, 0.035);
+  transition: transform 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.profile-action-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--team-secondary) 64%, var(--line));
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--team-secondary) 16%, transparent), transparent 56%),
+    rgba(255, 255, 255, 0.052);
+}
+
+.profile-action-card.primary {
+  border-left-color: var(--great);
+}
+
+.profile-action-card.warn {
+  border-left-color: var(--warn);
+}
+
+.profile-action-card strong {
+  font-size: 1.02rem;
+  text-transform: uppercase;
+  letter-spacing: 0.045em;
+}
+
+.profile-action-card span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.28;
+}
+
+.profile-action-note {
+  margin: 10px 0 0;
+  color: var(--quiet);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.development-signal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 0.9fr);
+  gap: 10px;
+}
+
+.development-signal-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.052), transparent 56%),
+    rgba(255, 255, 255, 0.032);
+}
+
+.development-signal-card.good {
+  border-color: color-mix(in srgb, var(--great) 42%, var(--line));
+}
+
+.development-signal-card strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 1.22rem;
+}
+
+.development-signal-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.personality-pill-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.personality-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.personality-pill.good {
+  border-color: color-mix(in srgb, var(--great) 46%, var(--line));
+  background: color-mix(in srgb, var(--great) 13%, rgba(255, 255, 255, 0.035));
+}
+
+.personality-pill.warn {
+  border-color: color-mix(in srgb, var(--warn) 46%, var(--line));
+  background: color-mix(in srgb, var(--warn) 13%, rgba(255, 255, 255, 0.035));
+}
+
+.development-note-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.development-note-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--team-secondary);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.032);
+}
+
+.development-note-row.high,
+.development-note-row.good,
+.development-note-row.major {
+  border-left-color: var(--great);
+}
+
+.development-note-row.warn {
+  border-left-color: var(--warn);
+}
+
+.development-note-row strong {
+  display: block;
+  font-size: 0.98rem;
+}
+
+.development-note-row p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  line-height: 1.38;
+}
+
+.development-note-row small {
+  display: block;
+  margin-top: 6px;
+  color: var(--quiet);
+}
+
+.evaluation-context {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.evaluation-context.good {
+  border-color: color-mix(in srgb, var(--great) 46%, var(--line));
+}
+
+.evaluation-context.warn {
+  border-color: color-mix(in srgb, var(--warn) 48%, var(--line));
+}
+
+.evaluation-context strong {
+  display: block;
+  font-size: 1.05rem;
+}
+
+.evaluation-context p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.evaluation-context small {
+  display: block;
+  margin-top: 8px;
+  color: var(--quiet);
+}
+
 .contract-hero {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -741,7 +1068,8 @@ h1 {
 .list-row,
 .role-row,
 .flex-row,
-.transaction-row {
+.transaction-row,
+.career-story-row {
   display: grid;
   gap: 7px;
   border: 1px solid var(--line);
@@ -753,9 +1081,34 @@ h1 {
 .list-row,
 .role-row,
 .flex-row,
-.transaction-row {
+.transaction-row,
+.career-story-row {
   grid-template-columns: minmax(0, 1fr) minmax(110px, 28%) auto;
   align-items: center;
+}
+
+.career-story-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.career-story-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.career-story-row.story-gold {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  background: color-mix(in srgb, var(--accent) 9%, rgba(255, 255, 255, 0.03));
+}
+
+.career-story-row.story-silver {
+  border-color: color-mix(in srgb, #cfd7e3 42%, var(--line));
+}
+
+.career-story-row.story-bronze {
+  border-color: color-mix(in srgb, #b68155 44%, var(--line));
 }
 
 .rating-concern {
@@ -946,6 +1299,16 @@ h1 {
     grid-template-columns: 1fr;
   }
 
+  .development-signal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-summary-band,
+  .profile-action-grid,
+  .profile-trend-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .contract-hero,
   .contract-detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -973,7 +1336,10 @@ h1 {
   }
 
   .metric-grid,
-  .fact-grid {
+  .fact-grid,
+  .profile-summary-band,
+  .profile-action-grid,
+  .profile-trend-grid {
     grid-template-columns: 1fr;
   }
 
@@ -986,6 +1352,7 @@ h1 {
   .role-row,
   .flex-row,
   .transaction-row,
+  .development-note-row,
   .attribute-row {
     grid-template-columns: 1fr;
   }

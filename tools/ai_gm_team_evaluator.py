@@ -710,6 +710,15 @@ def build_candidate_lists(
             - (min(18, dead_cap / 1_000_000) if dead_cap else 0)
             - need_penalty
         )
+        role_score = as_float(player.get("role_score"), current)
+        young_core = age <= 26 and potential >= 82 and group in {"QB", "WR", "OL", "EDGE", "IDL", "CB", "S", "LB"}
+        premium_young_core = age <= 27 and potential >= 86 and group in {"QB", "WR", "OL", "EDGE", "IDL", "CB"}
+        if young_core:
+            release_score -= 10
+        if premium_young_core:
+            release_score -= 10
+        if role_score >= current + 4 and current >= 66:
+            release_score -= 6
         if group in {"K", "P", "LS"} and current >= 66:
             release_score -= 20
         if current >= 78:
@@ -754,7 +763,25 @@ def build_candidate_lists(
             ps_candidates.append(candidate(player, ps_score, reasons or ["stash candidate"], include_contract=False))
 
         expiring_soon = bool(end_year and as_int(end_year) <= season + 1)
-        if expiring_soon and age <= 29 and current >= 74:
+        qb_continuity_target = (
+            expiring_soon
+            and group == "QB"
+            and age <= 34
+            and (current >= 76 or (current >= 70 and potential >= 84) or potential >= 88)
+        )
+        premium_core_target = (
+            expiring_soon
+            and group in {"WR", "OL", "EDGE", "IDL", "CB"}
+            and age <= 29
+            and (current >= 74 or (current >= 70 and potential >= 84) or potential >= 88)
+        )
+        scheme_core_target = expiring_soon and current >= 70 and role_score >= current + 4 and group not in {"K", "P", "LS"}
+        if expiring_soon and (
+            (age <= 29 and current >= 74)
+            or qb_continuity_target
+            or premium_core_target
+            or scheme_core_target
+        ):
             extension_score = (
                 current
                 + max(0, potential - current) * 0.8
@@ -765,6 +792,15 @@ def build_candidate_lists(
             reasons = ["expiring core player"]
             if group in {"QB", "WR", "OL", "EDGE", "IDL", "CB"}:
                 reasons.append("premium position")
+            if qb_continuity_target:
+                extension_score += 10
+                reasons.append("quarterback continuity")
+            if premium_core_target:
+                extension_score += 5
+                reasons.append("young premium-position core")
+            if scheme_core_target:
+                extension_score += 4
+                reasons.append("strong scheme fit")
             elif group in {"K", "P", "LS"}:
                 extension_score -= 18
                 reasons.append("specialist priority discount")
@@ -795,6 +831,12 @@ def build_candidate_lists(
             - (14 if group == "QB" and current >= 74 else 0)
             - need_penalty
         )
+        if young_core:
+            trade_score -= 12
+        if premium_young_core:
+            trade_score -= 12
+        if role_score >= current + 5 and current >= 68:
+            trade_score -= 6
         if trade_score >= 15:
             reasons = []
             if group in surplus_groups:

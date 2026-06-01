@@ -42,9 +42,9 @@ PLAYER_TRAITS = {
                 "key": "availability-review",
                 "title": "{name} draws internal availability review",
                 "body": (
-                    "In the save universe, {team} staff is reviewing an off-field availability flag "
-                    "around {name}. No roster status change has been made, but clubs around the "
-                    "league will monitor whether it develops into a discipline issue."
+                    "{team} staff is reviewing an off-field availability flag around {name}. "
+                    "No roster status change has been made, but clubs around the league will "
+                    "monitor whether it develops into a discipline issue."
                 ),
             },
             {
@@ -52,8 +52,8 @@ PLAYER_TRAITS = {
                 "title": "{team} monitoring {name} situation",
                 "body": (
                     "{team} staffers are quietly treating {name}'s week as one to monitor after "
-                    "an internal conduct note surfaced in the save. The first pass is only a "
-                    "public rumor; any future gameplay effect would need a separate roll."
+                    "an internal conduct note surfaced. For now, it remains a public rumor rather "
+                    "than a roster-status change."
                 ),
             },
         ],

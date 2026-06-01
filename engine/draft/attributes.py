@@ -40,6 +40,26 @@ DEV_TRAIT_CEILING_BONUS = {
     "X-Factor": 7,
 }
 
+LATE_ROUND_VALUE_START = 129
+LATE_ROUND_VALUE_END = 330
+
+RARE_POTENTIAL_OUTLIER_CHANCES = {
+    "round_1": 0.030,
+    "round_2_3": 0.014,
+    "round_4_5": 0.006,
+    "round_6_7": 0.0025,
+    "leftover": 0.0012,
+}
+RARE_POTENTIAL_OUTLIER_GAUSSIANS = {
+    "round_1": (88.5, 4.4),
+    "round_2_3": (86.0, 4.2),
+    "round_4_5": (84.0, 3.8),
+    "round_6_7": (83.0, 3.5),
+    "leftover": (82.0, 3.2),
+}
+HIDDEN_RARE_POTENTIAL_OUTLIER_CHANCE = 0.0065
+HIDDEN_RARE_POTENTIAL_OUTLIER_GAUSSIAN = (84.0, 4.0)
+
 POSITION_BASELINES: dict[str, dict[str, float]] = {
     "QB": {"height": 74.0, "weight": 220.0, "speed": 66.0, "strength": 57.0, "agility": 65.0},
     "RB": {"height": 70.5, "weight": 215.0, "speed": 83.0, "strength": 60.0, "agility": 79.0},
@@ -306,15 +326,25 @@ class DraftAttributeGenerator:
         age: int,
         talent_profile: str = "public_board",
     ) -> int:
-        if position in {"K", "P"}:
-            if rank <= 160:
-                start, end, sigma = 76, 71, 3.2
+        if position in {"K", "P", "LS"}:
+            if position == "LS":
+                if rank <= 160:
+                    start, end, sigma = 72, 66, 3.0
+                    span_start, span_end = 97, 160
+                elif rank <= 256:
+                    start, end, sigma = 69, 63, 3.5
+                    span_start, span_end = 161, 256
+                else:
+                    start, end, sigma = 64, 55, 4.0
+                    span_start, span_end = 257, 330
+            elif rank <= 160:
+                start, end, sigma = 78, 72, 3.2
                 span_start, span_end = 97, 160
             elif rank <= 256:
-                start, end, sigma = 73, 67, 3.4
+                start, end, sigma = 74, 67, 3.4
                 span_start, span_end = 161, 256
             else:
-                start, end, sigma = 67, 58, 4.2
+                start, end, sigma = 68, 58, 4.2
                 span_start, span_end = 257, 330
             pct = 0.0 if span_end == span_start else (rank - span_start) / (span_end - span_start)
             base = start + ((end - start) * max(0.0, min(1.0, pct)))
@@ -339,7 +369,7 @@ class DraftAttributeGenerator:
             )
             if talent_profile == "hidden_unlisted":
                 raw_grade = self._hidden_unlisted_true_grade(raw_grade)
-            return clamp(raw_grade, 42, 82)
+            return clamp(raw_grade, 42, 86 if position in {"K", "P"} else 84)
 
         if tier == "round_1":
             start, end, sigma = 75.5, 64, 4.25
@@ -523,8 +553,10 @@ class DraftAttributeGenerator:
         rank: int,
         talent_profile: str = "public_board",
     ) -> int:
-        if position in {"K", "P"}:
-            gap_base = 4 if rank <= 256 else 5
+        if position in {"K", "P", "LS"}:
+            gap_base = 5 if rank <= 256 else 6
+            if position == "LS":
+                gap_base += 1
             class_mod = (class_strength - 50) / 18.0
             ceiling = (
                 true_grade
@@ -544,7 +576,15 @@ class DraftAttributeGenerator:
             )
             if talent_profile == "hidden_unlisted":
                 ceiling += self._hidden_ceiling_variance()
-            return clamp(ceiling, max(48, true_grade + 1), 88)
+            ceiling = self._specialist_replacement_ceiling_lift(
+                ceiling=ceiling,
+                true_grade=true_grade,
+                rank=rank,
+                position=position,
+                talent_profile=talent_profile,
+            )
+            cap = 94 if position == "K" else 92 if position == "P" else 90
+            return clamp(ceiling, max(48, true_grade + 1), cap)
 
         gap_base = {
             "round_1": 7,
@@ -556,6 +596,11 @@ class DraftAttributeGenerator:
         class_mod = (class_strength - 50) / 12.0
         readiness_offset = self._rookie_readiness_boost(
             position=position,
+            rank=rank,
+            tier=tier,
+            talent_profile=talent_profile,
+        )
+        readiness_discount = self._readiness_ceiling_discount(
             rank=rank,
             tier=tier,
             talent_profile=talent_profile,
@@ -575,7 +620,7 @@ class DraftAttributeGenerator:
             )
             + class_mod
             + self.rng.gauss(0, 4.0)
-            - (readiness_offset * 0.85)
+            - (readiness_offset * readiness_discount)
         )
         if dev_trait == "X-Factor":
             ceiling = max(ceiling, 80 + self.rng.random() * 8)
@@ -605,7 +650,353 @@ class DraftAttributeGenerator:
             position=position,
             talent_profile=talent_profile,
         )
-        return clamp(ceiling, max(45, true_grade + 1), 92)
+        ceiling = self._middle_round_value_ceiling_lift(
+            ceiling=ceiling,
+            true_grade=true_grade,
+            age=age,
+            rank=rank,
+            class_strength=class_strength,
+            dev_trait=dev_trait,
+            position=position,
+            talent_profile=talent_profile,
+        )
+        ceiling = self._late_round_gem_ceiling_lift(
+            ceiling=ceiling,
+            true_grade=true_grade,
+            age=age,
+            rank=rank,
+            class_strength=class_strength,
+            dev_trait=dev_trait,
+            position=position,
+            talent_profile=talent_profile,
+        )
+        ceiling = self._rare_potential_outlier_ceiling_lift(
+            ceiling=ceiling,
+            true_grade=true_grade,
+            age=age,
+            rank=rank,
+            tier=tier,
+            dev_trait=dev_trait,
+            position=position,
+            talent_profile=talent_profile,
+        )
+        return clamp(ceiling, max(45, true_grade + 1), 99)
+
+    def _readiness_ceiling_discount(
+        self,
+        *,
+        rank: int,
+        tier: str,
+        talent_profile: str,
+    ) -> float:
+        """Avoid draining too much upside from the realistic middle-round starter band."""
+
+        if talent_profile == "hidden_unlisted":
+            return 0.64
+        if 65 <= rank <= 128:
+            return 0.55
+        if 33 <= rank <= 64:
+            return 0.72
+        if 129 <= rank <= 256:
+            return 0.58
+        if rank > 256:
+            return 0.64
+        if tier == "round_4_5":
+            return 0.68
+        return 0.85
+
+    def _specialist_replacement_ceiling_lift(
+        self,
+        *,
+        ceiling: float,
+        true_grade: int,
+        rank: int,
+        position: str,
+        talent_profile: str,
+    ) -> float:
+        """Keep annual K/P/LS classes capable of replacing NFL specialists."""
+
+        position = position.upper()
+        hidden_bonus = 0.015 if talent_profile == "hidden_unlisted" else 0.0
+        if position == "K":
+            if rank <= 224:
+                good_chance, elite_chance = 0.26, 0.055
+                good_floor = self.rng.gauss(79.0, 3.0)
+                elite_floor = self.rng.gauss(87.0, 3.2)
+            else:
+                good_chance, elite_chance = 0.12, 0.018
+                good_floor = self.rng.gauss(75.0, 3.0)
+                elite_floor = self.rng.gauss(84.0, 3.0)
+        elif position == "P":
+            if rank <= 224:
+                good_chance, elite_chance = 0.24, 0.045
+                good_floor = self.rng.gauss(77.0, 2.8)
+                elite_floor = self.rng.gauss(84.5, 2.7)
+            else:
+                good_chance, elite_chance = 0.11, 0.014
+                good_floor = self.rng.gauss(73.5, 2.8)
+                elite_floor = self.rng.gauss(82.0, 2.6)
+        else:
+            if rank <= 224:
+                good_chance, elite_chance = 0.40, 0.045
+                good_floor = self.rng.gauss(78.0, 2.8)
+                elite_floor = self.rng.gauss(84.0, 2.8)
+            else:
+                good_chance, elite_chance = 0.25, 0.020
+                good_floor = self.rng.gauss(75.0, 2.8)
+                elite_floor = self.rng.gauss(82.0, 2.5)
+
+        if true_grade >= (68 if position == "LS" else 70):
+            good_chance += 0.08
+            elite_chance += 0.015
+        elif true_grade < (56 if position == "LS" else 58):
+            good_chance *= 0.55
+            elite_chance *= 0.40
+        good_chance += hidden_bonus
+        elite_chance += hidden_bonus * 0.45
+
+        roll_value = self.rng.random()
+        if roll_value < elite_chance:
+            return max(ceiling, elite_floor)
+        if roll_value < good_chance:
+            return max(ceiling, good_floor)
+        return ceiling
+
+    def _middle_round_value_ceiling_lift(
+        self,
+        *,
+        ceiling: float,
+        true_grade: int,
+        age: int,
+        rank: int,
+        class_strength: int,
+        dev_trait: str,
+        position: str,
+        talent_profile: str,
+    ) -> float:
+        """Seed realistic starter value and occasional upside into rounds 2-4.
+
+        Real drafts keep producing useful starters on day two and early day
+        three. This creates that pocket without making the round-one board feel
+        flat or letting every late prospect carry fake Pro Bowl upside.
+        """
+
+        if talent_profile == "hidden_unlisted" or position in {"K", "P", "LS"}:
+            return ceiling
+        if rank < 33 or rank > 128:
+            return ceiling
+
+        strength_mod = max(-0.06, min(0.08, (class_strength - 50) / 250.0))
+        young_bonus = 0.035 if age <= 21 else 0.015 if age == 22 else -0.02 if age >= 24 else 0.0
+        dev_bonus = {"Normal": 0.0, "Star": 0.045, "Superstar": 0.08, "X-Factor": 0.11}.get(dev_trait, 0.0)
+
+        if rank <= 64:
+            min_grade = 61
+            upside_chance = 0.14 + (strength_mod * 0.45) + young_bonus + dev_bonus
+            starter_chance = 0.48 + strength_mod + (young_bonus * 0.45) + (dev_bonus * 0.6)
+            upside_floor = self.rng.uniform(79.0, 83.5)
+            starter_floor = self.rng.uniform(73.0, 78.0)
+            depth_floor = self.rng.uniform(70.0, 74.0)
+            depth_chance = 0.74 + strength_mod
+        elif rank <= 96:
+            min_grade = 58
+            upside_chance = 0.09 + (strength_mod * 0.40) + young_bonus + dev_bonus
+            starter_chance = 0.34 + strength_mod + (young_bonus * 0.55) + (dev_bonus * 0.55)
+            upside_floor = self.rng.uniform(77.0, 82.5)
+            starter_floor = self.rng.uniform(72.0, 77.0)
+            depth_floor = self.rng.uniform(69.0, 73.0)
+            depth_chance = 0.62 + strength_mod
+        else:
+            min_grade = 55
+            upside_chance = 0.055 + (strength_mod * 0.35) + (young_bonus * 0.85) + dev_bonus
+            starter_chance = 0.24 + strength_mod + (young_bonus * 0.45) + (dev_bonus * 0.5)
+            upside_floor = self.rng.uniform(76.0, 81.5)
+            starter_floor = self.rng.uniform(71.0, 76.0)
+            depth_floor = self.rng.uniform(68.0, 72.0)
+            depth_chance = 0.50 + strength_mod
+
+        if true_grade < min_grade:
+            shortfall = min_grade - true_grade
+            upside_chance *= max(0.15, 1.0 - (shortfall * 0.22))
+            starter_chance *= max(0.35, 1.0 - (shortfall * 0.14))
+            depth_chance *= max(0.55, 1.0 - (shortfall * 0.10))
+            upside_floor -= min(5.0, shortfall * 0.75)
+            starter_floor -= min(4.0, shortfall * 0.55)
+            depth_floor -= min(3.0, shortfall * 0.45)
+
+        roll_value = self.rng.random()
+        target = None
+        if roll_value < max(0.0, min(0.35, upside_chance)):
+            target = upside_floor
+        elif roll_value < max(0.0, min(0.74, starter_chance)):
+            target = starter_floor
+        elif roll_value < max(0.0, min(0.88, depth_chance)):
+            target = depth_floor
+
+        if target is None:
+            return ceiling
+
+        max_gap = 18.0 if age <= 21 else 15.0 if age == 22 else 12.0 if age == 23 else 9.0
+        if dev_trait in {"Star", "Superstar", "X-Factor"}:
+            max_gap += 3.0
+        target = min(target, true_grade + max_gap)
+        return max(ceiling, target)
+
+    def _late_round_gem_ceiling_lift(
+        self,
+        *,
+        ceiling: float,
+        true_grade: int,
+        age: int,
+        rank: int,
+        class_strength: int,
+        dev_trait: str,
+        position: str,
+        talent_profile: str,
+    ) -> float:
+        """Create rare day-three, UDFA, and off-public-board gems.
+
+        These players should usually need development time. Most late names stay
+        roster-depth or camp-body profiles, but a few can become the kind of
+        overlooked starter or late bloomer that makes scouting matter.
+        """
+
+        if position in {"K", "P", "LS"}:
+            return ceiling
+        if talent_profile != "hidden_unlisted" and not (LATE_ROUND_VALUE_START <= rank <= LATE_ROUND_VALUE_END):
+            return ceiling
+
+        strength_mod = max(-0.04, min(0.07, (class_strength - 50) / 300.0))
+        young_bonus = 0.035 if age <= 21 else 0.015 if age == 22 else -0.018 if age >= 24 else 0.0
+        dev_bonus = {"Normal": 0.0, "Star": 0.055, "Superstar": 0.095, "X-Factor": 0.13}.get(dev_trait, 0.0)
+
+        if talent_profile == "hidden_unlisted":
+            # A hidden prospect's evaluation rank already leans late day three,
+            # but the point of off-board discovery is that a few weird names can
+            # be more than the public market realizes.
+            gem_chance = 0.075 + strength_mod + young_bonus + dev_bonus
+            starter_chance = 0.22 + strength_mod + (young_bonus * 0.45) + (dev_bonus * 0.55)
+            depth_chance = 0.48 + strength_mod
+            gem_floor = self.rng.uniform(78.0, 84.5)
+            starter_floor = self.rng.uniform(71.0, 76.5)
+            depth_floor = self.rng.uniform(66.5, 71.5)
+            min_grade = 51
+        elif rank <= 178:
+            gem_chance = 0.035 + (strength_mod * 0.7) + young_bonus + dev_bonus
+            starter_chance = 0.18 + strength_mod + (young_bonus * 0.45) + (dev_bonus * 0.45)
+            depth_chance = 0.44 + strength_mod
+            gem_floor = self.rng.uniform(76.0, 81.0)
+            starter_floor = self.rng.uniform(70.0, 75.0)
+            depth_floor = self.rng.uniform(66.0, 70.5)
+            min_grade = 53
+        elif rank <= 256:
+            gem_chance = 0.022 + (strength_mod * 0.55) + (young_bonus * 0.85) + dev_bonus
+            starter_chance = 0.115 + strength_mod + (young_bonus * 0.40) + (dev_bonus * 0.40)
+            depth_chance = 0.34 + strength_mod
+            gem_floor = self.rng.uniform(75.0, 80.5)
+            starter_floor = self.rng.uniform(68.5, 73.5)
+            depth_floor = self.rng.uniform(64.5, 69.5)
+            min_grade = 49
+        else:
+            gem_chance = 0.018 + (strength_mod * 0.35) + (young_bonus * 0.70) + (dev_bonus * 0.75)
+            starter_chance = 0.060 + (strength_mod * 0.7) + (young_bonus * 0.25) + (dev_bonus * 0.25)
+            depth_chance = 0.20 + (strength_mod * 0.6)
+            gem_floor = self.rng.uniform(75.0, 81.5)
+            starter_floor = self.rng.uniform(67.0, 72.0)
+            depth_floor = self.rng.uniform(63.5, 68.5)
+            min_grade = 46
+
+        if true_grade < min_grade:
+            shortfall = min_grade - true_grade
+            gem_chance *= max(0.10, 1.0 - (shortfall * 0.24))
+            starter_chance *= max(0.30, 1.0 - (shortfall * 0.15))
+            depth_chance *= max(0.48, 1.0 - (shortfall * 0.10))
+            gem_floor -= min(6.0, shortfall * 0.80)
+            starter_floor -= min(5.0, shortfall * 0.60)
+            depth_floor -= min(4.0, shortfall * 0.45)
+
+        roll_value = self.rng.random()
+        target = None
+        if roll_value < max(0.0, min(0.22, gem_chance)):
+            target = gem_floor
+        elif roll_value < max(0.0, min(0.52, starter_chance)):
+            target = starter_floor
+        elif roll_value < max(0.0, min(0.78, depth_chance)):
+            target = depth_floor
+
+        if target is None:
+            return ceiling
+
+        max_gap = 19.0 if age <= 21 else 16.0 if age == 22 else 12.5 if age == 23 else 9.5
+        if talent_profile == "hidden_unlisted":
+            max_gap += 5.0
+            if target >= 78.0:
+                max_gap += 5.0
+        elif rank > 256 and target >= 75.0:
+            max_gap += 5.0
+        if dev_trait in {"Star", "Superstar", "X-Factor"}:
+            max_gap += 3.0
+        target = min(target, true_grade + max_gap)
+        return max(ceiling, target)
+
+    def _rare_potential_outlier_ceiling_lift(
+        self,
+        *,
+        ceiling: float,
+        true_grade: int,
+        age: int,
+        rank: int,
+        tier: str,
+        dev_trait: str,
+        position: str,
+        talent_profile: str,
+    ) -> float:
+        """Tiny all-range roll for rare 80-99 potential outliers.
+
+        This is deliberately separate from normal round value curves. Most hits
+        land in the 80s, while 90+ and 95+ outcomes require the far tail of the
+        Gaussian roll.
+        """
+
+        if position in {"K", "P", "LS"}:
+            return ceiling
+        hidden = talent_profile == "hidden_unlisted"
+        base_chance = (
+            HIDDEN_RARE_POTENTIAL_OUTLIER_CHANCE
+            if hidden
+            else RARE_POTENTIAL_OUTLIER_CHANCES.get(tier, RARE_POTENTIAL_OUTLIER_CHANCES["leftover"])
+        )
+        age_multiplier = 1.35 if age <= 21 else 1.0 if age == 22 else 0.82 if age == 23 else 0.58
+        dev_multiplier = {
+            "Normal": 1.0,
+            "Star": 1.45,
+            "Superstar": 1.95,
+            "X-Factor": 2.35,
+        }.get(dev_trait, 1.0)
+        if true_grade >= 68:
+            grade_multiplier = 1.2
+        elif true_grade >= 60:
+            grade_multiplier = 1.0
+        elif true_grade >= 52:
+            grade_multiplier = 0.78
+        else:
+            grade_multiplier = 0.48
+        chance = min(0.065, base_chance * age_multiplier * dev_multiplier * grade_multiplier)
+        if self.rng.random() >= chance:
+            return ceiling
+
+        mean, sigma = (
+            HIDDEN_RARE_POTENTIAL_OUTLIER_GAUSSIAN
+            if hidden
+            else RARE_POTENTIAL_OUTLIER_GAUSSIANS.get(tier, RARE_POTENTIAL_OUTLIER_GAUSSIANS["leftover"])
+        )
+        target = self.rng.gauss(mean, sigma)
+        if self.rng.random() < 0.07:
+            target = max(target, self.rng.gauss(91.5, 3.2))
+        if self.rng.random() < 0.012:
+            target = max(target, self.rng.gauss(96.5, 1.7))
+        target = max(80.0, min(99.0, target))
+        return max(ceiling, target)
 
     def _finished_product_ceiling(
         self,

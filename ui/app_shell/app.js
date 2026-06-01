@@ -180,7 +180,7 @@
       load_game: "Load Game",
       delete_save: "Delete Save",
       refresh: "Refresh",
-    }[action] || action || "Command";
+    }[action] || action || "Action";
   }
 
   function busyMessage() {
@@ -189,12 +189,12 @@
       return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league is preparing a playable save with roster variance, personalities, development traits, and scheme fits. Draft class setup now happens after the save opens.`;
     }
     if (state.busyAction === "load_game") {
-      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is switching the active save and refreshing the UI data. This does not regenerate draft classes, traits, ratings variance, or development modifiers.`;
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league is switching to that save. Draft classes, traits, ratings variance, and development modifiers are not regenerated when a save is loaded.`;
     }
     if (state.busyAction === "delete_save") {
-      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is removing the selected save from the local registry and save folder.`;
+      return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe selected save is being removed from this machine.`;
     }
-    return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe app is running the requested action and will refresh when it finishes.`;
+    return `${actionLabel(state.busyAction)} is running...\n\n${elapsed}\n\nThe league office will refresh when this finishes.`;
   }
 
   function shortDate(value) {
@@ -217,7 +217,7 @@
   }
 
   function runnerOutputPanel() {
-    const p = panel("Action Status", state.runnerBusy ? "Running" : "Last Action");
+    const p = panel("League Office", state.runnerBusy ? "Running" : "Last Action");
     if (state.runnerBusy) {
       const status = node("div", "action-status-card running");
       const message = node("p", "muted", busyMessage());
@@ -233,7 +233,7 @@
       return p;
     }
     if (!state.lastResult) {
-      p.append(node("div", "empty-state", runnerMode() ? "No action has been run yet." : "Live actions are unavailable."));
+      p.append(node("div", "empty-state", runnerMode() ? "Ready when you are." : "Actions unavailable right now."));
       return p;
     }
     const ok = state.lastResult.returncode === 0 && !state.lastResult.error;
@@ -248,7 +248,7 @@
     const summary = node("div", "runner-summary");
     append(summary, [
       metric("Action", actionLabel(state.lastResult.action), ok ? "Completed" : "Needs attention"),
-      metric("Elapsed", `${state.lastResult.duration_seconds ?? "-"}s`, "Action time"),
+      metric("Elapsed", `${state.lastResult.duration_seconds ?? "-"}s`, "Last action"),
     ]);
     append(p, [status, summary]);
     return p;
@@ -270,30 +270,30 @@
   }
 
   function renderHome() {
-    updateHeader("League Home", "Start a save, load an existing one, or jump into the season hub.");
+    updateHeader("League Home", "Start a save, load an existing league, or continue your front office.");
     const root = document.createDocumentFragment();
     const saves = data.registry.saves || [];
     const active = saves.find((save) => save.active);
     const metrics = node("section", "metric-grid");
     append(metrics, [
       metric("Active Save", active ? active.name : "None", active ? active.gameId : "Create or load a save"),
-      metric("Registered Saves", String(saves.length), "Local save registry"),
-      metric("Calendar", data.currentPhase || "-", data.settings?.salary_cap_rule || "TOP_51_ALWAYS"),
-      metric("Teams", String(data.teams.length), "NFL database"),
+      metric("Saved Leagues", String(saves.length), "On this machine"),
+      metric("Calendar", data.currentPhase || "-", "League phase"),
+      metric("Teams", String(data.teams.length), "NFL teams"),
     ]);
-    const overview = panel("Start Desk", "Main Menu");
+    const overview = panel("League Desk", "Main Menu");
     overview.append(metrics);
     root.append(overview);
 
     const grid = node("div", "grid");
-    const startPanel = panel("Start Game", runnerMode() ? "Local Runner Ready" : "Runner Offline");
+    const startPanel = panel("Start Game", runnerMode() ? "Ready" : "Actions Unavailable");
     const startCopy = node("div", "start-copy");
     append(startCopy, [
       node("strong", null, "Create a fresh June 1 save"),
       node("p", "muted", "Build a playable league file with roster variance, hidden personalities, development modifiers, and scheme fits. Draft class setup happens after the save opens."),
     ]);
     const startControls = node("div", "command-actions");
-    const newButton = node("button", "primary-button", runnerMode() ? "Start Game" : "Open UI Runner");
+    const newButton = node("button", "primary-button", runnerMode() ? "Start Game" : "Actions Unavailable");
     newButton.type = "button";
     newButton.disabled = state.runnerBusy || !runnerMode();
     newButton.addEventListener("click", () => {
@@ -342,7 +342,7 @@
     append(grid, [startPanel, actionsPanel, eventsPanel]);
     root.append(grid);
 
-    const flowPanel = panel("Recommended Playtest Flow", "Season Loop");
+    const flowPanel = panel("Season Roadmap", "League Flow");
     const flow = node("div", "flow-grid");
     [
       ["1", "Start or Continue", "Use a June 1 save and confirm the current date, cap, and roster state.", "Home"],
@@ -390,7 +390,7 @@
 
     const formPanel = panel("Save Setup", "New League");
     const stack = node("div", "form-stack");
-    const gameId = inputLabel("Game ID", "text", state.gameId, (value) => { state.gameId = value; });
+    const gameId = inputLabel("Save ID", "text", state.gameId, (value) => { state.gameId = value; });
     const saveName = inputLabel("Save Name", "text", state.saveName, (value) => { state.saveName = value; });
     const observe = checkboxLabel("Observe Mode", state.controlMode === "observe", (checked) => {
       state.controlMode = checked ? "observe" : "team";
@@ -403,14 +403,14 @@
       }
       renderNewGame();
     });
-    const seed = inputLabel("Seed", "number", state.seed, (value) => { state.seed = value; });
+    const seed = inputLabel("League Seed", "number", state.seed, (value) => { state.seed = value; });
     const variance = checkboxLabel("Rating Variance", state.variance, (checked) => { state.variance = checked; });
     const personality = checkboxLabel("Personality Variance", state.personalityVariance, (checked) => { state.personalityVariance = checked; });
     const development = checkboxLabel("Development Modifiers", state.developmentModifiers, (checked) => { state.developmentModifiers = checked; });
     append(stack, [gameId, saveName, observe, seed, variance, personality, development]);
     formPanel.append(stack);
     const command = node("div", "command-box setup-actions");
-    const note = node("div", "command-note", runnerMode() ? "Start the save when your setup looks right." : "Live actions are unavailable.");
+    const note = node("div", "command-note", runnerMode() ? "Start the save when your setup looks right." : "Actions unavailable right now.");
     const actions = node("div", "command-actions");
     const start = node("button", "primary-button", state.runnerBusy ? "Running" : "Start Game");
     start.type = "button";
@@ -473,9 +473,9 @@
   }
 
   function renderLoadGame() {
-    updateHeader("Load Game", "Registered saves from the local save registry. Empty here means this copy does not have saves yet.");
+    updateHeader("Load Game", "Choose a saved league from this computer.");
     const root = document.createDocumentFragment();
-    const savePanel = panel("Save Browser", `${(data.registry.saves || []).length} saves`);
+    const savePanel = panel("Saved Leagues", `${(data.registry.saves || []).length} saves`);
     const list = node("div", "list-stack");
     const saves = data.registry.saves || [];
     if (!saves.length) {
@@ -512,9 +512,9 @@
   }
 
   function renderSettings() {
-    updateHeader("Settings", "Current database-level settings and prototype UI notes.");
+    updateHeader("Settings", "Review league options and the current session.");
     const root = document.createDocumentFragment();
-    const settingsPanel = panel("Game Settings", "Database");
+    const settingsPanel = panel("League Settings", "Current Save");
     const stack = node("div", "list-stack");
     Object.entries(data.settings || {}).sort(([a], [b]) => a.localeCompare(b)).forEach(([key, value]) => {
       const row = node("div", "setting-row");
@@ -524,14 +524,14 @@
     settingsPanel.append(stack);
     root.append(settingsPanel);
 
-    const uiPanel = panel("UI Status", "Prototype");
+    const uiPanel = panel("League Office Status", "Current Session");
     const metrics = node("section", "metric-grid");
     append(metrics, [
-      metric("Mode", runnerMode() ? "Live" : "Static", runnerMode() ? "Actions available" : "Showing saved export"),
-      metric("Runner", runnerMode() ? "Online" : "Offline", "One-click local actions"),
-      metric("Data Source", data.database ? "Active DB" : "Master DB", data.database || "Exported JS payloads"),
+      metric("Mode", runnerMode() ? "Connected" : "Read-Only", runnerMode() ? "Actions available" : "Viewing current export"),
+      metric("Actions", runnerMode() ? "Available" : "Unavailable", "Local league controls"),
+      metric("League File", data.database ? "Active League" : "Master League", data.database ? "Current save" : "Default league data"),
       metric("Theme", "Front Office Dark", "Shared with profiles"),
-      metric("Next Step", "Backend", "Create/load from buttons"),
+      metric("Next Step", "Continue League", "Create or load from the menu"),
     ]);
     uiPanel.append(metrics);
     root.append(uiPanel);

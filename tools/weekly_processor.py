@@ -333,15 +333,23 @@ def roster_maintenance_plan(
         start_date=window.start_date,
         end_date=window.end_date,
     )
+    major_unavailable = major_injury_pressure_this_week(
+        con,
+        start_date=window.start_date,
+        end_date=window.end_date,
+    )
     checkpoint = week in ROSTER_MAINTENANCE_WEEKS
+    market_checkpoint = week in {1, 8, 16}
+    poach_checkpoint = week in PRACTICE_SQUAD_POACH_WEEKS
     return {
-        "reason": "checkpoint" if checkpoint else "new_unavailable_injury" if new_unavailable else "cadence_skip",
+        "reason": "checkpoint" if checkpoint else "major_injury_pressure" if major_unavailable else "new_unavailable_injury" if new_unavailable else "cadence_skip",
         "new_unavailable_injuries": new_unavailable,
+        "major_unavailable_injuries": major_unavailable,
         "practice_squad": week in PRACTICE_SQUAD_SANITY_WEEKS,
         "injury_replacements": checkpoint or new_unavailable > 0,
         "position_replacements": checkpoint or new_unavailable > 0,
-        "veteran_free_agents": checkpoint or new_unavailable > 0,
-        "practice_squad_poaching": week in PRACTICE_SQUAD_POACH_WEEKS or new_unavailable > 0,
+        "veteran_free_agents": market_checkpoint or major_unavailable > 0,
+        "practice_squad_poaching": poach_checkpoint or major_unavailable > 0,
         "depth_swaps": week in DEPTH_SANITY_WEEKS,
         "active_trim": checkpoint or new_unavailable > 0,
         "validation": checkpoint or new_unavailable > 0,
@@ -722,8 +730,8 @@ def process_week(
             target_date=window.end_date,
             game_id=target_game_id,
             include_user_team=False,
-            max_claims_per_team=3,
-            max_claims_total=64,
+            max_claims_per_team=1,
+            max_claims_total=12,
             post_cutdown=True,
             max_rounds=10,
         )

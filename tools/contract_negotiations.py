@@ -482,6 +482,16 @@ def estimate_offer(row: sqlite3.Row) -> OfferEstimate:
     ask = rounded_money(raw)
     ask = max(MIN_AAV.get(group, 1_000_000), min(MAX_AAV.get(group, 18_000_000), ask))
 
+    if group == "WR" and age is not None and age <= 28:
+        overall = int(row["overall"] or score)
+        if overall >= 86 or score >= 86:
+            ask = max(ask, 33_000_000)
+        elif overall >= 84 or score >= 84:
+            ask = max(ask, 30_500_000)
+        elif overall >= 82 or score >= 82:
+            ask = max(ask, 27_500_000)
+        ask = min(MAX_AAV.get(group, 38_000_000), ask)
+
     minimum = rounded_money(max(MIN_AAV.get(group, 1_000_000), ask * 0.78))
     tier = market_tier(group, score)
     years = suggested_years(group, age, score)
@@ -526,6 +536,7 @@ def expiring_players(con: sqlite3.Connection, team: str | int, season: int) -> l
             p.years_exp,
             p.status,
             p.overall,
+            p.potential,
             c.start_year,
             c.end_year,
             c.total_years,
@@ -1186,6 +1197,30 @@ def fifth_year_option_salary(group: str, current_aav: int, score: float) -> int:
     return rounded_money(max(base, int(current_aav * 1.20)))
 
 
+def fifth_year_option_recommendation(group: str, score: float, potential: int | None, age: int | None = None) -> str:
+    group = str(group or "").upper()
+    potential_value = int(potential if potential is not None else score)
+    age_value = int(age or 0)
+    premium = group in {"QB", "WR", "OT", "IOL", "EDGE", "IDL", "CB"}
+    if group == "QB":
+        if score >= 70 and potential_value >= 82:
+            return "Exercise"
+        if score >= 76 or potential_value >= 88:
+            return "Exercise"
+        return "Decline"
+    if group == "RB":
+        if age_value and age_value >= 26:
+            return "Exercise" if score >= 84 and potential_value >= 86 else "Decline"
+        return "Exercise" if score >= 80 or potential_value >= 86 else "Decline"
+    if premium:
+        return "Exercise" if score >= 74 or potential_value >= 84 else "Decline"
+    if group in {"TE", "S", "LB"}:
+        return "Exercise" if score >= 77 or potential_value >= 86 else "Decline"
+    if group == "ST":
+        return "Exercise" if score >= 82 else "Decline"
+    return "Exercise" if score >= 78 or potential_value >= 86 else "Decline"
+
+
 def fifth_year_option_candidates(con: sqlite3.Connection, team: str | int | None, league_year: int) -> list[dict[str, Any]]:
     ensure_contract_rights_schema(con)
     team_sql = ""
@@ -1206,6 +1241,7 @@ def fifth_year_option_candidates(con: sqlite3.Connection, team: str | int | None
             p.age,
             p.years_exp,
             p.overall,
+            p.potential,
             c.start_year,
             c.end_year,
             c.aav,
@@ -1250,7 +1286,12 @@ def fifth_year_option_candidates(con: sqlite3.Connection, team: str | int | None
         score = player_score(row)
         group = position_group(row["position"])
         salary = fifth_year_option_salary(group, int(row["aav"] or 0), score)
-        recommendation = "Exercise" if score >= 76 or group == "QB" and score >= 70 else "Decline"
+        recommendation = fifth_year_option_recommendation(
+            group,
+            score,
+            int(row["potential"]) if row["potential"] is not None else None,
+            int(row["age"]) if row["age"] is not None else None,
+        )
         result.append(
             {
                 **dict(row),

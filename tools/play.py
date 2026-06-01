@@ -8,6 +8,7 @@ mutated while playing.
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import subprocess
 import sys
@@ -19,14 +20,18 @@ from typing import Any
 
 import daily_processor
 import game_flow
+import history_archive
 import roster_cutdown
 import roster_rules
 import save_manager
 import scouting
 import sim_control
 import draft_class_bootstrap
+import league_balance_dashboards
 import saved_draft_class_package
 import view_team
+import talent_supply_guardrails
+import yearly_cleanup
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +104,94 @@ def sync_save(game_id: str) -> None:
             manifest,
             activate=registry.get("active_game_id") == game_id,
         )
+
+
+def run_yearly_cleanup_for_save(game_id: str, league_year: int) -> dict[str, Any]:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        summary = yearly_cleanup.run_yearly_cleanup(
+            con,
+            league_year=league_year,
+            apply=True,
+            persist=True,
+        )
+        con.commit()
+    changed = int(summary.get("changed") or 0)
+    checked = int(summary.get("checked") or 0)
+    print(
+        f"Yearly cleanup checked {checked} item(s) and fixed {changed} "
+        f"for {target_game_id} {league_year}."
+    )
+    return summary
+
+
+def run_history_archive_for_save(game_id: str, season: int, *, draft_through_year: int | None = None) -> dict[str, Any] | None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        try:
+            summary = history_archive.archive_history(
+                con,
+                season=season,
+                draft_through_year=draft_through_year,
+                force=False,
+            )
+            con.commit()
+        except Exception as exc:
+            con.rollback()
+            print(f"History archive warning for {target_game_id} {season}: {exc}")
+            return None
+    print(
+        f"History archive updated {target_game_id} {season}: "
+        f"{summary.get('teamsArchived', 0)} team season(s), "
+        f"{summary.get('milestonesArchived', 0)} milestone(s), "
+        f"{summary.get('storyEventsArchived', 0)} story event(s)."
+    )
+    return summary
+
+
+def run_talent_supply_guardrails_for_save(game_id: str, league_year: int) -> dict[str, Any] | None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        try:
+            summary = talent_supply_guardrails.run_guardrails(
+                con,
+                league_year=league_year,
+                apply=True,
+                persist_baseline=True,
+            )
+            con.commit()
+        except Exception as exc:
+            con.rollback()
+            print(f"Talent supply warning for {target_game_id} {league_year}: {exc}")
+            return None
+    print(
+        f"Talent supply updated {target_game_id} {league_year}: "
+        f"{summary.get('positionsTracked', 0)} position(s), "
+        f"{summary.get('flagCount', 0)} flag(s)."
+    )
+    return summary
+
+
+def run_league_balance_dashboards_for_save(game_id: str, league_year: int) -> dict[str, Any] | None:
+    target_game_id, db_path = save_db(game_id)
+    with game_flow.connect(db_path) as con:
+        try:
+            summary = league_balance_dashboards.run_dashboards(
+                con,
+                league_year=league_year,
+                apply=True,
+            )
+            con.commit()
+        except Exception as exc:
+            con.rollback()
+            print(f"League balance warning for {target_game_id} {league_year}: {exc}")
+            return None
+    print(
+        f"League balance updated {target_game_id} {league_year}: "
+        f"{summary.get('counts', {}).get('categories', 0)} dashboard(s), "
+        f"{summary.get('counts', {}).get('flags', 0)} flag(s)."
+    )
+    return summary
 
 
 def ensure_regular_season_specialists(game_id: str | None, season: int) -> None:
@@ -857,11 +950,14 @@ def gated_calendar_target(
     *,
     auto_roster_cutdown: bool = False,
     skip_roster_gate: bool = False,
+    auto_sim_preseason: bool = False,
 ) -> tuple[str, str | None]:
     if game.user_team_id is None or str(getattr(game, "control_mode", "") or "").lower() == "observe":
         game_stop = next_unplayed_game_stop(con, str(game.current_date), requested_target)
         if game_stop:
             if date.fromisoformat(str(game_stop["game_date"])) <= date.fromisoformat(str(game.current_date)):
+                if auto_sim_preseason and str(game_stop["game_type"] or "").upper() == "PRE":
+                    return requested_target, None
                 raise ValueError(
                     f"{game_stop_label(game_stop)} is due today. "
                     "Simulate the scheduled games before advancing the calendar."
@@ -879,6 +975,8 @@ def gated_calendar_target(
     if game_stop:
         game_stop_date = date.fromisoformat(str(game_stop["game_date"]))
         if game_stop_date <= current:
+            if auto_sim_preseason and str(game_stop["game_type"] or "").upper() == "PRE":
+                return requested_target, None
             raise ValueError(
                 f"{game_stop_label(game_stop)} is due today. "
                 "Simulate the scheduled games before advancing the calendar."
@@ -1511,7 +1609,7 @@ def process_offseason_free_agency_to_draft(
                 "--league-year",
                 str(draft_year),
                 "--cpu-offers",
-                str(max(32, min(64, base_cpu_offers))),
+                str(max(36, min(80, base_cpu_offers))),
                 "--signing-limit",
                 "24",
                 "--no-cap-snapshot",
@@ -1534,15 +1632,15 @@ def process_offseason_free_agency_to_draft(
             signing_limit = 32
         elif remaining_days <= 10:
             step_days = min(3, remaining_days)
-            cpu_offers = 36
+            cpu_offers = 44
             signing_limit = 40
         elif remaining_days <= 24:
             step_days = min(7, remaining_days)
-            cpu_offers = 30
+            cpu_offers = 36
             signing_limit = 40
         else:
             step_days = min(7, remaining_days)
-            cpu_offers = 44 if remaining_days > 35 else 34
+            cpu_offers = 56 if remaining_days > 35 else 42
             signing_limit = 48
         sim_control.raise_if_cancelled(db_path, "before advancing free agency days.")
         script_args = [
@@ -1625,6 +1723,13 @@ def finalize_pre_draft_free_agency_state(
                     cleanup[key] = value
                 else:
                     cleanup[key] = int(cleanup.get(key) or 0) + int(value or 0)
+        roster_floor_signings = free_agency_processor.ensure_playable_roster_floors_for_fa(
+            con,
+            period,
+            user_team=user_team,
+            force=True,
+            max_total=48,
+        )
         waiver_result = free_agency_processor.settle_due_market_waivers(
             con,
             league_year=draft_year,
@@ -1638,6 +1743,7 @@ def finalize_pre_draft_free_agency_state(
             f"{cleanup.get('restructures', 0)} restructure(s), "
             f"{cleanup.get('releases', 0)} release(s), "
             f"{cleanup.get('still_over', 0)} team(s) still below the cap target, "
+            f"{roster_floor_signings} roster-floor signing(s), "
             f"{waiver_result.get('processed', 0)} waiver(s) settled."
         )
     sync_save(target_game_id)
@@ -1990,6 +2096,7 @@ def action_advance_to_date(args: argparse.Namespace) -> None:
             requested_date,
             auto_roster_cutdown=args.auto_roster_cutdown,
             skip_roster_gate=getattr(args, "skip_roster_gate", False),
+            auto_sim_preseason=getattr(args, "auto_sim_preseason", False),
         )
     if getattr(args, "auto_sim_preseason", False):
         simulate_preseason_before_target(game_id, game.current_league_year, target_date)
@@ -2055,6 +2162,7 @@ def simulate_preseason_before_target(game_id: str | None, season: int, target_da
     with game_flow.connect(db_path) as con:
         if not table_exists(con, "season_games"):
             return
+        current_date = active_game_current_date(con)
         has_calendar = table_exists(con, "league_calendar_events")
         event_date_expr = (
             """
@@ -2085,11 +2193,11 @@ def simulate_preseason_before_target(game_id: str | None, season: int, target_da
             WHERE sg.season = ?
               AND sg.game_type = 'PRE'
             GROUP BY sg.week
-            HAVING date(checkpoint_date) <= date(?)
+            HAVING (date(checkpoint_date) < date(?) OR date(checkpoint_date) <= date(?))
                AND SUM(CASE WHEN COALESCE(sg.played, 0) = 1 THEN 1 ELSE 0 END) < COUNT(*)
             ORDER BY sg.week
             """,
-            (int(season), str(target_date)),
+            (int(season), str(target_date), str(current_date)),
         ).fetchall()
     for row in rows:
         week = int(row["week"])
@@ -2184,6 +2292,10 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
     auto_top30_before_calendar_advance(target_game_id, target_date, draft_year=target_year)
     finish_draft_before_calendar_advance(target_game_id, target_date)
     ensure_progression_for_league_year(target_game_id, target_year)
+    run_yearly_cleanup_for_save(target_game_id, target_year)
+    run_talent_supply_guardrails_for_save(target_game_id, target_year)
+    run_league_balance_dashboards_for_save(target_game_id, target_year)
+    run_history_archive_for_save(target_game_id, target_year - 1, draft_through_year=target_year)
 
     game_id, _db_path, con = open_save_db(target_game_id)
     try:
@@ -2205,6 +2317,113 @@ def action_advance_to_next_league_year(args: argparse.Namespace) -> None:
     settle_expired_waivers_if_due(target_game_id, target_date, include_user_team=args.auto_roster_cutdown)
     refresh_dirty_cpu_depth_charts(target_game_id)
     sync_save(game_id)
+
+
+def action_yearly_cleanup(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
+    game_id, db_path, con = open_save_db(args.game_id)
+    try:
+        league_year = int(args.league_year or yearly_cleanup.current_league_year(con))
+        summary = yearly_cleanup.run_yearly_cleanup(
+            con,
+            league_year=league_year,
+            apply=bool(args.apply),
+            min_unsigned_years=args.min_unsigned_years,
+            max_unsigned_overall=args.max_unsigned_overall,
+            persist=bool(args.apply),
+        )
+        if args.apply:
+            con.commit()
+        else:
+            con.rollback()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    yearly_cleanup.print_summary(summary)
+    if args.apply:
+        sync_save(game_id)
+
+
+def action_history_archive(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
+    game_id, db_path, con = open_save_db(args.game_id)
+    try:
+        season = int(args.season or history_archive.current_season(con))
+        summary = history_archive.archive_history(
+            con,
+            season=season,
+            draft_through_year=args.draft_through_year,
+            force=bool(args.force),
+        )
+        if args.apply:
+            con.commit()
+        else:
+            con.rollback()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    history_archive.print_summary(summary)
+    if args.apply:
+        sync_save(game_id)
+
+
+def action_talent_supply(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
+    game_id, db_path, con = open_save_db(args.game_id)
+    try:
+        league_year = int(args.league_year or talent_supply_guardrails.current_league_year(con))
+        summary = talent_supply_guardrails.run_guardrails(
+            con,
+            league_year=league_year,
+            apply=bool(args.apply),
+            persist_baseline=not args.no_baseline,
+        )
+        if args.apply:
+            con.commit()
+        else:
+            con.rollback()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    else:
+        talent_supply_guardrails.print_summary(summary)
+    if args.apply:
+        sync_save(game_id)
+
+
+def action_league_balance(args: argparse.Namespace) -> None:
+    args.game_id = sync_active_game_row_to_settings(args.game_id)
+    game_id, db_path, con = open_save_db(args.game_id)
+    try:
+        league_year = int(args.league_year or league_balance_dashboards.current_league_year(con))
+        summary = league_balance_dashboards.run_dashboards(
+            con,
+            league_year=league_year,
+            apply=bool(args.apply),
+        )
+        if args.apply:
+            con.commit()
+        else:
+            con.rollback()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    if args.json:
+        print(json.dumps(summary, indent=2, sort_keys=True, default=str))
+    else:
+        league_balance_dashboards.print_summary(summary)
+    if args.apply:
+        sync_save(game_id)
 
 
 def action_advance_to_draft(args: argparse.Namespace) -> None:
@@ -2959,6 +3178,12 @@ def action_complete_season(args: argparse.Namespace) -> None:
         script_args.extend(["--retirement-seed", str(args.retirement_seed)])
     if args.force_retirements:
         script_args.append("--force-retirements")
+    if args.no_talent_guardrails:
+        script_args.append("--no-talent-guardrails")
+    if args.no_history_archive:
+        script_args.append("--no-history-archive")
+    if args.force_history_archive:
+        script_args.append("--force-history-archive")
     if args.process_days_on_advance:
         script_args.append("--process-days-on-advance")
     if args.notes:
@@ -3102,6 +3327,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     next_year_parser.add_argument("--skip-roster-gate", action="store_true", help="Advance through cutdown/practice-squad gates without automatic user-team moves.")
     next_year_parser.set_defaults(func=action_advance_to_next_league_year)
+
+    cleanup_parser = subparsers.add_parser("yearly-cleanup", help="Audit/apply yearly save cleanup.")
+    add_save_selector(cleanup_parser)
+    cleanup_parser.add_argument("--league-year", type=int)
+    cleanup_parser.add_argument("--min-unsigned-years", type=int, default=2)
+    cleanup_parser.add_argument("--max-unsigned-overall", type=int, default=60)
+    cleanup_parser.add_argument("--apply", action="store_true")
+    cleanup_parser.set_defaults(func=action_yearly_cleanup)
+
+    history_parser = subparsers.add_parser("history-archive", help="Archive franchise history, milestones, draft classes, and records.")
+    add_save_selector(history_parser)
+    history_parser.add_argument("--season", type=int)
+    history_parser.add_argument("--draft-through-year", type=int)
+    history_parser.add_argument("--force", action="store_true")
+    history_parser.add_argument("--apply", action="store_true")
+    history_parser.set_defaults(func=action_history_archive)
+
+    talent_parser = subparsers.add_parser("talent-supply", help="Snapshot league talent supply and flag rating drift.")
+    add_save_selector(talent_parser)
+    talent_parser.add_argument("--league-year", type=int)
+    talent_parser.add_argument("--apply", action="store_true")
+    talent_parser.add_argument("--no-baseline", action="store_true", help="Do not create missing baseline rows from this snapshot.")
+    talent_parser.add_argument("--json", action="store_true")
+    talent_parser.set_defaults(func=action_talent_supply)
+
+    balance_parser = subparsers.add_parser("league-balance", help="Snapshot long-term league balance dashboards.")
+    add_save_selector(balance_parser)
+    balance_parser.add_argument("--league-year", type=int)
+    balance_parser.add_argument("--apply", action="store_true")
+    balance_parser.add_argument("--json", action="store_true")
+    balance_parser.set_defaults(func=action_league_balance)
 
     draft_date_parser = subparsers.add_parser("advance-to-draft", help="Advance to the next draft event and open the draft room.")
     add_save_selector(draft_date_parser)
@@ -3511,6 +3767,9 @@ def build_parser() -> argparse.ArgumentParser:
     complete_parser.add_argument("--no-retirements", action="store_true", help="Do not run automatic offseason retirements.")
     complete_parser.add_argument("--retirement-seed", type=int, help="Seed for automatic offseason retirements.")
     complete_parser.add_argument("--force-retirements", action="store_true", help="Replace an existing retirement run for this season.")
+    complete_parser.add_argument("--no-talent-guardrails", action="store_true", help="Do not snapshot league talent supply and drift flags.")
+    complete_parser.add_argument("--no-history-archive", action="store_true", help="Do not archive franchise history for this completed season.")
+    complete_parser.add_argument("--force-history-archive", action="store_true", help="Replace generated history rows for this season before archiving.")
     complete_parser.add_argument(
         "--process-days-on-advance",
         action="store_true",

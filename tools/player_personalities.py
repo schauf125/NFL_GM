@@ -59,7 +59,7 @@ TRAITS = [
         45,
         85,
         1,
-        "Creates occasional chemistry management problems in this save universe.",
+        "Creates occasional chemistry management problems inside the building.",
     ),
     TraitDefinition(
         "off_field_issue",
@@ -70,7 +70,7 @@ TRAITS = [
         35,
         90,
         1,
-        "Hidden save-only risk for a suspension, legal event, gambling issue, or accident storyline.",
+        "Hidden risk for an availability, discipline, legal, gambling, or accident storyline.",
     ),
     TraitDefinition(
         "greedy",

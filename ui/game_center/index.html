@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>NFL GM Game Center</title>
-    <link rel="stylesheet" href="./styles.css?v=20260528-awards-tab">
+    <title>NFL GM League Office</title>
+    <link rel="stylesheet" href="./styles.css?v=20260601-fa-market-pulse">
   </head>
   <body>
     <main class="shell">
@@ -19,25 +19,27 @@
         </button>
         <nav class="nav" aria-label="Game center sections">
           <span class="nav-label">Today</span>
-          <button type="button" data-view="calendar" class="active">Calendar</button>
+          <button type="button" data-view="today" class="active">Today</button>
+          <button type="button" data-view="calendar">Calendar</button>
           <button type="button" data-view="inbox">Inbox</button>
 
           <span class="nav-label">League</span>
-          <button type="button" data-view="season">League Table</button>
+          <button type="button" data-view="season">Standings</button>
           <button type="button" data-view="playoffTree" hidden>Playoffs Tree</button>
           <button type="button" data-view="stats">Stats</button>
           <button type="button" data-view="awards">Awards</button>
+          <button type="button" data-view="history">History</button>
           <button type="button" data-view="leagueNews">League News</button>
           <button type="button" data-view="transactions">Transactions</button>
           <button type="button" data-view="injuries">Injuries</button>
 
           <span class="nav-label">Team</span>
-          <button type="button" data-view="roster">Roster Hub</button>
+          <button type="button" data-view="roster">Roster</button>
           <button type="button" data-view="practiceSquad">Roster Cutdown</button>
           <button type="button" data-view="depth">Depth Chart</button>
-          <button type="button" data-view="contracts">Contract Talks</button>
+          <button type="button" data-view="contracts">Contracts</button>
 
-          <span class="nav-label">Acquisition</span>
+          <span class="nav-label">Roster Building</span>
           <button type="button" data-view="scouting">Scouting</button>
           <button type="button" data-view="freeAgency">Free Agency</button>
           <button type="button" data-view="waivers">Waivers</button>
@@ -52,8 +54,8 @@
             <a href="../player_card/index.html">Player Cards</a>
           </div>
 
-          <span class="nav-label">Tools</span>
-          <button type="button" data-view="aiGm">AI GMs</button>
+          <span class="nav-label">League Office</span>
+          <button type="button" data-view="aiGm">CPU Front Offices</button>
         </nav>
       </aside>
 
@@ -62,7 +64,7 @@
           <div>
             <button id="backButton" class="back-button" type="button" disabled>Back</button>
             <p id="phaseText" class="eyebrow"></p>
-            <h1 id="title">Game Center</h1>
+            <h1 id="title">League Office</h1>
             <p id="subhead" class="subhead"></p>
             <div id="liveStatus" class="live-status" hidden></div>
           </div>
@@ -84,7 +86,7 @@
 
     <div id="runnerToast" class="runner-toast" hidden></div>
 
-    <script src="./game-center-data.js?v=20260512-playoff-tree"></script>
-    <script src="./app.js?v=20260528-awards-tab"></script>
+    <script src="./game-center-data.js?v=20260601-why-panels"></script>
+    <script src="./app.js?v=20260601-fa-market-pulse"></script>
   </body>
 </html>

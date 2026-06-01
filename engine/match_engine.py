@@ -642,8 +642,18 @@ def slot_eligible_positions(slot: str) -> set[str]:
     return {str(position).upper() for position in SLOT_POSITION_FALLBACKS.get(canonical, [canonical])}
 
 
+def player_flex_positions(player: "PlayerSnapshot") -> set[str]:
+    raw = player.metadata.get("position_flex_positions") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return {str(position).upper() for position in raw if position}
+
+
 def player_is_slot_eligible(player: "PlayerSnapshot", slot: str) -> bool:
-    return str(player.position or "").upper() in slot_eligible_positions(slot)
+    eligible = slot_eligible_positions(slot)
+    if str(player.position or "").upper() in eligible:
+        return True
+    return bool(player_flex_positions(player) & eligible)
 
 
 @dataclass
@@ -738,8 +748,7 @@ class TeamSnapshot:
                     seen.add(player.player_id)
             if packaged:
                 return packaged
-        fallback_positions = SLOT_POSITION_FALLBACKS.get(canonical, [canonical])
-        players = [p for p in self.roster if p.position in fallback_positions]
+        players = [p for p in self.roster if player_is_slot_eligible(p, canonical)]
         return sorted(players, key=lambda p: self.score_for_slot(p, canonical), reverse=True)
 
     def starter(self, slot: str) -> PlayerSnapshot:
@@ -1445,6 +1454,22 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
     for row in role_rows:
         role_by_player[int(row["player_id"])][row["role_key"]] = float(row["role_score"])
 
+    flex_by_player: dict[int, list[str]] = defaultdict(list)
+    if table_exists(con, "player_position_flex"):
+        flex_rows = con.execute(
+            f"""
+            SELECT player_id, position
+            FROM player_position_flex
+            WHERE player_id IN ({placeholders})
+              AND COALESCE(experience, 0) > 0
+            """,
+            tuple(player_ids),
+        ).fetchall()
+        for row in flex_rows:
+            position = str(row["position"] or "").upper()
+            if position and position not in flex_by_player[int(row["player_id"])]:
+                flex_by_player[int(row["player_id"])].append(position)
+
     qb_behavior_by_player: dict[int, tuple[object, str]] = {}
     if player_qb_behavior_table_exists(con):
         profile_rows = con.execute(
@@ -1692,6 +1717,7 @@ def load_team(con: sqlite3.Connection, team_id: int, season: int, as_of_date: st
             "injury_body_risks": player_context.get("body_risks", {}),
             "active_injuries": active_injuries.get(player_id, []),
             "season_stats": season_stats.get(player_id, {}),
+            "position_flex_positions": flex_by_player.get(player_id, []),
         }
         metadata.update(contracts_by_player.get(player_id, {}))
         metadata.update(draft_context.get(player_id, {}))
@@ -2074,14 +2100,12 @@ class MatchEngine:
             ]
         )
         if active_count < 4:
-            fallback_positions = SLOT_POSITION_FALLBACKS.get(canonical_slot, [canonical_slot])
             seen = {player.player_id for player in raw_candidates}
             supplemental = sorted(
                 [
                     player
                     for player in team.roster
-                    if player.position in fallback_positions
-                    and player.player_id not in seen
+                    if player.player_id not in seen
                     and player_is_slot_eligible(player, canonical_slot)
                 ],
                 key=lambda player: team.score_for_slot(player, slot),

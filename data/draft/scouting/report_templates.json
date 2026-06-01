@@ -8,7 +8,9 @@
       "{name} brings a premium blend of baseline skill and projectable traits.",
       "{name} checks enough boxes that the debate is more about ceiling than roster fit.",
       "{name} has the kind of profile staffs can sell themselves on early.",
-      "{name} looks ready to help quickly, though the final grade still depends on how the staff weighs the flaws."
+      "{name} looks ready to help quickly, though the final grade still depends on how the staff weighs the flaws.",
+      "{name} has enough bankable football skill that the discussion can move from whether he belongs to how soon he starts.",
+      "{name} gives the room a rare mix of immediate usefulness and long-term upside, even if the final stack is not automatic."
     ],
     "starter_path": [
       "{name} has a realistic starter path, but the landing spot and development plan matter.",
@@ -18,7 +20,9 @@
       "{name} is a credible projection if the coaching staff can narrow the early assignment.",
       "{name} has a workable NFL profile with a few traits that can carry him while he develops.",
       "{name} should stay on boards because the good reps look like real Sunday traits.",
-      "{name} is not a clean evaluation, but the path to a meaningful role is visible."
+      "{name} is not a clean evaluation, but the path to a meaningful role is visible.",
+      "{name} has the type of profile that can become a starter if the staff is right about the teachable pieces.",
+      "{name} is easier to like when the first role is specific and the long-term plan stays patient."
     ],
     "developmental": [
       "{name} is more projection than polish right now.",
@@ -28,7 +32,9 @@
       "{name} flashes the outline of an NFL role without sustaining it snap to snap.",
       "{name} is the kind of prospect who needs a staff that already knows what it wants from him.",
       "{name} has tools that will keep scouts interested, but the week-one role should be limited.",
-      "{name} has enough talent to stick in a building while the details catch up."
+      "{name} has enough talent to stick in a building while the details catch up.",
+      "{name} is a developmental swing with enough real traits to keep the room from dismissing the upside.",
+      "{name} needs a plan, but the best reps explain why scouts keep coming back."
     ],
     "roster_bubble": [
       "{name} is a camp-and-depth profile unless one trait translates faster than expected.",
@@ -38,7 +44,9 @@
       "{name} is fighting the numbers game unless the staff sees a specific developmental hook.",
       "{name} has enough to warrant a look, but the margin for early mistakes is small.",
       "{name} looks more like a roster competition player than a plug-in answer.",
-      "{name} will need to convince a staff that the best trait is worth protecting."
+      "{name} will need to convince a staff that the best trait is worth protecting.",
+      "{name} needs the right summer, the right depth chart, and one trait that refuses to disappear.",
+      "{name} is not a comfortable projection, but there is enough here for a staff to keep digging."
     ]
   },
   "projection": {
@@ -349,6 +357,10 @@
     "The final board should check whether the same strengths show up against better competition.",
     "This is the kind of report that may age very differently after a year in an NFL building.",
     "The workout data supports part of the opinion, but the tape still has to carry the grade.",
-    "The room should separate what the player already does from what the staff hopes to teach."
+    "The room should separate what the player already does from what the staff hopes to teach.",
+    "This note should be rechecked against interviews, medicals, and whether the role exists on the current roster.",
+    "The staff should ask whether this is a player evaluation or a fit evaluation before locking the grade.",
+    "There may be more confidence in the player than in the usage plan, which matters on draft weekend.",
+    "A late visit, pro day, or coaching fit could still change how the room stacks this file."
   ]
 }

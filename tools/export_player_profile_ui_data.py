@@ -28,7 +28,8 @@ SEASON_STAT_KEYS = [
     "def_interception_yards", "def_pass_defended", "def_tds", "def_safeties",
     "punt_returns", "punt_return_yards", "kickoff_returns", "kickoff_return_yards",
     "fg_made", "fg_att", "fg_long", "fg_pct", "pat_made", "pat_att", "pat_pct",
-    "fantasy_points", "fantasy_points_ppr", "source",
+    "fantasy_points", "fantasy_points_ppr", "offensive_snaps", "defensive_snaps",
+    "special_teams_snaps", "total_snaps", "source",
 ]
 
 SUM_CAREER_FIELDS = [
@@ -41,7 +42,8 @@ SUM_CAREER_FIELDS = [
     "def_qb_hits", "def_interceptions", "def_interception_yards", "def_pass_defended",
     "def_tds", "def_safeties", "punt_returns", "punt_return_yards",
     "kickoff_returns", "kickoff_return_yards", "fg_made", "fg_att", "pat_made",
-    "pat_att", "fantasy_points", "fantasy_points_ppr",
+    "pat_att", "fantasy_points", "fantasy_points_ppr", "offensive_snaps",
+    "defensive_snaps", "special_teams_snaps", "total_snaps",
 ]
 
 POSITION_LABELS = {
@@ -475,7 +477,12 @@ def normalized_historical_season_rows(conn: sqlite3.Connection, player_ids: list
     ).fetchall()
     grouped: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault(int(row["player_id"]), []).append({key: row[key] for key in SEASON_STAT_KEYS})
+        item = {key: row[key] for key in SEASON_STAT_KEYS if key in row.keys()}
+        item.setdefault("offensive_snaps", 0)
+        item.setdefault("defensive_snaps", 0)
+        item.setdefault("special_teams_snaps", 0)
+        item.setdefault("total_snaps", 0)
+        grouped.setdefault(int(row["player_id"]), []).append(item)
     return grouped
 
 
@@ -522,7 +529,11 @@ def normalized_simulated_season_rows(conn: sqlite3.Connection, player_ids: list[
                 SUM(CASE WHEN stat_key = 'fg_attempts' THEN stat_value ELSE 0 END) AS fg_att,
                 MAX(CASE WHEN stat_key = 'long_fg' THEN stat_value ELSE 0 END) AS fg_long,
                 SUM(CASE WHEN stat_key = 'xp_made' THEN stat_value ELSE 0 END) AS pat_made,
-                SUM(CASE WHEN stat_key = 'xp_attempts' THEN stat_value ELSE 0 END) AS pat_att
+                SUM(CASE WHEN stat_key = 'xp_attempts' THEN stat_value ELSE 0 END) AS pat_att,
+                SUM(CASE WHEN stat_key = 'offensive_snaps' THEN stat_value ELSE 0 END) AS offensive_snaps,
+                SUM(CASE WHEN stat_key = 'defensive_snaps' THEN stat_value ELSE 0 END) AS defensive_snaps,
+                SUM(CASE WHEN stat_key = 'special_teams_snaps' THEN stat_value ELSE 0 END) AS special_teams_snaps,
+                SUM(CASE WHEN stat_key = 'total_snaps' THEN stat_value ELSE 0 END) AS total_snaps
             FROM season_player_stats
             WHERE player_id IN ({placeholders})
             GROUP BY season, player_id, team_id
@@ -605,6 +616,10 @@ def normalized_simulated_season_rows(conn: sqlite3.Connection, player_ids: list[
             "pat_made": int(row["pat_made"] or 0),
             "pat_att": int(row["pat_att"] or 0),
             "pat_pct": pct_value(float(row["pat_made"] or 0), float(row["pat_att"] or 0)),
+            "offensive_snaps": int(row["offensive_snaps"] or 0),
+            "defensive_snaps": int(row["defensive_snaps"] or 0),
+            "special_teams_snaps": int(row["special_teams_snaps"] or 0),
+            "total_snaps": int(row["total_snaps"] or 0),
             "source": "nfl_gm_sim_engine",
         }
         item["fantasy_points"] = fantasy_ppr(item)
@@ -830,6 +845,231 @@ def transactions_by_player(conn: sqlite3.Connection, player_ids: list[int], limi
     return grouped
 
 
+def milestones_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_each: int = 12) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids or not table_exists(conn, "player_career_milestones_view"):
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM player_career_milestones_view
+        WHERE player_id IN ({placeholders})
+        ORDER BY player_id, season DESC, threshold_value DESC, sort_order
+        """,
+        player_ids,
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        items = grouped.setdefault(int(row["player_id"]), [])
+        if len(items) >= limit_each:
+            continue
+        items.append({
+            "id": int(row["milestone_id"]),
+            "season": int(row["season"]),
+            "team": row["team"] or "",
+            "key": row["milestone_key"],
+            "name": row["milestone_name"],
+            "group": row["milestone_group"],
+            "value": row["milestone_value"],
+            "threshold": row["threshold_value"],
+            "notes": row["notes"] or "",
+        })
+    return grouped
+
+
+def career_stories_by_player(conn: sqlite3.Connection, player_ids: list[int], limit_each: int = 12) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids or not table_exists(conn, "career_story_events_view"):
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM career_story_events_view
+        WHERE player_id IN ({placeholders})
+        ORDER BY player_id, COALESCE(story_date, printf('%04d-12-31', season)) DESC, story_id DESC
+        """,
+        player_ids,
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        items = grouped.setdefault(int(row["player_id"]), [])
+        if len(items) >= limit_each:
+            continue
+        items.append({
+            "id": int(row["story_id"]),
+            "season": int(row["season"]),
+            "date": row["story_date"],
+            "team": row["team"] or "",
+            "type": row["story_type"],
+            "tier": row["story_tier"],
+            "title": row["title"],
+            "summary": row["summary"],
+        })
+    return grouped
+
+
+def revealed_personality_by_player(
+    conn: sqlite3.Connection,
+    *,
+    game_id: str,
+    season: int,
+    player_ids: list[int],
+    limit_each: int = 4,
+) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids or not table_exists(conn, "player_personalities_view"):
+        return {}
+    placeholders = ",".join("?" for _ in player_ids)
+    rows = conn.execute(
+        f"""
+        WITH visible AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY player_id, trait_key
+                       ORDER BY season DESC, created_at DESC
+                   ) AS rn
+            FROM player_personalities_view
+            WHERE game_id = ?
+              AND season <= ?
+              AND player_id IN ({placeholders})
+              AND COALESCE(hidden, 1) = 0
+        )
+        SELECT *
+        FROM visible
+        WHERE rn = 1
+        ORDER BY player_id, ABS(COALESCE(intensity, 0)) DESC, display_name
+        """,
+        [game_id, season, *player_ids],
+    ).fetchall()
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for row in rows:
+        items = grouped.setdefault(int(row["player_id"]), [])
+        if len(items) >= limit_each:
+            continue
+        intensity = int(row["intensity"] or 0)
+        if abs(intensity) >= 82:
+            strength = "Strong"
+        elif abs(intensity) >= 64:
+            strength = "Clear"
+        else:
+            strength = "Light"
+        items.append({
+            "key": row["trait_key"],
+            "label": row["display_name"] or str(row["trait_key"]).replace("_", " ").title(),
+            "category": row["category"] or "Personality",
+            "polarity": row["polarity"] or "neutral",
+            "strength": strength,
+            "notes": row["notes"] or "",
+            "source": "Staff Read",
+        })
+    return grouped
+
+
+def development_notes_by_player(
+    conn: sqlite3.Connection,
+    *,
+    game_id: str,
+    player_ids: list[int],
+    limit_each: int = 8,
+) -> dict[int, list[dict[str, Any]]]:
+    if not player_ids:
+        return {}
+    user_team_id = pro_player_fog.active_user_team_id(conn)
+    grouped: dict[int, list[dict[str, Any]]] = {player_id: [] for player_id in player_ids}
+    placeholders = ",".join("?" for _ in player_ids)
+
+    def add(player_id: int, item: dict[str, Any]) -> None:
+        bucket = grouped.setdefault(player_id, [])
+        if len(bucket) < limit_each:
+            bucket.append(item)
+
+    if table_exists(conn, "user_inbox_messages"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM user_inbox_messages
+            WHERE game_id = ?
+              AND related_table = 'players'
+              AND related_id IN ({placeholders})
+              AND (
+                    category IN ('Player Development', 'Team Culture')
+                 OR LOWER(COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%development%'
+                 OR LOWER(COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%trait%'
+                 OR LOWER(COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%coach%'
+              )
+            ORDER BY related_id, date(message_date) DESC, message_id DESC
+            """,
+            [game_id, *player_ids],
+        ).fetchall()
+        for row in rows:
+            add(int(row["related_id"]), {
+                "date": row["message_date"],
+                "type": "staff",
+                "source": row["source"] or "Coaching Staff",
+                "title": row["title"],
+                "summary": row["body"],
+                "priority": row["priority"] or "normal",
+                "visibility": "Team staff",
+            })
+
+    if table_exists(conn, "preseason_camp_events") and user_team_id is not None:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM preseason_camp_events
+            WHERE game_id = ?
+              AND player_id IN ({placeholders})
+              AND team_id = ?
+            ORDER BY player_id, date(event_date) DESC, camp_event_id DESC
+            """,
+            [game_id, *player_ids, user_team_id],
+        ).fetchall()
+        for row in rows:
+            impact = float(row["impact_delta"] or 0.0)
+            priority = "high" if abs(impact) >= 0.85 or int(row["trait_revealed"] or 0) else "normal"
+            add(int(row["player_id"]), {
+                "date": row["event_date"],
+                "type": "camp",
+                "source": "Coaching Staff",
+                "title": row["title"],
+                "summary": row["details"] or "",
+                "priority": priority,
+                "visibility": "Team staff",
+                "traitRevealed": bool(row["trait_revealed"]),
+                "tone": "good" if impact > 0 else "warn" if impact < 0 else "neutral",
+            })
+
+    if table_exists(conn, "league_news_items"):
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM league_news_items
+            WHERE game_id = ?
+              AND player_id IN ({placeholders})
+              AND (
+                    category IN ('Development', 'Training Camp', 'Preseason')
+                 OR LOWER(COALESCE(tags_json, '') || ' ' || COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%development%'
+                 OR LOWER(COALESCE(tags_json, '') || ' ' || COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%personality%'
+                 OR LOWER(COALESCE(tags_json, '') || ' ' || COALESCE(title, '') || ' ' || COALESCE(body, '')) LIKE '%training_camp%'
+              )
+            ORDER BY player_id, date(news_date) DESC, news_id DESC
+            """,
+            [game_id, *player_ids],
+        ).fetchall()
+        for row in rows:
+            add(int(row["player_id"]), {
+                "date": row["news_date"],
+                "type": "league",
+                "source": row["source"] or "League Wire",
+                "title": row["title"],
+                "summary": row["body"],
+                "priority": row["priority"] or "normal",
+                "visibility": "Public",
+                "tone": "good" if int(row["is_major"] or 0) else "neutral",
+            })
+
+    return {player_id: rows for player_id, rows in grouped.items() if rows}
+
+
 def empty_medical_entry() -> dict[str, list[Any]]:
     return {"active": [], "history": [], "bodyRisk": [], "recentEvents": []}
 
@@ -1000,6 +1240,10 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
     contracts = contracts_by_player(conn, player_ids)
     free_agents = free_agent_profiles(conn)
     transactions = transactions_by_player(conn, player_ids)
+    milestones = milestones_by_player(conn, player_ids)
+    career_stories = career_stories_by_player(conn, player_ids)
+    personality = revealed_personality_by_player(conn, game_id=game_id, season=season, player_ids=player_ids)
+    development_notes = development_notes_by_player(conn, game_id=game_id, player_ids=player_ids)
     medical = medical_by_player(conn, player_ids)
     accolades = player_accolades.accolades_for_players(conn, player_ids)
 
@@ -1051,6 +1295,10 @@ def build_payload(db_path: Path, season: int, limit: int | None = None, player_i
             "contract": contracts.get(player_id),
             "freeAgency": free_agents.get(player_id),
             "transactions": transactions.get(player_id, []),
+            "milestones": milestones.get(player_id, []),
+            "careerStories": career_stories.get(player_id, []),
+            "personality": personality.get(player_id, []),
+            "developmentNotes": development_notes.get(player_id, []),
             "medical": medical.get(player_id, empty_medical_entry()),
             "accolades": accolades.get(player_id, {"badges": [], "history": [], "count": 0}),
             "summary": build_summary(row, primary_role, player_ratings, career_row),
